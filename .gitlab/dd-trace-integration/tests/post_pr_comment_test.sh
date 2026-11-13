@@ -24,6 +24,12 @@ FAILED=0
 WORK=$(mktemp -d)
 trap 'rm -rf "${WORK}"' EXIT
 
+# The gate reads the list through QUARANTINE_LIST; each run points at an empty
+# list unless a test builds its own.
+: > "${WORK}/empty-quarantine.txt"
+
+TODAY="$(TZ=UTC date '+%Y-%m-%d')"
+
 # Writes one config directory whose two validation logs say pass or fail.
 write_config() {
   local dir="$1" config="$2" outcome="$3"
@@ -32,6 +38,27 @@ write_config() {
   mkdir -p "${dir}/${config}"
   echo "${marker} whatever" > "${dir}/${config}/profiler-only-${config}.log"
   echo "${marker} whatever" > "${dir}/${config}/tracer-profiler-${config}.log"
+}
+
+# Per-scenario variant: outcome per scenario is pass, fail, or omit (no log
+# at all - a lost job that wrote only one validation log).
+write_cell() {
+  local dir="$1" config="$2" s1="$3" s2="$4" scenario outcome marker
+  mkdir -p "${dir}/${config}"
+  for scenario in profiler-only tracer-profiler; do
+    if [ "${scenario}" = "profiler-only" ]; then outcome="${s1}"; else outcome="${s2}"; fi
+    [ "${outcome}" = "omit" ] && continue
+    marker="SUCCESS:"
+    [ "${outcome}" = "fail" ] && marker="VALIDATION_FAILED"
+    echo "${marker} whatever" > "${dir}/${config}/${scenario}-${config}.log"
+  done
+}
+
+# Appends a quarantine entry to a list file; empty ticket keeps the field so
+# the validator's format still applies when a test wants one.
+add_quarantine() {
+  local file="$1" id="$2" ticket="$3" review_by="$4" reason="${5:-flake}"
+  echo "${id} | ${ticket} | 2026-11-12 | ${review_by} | ${reason}" >> "${file}"
 }
 
 # Builds a full expected matrix, then applies per-config overrides:
@@ -63,12 +90,13 @@ build_matrix() {
 }
 
 # Runs the script over a results dir, keeping the rendered body and exit code.
+# The optional second argument is a quarantine list to inject.
 run_script() {
-  local dir="$1"
+  local dir="$1" qfile="${2:-${WORK}/empty-quarantine.txt}"
   BODY="${WORK}/body.md"
   : > "${BODY}"
   SCRIPT_EXIT=0
-  COMMENT_BODY_FILE="${BODY}" "${BASH}" "${SCRIPT}" "${dir}" > "${WORK}/log.txt" 2>&1 || SCRIPT_EXIT=$?
+  QUARANTINE_LIST="${qfile}" COMMENT_BODY_FILE="${BODY}" "${BASH}" "${SCRIPT}" "${dir}" > "${WORK}/log.txt" 2>&1 || SCRIPT_EXIT=$?
 }
 
 assert_body_contains() {
@@ -145,5 +173,153 @@ mkdir -p "${WORK}/empty"
 run_script "${WORK}/empty"
 assert_exit "an empty results directory fails the pipeline" 1
 assert_body_contains "an empty matrix says the tests could not run" "no results were produced"
+
+# --- a quarantined scenario failure does not gate ---
+#
+# One scenario fails with an unexpired matching entry: the cell renders as
+# quarantined, the comment names ticket and expiry, and the job exits 0.
+
+build_matrix "${WORK}/one-quarantined" "fail:glibc-x64-openj9-jdk25"
+# Only the profiler-only scenario fails (and is quarantined); the cell's
+# tracer-profiler scenario passes.
+write_cell "${WORK}/one-quarantined" "glibc-x64-openj9-jdk25" fail pass
+Q="${WORK}/q1.txt"
+: > "${Q}"
+add_quarantine "${Q}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "VALIDATION_FAILED on patch verification, 1 in ~5 runs"
+run_script "${WORK}/one-quarantined" "${Q}"
+assert_exit "a quarantined scenario failure exits 0" 0
+assert_body_contains "the quarantined cell is counted in the headline" "**1** quarantined"
+assert_body_contains "the headline keeps the expected denominator" "out of **40** expected configurations"
+assert_body_lacks "the terse all-pass line is not used when something failed" "All 39 integration tests passed"
+assert_body_contains "the quarantined cell is marked in the matrix" ":shield:"
+assert_body_contains "the quarantined entry names the ticket" "PROF-16618"
+assert_body_contains "the quarantined entry names the review date" "review_by 2027-02-10"
+assert_body_contains "the quarantined entry names the scenario" "glibc-x64-openj9-jdk25/profiler-only"
+
+# --- the free-text reason renders verbatim, escapes and all ---
+#
+# A reason carrying backslash sequences (a Windows path, a literal \c) must
+# reach the comment unchanged: no escape expansion, no truncation of the
+# sections that follow.
+
+Q_ESC="${WORK}/q-esc.txt"
+: > "${Q_ESC}"
+add_quarantine "${Q_ESC}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" 'path C:\temp logged, exit \c code'
+run_script "${WORK}/one-quarantined" "${Q_ESC}"
+assert_exit "a reason with backslash escapes does not change gating" 0
+assert_body_contains "the reason text is rendered verbatim" 'path C:\temp logged, exit \c code'
+assert_body_contains "a backslash-heavy reason does not truncate the sections after it" "### Links"
+EXPECTED_HEADER="| Platform |$(printf ' JDK %s |' "${JDKS[@]}")"
+assert_body_contains "the matrix header is generated from the JDK list" "${EXPECTED_HEADER}"
+
+# --- the same flake on the other scenario still gates ---
+
+build_matrix "${WORK}/other-scenario" "fail:glibc-x64-openj9-jdk25"
+write_cell "${WORK}/other-scenario" "glibc-x64-openj9-jdk25" pass fail
+run_script "${WORK}/other-scenario" "${Q}"
+assert_exit "a non-quarantined scenario failure still fails the pipeline" 1
+assert_body_contains "the gating failure is marked in the matrix" ":x:"
+assert_body_contains "the failure details name the failing scenario" "**Tracer+profiler:**"
+assert_body_lacks "a quarantined scenario of a gating cell is not reported as excused" "### Quarantined failures"
+
+# --- an expired entry never excuses a failure ---
+
+Q_EXPIRED="${WORK}/q-expired.txt"
+: > "${Q_EXPIRED}"
+add_quarantine "${Q_EXPIRED}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2020-01-01" "stale entry"
+run_script "${WORK}/one-quarantined" "${Q_EXPIRED}"
+assert_exit "an expired quarantine gates again" 1
+assert_body_contains "an expired quarantine renders the cell as failed" ":x:"
+assert_body_lacks "an expired quarantine is not rendered as quarantined" ":shield:"
+
+# --- a review_by equal to today is expired: the failure gates again ---
+
+Q_DUE_TODAY="${WORK}/q-due-today.txt"
+: > "${Q_DUE_TODAY}"
+add_quarantine "${Q_DUE_TODAY}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "${TODAY}" "due today"
+run_script "${WORK}/one-quarantined" "${Q_DUE_TODAY}"
+assert_exit "a review_by equal to today gates again" 1
+assert_body_contains "a due-today quarantine renders the cell as failed" ":x:"
+assert_body_lacks "a due-today quarantine is not rendered as quarantined" ":shield:"
+assert_body_lacks "a due-today quarantine has no quarantined-failures section" "### Quarantined failures"
+
+# --- a quarantined scenario must not mask the other scenario's missing log ---
+Q2="${WORK}/q2.txt"
+: > "${Q2}"
+add_quarantine "${Q2}" "musl-arm64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "flake"
+build_matrix "${WORK}/quarantined-plus-unknown" "fail:musl-arm64-openj9-jdk25"
+rm "${WORK}/quarantined-plus-unknown/musl-arm64-openj9-jdk25/tracer-profiler-musl-arm64-openj9-jdk25.log"
+run_script "${WORK}/quarantined-plus-unknown" "${Q2}"
+assert_exit "a quarantined failure next to a missing log still fails the pipeline" 1
+assert_body_contains "the missing log is still reported" "**1** without a result"
+
+# --- a glob entry quarantines every cell it matches, and only those ---
+
+Q4="${WORK}/q4.txt"
+: > "${Q4}"
+add_quarantine "${Q4}" "glibc-x64-openj9-*/profiler-only" "PROF-16618" "2027-02-10" "same flake on both jdk versions"
+build_matrix "${WORK}/wildcard" "fail:glibc-x64-openj9-jdk25"
+write_cell "${WORK}/wildcard" "glibc-x64-openj9-jdk25" fail pass
+write_cell "${WORK}/wildcard" "glibc-x64-openj9-jdk11" pass fail
+run_script "${WORK}/wildcard" "${Q4}"
+assert_exit "the glob-matched cell does not gate, the unlisted failing one does" 1
+assert_body_contains "the matched cell renders as quarantined" ":shield:"
+assert_body_contains "the unlisted failing cell still renders as failed" ":x:"
+assert_body_contains "exactly one cell is quarantined" "**1** quarantined"
+
+# --- the gate fails closed on a list it cannot read ---
+
+Q5="${WORK}/q5.txt"
+echo "glibc-x64-openj9-jdk25profiler-only | PROF-16618 | 2026-11-12 | 2027-02-10 | malformed id" >> "${Q5}"
+run_script "${WORK}/one-quarantined" "${Q5}"
+assert_exit "a malformed entry never excuses a failure" 1
+
+run_script "${WORK}/one-quarantined" "${WORK}/no-such-list.txt"
+assert_exit "a missing list file never excuses a failure" 1
+
+# --- a sub-5-field line fails closed in the gate ---
+
+Q_SHORT="${WORK}/q-short.txt"
+echo "glibc-x64-openj9-jdk25/profiler-only | PROF-16618 | 2026-11-12 | 2027-02-10" >> "${Q_SHORT}"
+run_script "${WORK}/one-quarantined" "${Q_SHORT}"
+assert_exit "a sub-5-field entry never excuses a failure" 1
+assert_body_lacks "a sub-5-field entry is not rendered as quarantined" ":shield:"
+
+# --- a quarantined scenario that passes renders as an ordinary pass ---
+
+Q3="${WORK}/q3.txt"
+: > "${Q3}"
+add_quarantine "${Q3}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "flake that got fixed"
+run_script "${WORK}/all-pass" "${Q3}"
+assert_exit "a quarantined-but-passing scenario still exits 0" 0
+assert_body_contains "the quarantine does not colour a passing scenario" "All 40 integration tests passed"
+
+# --- quarantined bullets render on separate lines ---
+
+build_matrix "${WORK}/two-quarantined" "fail:glibc-x64-openj9-jdk25" "fail:musl-arm64-openj9-jdk25"
+write_cell "${WORK}/two-quarantined" "glibc-x64-openj9-jdk25" fail pass
+write_cell "${WORK}/two-quarantined" "musl-arm64-openj9-jdk25" fail pass
+Q6="${WORK}/q6.txt"
+: > "${Q6}"
+add_quarantine "${Q6}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "flake one"
+add_quarantine "${Q6}" "musl-arm64-openj9-jdk25/profiler-only" "PROF-16014" "2027-02-10" "flake two"
+run_script "${WORK}/two-quarantined" "${Q6}"
+assert_exit "two quarantined cells exit 0" 0
+assert_body_contains "the first quarantined entry is named" "glibc-x64-openj9-jdk25/profiler-only"
+assert_body_contains "the second quarantined entry is named" "musl-arm64-openj9-jdk25/profiler-only"
+if grep -qF -- '\n' "${BODY}"; then
+  printf '%s\n' "FAIL: quarantined bullets must not contain a literal \\n escape"
+  sed 's/^/      /' "${BODY}" | head -12
+  FAILED=1
+else
+  echo "PASS: quarantined bullets contain no literal escape sequence"
+fi
+if [ "$(grep -c '^- `' "${BODY}")" -eq 2 ]; then
+  echo "PASS: both quarantined entries render as separate bullet lines"
+else
+  echo "FAIL: expected 2 quarantined bullet lines, got $(grep -c '^- `' "${BODY}" || true)"
+  sed 's/^/      /' "${BODY}" | head -12
+  FAILED=1
+fi
 
 exit "${FAILED}"
