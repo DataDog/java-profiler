@@ -44,17 +44,11 @@ enum class BlockRunOwner : int {
 // tests can pair a tracker with any ThreadFilter instance.
 class WallClockBlockTracker {
 public:
-    // BlockState storage (~128 KiB) is allocated lazily by ensureAllocated(),
-    // which ThreadFilter::registerThread() calls under _registry_lock on the
-    // first registration. It is recorded under NM_WALLCLOCK only once
-    // allocated and retracted by the destructor, so processes that never
-    // register a thread pay nothing.
-    WallClockBlockTracker();
+    WallClockBlockTracker() = default;
     ~WallClockBlockTracker();
 
-    // One cache line per slot, mirroring ThreadFilter::Slot's own
-    // false-sharing avoidance. Storage, once published, is never freed before
-    // ~WallClockBlockTracker (R-B2), so a captured BlockState* stays valid.
+    // Published backing survives registry resets and recording restarts, so
+    // captured pointers remain valid until destruction.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) BlockState {
         static constexpr u64 kUnownedBlockedFallbackRatio = 10;
 
@@ -229,9 +223,22 @@ public:
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
+        bool needsActiveBlockRunClear(OSThreadState state) const {
+            // Retained unowned context and epoch segments are not owned-run payload.
+            return activeBlockOwner() != BlockRunOwner::NONE ||
+                   activeBlockState() != OSThreadState::UNKNOWN || sampledThisRun() ||
+                   last_sampled_state.load(std::memory_order_acquire) != state;
+        }
+#ifdef UNIT_TEST
+        // Observation only; this counter publishes no payload or layout changes.
+        inline static std::atomic<u64> clear_count_for_test{0};
+#endif
         // End owned suppression without discarding an unowned origin's retained
         // context, trace or weight. Publish UNKNOWN before releasing ownership.
         inline void clearActiveBlockRun(OSThreadState state) {
+#ifdef UNIT_TEST
+            clear_count_for_test.fetch_add(1, std::memory_order_relaxed);
+#endif
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
             last_sampled_state.store(state, std::memory_order_relaxed);
@@ -255,9 +262,8 @@ public:
     static_assert(std::atomic<u64>::is_always_lock_free,
                   "BlockState u64 fields must be lock-free for signal-handler safety");
 
-    // NOT signal-safe. Called by ThreadFilter::registerThread() under
-    // _registry_lock. Returns false only on allocation failure (the tracker
-    // stays inert and the allocation is retried on the next registration).
+    // Not signal-safe. Registry registration prepares backing under its mutex;
+    // failure leaves lookups inert and the next registration retries.
     bool ensureAllocated();
 
     // Normal-only mode and backing preparation. The registry mutex serializes
@@ -320,10 +326,8 @@ public:
 
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                         OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
-    // Generation-checked exit: block lifecycles use it so they cannot clear
-    // another owner's run. Clears only the owned-run fields; the
-    // unowned-blocked tail is preserved (R-B1). Callers that need an
-    // unconditional clear use resetSlot(slot_id, OSThreadState::RUNNABLE).
+    // Generation-checked exits preserve retained unowned tails and cannot
+    // clear another owner's run. Unconditional lifecycle cleanup uses resetSlot.
     bool exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation);
     // Clears stale suppression state so a new/reused slot cannot inherit a
     // predecessor's active block or once-per-run sampled marker. Called by
@@ -336,6 +340,14 @@ public:
     bool shouldSuppressOwnedBlock(ThreadFilter* registry, const ThreadEntry& entry) const;
 
 #ifdef UNIT_TEST
+    using AllocationHook = void (*)(void*);
+    void setAllocationHookForTest(AllocationHook hook, void* arg) {
+        _allocation_hook = hook;
+        _allocation_hook_arg = arg;
+    }
+    void setAllocationFailureForTest(bool fail) {
+        _allocation_failure.store(fail, std::memory_order_release);
+    }
     static size_t storageSize();
     static size_t unownedContextChunkSizeForTest();
     bool exchangeUnownedContextAllocationFailureForTest(bool fail);
@@ -390,11 +402,13 @@ private:
         std::array<BlockState, ThreadFilter::kMaxThreads> slots;
         std::array<std::atomic<u64>, ThreadFilter::kMaxThreads / 64> roots{};
     };
-    // Published once by ensureAllocated(); never freed before the destructor
-    // (R-B2). Signal paths only load it, never allocate.
+    // Signal paths only load backing; only the destructor reclaims it.
     std::atomic<SlotStorage*> _storage{nullptr};
 
 #ifdef UNIT_TEST
+    std::atomic<bool> _allocation_failure{false};
+    AllocationHook _allocation_hook = nullptr;
+    void* _allocation_hook_arg = nullptr;
     std::atomic<bool> _context_allocation_failure{false};
     UnownedContextReadHook _context_read_hook = nullptr;
     void* _context_read_hook_arg = nullptr;

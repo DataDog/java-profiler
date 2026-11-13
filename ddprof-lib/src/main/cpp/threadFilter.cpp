@@ -164,11 +164,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid, u64 logical_window_st
         return -1;
     }
     if (_block_tracker != nullptr) {
-        // Lazy BlockState storage (R-B2). Locked path only: never from a signal
-        // handler. Allocation failure leaves the tracker inert (all slotForId
-        // callers fail open) and is retried on the next registration. The
-        // pre-lock capacity reject above never reaches here; every first
-        // registration of any tid takes this path.
+        // Failure disables suppression, not identity registration.
         _block_tracker->ensureAllocated();
     }
 

@@ -267,9 +267,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
               try {
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SLEEP_MILLIS);
                 while (System.nanoTime() < deadline) {
-                  // Keep the OS thread runnable so suppression must come from the owned park
-                  // marker.
-                  // yield() (not onSpinWait(): --release 8) keeps the spin from starving others.
+                  // Keep the worker runnable; Thread.yield is available with --release 8.
                   Thread.yield();
                 }
               } finally {

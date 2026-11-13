@@ -340,7 +340,6 @@ TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   EXPECT_TRUE(slot->sampledThisRun() &&
               slot->activeBlockState() == slot->lastSampledState());
 
-  // Unconditional clear (the single-argument exitBlockedRun() was removed).
   tracker.resetSlot(slot_id, OSThreadState::RUNNABLE);
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
   EXPECT_FALSE(slot->sampledThisRun());

@@ -464,7 +464,9 @@ original fields; see [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 Timer backing capacity is accounted with allocation deltas and retracted on exit,
 not by replacing the shared `NM_WALLCLOCK` gauge. The tracker's slots and context sidecars
-are allocated lazily and accounted independently.
+are allocated lazily and accounted independently until tracker destruction.
+Block-slot allocation failure leaves suppression inactive; a later registration retries.
+Context boundaries skip clean owned-run writes and retain unowned context and epoch segments.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.

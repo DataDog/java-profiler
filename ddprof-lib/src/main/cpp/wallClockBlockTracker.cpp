@@ -21,10 +21,6 @@
 #include <memory>
 #include <new>
 
-WallClockBlockTracker::WallClockBlockTracker() {
-    // Storage is allocated lazily by ensureAllocated(); nothing to record yet.
-}
-
 WallClockBlockTracker::~WallClockBlockTracker() {
     SlotStorage* storage = _storage.exchange(nullptr, std::memory_order_acq_rel);
     if (storage != nullptr) {
@@ -41,20 +37,30 @@ WallClockBlockTracker::~WallClockBlockTracker() {
 }
 
 bool WallClockBlockTracker::ensureAllocated() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
     if (_storage.load(std::memory_order_acquire) != nullptr) {
         return true;
     }
-    // A default-constructed BlockState is the resetSlot(UNKNOWN) state.
-    SlotStorage* fresh = new (std::nothrow) SlotStorage();
+    std::unique_ptr<SlotStorage> fresh;
+#ifdef UNIT_TEST
+    if (!_allocation_failure.load(std::memory_order_acquire))
+#endif
+    {
+        fresh.reset(new (std::nothrow) SlotStorage());
+    }
     if (fresh == nullptr) {
         return false;
     }
+#ifdef UNIT_TEST
+    if (_allocation_hook != nullptr) {
+        _allocation_hook(_allocation_hook_arg);
+    }
+#endif
     SlotStorage* expected = nullptr;
-    if (_storage.compare_exchange_strong(expected, fresh, std::memory_order_acq_rel,
+    if (_storage.compare_exchange_strong(expected, fresh.get(), std::memory_order_acq_rel,
                                          std::memory_order_acquire)) {
+        fresh.release();
         NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(SlotStorage)));
-    } else {
-        delete fresh;
     }
     return true;
 }
@@ -108,7 +114,7 @@ void WallClockBlockTracker::resetAll() {
 
 void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state) {
     BlockState* s = slotForId(slot_id);
-    if (s != nullptr) {
+    if (s != nullptr && s->needsActiveBlockRunClear(state)) {
         s->clearActiveBlockRun(state);
     }
 }

@@ -266,10 +266,9 @@ private:
 class WallClockAccountingTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        ASSERT_TRUE(tracker.ensureAllocated());
         baseline = NativeMem::live(NM_WALLCLOCK);
-        // The profiler's tracker storage is allocated lazily on first
-        // registration, so the baseline may be 0; tests assert deltas against it.
-        ASSERT_GE(baseline, 0);
+        ASSERT_GT(baseline, 0);
         previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
         first.enableEvents(true);
     }
@@ -284,6 +283,7 @@ protected:
     }
 
     Arguments args;
+    WallClockBlockTracker tracker;
     AccountingWallClock first;
     AccountingWallClock second;
     long long baseline = 0;
