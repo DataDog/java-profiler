@@ -250,6 +250,10 @@ public class ExternalLauncher {
         case "RESTORE":
           System.out.println("[standin] restored=" + com.datadoghq.profiler.nativemem.DdprofStandin.restore());
           break;
+        case "SAVEDMALLOC":
+          System.out.println("[standin-saved] malloc="
+              + com.datadoghq.profiler.nativemem.DdprofStandin.savedMalloc());
+          break;
         case "START":
           JavaProfiler instance = JavaProfiler.getInstance();
           try {
