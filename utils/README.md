@@ -175,12 +175,13 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
   --arch=x64|aarch64|all[,..]     (default: auto-detect)
   --config=debug|release|asan|tsan|all[,..] (default: debug)
   --container=podman|docker       (default: podman)
-  --tests="TestPattern"           (optional)
+  --tests="TestPattern"           (optional; any characters except a newline)
   --gtest                         (enable C++ gtests)
   --gtest-task=Task               (run one C++ gtest task)
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
   --rebuild                       (force rebuild of container images)
+  --coverage-out=DIR              (single cell: coverageReport, exported to DIR)
   --matrix                        (preview a full matrix)
   --run                           (execute an inferred matrix without prompting)
   --fail-fast                     (stop matrix execution on first failure)
@@ -205,6 +206,16 @@ Examples:
 ```
 
 Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
+
+`--coverage-out=DIR` runs `:ddprof-lib:coverageReport -PenableCoverage` for one cell and replaces in `DIR` the reports (`reports/`, including the gcovr tracefile `reports/cpp/coverage.json`), the JaCoCo `.exec` files (`jacoco/`), the classes they were recorded against (`classes/`) and `cell.properties` (libc, arch, jdk, tests filter, commit, Gradle exit code). The export also runs when Gradle fails; the script still exits with Gradle's code, or with 70 when Gradle passed but the export failed. The export writes `cell.properties` last, so a directory without it holds no complete export. `DIR` must be empty or hold an earlier export, which the script marks with a `.coverage-cell` file. The source tree must have no uncommitted or untracked files, except in `DIR`. The script can run from a git worktree: it also mounts the main repository's git dir, read-only.
+
+### `merge-coverage.sh`
+
+Merges `--coverage-out` directories from several cells into one C++ report (gcovr `--add-tracefile`) and one Java report (JaCoCo CLI `merge` + `report`), plus `summary.md`. All cells and `--source-root` must be at the same commit. Needs `java`, `python3` and a gcovr at least as new as the containers' (an older one rejects their tracefiles); the JaCoCo CLI comes from `$JACOCO_CLI` or is downloaded from Maven Central with `curl` and checked against a pinned SHA-256. `--out` is replaced on each run, and `summary.md` marks which cells each report includes. A cell whose `gradle_exit` is 128 or more (Gradle killed by a signal) holds partial data and is left out of both reports. When gcovr fails, the script leaves the cells whose tracefile gcovr rejects out of the C++ report and merges the rest. There is no C++ report when gcovr is missing or the rest still fails to merge. The script still writes the Java report and `summary.md`, and exits with 2. The C++ column of `summary.md` gives the reason per cell. The `test-coverage` skill drives the full Linux matrix and this merge.
+
+```bash
+./utils/merge-coverage.sh --source-root=. --out=build/coverage-merged cells/glibc-x64-21 cells/musl-aarch64-17
+```
 
 ### `check-signal-reachability.py`
 
