@@ -80,9 +80,10 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 
 ## Pi
 
-Pi has no subagents. Say so, then run S1, S3 and S2 one after another in this session,
-with the same loop and stops. Pi has no review tool, so S3 follows `pre-pr-review`
-step 3 for a missing reviewer.
+In Pi, do not use subagents, also when an extension such as `pi-subagents` provides
+them. Say so, then run S1, S3 and S2 one after another in this session, with the same
+loop and stops. Pi has no review tool, so S3 follows `pre-pr-review` step 3 for a
+missing reviewer.
 
 ## `gh` in test drives
 
