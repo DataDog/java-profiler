@@ -304,9 +304,9 @@ public final class LeakingCacheScenario {
 
   /**
    * Inline padding supplies sampled instances for the detector's eight-survivor per-thread
-   * threshold while preserving the one-shot allocator threads and number of retained objects.
-   * With only 32 longs, a failing release run retained at most six sampled instances per worker:
-   * its one-age cohorts could never qualify, regardless of traversal time. About 1KiB per payload
+   * threshold while preserving the one-shot allocator threads and number of retained objects. With
+   * only 32 longs, a failing release run retained at most six sampled instances per worker: its
+   * one-age cohorts could never qualify, regardless of traversal time. About 1KiB per payload
    * provides more sampling opportunities within the same rounds at the 256KiB sampling interval.
    * Plain fields keep that allocation volume on CachedPayload itself; a companion array would
    * compete for samples without contributing any CachedPayload survivors.
@@ -320,7 +320,22 @@ public final class LeakingCacheScenario {
     long p64, p65, p66, p67, p68, p69, p70, p71, p72, p73, p74, p75, p76, p77, p78, p79;
     long p80, p81, p82, p83, p84, p85, p86, p87, p88, p89, p90, p91, p92, p93, p94, p95;
     long p96, p97, p98, p99, p100, p101, p102, p103, p104, p105, p106, p107, p108, p109, p110, p111;
-    long p112, p113, p114, p115, p116, p117, p118, p119, p120, p121, p122, p123, p124, p125, p126, p127;
+    long p112,
+        p113,
+        p114,
+        p115,
+        p116,
+        p117,
+        p118,
+        p119,
+        p120,
+        p121,
+        p122,
+        p123,
+        p124,
+        p125,
+        p126,
+        p127;
 
     CachedPayload(String key) {
       this.key = key;
