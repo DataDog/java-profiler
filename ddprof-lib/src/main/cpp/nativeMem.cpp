@@ -3,6 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "nativeMem.h"
+#include "common.h"
+#include "log.h"
+#include "signalSafety.h"
+
+#include <stdio.h>
 
 volatile long long NativeMem::_live[NM_NUM_CATEGORIES] = {};
 volatile long long NativeMem::_overhead[NM_NUM_CATEGORIES] = {};
@@ -119,4 +124,25 @@ const char *NativeMem::categoryName(NativeMemCategory category) {
     return "unknown";
   }
   return names[category];
+}
+
+void NativeMem::logLive(const char *when) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  // One line, within TEST_LOG's 512-byte limit: ~13 categories of
+  // " name=bytes" fit comfortably.
+  char buf[400];
+  size_t pos = 0;
+  buf[0] = '\0';
+  for (int c = 0; c < NM_NUM_CATEGORIES && pos < sizeof(buf); c++) {
+    int n = snprintf(buf + pos, sizeof(buf) - pos, " %s=%lld",
+                     categoryName(static_cast<NativeMemCategory>(c)),
+                     live(static_cast<NativeMemCategory>(c)));
+    if (n < 0) {
+      break;
+    }
+    pos += static_cast<size_t>(n);
+  }
+  double total_kb = liveTotal() / 1024.0;
+  TEST_LOG("NativeMem live %s (total %.1f KB):%s", when, total_kb, buf);
+  Log::debug("NativeMem live %s (total %.1f KB):%s", when, total_kb, buf);
 }

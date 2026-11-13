@@ -7,11 +7,13 @@ package com.datadoghq.profiler.queue;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
+import java.lang.reflect.Method;
 import java.util.concurrent.ArrayBlockingQueue;
 import org.junit.jupiter.api.Test;
 
@@ -80,5 +82,48 @@ public class QueueTimeTest extends AbstractProfilerTest {
       assertEquals(ArrayBlockingQueue.class.getName(), item.getClassName("queueType"));
       assertEquals(10, item.getLong("queueLength"));
     }
+  }
+
+  /**
+   * recordQueueTime() dereferences its classes, so only a direct native call can pass a null name.
+   * Each null name drops the event; the queue length tells the calls apart.
+   */
+  @Test
+  public void testNullNamesDropQueueTimeEvent() throws Exception {
+    Method recordQueueEnd0 =
+        JavaProfiler.class.getDeclaredMethod(
+            "recordQueueEnd0",
+            long.class,
+            long.class,
+            String.class,
+            String.class,
+            Thread.class,
+            String.class,
+            int.class);
+    recordQueueEnd0.setAccessible(true);
+    Thread origin = Thread.currentThread();
+    String task = Runnable.class.getName();
+    String scheduler = getClass().getName();
+    String queueType = ArrayBlockingQueue.class.getName();
+    long end = profiler.getCurrentTicks();
+    long start = end - 1000;
+
+    recordQueueEnd0.invoke(null, start, end, null, scheduler, origin, queueType, 101);
+    recordQueueEnd0.invoke(null, start, end, task, null, origin, queueType, 102);
+    recordQueueEnd0.invoke(null, start, end, task, scheduler, origin, null, 103);
+    recordQueueEnd0.invoke(null, start, end, task, scheduler, origin, queueType, 104);
+    stopProfiler();
+
+    int recorded = 0;
+    for (JfrEvent item : verifyEvents("datadog.QueueTime")) {
+      long queueLength = item.getLong("queueLength");
+      if (queueLength >= 101 && queueLength <= 103) {
+        fail("event with a null name was recorded (queueLength " + queueLength + ")");
+      }
+      if (queueLength == 104) {
+        recorded++;
+      }
+    }
+    assertEquals(1, recorded, "the call with every name set must be recorded");
   }
 }

@@ -185,6 +185,7 @@ protected:
         // Initialize shared storage if not already done
         if (!shared_storage) {
             shared_storage = std::make_unique<CallTraceStorage>();
+            shared_storage->acquire();
         }
 
         // Clear any traces from previous tests to start fresh

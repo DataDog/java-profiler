@@ -161,14 +161,14 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
-| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
-| String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
+| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, freed on stop) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
+| String dictionary (lazily allocated arena chunks, rotation/clear/release protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
 | Profiling engines (CPU, wall-clock, allocation, native memory, liveness; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
-| Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
+| Native memory profiling (malloc interception installed per recording and restored on stop, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
@@ -297,17 +297,16 @@ run without `_state_lock` and overlap `start()`/`stop()`. Reach engines only thr
 `Profiler::registerThread()`/`unregisterThread()`, never `_cpu_engine->…` directly. An
 engine with a per-thread table sizes it before `openThreadRegistration()` and frees or
 replaces it only under `ThreadTablesFreeze`; that freeze closes unregistration only around
-the replacement, never for a whole `start()`. Details:
+the replacement or release, never for a whole `start()` or `stop()` (CTimer frees its
+table at the end of `stop()`). Details:
 [ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
 
-**JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —
-including compiler, VM and GC threads that never went through our `pthread_create`
-hook — so call `ProfiledThread::initCurrentThreadSignalSafe()` first.
-`GarbageCollectionStart`/`Finish` run while the VM is stopped: no JNI, and no JVMTI
-beyond the raw-monitor, memory-management and environment-local-storage functions
-(JVMTI spec). Keep them to lock-free bookkeeping and defer work to a profiler thread
-(see `ReferenceChainTracker::onGCStart()`). Profiler threads that need JNI attach with
-`VM::attachThread()` and call `VM::detachThread()` before they exit.
+**JVMTI callbacks.** They run on any JVM thread, including ones that never went through
+our `pthread_create` hook: call `ProfiledThread::initCurrentThreadSignalSafe()` first.
+`GarbageCollectionStart`/`Finish` run with the VM stopped: no JNI and almost no JVMTI,
+so keep them to lock-free bookkeeping and defer the rest to a profiler thread.
+Profiler threads that need JNI use `VM::attachThread()`/`detachThread()`. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#jvmti-callbacks).
 
 **JNI/JVMTI resource cleanup.** Release every JNI local reference and JVMTI-allocated
 buffer (e.g. the `GetAllThreads()` array, freed with `Deallocate`) on every exit path —
@@ -319,14 +318,27 @@ the helper matching the clock that produced the timestamp (`OS::nanotime()` valu
 nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two.
 
 **Recording lifecycle (stop/start/restart).** State that outlives `Profiler::stop()`
-(caches, frontier/tracking tables, cached class-map ids, clocks and deadlines, JNI global
-refs) must either be cleared in `stop()`/`start()` or be tagged with a generation and
-re-validated on use. `Profiler::start()` clears `_class_map` only on a reset start
-(`ACTION_START` or the first start); `ACTION_RESUME` keeps it. A cleared dictionary
-invalidates every stored class id, so state that caches ids must be re-validated on a
-reset start. If the `RefCountGuard` drain times out, `clearAll()` leaves the dictionary
-unchanged. Events queued since the last `dump()` must be written before
-`stop()` discards them.
+(caches, tracking tables, cached class-map ids, clocks and deadlines, JNI global refs)
+must be cleared in `stop()`/`start()` or be tagged with a generation and re-validated
+on use; a released or cleared dictionary bumps its `generation()`. Recording-scoped
+memory is freed at the end of `stop()` by `Profiler::releaseRecordingMemory()`. Anything
+a late writer can still reach after `stop()` must find it null or zero-capacity under
+the same lock it writes under, and must decide ownership of what it inserted while
+holding that lock, never by re-reading shared state after unlocking. Write queued events
+before `stop()` discards them. `_context_value_map` is deliberately kept across
+`stop()` (its ids survive `ACTION_RESUME`); the class and string-label maps are
+released at every stop and keep only their id counter, so ids are never reused but
+entries are re-interned. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#recording-scoped-state).
+
+**Persistent hooks.** The `pthread_create` and `sigaction` GOT hooks are installed once
+(`LibraryPatcher::initialize_persistent()`) and never unpatched, so they run before the
+first `start()` and between recordings. They must stay transparent (the `pthread_create`
+wrapper passes the routine's return value to `pthread_exit()`), and code they reach must
+tolerate an idle profiler, including one that never started: go through the registration
+gates and skip a `NULL` engine slot. Details:
+[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration),
+[SigsegvPatching.md](doc/architecture/SigsegvPatching.md#initialization-flow).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

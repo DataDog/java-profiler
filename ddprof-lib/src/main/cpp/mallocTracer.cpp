@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -93,6 +95,9 @@ PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
 Mutex MallocHooker::_patch_lock;
 int MallocHooker::_patched_libs = 0;
 bool MallocHooker::_initialized = false;
+MallocPatchEntry MallocHooker::_entries[MallocHooker::MAX_MALLOC_ENTRIES];
+int MallocHooker::_entry_count = 0;
+int MallocHooker::_kept_count = 0;
 // xoroshiro128+ PRNG state — shared, relaxed atomics.
 // Benign races are acceptable: occasional duplicate output is harmless
 // for a sampling PRNG and thread_local cannot be used on the malloc path.
@@ -225,46 +230,151 @@ bool MallocHooker::initialize() {
     return _orig_malloc != NULL;
 }
 
-void MallocHooker::patchLibraries() {
-    // Defensive guard: _orig_malloc is set by initialize(), which runs in
-    // MallocTracer::start() before _running is set and this path is reached.
-    // Guards against stale or unexpected direct calls.
-    if (_orig_malloc == NULL) return;
-
-    MutexLocker ml(_patch_lock);
-
-    const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
-    int native_lib_count = native_libs.count();
-
-    // _patched_libs is intentionally monotonic: hooks are permanent and cannot be
-    // uninstalled safely (library unloading races). On profiler restart, only
-    // newly-loaded libraries need patching.
-    TEST_LOG("MallocHooker::patchLibraries: _patched_libs=%d native_lib_count=%d _orig_malloc=%p",
-             _patched_libs, native_lib_count, (void*)_orig_malloc);
-    while (_patched_libs < native_lib_count) {
-        CodeCache* cc = native_libs[_patched_libs++];
-
-        UnloadProtection handle(cc);
-        if (!handle.isValid()) {
-            TEST_LOG("MallocHooker::patchLibraries: skipping (invalid handle) %s", cc->name());
-            continue;
+// Patches one library's malloc-family imports. The caller holds the lock that
+// guards the bookkeeping and keeps the library mapped (see patchLibraries()).
+void MallocHooker::patchLibrary(CodeCache* cc) {
+    TEST_LOG("MallocHooker::patchLibraries: patching %s has_malloc=%d",
+             cc->name(), cc->findImport(im_malloc) != nullptr);
+    // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
+    // hooking them too would double-count. Leave the GOT entry untouched instead.
+    const struct {
+        ImportId id;
+        void* hook;
+        void* orig;
+        bool enabled;
+    } imports[] = {
+        {im_malloc, reinterpret_cast<void*>(malloc_hook), reinterpret_cast<void*>(_orig_malloc), true},
+        {im_realloc, reinterpret_cast<void*>(realloc_hook), reinterpret_cast<void*>(_orig_realloc), true},
+        {im_aligned_alloc, reinterpret_cast<void*>(aligned_alloc_hook), reinterpret_cast<void*>(_orig_aligned_alloc), true},
+        {im_calloc, reinterpret_cast<void*>(calloc_hook), reinterpret_cast<void*>(_orig_calloc), !_nested_malloc},
+        {im_posix_memalign, reinterpret_cast<void*>(posix_memalign_hook), reinterpret_cast<void*>(_orig_posix_memalign), !_nested_posix_memalign},
+    };
+    static_assert(sizeof(imports) / sizeof(imports[0]) == NUM_HOOKED_IMPORTS,
+                  "size the entry table (NUM_HOOKED_IMPORTS) for every hooked import");
+    // patchImport() records each slot for unpatchLibraries() restoration
+    for (const auto& imp : imports) {
+        if (imp.orig != nullptr && imp.enabled) {
+            patchImport(cc, imp.id, imp.hook, imp.orig);
         }
-
-        TEST_LOG("MallocHooker::patchLibraries: patching %s has_malloc=%d",
-                 cc->name(), cc->findImport(im_malloc) != nullptr);
-        if (_orig_malloc) cc->patchImport(im_malloc, (void*)malloc_hook);
-        if (_orig_realloc) cc->patchImport(im_realloc, (void*)realloc_hook);
-        if (_orig_aligned_alloc) cc->patchImport(im_aligned_alloc, (void*)aligned_alloc_hook);
-        // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
-        // hooking them too would double-count. Leave the GOT entry untouched instead.
-        if (_orig_calloc && !_nested_malloc) cc->patchImport(im_calloc, (void*)calloc_hook);
-        if (_orig_posix_memalign && !_nested_posix_memalign) cc->patchImport(im_posix_memalign, (void*)posix_memalign_hook);
     }
 }
 
 void MallocHooker::installHooks() {
     patchLibraries();
 }
+
+// Patch every relocation slot the library has for the import (PRIMARY and
+// SECONDARY), like CodeCache::patchImport(), recording each for restoration.
+void MallocHooker::patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn) {
+    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
+        patchSlot(cc, cc->findImport(id, static_cast<ImportType>(ty)), hook_fn, orig_fn);
+    }
+}
+
+// Record a patched GOT slot for later restoration by unpatchLibraries().
+void MallocHooker::patchSlot(CodeCache* cc, void** location, void* hook_fn, void* orig_fn) {
+    if (cc == nullptr || location == nullptr || orig_fn == nullptr) return;
+
+    void* current = __atomic_load_n(location, __ATOMIC_ACQUIRE);
+    // Still our hook: an earlier restore could not reach it. Its kept entry
+    // (keepUnrestoredEntries()) has the true original, which may be a PLT stub
+    // or another interposer's wrapper rather than the resolved malloc.
+    const bool rehook = current == hook_fn;
+    // At most one entry per slot: a second would restore a stale original on
+    // stop(), as the sort that groups entries by library does not keep their order.
+    // A slot still holding our hook may be in an entry of this recording too (a
+    // second cache of the same image); otherwise only a kept entry can match.
+    const int scan = rehook ? _entry_count : _kept_count;
+    int existing = -1;
+    for (int i = 0; i < scan; i++) {
+        if (_entries[i]._location == location && _entries[i]._hook == hook_fn) {
+            existing = i;
+            break;
+        }
+    }
+    if (rehook) {
+        if (existing >= 0) {
+            _entries[existing]._lib = cc;  // current image: restorable by this recording's stop()
+            return;
+        }
+        // Not tracked (the orphan table overflowed): the original is unknown;
+        // the resolved one is the best remaining answer.
+        current = orig_fn;
+    }
+
+    // A slot that cannot be recorded is left alone rather than hooked for good:
+    // every hook must be restorable on stop().
+    if (existing < 0 && _entry_count >= MAX_MALLOC_ENTRIES) {
+        if (rehook) {
+            // No stop() would restore this stale hook; unhook it now.
+            void* expected = hook_fn;
+            __atomic_compare_exchange_n(location, &expected, orig_fn, false,
+                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+        }
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            Log::warn("Malloc hook table full; some allocations will not be profiled");
+        }
+        return;
+    }
+    // Reuses the kept entry of this slot, replacing its stale original.
+    MallocPatchEntry& entry = _entries[existing >= 0 ? existing : _entry_count++];
+    entry._lib = cc;
+    entry._location = location;
+    entry._hook = hook_fn;
+    entry._orig = current;
+    entry._orig_resolved = current == orig_fn;
+
+    // Write the hook function pointer directly to the GOT slot. The caller has
+    // made the library's imports writable.
+    __atomic_store_n(location, hook_fn, __ATOMIC_RELEASE);
+}
+
+bool MallocHooker::symbolsResolved() {
+    return _orig_malloc != NULL;
+}
+
+void MallocHooker::restoreSlot(const MallocPatchEntry& entry) {
+    // Only undo our own write: leave the slot alone if something else has
+    // re-patched it since.
+    void* expected = entry._hook;
+    __atomic_compare_exchange_n(entry._location, &expected, entry._orig, false,
+                                __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
+
+void MallocHooker::keepUnrestoredEntries() {
+    // In place, without allocating: this runs under the walk's lock.
+    MallocPatchEntry* end = std::remove_if(_entries, _entries + _entry_count,
+        [](const MallocPatchEntry& e) { return e._lib == nullptr; });
+    // Front: entries whose original only the entry knows (a PLT stub or another
+    // interposer's wrapper); patchSlot() rebuilds the rest without them.
+    MallocPatchEntry* rebuildable = std::partition(_entries, end,
+        [](const MallocPatchEntry& e) { return !e._orig_resolved; });
+    int count = static_cast<int>(end - _entries);
+    if (count > MAX_ORPHAN_ENTRIES) {
+        int lost = static_cast<int>(rebuildable - _entries) - MAX_ORPHAN_ENTRIES;
+        if (lost > 0) {
+            Log::warn("Malloc hook table: %d unrestored slot(s) lost their original; "
+                      "a later stop() restores the resolved allocator there", lost);
+        }
+        count = MAX_ORPHAN_ENTRIES;
+    }
+    _entry_count = count;
+    _kept_count = count;
+}
+
+// Groups each library's entries into a single run, so that a library is
+// visited (or pinned) once.
+void MallocHooker::sortEntriesByLibrary() {
+    std::sort(_entries, _entries + _entry_count,
+              [](const MallocPatchEntry& a, const MallocPatchEntry& b) {
+                  return std::less<CodeCache*>()(a._lib, b._lib);
+              });
+}
+
+// patchLibraries() and unpatchLibraries() are per platform:
+// mallocTracer_linux.cpp and mallocTracer_macos.cpp.
 
 static inline u64 xo_rotl(u64 x, int k) {
     return (x << k) | (x >> (64 - k));
@@ -310,6 +420,10 @@ bool MallocTracer::shouldSample(size_t size) {
 // (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
 // because the window is short.
 void MallocTracer::maybeRecord(void* ret, size_t size) {
+    // Read before running(): a hook descheduled across a stop()/start() must not record
+    // into the next recording. recordSample() drops the sample under its stripe lock if the
+    // recording memory was released since.
+    const u32 session = Profiler::instance()->recordingSession();
     if (running() && ret && size) {
         // Even we are not in a signal handler, we cannot malloc or
         // we may get into indefinite loop
@@ -320,7 +434,7 @@ void MallocTracer::maybeRecord(void* ret, size_t size) {
         }
         CriticalSection cs(prof_thread);
         if (cs.entered() && shouldSample(size)) {
-            recordMalloc(ret, size, prof_thread->tid());
+            recordMalloc(ret, size, prof_thread->tid(), session);
         }
     }
 }
@@ -339,7 +453,7 @@ void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
 // run before this is reached so that unsampled allocations never pay for the
 // cost of recordMalloc itself. acquireCurrent()/CriticalSection are already
 // paid by then, since maybeRecord acquires them before checking shouldSample().
-void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
+void MallocTracer::recordMalloc(void* address, size_t size, int tid, u32 session) {
     // maybeRecord() has already applied the shouldSample() gate and holds the
     // CriticalSection, so every call here is a real sampled allocation. Distinct
     // from event._start_time below: that is the event's own timestamp, this
@@ -358,7 +472,8 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
         event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
     }
 
-    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event, nullptr,
+                                       &session);
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
     if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {
@@ -404,7 +519,9 @@ Error MallocTracer::start(Arguments& args) {
 }
 
 void MallocTracer::stop() {
-    // Ideally, we should reset original malloc entries, but it's not currently safe
-    // in the view of library unloading. Consider using dl_iterate_phdr.
+    // Disable recording first so concurrent hook invocations see running()==false
     __atomic_store_n(&_running, false, __ATOMIC_RELEASE);
+    // Restore original function pointers in patched GOT slots, skipping
+    // libraries that have been unloaded.
+    MallocHooker::unpatchLibraries();
 }

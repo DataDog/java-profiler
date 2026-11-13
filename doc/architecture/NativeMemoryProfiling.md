@@ -82,8 +82,11 @@ unless `running() && ret != NULL && size != 0`.
 
 ## Initialization Sequence
 
-The GOT-patching state lives in `MallocHooker` (`_patch_lock`, `_patched_libs`,
-`_initialized`); the sampling state lives in `MallocTracer`. `MallocTracer::start()`
+The GOT-patching state lives in `MallocHooker` (`_patched_libs`, `_initialized`, and
+the `_entries` table of patched slots, guarded by `LibraryPatcher::_lock` on Linux and
+by `_patch_lock` on macOS); the sampling state lives in `MallocTracer`. The two
+platform implementations of `patchLibraries()` / `unpatchLibraries()` live in
+`mallocTracer_linux.cpp` and `mallocTracer_macos.cpp`. `MallocTracer::start()`
 (called on every profiler start that requests `nativemem`) runs:
 
 1. Resets per-session sampling state: `_configured_interval` / `_interval` (from
@@ -123,13 +126,53 @@ The GOT-patching state lives in `MallocHooker` (`_patch_lock`, `_patched_libs`,
    `patchLibraries()` already sees `running() == true` and patches the new library
    itself.
 
-4. **`MallocHooker::patchLibraries()`** — under `_patch_lock`, walks the native
-   libraries not yet patched and writes the hook addresses into each library's GOT.
-   `_patched_libs` is a monotonic index, so already-patched libraries are skipped on
-   subsequent calls.
+4. **`MallocHooker::patchLibraries()`** — writes the hook addresses into the GOT of
+   every native library from index `_patched_libs` on, covering both relocation slots
+   a symbol can have (`findImport(id, PRIMARY/SECONDARY)`), and records each written
+   slot (library, slot address, hook, original pointer) in `_entries` so `stop()` can
+   restore it. A slot that cannot be recorded (table full) is left unhooked rather than
+   hooked for good. On Linux the patching runs inside a
+   `LibraryPatcher::LiveLibraryWalk`: a library is visited only while the loader keeps
+   it mapped and only if it is still the image its `CodeCache` describes, so a slot
+   address saved in a stale cache is never written through. On macOS each library is
+   pinned with `UnloadProtection` under `_patch_lock`, and is used only if `dladdr()`
+   on the cache's start (its Mach-O header) reports an image that starts there with the
+   cache's path and, when the parser recorded one, the same `LC_UUID`
+   (`isCurrentImage()`): the pin resolves a library by name, so it also succeeds after
+   the same path was reloaded elsewhere, or as another build at the same base, which the
+   parser never re-parses. `dladdr()` resolves under dyld's
+   lock; dyld's image indexes shift under concurrent unloads. Either way the walk re-checks
+   `MallocTracer::running()` under its lock, so a refresh that raced `stop()` does not
+   re-hook after the restore.
 
-`patchLibraries()` is called again on every `start()` to pick up any libraries
-loaded between profiler sessions.
+`stop()` restores every recorded slot and resets `_patched_libs` to 0, so the next
+`start()` patches every library again (see "Stopping" below).
+
+---
+
+## Stopping
+
+`MallocTracer::stop()` clears `_running` first, so a hook invocation already past its
+GOT load records nothing, then calls **`MallocHooker::unpatchLibraries()`**:
+
+- On Linux, in a `LiveLibraryWalk` (one visit per library, entries sorted by library),
+  each recorded slot is restored with a compare-and-swap from the hook back to the
+  saved original, so a slot something else has re-patched since is left alone.
+  On macOS each library is pinned with `UnloadProtection` and checked with
+  `isCurrentImage()` for the restore.
+- Entries of a library the walk did not visit (unloaded, or no longer verifiably the
+  image they were saved from) are not written. They are kept, up to a cap, so a later
+  `patchSlot()` of the same slot reuses the saved original. Over the cap, the entries
+  whose original `patchSlot()` can rebuild are dropped first; one holding a PLT stub or
+  another interposer's wrapper survives.
+- `_patched_libs` is reset and the restored entries are discarded; the kept orphans
+  move to the front (`[0, _kept_count)`), and the next `start()` re-patches the rest
+  from scratch.
+
+`Profiler::stop()` stops the libraries refresher **before** `malloc_tracer.stop()`,
+because the refresher re-installs malloc hooks (`Libraries::refresh()` →
+`installHooks()`). A thread that loaded a hook address before the restore still runs
+the hook, which only calls the saved `_orig_*` pointer and sees `running() == false`.
 
 ---
 
@@ -361,8 +404,9 @@ writeCurrentContext(buf);
 
 | Concern | Mechanism |
 |---------|-----------|
-| GOT patching across threads | `MallocHooker::_patch_lock` (Mutex) in `patchLibraries()` |
-| Library unload during patching | `UnloadProtection` handle per library |
+| GOT patching and restoring across threads | Linux: `LibraryPatcher::_lock`, held by the `LiveLibraryWalk` that patches or restores; macOS: `MallocHooker::_patch_lock` (Mutex) |
+| Library unload during patching or restoring | Linux: the walk visits only libraries the loader keeps mapped, after an identity check; macOS: an `UnloadProtection` handle per library |
+| Refresher re-hooking after `stop()` | Refresher stopped before `malloc_tracer.stop()`; `running()` re-checked under the walk's lock |
 | Allocation byte counter | Lock-free CAS loop in `shouldSample` |
 | Reentrant allocations from the profiler | `CriticalSection` in `maybeRecord` — nested calls do not record |
 | Recording / JFR buffer writes | Per-lock-index try-lock with 3 attempts in `Profiler::recordSample`; samples dropped on contention |
@@ -381,11 +425,12 @@ the nested call fails `cs.entered()` and is not recorded. The critical section a
 blocks same-thread timer samples (SIGPROF/SIGVTALRM) for the short duration of
 `recordMalloc`.
 
-**Hooks are never uninstalled.** `stop()` only sets `_running = false`. The GOT
-entries remain patched for the lifetime of the process, because restoring them is not
-safe while libraries may be unloaded concurrently (`mallocTracer.cpp`, `stop()`). After
-stopping, every hooked allocation pays one extra function-pointer indirection plus an
-acquire load of `_running`.
+**Hooks are uninstalled on `stop()`, but a restore can miss a library.** A library
+that was unloaded and reloaded, or replaced at the same base, is not verifiably the
+image its saved slots came from, so its entries are not restored. They are kept, up to `MAX_ORPHAN_ENTRIES`, for a
+later `patchSlot()`. In
+practice such a library has a fresh GOT that never held the hook. A thread already
+inside a hook when the restore runs finishes it normally (the hook code stays mapped).
 
 **`nativemem=0` records every allocation.** When `_interval == 0`,
 `shouldSample` returns `true` on every call (the `interval <= 1` fast path). This

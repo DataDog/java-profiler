@@ -231,6 +231,9 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
             if (!parser.parse()) {
                 Log::warn("Could not parse symbols from %s", path);
             }
+            // An image is parsed once per base: this tells a later build at the
+            // same base and path apart from the one parsed here.
+            cc->setImageFingerprint(imageFingerprint(image_base));
             cc->sort();
             if (!array->add(cc)) {
                 delete cc;
@@ -251,6 +254,35 @@ bool Symbols::isLibcOrPthreadAddress(uintptr_t pc) {
 
 void Symbols::clearParsingCaches() {
     _parsed_libraries.clear();
+}
+
+u64 Symbols::imageFingerprint(const void* mach_header) {
+    const mach_header_64* header = reinterpret_cast<const mach_header_64*>(mach_header);
+    if (header == NULL || header->magic != MH_MAGIC_64) {
+        return 0;
+    }
+    const char* cmds = reinterpret_cast<const char*>(header + 1);
+    const char* cmds_end = cmds + header->sizeofcmds;
+    const load_command* lc = reinterpret_cast<const load_command*>(cmds);
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        // Stay inside the load commands: a cmdsize of 0 would never advance.
+        const char* at = reinterpret_cast<const char*>(lc);
+        if (cmds_end - at < static_cast<ptrdiff_t>(sizeof(load_command)) ||
+            lc->cmdsize < sizeof(load_command) ||
+            static_cast<size_t>(cmds_end - at) < lc->cmdsize) {
+            return 0;
+        }
+        if (lc->cmd == LC_UUID && lc->cmdsize >= sizeof(uuid_command)) {
+            const uint8_t* uuid = reinterpret_cast<const uuid_command*>(lc)->uuid;
+            u64 hi, lo;
+            memcpy(&hi, uuid, sizeof(hi));
+            memcpy(&lo, uuid + sizeof(hi), sizeof(lo));
+            u64 fingerprint = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
+            return fingerprint != 0 ? fingerprint : 1;
+        }
+        lc = reinterpret_cast<const load_command*>(reinterpret_cast<const char*>(lc) + lc->cmdsize);
+    }
+    return 0;
 }
 
 #endif // __APPLE__

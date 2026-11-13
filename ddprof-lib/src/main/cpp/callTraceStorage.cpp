@@ -14,7 +14,10 @@
 #include "guards.h" // For table swap critical sections
 #include "threadLocalData.h"
 #include <string.h>
+#include <algorithm>
+#include <new>
 #include <atomic>
+#include <utility>
 
 static const u64 OVERFLOW_TRACE_ID = 0x7fffffffffffffffULL;  // Max 64-bit signed value
 
@@ -30,31 +33,9 @@ u64 CallTraceStorage::getNextInstanceId() {
 }
 
 CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storage(nullptr), _scratch_storage(nullptr), _generation_counter(1), _liveness_lock(0) {
-    
-    // Pre-allocate and pre-size collections with conservative load factor
-    _traces_buffer.max_load_factor(0.75f);
-    _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
-
-
-
-    _preserve_set_buffer.max_load_factor(0.75f);
-    _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
-
-    // Initialize triple-buffered storage
-    auto active_table = std::make_unique<CallTraceHashTable>();
-    active_table->setInstanceId(getNextInstanceId());
-    active_table->setParentStorage(this);
-    __atomic_store_n(&_active_storage, active_table.release(), __ATOMIC_RELEASE);
-
-    auto standby_table = std::make_unique<CallTraceHashTable>();
-    standby_table->setParentStorage(this);
-    standby_table->setInstanceId(getNextInstanceId());
-    __atomic_store_n(&_standby_storage, standby_table.release(), __ATOMIC_RELEASE);
-    
-    auto scratch_table = std::make_unique<CallTraceHashTable>();
-    scratch_table->setParentStorage(this);
-    scratch_table->setInstanceId(getNextInstanceId());
-    __atomic_store_n(&_scratch_storage, scratch_table.release(), __ATOMIC_RELEASE);
+    // No tables yet: acquire() allocates them when a recording starts, so the
+    // storage holds none while the profiler is idle - including before the
+    // first start(), as Profiler's member is constructed when the library loads.
 
     // Pre-allocate containers to avoid malloc() during hot path operations
     _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
@@ -64,7 +45,79 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
     Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
 
+bool CallTraceStorage::allocateTables() {
+    std::unique_ptr<CallTraceHashTable> active_table;
+    std::unique_ptr<CallTraceHashTable> standby_table;
+    std::unique_ptr<CallTraceHashTable> scratch_table;
+    bool ok = false;
+    try {
+        // Pre-allocate and pre-size collections with conservative load factor
+        _traces_buffer.max_load_factor(0.75f);
+        _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
+
+        _preserve_set_buffer.max_load_factor(0.75f);
+        _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
+
+#ifdef UNIT_TEST
+        if (_fail_allocation_for_test) {
+            throw std::bad_alloc();
+        }
+#endif
+        active_table = std::make_unique<CallTraceHashTable>();
+        standby_table = std::make_unique<CallTraceHashTable>();
+        scratch_table = std::make_unique<CallTraceHashTable>();
+#ifdef UNIT_TEST
+        CallTraceHashTable *built[] = {active_table.get(), standby_table.get(), scratch_table.get()};
+        if (_unusable_table_for_test != NO_UNUSABLE_TABLE) {
+            built[_unusable_table_for_test]->dropTableForTest();
+        }
+#endif
+        ok = active_table->usable() && standby_table->usable() && scratch_table->usable();
+    } catch (const std::bad_alloc&) {
+    }
+    if (!ok) {
+        // Nothing is published: the storage stays idle and start() can fail.
+        // Give the pre-sized bucket arrays back, as release() does.
+        CallTraceSet().swap(_traces_buffer);
+        CallTraceIdSet().swap(_preserve_set_buffer);
+        return false;
+    }
+
+    // Initialize triple-buffered storage
+    active_table->setInstanceId(getNextInstanceId());
+    active_table->setParentStorage(this);
+    standby_table->setParentStorage(this);
+    standby_table->setInstanceId(getNextInstanceId());
+    scratch_table->setParentStorage(this);
+    scratch_table->setInstanceId(getNextInstanceId());
+    __atomic_store_n(&_active_storage, active_table.release(), __ATOMIC_RELEASE);
+    __atomic_store_n(&_standby_storage, standby_table.release(), __ATOMIC_RELEASE);
+    __atomic_store_n(&_scratch_storage, scratch_table.release(), __ATOMIC_RELEASE);
+    return true;
+}
+
+bool CallTraceStorage::acquire() {
+    if (__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE) != nullptr) {
+        return true;
+    }
+    return allocateTables();
+}
+
+void CallTraceStorage::release() {
+    freeTables();
+    // The processTraces() collections count under NM_CALLTRACE too; swapping
+    // with empty sets frees their bucket arrays (clear() would keep them).
+    CallTraceSet().swap(_traces_buffer);
+    CallTraceIdSet().swap(_preserve_set_buffer);
+    Counters::set(CALLTRACE_STORAGE_BYTES, 0);
+    Counters::set(CALLTRACE_STORAGE_TRACES, 0);
+}
+
 CallTraceStorage::~CallTraceStorage() {
+    freeTables();
+}
+
+void CallTraceStorage::freeTables() {
     // Atomically invalidate storage pointers to prevent new put() operations
     // ACQ_REL ordering: RELEASE ensures nullptr is visible to put()'s ACQUIRE load,
     // ACQUIRE ensures we see the latest pointer value for subsequent deletion
@@ -78,14 +131,16 @@ CallTraceStorage::~CallTraceStorage() {
     // a straggler that already holds a guard: a table one still holds after
     // the drain timeout is leaked rather than deleted under it
     // (waitForRefCountToClear() aborts debug builds first).
-    // Note: In triple-buffering, all three pointers should be unique, but check anyway
-    if (RefCountGuard::waitForRefCountToClear(active)) {
+    // Note: In triple-buffering, all three pointers should be unique, but check anyway.
+    // They are all null when the tables were already freed (release()).
+    if (active != nullptr && RefCountGuard::waitForRefCountToClear(active)) {
         delete active;
     }
-    if (standby != active && RefCountGuard::waitForRefCountToClear(standby)) {
+    if (standby != nullptr && standby != active && RefCountGuard::waitForRefCountToClear(standby)) {
         delete standby;
     }
-    if (scratch != active && scratch != standby && RefCountGuard::waitForRefCountToClear(scratch)) {
+    if (scratch != nullptr && scratch != active && scratch != standby &&
+        RefCountGuard::waitForRefCountToClear(scratch)) {
         delete scratch;
     }
 
@@ -106,14 +161,19 @@ CallTrace* CallTraceStorage::getDroppedTrace() {
     return &dropped_trace;
 }
 
-void CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
+u64 CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
     ExclusiveLockGuard lock(&_liveness_lock);
-    _liveness_checkers.push_back(checker);
+    const u64 token = _next_liveness_token++;
+    _liveness_checkers.emplace_back(token, std::move(checker));
+    return token;
 }
 
-void CallTraceStorage::clearLivenessCheckers() {
+void CallTraceStorage::unregisterLivenessChecker(u64 token) {
     ExclusiveLockGuard lock(&_liveness_lock);
-    _liveness_checkers.clear();
+    _liveness_checkers.erase(
+        std::remove_if(_liveness_checkers.begin(), _liveness_checkers.end(),
+                       [token](const std::pair<u64, LivenessChecker>& c) { return c.first == token; }),
+        _liveness_checkers.end());
 }
 
 
@@ -122,7 +182,8 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     // MEMORY_ORDER_ACQUIRE: Critical - synchronizes with release stores in processTraces()
     CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
 
-    // Safety check - if null, system is shutting down
+    // Null while the tables are released (profiler idle, see release()) or
+    // the storage is being destroyed
     if (active == nullptr) {
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
@@ -173,6 +234,16 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {
+    // Released or never acquired: hand the processor only the dropped-trace
+    // placeholder, in a local set, so a chunk written while idle does not
+    // re-allocate the collections.
+    if (__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE) == nullptr) {
+        CallTraceSet traces;
+        traces.insert(getDroppedTrace());
+        processor(traces);
+        return;
+    }
+
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {
         SharedLockGuard lock(&_liveness_lock);
@@ -181,7 +252,7 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
         _preserve_set_buffer.clear();
 
         for (const auto& checker : _liveness_checkers) {
-            checker(_preserve_set_buffer);
+            checker.second(_preserve_set_buffer);
         }
     }
 
@@ -270,6 +341,7 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     // - New standby (old scratch) stores preserved traces for next cycle
 }
 
+#if defined(UNIT_TEST) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 void CallTraceStorage::clear() {
     // Mark critical section during clear operation for consistency
     CriticalSection cs;
@@ -291,3 +363,4 @@ void CallTraceStorage::clear() {
     Counters::set(CALLTRACE_STORAGE_BYTES, 0);
     Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
+#endif

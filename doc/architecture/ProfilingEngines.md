@@ -76,7 +76,7 @@ Profiler::start()
   SamplerPerf::primeClock()                    before any handler can fire
   Profiler::startCpuEngine()    (EM_CPU)       failure -> warning, continue
     _cpu_engine->start()
-      CTimer:            ThreadTablesFreeze only if the table size changes;
+      CTimer:            ThreadTablesFreeze whenever stop() kept a table;
                          on a wait timeout (1 s) it fails and keeps its
                          table (a stuck registration call: see `stop()`)
       PerfEvents:        replaces its table without the freeze (PROF-16359);
@@ -143,6 +143,40 @@ without starting anything. It runs only while the profiler is `IDLE`
 (`checkState()` rejects a `RUNNING` profiler) and selects into locals, so it
 never replaces the engine slots that thread exits still route to.
 
+### Recording-scoped state
+
+State that outlives `Profiler::stop()` (caches, frontier/tracking tables, cached
+class-map ids, clocks and deadlines, JNI global refs) must either be cleared in
+`stop()`/`start()` or be tagged with a generation and re-validated on use.
+
+Recording-scoped memory is freed at the end of `stop()` by
+`Profiler::releaseRecordingMemory()`:
+- call-trace storage and the per-stripe frame buffers;
+- the `_class_map` and `_string_label_map` storage (`StringDictionary::release()`,
+  which keeps the id counter, so an old id cannot alias a new key);
+- the `LivenessTracker` state (`LivenessTracker::release()`).
+
+Malloc hooks are restored as well. What an idle profiler holds afterwards is listed in
+[ProfilerMemoryRequirements](../reference/ProfilerMemoryRequirements.md#idle-profiler-after-stop).
+
+Late writers. Anything that can still reach the freed state after `stop()` (an
+allocation callback, a malloc or socket hook already past its GOT load, a tracer
+thread) must find it null or zero-capacity under the same lock it writes under. It must
+decide ownership of what it inserted while holding that lock, never by re-reading
+shared state after unlocking.
+
+Dictionaries:
+- `_context_value_map` is deliberately kept across `stop()`: threads cache its
+  encodings in their `ProfiledThread` sidecar.
+- `Profiler::start()` clears the dictionaries only on a reset start (`ACTION_START` or
+  the first start). `ACTION_RESUME` keeps their ids.
+- A released or cleared dictionary bumps its `generation()`, so state that caches ids
+  must re-validate against it (`LivenessTracker`, `ReferenceChainTracker`).
+- If the `RefCountGuard` drain times out, `clearAll()`/`release()` leave the dictionary
+  unchanged; see [StringDictionary.md](StringDictionary.md#release-protocol).
+
+Events queued since the last `dump()` must be written before `stop()` discards them.
+
 ### Thread registration
 
 Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
@@ -155,10 +189,24 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    (`blockProfilingForExit()`).
 2. **Native threads**: on Linux, `LibraryPatcher`'s `pthread_create` GOT hook
    wraps the start routine (`start_routine_wrapper()`) and calls
-   `Profiler::registerThread()` (`libraryPatcher_linux.cpp:553`). On exit,
-   `unregister_and_release()` calls `Profiler::unregisterThread()`
-   (`libraryPatcher_linux.cpp:249`). The hook runs without `_state_lock`
-   and is installed before the engines start, so both calls are gated:
+   `Profiler::registerThread()`. On exit, `unregister_and_release()` calls
+   `Profiler::unregisterThread()`. The hook is **persistent**:
+   `Profiler::init()` (or the first `start()`) calls
+   `LibraryPatcher::initialize_persistent()`, which arms the patcher; the first
+   `start()`'s `updateSymbols()` installs the hook, and it is never unpatched, so it
+   also runs between recordings. A refresh re-checks
+   already patched libraries (one reloaded at the same base needs its fresh GOT
+   re-hooked) only when glibc's process-wide counters show one may have
+   happened: an unload (`dlpi_subs`) since the last full pass, or a load
+   (`dlpi_adds`) since then while any unload has ever happened (the unload of a
+   reload can fall in an earlier pass than its load). Otherwise only unpatched
+   libraries enter the identity-checking walk. A re-check re-hooks a patched
+   library only if its slot holds the real `pthread_create` or the library's own
+   lazy-binding stub, as a reload's fresh GOT does; a slot someone else hooked
+   after us is left alone. The wrapper passes the routine's
+   return value to `pthread_exit()`, so `pthread_join()` still sees it even
+   though the hook outlives every recording. The hook runs without
+   `_state_lock`, so both calls are gated:
    - `registerThread()` needs `_engines_ready`, which `CTimer::start()` and
      `PerfEvents::start()` set via `Profiler::openThreadRegistration()` once
      their table is sized and before they list threads, and which
@@ -179,10 +227,17 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      registered after the thread list was taken, and such a thread is then not
      sampled for the recording (PROF-16359).
    - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
-     while `CTimer::sizeTimerTable()` replaces the timer table
-     (`ThreadTablesFreeze`), that is, when the table size changes: the first
-     start, or `pid_max` changed. A restart that keeps the table never clears
-     it. `PerfEvents::start()` replaces its table without clearing it
+     while CTimer replaces or frees its timer table (`ThreadTablesFreeze`):
+     `CTimer::sizeTimerTable()` in `start()` whenever `stop()` kept a table
+     (to sweep it, and to replace it if `pid_max` changed),
+     and `CTimer::releaseTimerTable()` at the end of `CTimer::stop()`. Since
+     `stop()` frees the table, a `start()` normally allocates into none, which
+     needs no freeze: hook calls see `_max_timers == 0` until the table is
+     published, `_max_timers` last with release. So a start does not fail on
+     thread churn the freeze could not drain. A table that `stop()` had to keep
+     (hook calls did not drain) is swept under the freeze before it is reused
+     at an unchanged `pid_max`.
+     `PerfEvents::start()` replaces its table without clearing it
      (PROF-16359). An exit that arrives while the gate is closed is recorded
      by `Profiler::recordSkippedUnregistration()`. `CTimer::start()` replays
      the record after it lists threads, which removes the timer the listing
@@ -190,6 +245,8 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      a thread listed after its exit keeps its fd (PROF-16359). The gate
      stays set while idle, because `PerfEvents::stop()` keeps per-thread fds
      open and this call closes the fd of a thread that exits after `stop()`.
+     The call skips a `NULL` engine slot: the hook is normally installed by the
+     first `start()`, but a refresh after `init()` may install it earlier.
    - `start()` replaces `_cpu_engine`/`_wall_engine` while unregistration is
      open, so it stores the pointers with release and the hook paths load them
      with acquire. An unregistration that reaches the previous engine only
@@ -223,6 +280,25 @@ soon as it is re-enabled, and unwinding out of an implicitly `noexcept` destruct
 terminates the process.
 
 Each engine's `start()` also registers every thread that already exists.
+
+### JVMTI callbacks
+
+JVMTI callbacks run on whichever JVM thread triggers the event. That includes
+compiler, VM and GC threads that never went through our `pthread_create` hook, so
+such a thread has no `ProfiledThread` yet. A callback that touches per-thread state
+calls `ProfiledThread::initCurrentThreadSignalSafe()` first (see "ProfiledThread
+acquisition" in [AGENTS.md](../../AGENTS.md)).
+
+`GarbageCollectionStart`/`GarbageCollectionFinish` run while the VM is stopped. The
+JVMTI spec allows no JNI there, and no JVMTI beyond the raw-monitor,
+memory-management and environment-local-storage functions. Keep them to lock-free
+bookkeeping (epoch counters) and defer the real work to a profiler thread; see
+`ReferenceChainTracker::onGCStart()` and
+[ReferenceChainsSignalsExplained.md](ReferenceChainsSignalsExplained.md).
+
+A profiler thread that needs JNI attaches with `VM::attachThread()` and calls
+`VM::detachThread()` before it exits. Local references created on such a thread are
+not freed until it detaches.
 
 ## Common Signal-Handler Contract
 
@@ -308,7 +384,15 @@ resolved through `Arguments::cpuSamplerInterval()`.
   at or above
   `_max_timers` logs a warning and is not profiled. The table is accounted
   under `NM_CTIMER` at its full allocated size (see Profiler Self-Accounting).
-- **`stop()`** unregisters every slot.
+- **`stop()`** takes a `ThreadTablesFreeze` (`releaseTimerTable()`) and, once
+  it drains, unregisters every slot and frees the table, so the idle profiler
+  holds none of it. The sweep runs inside the freeze because a registration
+  that outlived `stop()`'s registration drain may publish its timer late; a
+  sweep before the freeze would miss it and the free would lose its id. If
+  hook calls do not drain within the wait budget, it keeps the table (logged)
+  and sweeps without the freeze; a timer published later stays in the kept
+  table for the next `stop()`, and the next `start()` reuses the table. Exits
+  recorded during the freeze need no replay, since their timers are gone.
 - **`CTimerJvmti`**: runs `CTimer::start()` and then replaces the `SIGPROF`
   handler with one that calls `recordSampleDelegated(ucontext, ...)`
   (`CTimerJvmti::start()`, `CTimerJvmti::signalHandler()`). It has no ASGCT
@@ -474,12 +558,19 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
 - **Callback** `SampledObjectAlloc()` → `recordAllocation()`
   (`objectSampler.cpp:51-154`), on the allocating Java thread, outside any
   signal handler:
-  1. Resolves the class with `GetClassSignature` and `lookupClass()`. An
-     unresolvable class drops the sample.
+  1. Resolves the class with `GetClassSignature` and `lookupClass()` (through
+     the profiler's intern gate). An unresolvable class drops the sample. At
+     callback entry, before any JVMTI call, it reads `Profiler::recordingSession()` and
+     `LivenessTracker::tableGeneration()`: disabling the JVMTI event does not
+     wait for callbacks already running, so one can resume after a stop/start
+     holding a class id from the previous recording.
   2. If allocations or liveness are being recorded, computes
      `weight = 1 / (1 - exp(-size / interval))` and calls
      `recordJVMTISample()`. When only liveness is recorded, the sample is
-     deferred (`deferred = !_record_allocations`).
+     deferred (`deferred = !_record_allocations`). Under its stripe lock,
+     `recordJVMTISample()` drops the sample if the recording session moved;
+     only `releaseRecordingMemory()` bumps it, under `lockAll()`, so the check
+     and the emission cannot straddle a stop, and a `dump()` drops nothing.
      `recordJVMTISample()` captures the stack according to `allocstack`: by
      default (HotSpot with `cstack=vm`/`vmx`) with the VM stack walker,
      seeded from the thread's last Java frame
@@ -527,11 +618,17 @@ chains are described in
 [LiveHeapReferenceChainsImplementation.md](LiveHeapReferenceChainsImplementation.md).
 
 - **Enablement**: `_enabled = gc_generations || record_liveness`. The tracking
-  table is set up once per process and **persists across recordings**
-  (`_initialized`; `livenessTracker.cpp:2095-2140`). Later starts get back the
-  stored initialization result. Liveness tracking turns itself off (by setting
-  `_table_max_cap = 0`) on HotSpot older than 11, when the max heap size is
-  unknown, or when `Class.getName` cannot be resolved.
+  state is **recording-scoped**: `initialize()` sets the table up on the first
+  enabled `start()` after a release, reading that recording's interval and
+  live-samples ratio, and `release()` frees it when the recording stops (see
+  below). Objects allocated before a stop are not reported after the next start,
+  and leak-candidate selection warms up again over a few GC cycles. Liveness
+  tracking turns itself off (by setting `_table_max_cap = 0`) on HotSpot older
+  than 11, when the max heap size is unknown, or when `Class.getName` cannot be
+  resolved; that outcome stays cached (`_initialized`) across recordings. The
+  table, `_table_size`, `_table_cap` and `_table_max_cap` are published together
+  under the exclusive table lock, so a callback left over from the previous
+  recording never sees a capacity without its table.
 - **Table size**: `min(MAX_TRACKING_TABLE_SIZE (262144), max_heap /
   interval)`. It grows by doubling up to that cap (`livenessTracker.cpp:1985`).
   Memory is accounted under `NM_LIVENESS`.
@@ -541,9 +638,19 @@ chains are described in
      allocations accumulates in a thread-local `skipped` value.
   2. `NewWeakGlobalRef(object)`.
   3. `_table_lock.tryLockShared()`. If the lock is not available, the weak ref
-     is deleted and the sample is dropped (`livenessTracker.cpp:2381`).
-  4. Reserves a slot by CASing `_table_size`, fills it, and publishes it with
-     a release store to `ready`.
+     is deleted and the sample is dropped. Under the lock it compares the
+     table generation the callback read before resolving the class id
+     (`tableGeneration()`, passed by `ObjectSampler::recordAllocation()`)
+     with the current one, which `release()` and `initialize()` bump under the
+     exclusive lock. A mismatch means the callback straddled a stop: its
+     `call_trace_id` may name a trace in call-trace storage that was released,
+     so the sample is dropped.
+  4. Reserves a slot by CASing `_table_size` against a `_table_cap` snapshot
+     taken under the shared lock, fills it, and publishes it with a release
+     store to `ready`. Whether the insert succeeded is decided there: once
+     inserted, the weak ref belongs to the table (which `release()` may delete
+     as soon as the lock is dropped), so it is never re-derived from
+     `_table_cap` after unlocking.
   5. When the table is full, runs one forced reap-only `cleanup_table()`, may
      grow the table under the exclusive lock, and retries once.
 - **GC hook**: `vmEntry.cpp:454` fans `GarbageCollectionFinish` out to
@@ -560,21 +667,40 @@ chains are described in
   `recordDeferredSample()` (`livenessTracker.cpp:1962`). When heap-usage
   recording is enabled, it also writes a heap-usage event.
 - **Trace retention**: when enabled, `start()` registers a liveness checker
-  with `CallTraceStorage` (`livenessTracker.cpp:2071`). The checker returns the
-  `call_trace_id` of every published entry, so the stacks of live objects
-  survive trace-storage rotation (see [CallTraceStorage.md](CallTraceStorage.md)).
-  Production code never calls `CallTraceStorage::clearLivenessCheckers()`, so
-  each enabled `start()` appends another checker.
-- **`stop()`** cleans up and flushes the table, but deliberately leaves GC
-  notifications enabled (`livenessTracker.cpp:2083-2093`).
+  with `CallTraceStorage`. The checker returns the `call_trace_id` of every
+  published entry, so the stacks of live objects survive trace-storage rotation
+  within a recording (see [CallTraceStorage.md](CallTraceStorage.md)).
+  `release()` clears the checkers, so each recording registers exactly one.
+- **`stop()`** first bumps the table generation under the exclusive lock, so an
+  allocation callback that straddles the stop is dropped. It then cleans up and
+  flushes the table into the final chunk, but
+  deliberately leaves GC notifications enabled (`onGC()` ignores them while the
+  tracker is released).
+- **`release()`** runs from `Profiler::releaseRecordingMemory()`, after the final
+  chunk is written and the reference-chain BFS thread is joined. It first unregisters
+  its own liveness checker, on every path. When a pool tag is out or an earlier
+  clear failed, it then clears the JVMTI tag of every object still carrying a
+  leak-pool tag (one
+  `GetObjectsWithTags` over the pool; `releaseSearchTags()` clears only search
+  tags), then under the exclusive lock deletes every entry's weak ref and the
+  population representatives' weak refs, frees the table, and zeroes
+  `_table_cap`/`_table_max_cap`/`_enabled`. It then resets the leak-tag pool to
+  all free, and resets `_initialized` so the next
+  `start()` initializes from scratch. If the clear fails here, a later `start()` or
+  `release()` tries it again. If the retry at the next `start()` also fails, that
+  recording hands out no leak tags. Allocation and liveness sampling continue.
+  Objects can still carry pool tags from an earlier recording, and the
+  reference-chain walk can emit chains keyed by those tags. An allocation callback still in flight
+  finds no capacity and deletes only its own, never-inserted weak ref. Apart from unregistering
+  the checker, it is a no-op when no table was allocated.
 
 ## Native Malloc Sampling (`MallocTracer`, `mallocTracer.{h,cpp}`)
 
 The full design is in [NativeMemoryProfiling.md](NativeMemoryProfiling.md).
 In summary:
 
-- **Classes**: `MallocHooker` owns GOT patching (`_patch_lock`,
-  `_patched_libs`, `_initialized`; `mallocTracer.h:17`). `MallocTracer :
+- **Classes**: `MallocHooker` owns GOT patching (`_patched_libs`,
+  `_initialized`, the `_entries` table of patched slots; `mallocTracer.h`). `MallocTracer :
   Engine` owns the sampling state (`mallocTracer.h:32`). There is no
   `free_hook` and no `calloc_hook_dummy`. The hooks are `malloc_hook`,
   `calloc_hook`, `realloc_hook`, `posix_memalign_hook`, and
@@ -583,8 +709,9 @@ In summary:
   `im_malloc`/`im_realloc`/`im_aligned_alloc` GOT entries of every native
   library. It also rewrites `im_calloc`/`im_posix_memalign` unless the libc
   implements them on top of `malloc`/`aligned_alloc`
-  (`detectNestedMalloc()`). `_patched_libs` only grows; hooks are never
-  removed. Libraries loaded later are patched by `Libraries::refresh()`
+  (`detectNestedMalloc()`). Every patched slot is recorded, and `stop()`
+  restores them and resets `_patched_libs`, so hooks exist only while a
+  recording runs, except in a library the restore walk could not verify. Libraries loaded later are patched by `Libraries::refresh()`
   (`libraries.cpp:90-91`).
 - **Signals**: none. Hooks run synchronously on the allocating thread.
 - **Sampling**: `maybeRecord()` (`mallocTracer.cpp:312`) acquires the
@@ -633,7 +760,9 @@ space, not resident memory: each is `calloc`ed at `pid_max` slots, but only the
 pages holding live tids are ever touched. With a `pid_max` of 4194304 the
 `ctimer` gauge reads about 16 MiB and the table part of the `perf` gauge about
 512 MiB, while the resident share is usually far lower. Read both as upper
-bounds. Only `NM_PERF`'s ring pages are resident.
+bounds. Only `NM_PERF`'s ring pages are resident. The `ctimer` table exists only
+while a CTimer recording runs (`CTimer::stop()` frees it); the `perf` table
+outlives `stop()`.
 
 Each category is exported per chunk as
 `native_mem_{live,avg,max,chunk_overhead,post_flush_live,post_flush_max}_bytes.<category>`
