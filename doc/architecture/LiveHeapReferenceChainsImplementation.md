@@ -135,13 +135,78 @@ An object can change after its first expansion. For example, a long-lived collec
 | Leak accumulation | 16 | Select parents that accumulate instances of watched classes. |
 | Stale expanded entries | 256 | Provide eventual low-priority rechecks across the frontier table. |
 | Transient root kinds | 16 | Improve root attribution when later observations provide a more durable root kind. |
-| Static anchors | 32 selected, plus 16 FIFO entries | Descend from selected objects held by static fields. |
+| Anchors | 32 selected, plus 16 FIFO entries | Descend from indexed anchors: objects held by static fields or JNI globals, and confirmed collection/map holders first seen as stack or JNI locals. See [Anchor index](#anchor-index). |
 
 Leak accumulation has two levels. The first groups admissions by leaf class and parent class. The second ranks parent object tags within the selected group.
 
 When a class first becomes watched, the tracker scans existing expanded entries for matching stable class tags. This scan supplies data that admission-time tracking could not collect before the class became watched.
 
 Rotation improves coverage but remains bounded and best effort.
+
+### Anchor index
+
+`collectStaticFieldAnchorsForRotation()` selects descend-walk anchors from an index
+(`_static_anchor_index`), not from the full frontier table. The index has two shares:
+
+- **Durable share.** Root-attached `STATIC_FIELD` and `JNI_GLOBAL` entries, added by
+  `addToStaticAnchorIndex()`. Such an entry is selectable while it stays root-attached with a
+  durable root kind. Once it is classified as a collection or map, it stays selectable after
+  reparenting. A reparented holder of any other class gets one walk from the at-risk FIFO
+  (`pushAtRiskStaticAnchor()`).
+- **Local share.** Holders that root enumeration reports as `STACK_LOCAL` or `JNI_LOCAL` roots.
+  `heapRootCallback()` passes them to `noteLocalRootHolder()`. A holder is indexed only after
+  `reconcileAnchorClassShapes()` classifies its class as implementing `java.util.Collection` or
+  `java.util.Map`. A confirmed collection remains selectable after expansion reparents it into a
+  deeper chain, so the tracker still observes replacement backing storage such as a resized
+  `HashMap.table`. Local holders of any other class are never indexed.
+
+Classification needs JNI, which the heap-root callback cannot use. A holder whose class is not
+yet classified waits in `_pending_local_anchors`, capped at 1024 entries.
+`resolvePendingLocalAnchors()` runs after each `reconcileAnchorClassShapes()`. It indexes the
+confirmed collections and drops everything else, including holders whose class is still
+unclassified. The next root enumeration reports a dropped holder again. Reconciliation
+classifies pending holder classes before unclassified durable-anchor classes, within the
+128-classes-per-pass budget. When the pending buffer is full, a holder already confirmed as a
+collection (met while the local share is at its cap) evicts the oldest entry not confirmed as a
+collection. An unclassified holder that meets a full buffer is dropped, and so is a confirmed
+collection when the buffer holds only confirmed collections. Either way the next root enumeration
+reports it again.
+
+The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`). This keeps the per-pass
+index scan proportional to the durable share plus a constant, regardless of how many locals the
+application holds. When the cap is reached, `compactLocalAnchors()` removes local entries that
+are no longer selectable, such as entries whose object died, at most once per resolve call. Its
+frontier lookups scan only the local share, but its in-place compaction phase rewrites both
+parallel vectors, so one compaction costs O(durable share + local cap) — bounded by the two
+caps below, never by the live object population. If the share is
+still full of live collections, new local holders are not indexed until entries die or the search
+restarts. A compaction that removes nothing skips the next 8 at-cap compaction attempts
+(`LOCAL_ANCHOR_COMPACT_BACKOFF`), so a full share of live collections does not pay the scan on
+every pass. Dead entries can therefore keep their slots for up to 8 extra passes.
+
+The durable share (static fields and JNI globals) is capped at 8192 entries
+(`DURABLE_ANCHOR_INDEX_CAP`). The admission that pushes it past the cap FIFO-evicts the oldest
+1024 durable entries (`DURABLE_ANCHOR_EVICT_BATCH`) from the index, the dedup set and the fresh
+queue, so the per-pass selection scan stays bounded by the sum of the two caps. Eviction also
+invalidates the static sweep memo, forcing one sweep lap, because a re-discovered durable edge is
+the only path that re-enlists an evicted anchor: an unchanged durable root kind never upgrades,
+an already-admitted entry takes no fresh admission path, and static-only holders never appear in
+root enumeration at all. A live evicted anchor is therefore re-enlisted - with rotation
+eligibility and a fresh-lane first look - the next time its durable edge is traversed; a dead one
+is never reported again. Rotation eligibility is the shared admission contract
+(`isSelectableAnchor()`): root-attached durable kinds, or CONTAINER-shaped holders - reparented
+containers keep parent_tag set and a stale transient root_kind, so the re-enlist bypasses the
+root-kind filter and re-indexes directly. Eviction bumps a resweep-request generation
+unconditionally and never touches the sweep cursor; a sweep lap serves exactly the generations
+requested before it started — it latches the generation at its start from class 0 and publishes
+it only on completing, so a lap in flight when the eviction lands, or a truncated first chunk,
+leave the generation unserved until a full lap actually re-traverses the whole class list. A
+cursor restart on eviction would reset mid-lap progress under sustained above-cap churn and
+starve later classes, so there is none.
+Eviction and re-enlistment are pure index bookkeeping — no frontier lock — so both are legal from
+the heap-root callback. A local
+holder that a durable root later attaches moves to the durable share and stops
+counting against the local cap. `restartSearch()` clears both shares and the pending buffer.
 
 ## Search termination
 

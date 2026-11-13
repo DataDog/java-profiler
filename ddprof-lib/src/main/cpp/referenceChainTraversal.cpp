@@ -129,11 +129,29 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
             ctx->frontier, *tag_ptr, translated_root_kind)) {
       ctx->tracker->deferResolvedChainInvalidation(
           *tag_ptr, ctx->resolved_chain_tags,
-          ctx->resolved_chain_tag_count);
+          ctx->resolved_chain_tag_count,
+          ReferenceChainTracker::ChainInvalidationKind::REBUILD);
+    } else if (translated_root_kind ==
+               (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
+      // An unchanged durable root never upgrades: for an evicted anchor this re-discovery is the
+      // only re-indexing path. Static-field holders never appear here (root enumeration has no
+      // static-field root kind) - they re-enlist from the static sweep's edge path instead. The
+      // re-enlist filters non-root-attached entries itself and is O(1) for still-indexed tags.
+      ctx->tracker->reenlistEvictedDurableAnchor(ctx->frontier, *tag_ptr,
+                                                 class_tag);
     }
     break;
   default:
     break;
+  }
+  // Remember local holders before expansion can reparent them into a deeper
+  // chain. Known collections still need bounded descend walks after that change
+  // to observe replacement backing storage. Only confirmed containers enter the
+  // anchor index (capped); classification runs outside this callback, so an
+  // unclassified holder waits in a capped pending buffer instead.
+  if (isTransientRootKind(translated_root_kind) && class_tag != 0 &&
+      *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    ctx->tracker->noteLocalRootHolder(*tag_ptr, class_tag);
   }
   return JVMTI_ITERATION_CONTINUE;
 }
@@ -294,10 +312,12 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // IterateOverReachableObjects' root/stack-ref callbacks above - see admitStaticFieldRoots()'s own
   // comment - so this pass would otherwise never discover an object retained only that way.
   TEST_LOG_SUMMARY("ReferenceChainTracker::runPassManualWalk static_sweep_gate "
-           "resolved=%d swept=%d cursor=%d",
+           "resolved=%d swept=%d cursor=%d unserved=%d",
            _last_resolved_class_count, _last_static_field_class_count,
-           _static_field_sweep_cursor);
-  if (_last_resolved_class_count != _last_static_field_class_count) {
+           _static_field_sweep_cursor,
+           (int)(_static_field_sweep_served_gen != _durable_anchor_resweep_gen));
+  if (_last_resolved_class_count != _last_static_field_class_count ||
+      _static_field_sweep_served_gen != _durable_anchor_resweep_gen) {
     int static_field_edges_admitted = 0;
     bool static_field_truncated = false;
     bool static_field_frontier_cap_hit = false;
@@ -324,8 +344,12 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       // The chunk cursor completed a full lap over the loaded-class list with no chunk truncating
       // along the way (possibly discovering nothing, if every static field seen was already
       // ALREADY_ADMITTED) - remember the class count it covered so a later pass with no new classes
-      // can skip re-running the sweep entirely.
+      // can skip re-running the sweep entirely, and publish that this lap served every resweep
+      // request recorded before it started (see the lap-start latch in admitStaticFieldRoots()).
+      // Requests recorded during the lap stay unserved: this lap does not revisit the classes it
+      // already passed, so the next lap starting from class 0 serves them.
       _last_static_field_class_count = _last_resolved_class_count;
+      _static_field_sweep_served_gen = _static_field_sweep_lap_request_gen;
     }
   }
 
@@ -375,12 +399,18 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // collectStaticFieldAnchorsForRotation()/ walkStaticFieldAnchors()'s own comments) - not pushed
   // onto the priority lane, so they are independent of the queue tiers above.
   reconcileAnchorClassShapes(jvmti, jni);
+  resolvePendingLocalAnchors();
   std::vector<jlong> static_anchor_tags =
       collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
   drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
   for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
-    static_anchor_tags.push_back(at_risk.tag);
+    // A reparented collection can also have been selected by the persistent
+    // container tier. The combined selection is bounded by 48 + 16 entries.
+    if (std::find(static_anchor_tags.begin(), static_anchor_tags.end(),
+                  at_risk.tag) == static_anchor_tags.end()) {
+      static_anchor_tags.push_back(at_risk.tag);
+    }
   }
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
       stale_expanded_tags.empty() && static_anchor_tags.empty()) {
@@ -831,6 +861,15 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     _static_field_sweep_cycle_truncated = false;
   }
   jint chunk_start = _static_field_sweep_cursor;
+  // A lap starting at class 0 re-traverses the whole loaded-class list, so when it completes it
+  // will have served every resweep request recorded up to now - latch this lap's request
+  // generation. Latched, not cleared: a lap whose first chunk truncates (or that is overtaken by
+  // a mid-lap eviction) must leave the request unserved so the gate keeps running the sweep until
+  // a lap from class 0 actually completes and publishes the generation (see the completion write
+  // in runPassManualWalk()).
+  if (chunk_start == 0) {
+    _static_field_sweep_lap_request_gen = _durable_anchor_resweep_gen;
+  }
   jint chunk_end =
       std::min(chunk_start + STATIC_FIELD_SWEEP_CHUNK_CLASSES, class_count);
   jint chunk_count = chunk_end - chunk_start;
@@ -1061,6 +1100,11 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   if (manual_first_pass) {
     _search_started = true;
     store(_search_start_ns, OS::nanotime());
+    // Register the candidates that triggered this search before walking. The
+    // first pass can drain the frontier; without a watched klass it would then
+    // complete and release its tags before the loop's post-pass poll can
+    // reconstruct any chain or schedule candidate-scoped walks.
+    pollWatchedTargets(jvmti, jni);
   }
 
   // Root/stack-ref enumeration alone never discovers a root's transitive children

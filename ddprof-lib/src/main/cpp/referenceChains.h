@@ -480,10 +480,8 @@ private:
     }
   } _priority_expand_set;
 
-  // A static holder richly referenced from the running graph is EXCLUDED from the static-anchor tier forever once its
-  // frontier entry is chain-attached (first admitted via a non-root path, or demoted by
-  // improveChain) - maybeUpgradeRootAttachedRootKind() refuses entries with parent_tag != 0 by
-  // design, so collectStaticFieldAnchorsForRotation() (parent_tag == 0 filter) can never select it.
+  // Chain-attached holders without a known collection shape need a first
+  // descend walk when a static edge or reparenting removes their root eligibility.
   struct AtRiskAnchor {
     jlong tag;
     u32 klass_id;
@@ -503,18 +501,86 @@ private:
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
 
-  // Index of root-attached STATIC_FIELD/JNI_GLOBAL frontier entries, so
-  // collectStaticFieldAnchorsForRotation() iterates O(anchors) instead of scanning the full
-  // frontier table O(frontier_size).
+  // Index of durable roots and CONFIRMED-container local holders. Known collections remain
+  // eligible after reparenting, so replacing their storage is still observed. A stack/JNI-local
+  // root is indexed only once its class is classified as a collection/map (see
+  // noteLocalRootHolder()/resolvePendingLocalAnchors()); non-collection local holders are never
+  // indexed. Both shares are capped: the local share at LOCAL_ANCHOR_INDEX_CAP (compacted by
+  // compactLocalAnchors()), the durable share at DURABLE_ANCHOR_INDEX_CAP (FIFO-evicted by
+  // evictOldestDurableAnchors(); a still-live evicted anchor is re-reported and re-admitted by
+  // the next root enumeration, a dead one never is). The caps bound
+  // collectStaticFieldAnchorsForRotation()'s per-pass scan, which iterates these anchors rather
+  // than scanning the full frontier table, to LOCAL_ANCHOR_INDEX_CAP + DURABLE_ANCHOR_INDEX_CAP
+  // entries under the shared frontier lock.
   std::vector<jlong> _static_anchor_index;
 
-  // Parallel to _static_anchor_index: the OWN class tag of each anchor object (the class of the
-  // static field's VALUE, not the holder class).
+  // Parallel to _static_anchor_index: the runtime class tag of each indexed holder.
   std::vector<jlong> _static_anchor_own_class_tags;
 
-  // Dedup companion for _static_anchor_index (O(1) membership; the population is ~28k on a real JVM
-  // - see addToStaticAnchorIndex()'s own comment).
+  // Dedup companion for _static_anchor_index (O(1) membership).
   std::unordered_set<jlong> _static_anchor_index_tags;
+
+  // Subset of _static_anchor_index_tags that were indexed as stack/JNI-local holders (not as
+  // durable roots). Its size is the local share of the index, capped at LOCAL_ANCHOR_INDEX_CAP so
+  // per-pass anchor selection stays O(durable anchors + cap) no matter how many locals the
+  // application holds. A tag later indexed as a durable root leaves this map (uncapped share).
+  // Maps each local holder tag to its own runtime class tag at admission time, so
+  // compactLocalAnchors() can evaluate isSelectableAnchor() by iterating only the local share
+  // (O(cap)) instead of scanning the whole, uncapped index.
+  std::unordered_map<jlong, jlong> _local_anchor_tags;
+  static constexpr size_t LOCAL_ANCHOR_INDEX_CAP = 4096;
+  // Durable-share cap (STATIC_FIELD / JNI_GLOBAL holders). A live evicted anchor is re-enlisted
+  // by reenlistEvictedDurableAnchor() when a traversal re-reports its durable edge - JNI_GLOBAL
+  // roots every root enumeration; for static-only holders eviction also invalidates the sweep
+  // memo so the next pass re-traverses their class -> field edges. A dead evicted anchor is never
+  // reported again. Pure index bookkeeping - no frontier lock - so it is legal from the heap-root
+  // callback context.
+  static constexpr size_t DURABLE_ANCHOR_INDEX_CAP = 8192;
+  // Eviction removes enough oldest entries to drop the share to cap - DURABLE_ANCHOR_EVICT_BATCH,
+  // so one O(index) compaction is amortized over ~DURABLE_ANCHOR_EVICT_BATCH admissions.
+  static constexpr size_t DURABLE_ANCHOR_EVICT_BATCH = 1024;
+  // Resweep requests as a generation counter: every eviction batch bumps
+  // _durable_anchor_resweep_gen, and a sweep lap serves exactly the generations requested before
+  // the lap started - a fresh lap (cursor 0) latches _static_field_sweep_lap_request_gen, and its
+  // completion publishes it as _static_field_sweep_served_gen. The gate runs the sweep while
+  // served != requested, so a request survives: laps in flight when the eviction lands (which do
+  // not revisit classes they already passed) and first chunks that truncate both leave the
+  // generation unserved until a full lap from class 0 completes. Latching at lap start (not
+  // clearing at start or completion) is what makes a completion serve only the requests that
+  // predate the lap. Eviction never restarts the cursor: a restart under sustained above-cap
+  // churn would reset a mid-lap cursor and starve later classes (PROF finding on PR #899).
+  u64 _durable_anchor_resweep_gen = 0;
+  u64 _static_field_sweep_lap_request_gen = 0;
+  u64 _static_field_sweep_served_gen = 0;
+  // compactLocalAnchors() attempts to skip after one that removed nothing (local share full of
+  // live containers): bounds the steady-state locked O(cap) scan to one in every
+  // LOCAL_ANCHOR_COMPACT_BACKOFF + 1 at-cap resolve passes. While backing off, a container met at
+  // the cap is dropped from the pending buffer and re-reported by the next root enumeration; dead
+  // locals hold their slots for at most this many extra at-cap passes.
+  static constexpr int LOCAL_ANCHOR_COMPACT_BACKOFF = 8;
+  // At-cap compaction attempts still to skip. Set by a no-progress compaction, decremented by each
+  // skipped attempt, zeroed by a productive one; untouched while the local share is under the cap.
+  int _local_compact_backoff = 0;
+
+  // Local-root holders whose class was not yet classified when root enumeration reported them
+  // (classification needs JNI, which the heap-root callback cannot use). Drained - indexed if
+  // confirmed containers, dropped otherwise - by resolvePendingLocalAnchors() after every
+  // reconcileAnchorClassShapes(); an entry whose class is still unclassified is dropped too and
+  // re-reported by the next root enumeration. Capped so a burst of locals cannot grow it. When the
+  // buffer is full, a confirmed container met at the local cap evicts the oldest entry not
+  // confirmed as a container (that entry is re-reported by the next root enumeration); an
+  // unclassified holder met at a full buffer, or a container met at a buffer holding only
+  // confirmed containers, is dropped and re-reported.
+  struct PendingLocalAnchor {
+    jlong tag;
+    jlong class_tag;
+  };
+  std::vector<PendingLocalAnchor> _pending_local_anchors;
+  std::unordered_set<jlong> _pending_local_anchor_tags;
+  static constexpr size_t PENDING_LOCAL_ANCHOR_CAP = 1024;
+  // noteLocalRootHolder() eviction cursor (forward-only): every _pending_local_anchors slot below it
+  // holds a confirmed container. Reset together with the buffer.
+  size_t _pending_local_evict_cursor = 0;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
   // java/util/Map (directly or via superclasses/ interfaces)?
@@ -539,10 +605,13 @@ private:
   // FIFO of newly admitted anchors awaiting their first walk.
   std::deque<jlong> _static_anchor_fresh_queue;
 
-  // Cap for _static_anchor_fresh_queue. The queue normally holds only ~one pass of sweep admits
-  // (admits happen in passes, the collector drains every pass, and the drain DROPS everything it
-  // does not keep, so the queue empties each call); the cap only guards a pathological burst (e.g.
-  // a pass admitting thousands) from growing it unbounded in native memory.
+  // Cap for _static_anchor_fresh_queue. The queue carries its OLDEST unserved entries across
+  // collects (a cross-pass FIFO: the oldest first looks go first); the cap bounds that carry -
+  // overflow entries are dropped and fall back to the fair tiers at their index positions, the
+  // same treatment the force-drain gave them. Without the carry, a stable anchor population above
+  // the durable cap re-enlists a wave larger than one collect's budget every pass and the drain's
+  // window would always hold the same wave tail - re-selecting the same anchors every pass and
+  // starving everything else (8968 of 9000 holders got zero selections in 20 passes).
   static constexpr size_t STATIC_ANCHOR_FRESH_CAP = 1024;
 
   // java/lang/Object jclass cache for expandFrontier()'s and admitStaticFieldRoots()'s holder-array
@@ -629,10 +698,13 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
-  // Chain evictions deferred by heap callbacks. Only tags present in the immutable pre-traversal
-  // resolved-cache snapshot are eligible, so distinct pending tags are bounded exactly by the
-  // cache cap. Both buffers are reserved up front: drains swap the active producer buffer into the
-  // scratch buffer under the pending lock, then erase cache entries after releasing that lock.
+  // Chain invalidations deferred by heap callbacks. Only tags present in the immutable
+  // pre-traversal resolved-cache snapshot are eligible, so distinct pending tags are bounded
+  // exactly by the cache cap. Both buffers are reserved up front: drains move entries into the
+  // scratch buffer under the pending lock, then touch cache entries after releasing that lock.
+  // The ChainInvalidationKind is stored in-band (see encodePendingChainInvalidation()): EVICT
+  // entries hold the source tag, REBUILD entries its bitwise complement. Every read and write of
+  // both buffers happens under _pending_chain_invalidations_lock (full-barrier acquire/release).
   static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
   std::vector<jlong> _pending_chain_invalidations;
   std::vector<jlong> _draining_chain_invalidations;
@@ -1062,14 +1134,57 @@ private:
                                  int *edges_admitted, bool *truncated,
                                  bool *frontier_cap_hit, u64 *safepoint_ns);
 
-  // Selects root-attached durable entries with a tiered cursor: leak-tagged, fresh, container-shaped,
-  // then everything else fairly.
+  // Selects durable roots and indexed collections (including reparented ones)
+  // with a tiered cursor: leak-tagged, fresh, containers, then other roots fairly.
   std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
+  bool isSelectableAnchor(const FrontierEntry &entry, jlong own_class_tag) const;
   // At-risk anchor push: deduped, capped, and quota-limited per klass.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   // Add `tag` to _static_anchor_index if its root_kind is a durable anchor-tier kind (STATIC_FIELD
   // or JNI_GLOBAL).
   void addToStaticAnchorIndex(jlong tag, jlong own_class_tag, u8 root_kind);
+  // Shared deduplicated index insertion for durable roots and local holders.
+  void indexAnchorForRotation(jlong tag, jlong own_class_tag);
+  // Heap-root callback hook for a stack/JNI-local holder: indexes a confirmed container (under
+  // LOCAL_ANCHOR_INDEX_CAP), ignores a classified non-container, and parks an unclassified holder
+  // (or one met at the cap) in the capped _pending_local_anchors buffer; at a full buffer a
+  // confirmed container evicts the oldest not-confirmed entry. No JNI, no frontier lock.
+  void noteLocalRootHolder(jlong tag, jlong own_class_tag);
+  // BFS thread, after reconcileAnchorClassShapes(): indexes pending holders confirmed as
+  // containers, drops the rest, and empties the pending buffer.
+  void resolvePendingLocalAnchors();
+  // Removes local-holder index entries that are no longer selectable (dead or demoted), keeping
+  // _static_anchor_fresh_queue a suffix of the index. Scans only the local share. Run at most once
+  // per resolvePendingLocalAnchors() call, only when the local cap is reached and the backoff
+  // (_local_compact_backoff) is not active. Returns the number of removed entries.
+  size_t compactLocalAnchors();
+  // Removes tags absent from walkStaticFieldAnchors()'s GetObjectsWithTags() resolution - a
+  // collected anchor can never be walked again, so its slot is reclaimed instead of waiting for
+  // FIFO eviction (and a dead local container would otherwise keep its selectable EXPANDED
+  // frontier record until a search restart cleared the frontier).
+  void removeMissingAnchors(const std::vector<jlong> &missing);
+  // Shared tail of the three anchor-removal paths above: stable in-place compaction of the two
+  // parallel vectors (relative order preserved, so the fresh queue - a suffix of the index -
+  // stays a suffix), then removal from the membership set, the local-share map and the fresh
+  // queue. Positions shift: the collector clamps out-of-range cursors; in-range ones only lose
+  // fairness for one lap.
+  void eraseAnchorEntries(const std::unordered_set<jlong> &removed);
+  // FIFO-evicts the oldest durable-share entries when the durable share exceeds
+  // DURABLE_ANCHOR_INDEX_CAP, down to cap - DURABLE_ANCHOR_EVICT_BATCH, keeping
+  // _static_anchor_fresh_queue a suffix of the index (stable compaction, queue tags removed
+  // alongside). Local-share entries are never evicted here. Pure index bookkeeping - no JNI,
+  // no frontier lock - so it is legal from the heap-root callback context. Returns the number
+  // of evicted entries.
+  size_t evictOldestDurableAnchors();
+  // Re-indexes an evicted durable anchor when a traversal re-reports it: root enumeration never
+  // re-reports a static-field holder, an unchanged durable root kind never upgrades
+  // (maybeUpgradeRootAttachedRootKind() refuses), and an already-admitted entry takes no fresh
+  // admission path - so without this, a live evicted anchor would stay unindexed until
+  // restartSearch(). O(1) for still-indexed tags (the traversal callbacks call it on every
+  // durable-root rediscovery); the frontier lookup runs only for a tag missing from the index.
+  // No-op for non-durable root kinds and non-root-attached entries. BFS thread only.
+  void reenlistEvictedDurableAnchor(FrontierTable *frontier, jlong tag,
+                                    jlong class_tag);
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
   // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive
@@ -1086,6 +1201,10 @@ private:
   // pass via one GetObjectsWithTags call (class objects are tagged with their class tags) and
   // classifies each.
   void reconcileAnchorClassShapes(jvmtiEnv *jvmti, JNIEnv *jni);
+  // Pure (no JNI) collection step of reconcileAnchorClassShapes(): up to
+  // ANCHOR_SHAPE_RECONCILE_BUDGET distinct non-zero class tags absent from _class_shape_cache,
+  // pending local holders first (buffer order), then indexed anchors (index order). Read-only.
+  std::vector<jlong> collectUnclassifiedAnchorClassTags() const;
   // Pops up to max_count AtRiskAnchor entries off _static_anchor_fifo's front into `out`
   // (appending), decrementing each popped entry's class occupancy in
   // _static_anchor_fifo_klass_counts (erased at zero, so the map tracks the FIFO's live contents),
@@ -1139,15 +1258,45 @@ private:
   // Copies the current cache keys into fixed caller-owned storage before a synchronous traversal.
   int snapshotResolvedChainTags(jlong *out);
 
-  // Queues an eviction from a heap callback only when the tag was cached in the immutable
+  // What a deferred invalidation does to the cached chain.
+  // EVICT: the source was rejected (noise eviction) - the cached chain is erased, at dump time or
+  // on the next poll, whichever drains first.
+  // REBUILD: the source is still live and its frontier entry intact, only its path changed
+  // (improveChain()/reparentToDurableRoot()/root-kind upgrade). Never erased at dump time: only
+  // the BFS-thread poll applies it, rebuilding the chain from the frontier and keeping the old one
+  // if the rebuild fails (restartSearch()'s keep-across-restart contract). EVICT wins over
+  // REBUILD for the same pending tag.
+  enum class ChainInvalidationKind : u8 { EVICT, REBUILD };
+
+  // In-band kind encoding for the pending buffers. Cache keys are frontier tags (>= 0), so the
+  // complement of a REBUILD tag is always negative and never collides with an EVICT entry.
+  static jlong encodePendingChainInvalidation(jlong source_tag,
+                                              ChainInvalidationKind kind) {
+    return kind == ChainInvalidationKind::REBUILD ? ~source_tag : source_tag;
+  }
+  static bool isPendingChainRebuild(jlong encoded) { return encoded < 0; }
+  static jlong pendingChainInvalidationTag(jlong encoded) {
+    return encoded < 0 ? ~encoded : encoded;
+  }
+
+  // Queues an invalidation from a heap callback only when the tag was cached in the immutable
   // pre-traversal snapshot. This never takes _resolved_chains_lock or allocates.
   void deferResolvedChainInvalidation(jlong source_tag,
                                       const jlong *resolved_chain_tags,
-                                      int resolved_chain_tag_count);
+                                      int resolved_chain_tag_count,
+                                      ChainInvalidationKind kind);
 
-  // Applies queued exact-tag evictions. Called by the engine thread and by dump threads, which may
-  // overlap a traversal; the resolved-cache/pending locks provide synchronization.
+  // Dump-path drain: applies only the queued EVICT invalidations and leaves REBUILD entries
+  // pending for the BFS thread (see ChainInvalidationKind). May overlap a traversal; the
+  // resolved-cache/pending locks provide synchronization.
   void drainPendingChainInvalidations();
+
+  // BFS-thread drain (pollWatchedTargets()): applies EVICT entries like the dump path and rebuilds
+  // each REBUILD entry's current-generation cached chain from the frontier via buildChainEvent(),
+  // overwriting it on success and keeping it on failure. Independent of candidate/discovered
+  // slots, so it still works after runPass()'s terminal branch zeroed them.
+  void applyPendingChainInvalidations(jvmtiEnv *jvmti, JNIEnv *jni,
+                                      u64 current_search_ns);
 
   // Clears both pending buffers at cache/tag-generation boundaries without releasing capacity.
   void clearPendingChainInvalidations();

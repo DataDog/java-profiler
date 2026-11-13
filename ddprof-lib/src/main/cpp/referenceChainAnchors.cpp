@@ -148,11 +148,11 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     // fair pick vector here and is skipped at consumption time via fresh_kept_tags).
     for (size_t i = 0; i < idx_size; i++) {
       jlong tag = _static_anchor_index[i];
+      jlong own_class_tag = i < _static_anchor_own_class_tags.size()
+                               ? _static_anchor_own_class_tags[i] : 0;
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
-          entry.parent_tag != 0 ||
-          (entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
-           entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) ||
+          !isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag)) {
@@ -173,16 +173,31 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         other_picks.push_back(TierPick{i, tag});
       }
     }
-    // Fresh-lane drain. Every queue entry is popped (its ONE first look is spent either way): kept
-    // if eligible AND (container-shaped OR not-yet-classified) AND room remains in the budget;
-    // dropped otherwise.
-    int fresh_room = max_count - (int)leak_picks.size();
+    // Fresh-lane drain. FIFO across passes: entries the budget cannot serve stay queued (the
+    // oldest unserved first looks go first, and no anchor loses its turn to a later admission -
+    // under above-cap churn the re-enlistment wave re-forms every pass, so a force-drain here
+    // would re-select the same wave tail every pass and starve everything else). Every popped
+    // entry spends its ONE first look either way: kept if eligible AND (container-shaped OR
+    // not-yet-classified) AND room remains in the budget; dropped otherwise (it keeps its fair-
+    // tier coverage at its index position).
+    // The fresh lane is capped at half the post-leak budget: under above-cap churn the
+    // re-enlistment wave refills the queue every pass, and an uncapped drain would spend the
+    // whole budget on the wave's tail every pass - the fair cursors (the only coverage for
+    // everyone outside the wave) would never advance. The cap must bound the DRAIN's room: pops
+    // beyond it would drop entries from the queue without selecting them.
+    int fresh_room =
+        (max_count - (int)leak_picks.size()) -
+        (max_count - (int)leak_picks.size()) / 2;
     size_t drain_pos = fresh_queue_len <= idx_size ? idx_size - fresh_queue_len : 0;
     while (!_static_anchor_fresh_queue.empty()) {
       if (fresh_room <= 0) {
-        // Budget exhausted before the queue drained: everything remaining spends its first look now
-        // and falls back to the fair tiers at its index position (covered, not urgent).
-        _static_anchor_fresh_queue.clear();
+        // Budget exhausted: the unserved head keeps its queue position for the next collect (a
+        // cross-pass FIFO - the oldest first looks go first). Overflow beyond the cap drops the
+        // NEWEST pushes: they fall back to the fair tiers at their index positions, the same
+        // treatment the force-drain gave them.
+        while (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
+          _static_anchor_fresh_queue.pop_front();
+        }
         break;
       }
       jlong tag = _static_anchor_fresh_queue.front();
@@ -201,15 +216,15 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         }
         pos = (size_t)(it - _static_anchor_index.begin());
       }
+      jlong own_class_tag = pos < _static_anchor_own_class_tags.size()
+                               ? _static_anchor_own_class_tags[pos] : 0;
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
-          entry.parent_tag != 0 ||
-          (entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
-           entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) ||
+          !isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag) || entry.leak_tag != 0) {
-        continue; // dead/demoted/queued/leak-tier: first look spent, not
+        continue; // dead/ineligible/queued/leak-tier: first look spent, not
                   // fresh-kept (the leak tier selects it via the scan if it is leak-tagged)
       }
       bool keep = false; // container or not-yet-classified rides the
@@ -286,8 +301,8 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     budget_left--;
   }
   // Fresh lane: queue order (admission order) so a burst larger than the budget spends the oldest
-  // first looks first and nothing jumps the queue; outranked fresh anchors fall back to the fair
-  // tiers at their positions (the drain already dropped them from the queue).
+  // first looks first and nothing jumps the queue; outranked fresh anchors stay queued for their
+  // FIFO turn (the drain's room cap bounds how many are popped per collect).
   for (const TierPick &p : fresh_picks) {
     if (budget_left <= 0) {
       break;
@@ -300,6 +315,17 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   // The other tier is the last consumer of the budget - its leftover has no further reader, so
   // don't accumulate it back into budget_left (a dead store clang scan-build flags).
   consume_tier_fair(other_picks, _anchor_other_cursor, budget_left);
+  // A selected anchor has had its look: whether it came from the fresh lane or a fair tier, it
+  // must leave the queue, or the next collect's fresh lane would re-serve anchors the fair tiers
+  // already covered (the queue's FIFO turn is for anchors still awaiting their first look).
+  if (!selected.empty()) {
+    std::unordered_set<jlong> served(selected.begin(), selected.end());
+    _static_anchor_fresh_queue.erase(
+        std::remove_if(_static_anchor_fresh_queue.begin(),
+                       _static_anchor_fresh_queue.end(),
+                       [&](jlong tag) { return served.count(tag) > 0; }),
+        _static_anchor_fresh_queue.end());
+  }
   return selected;
 }
 
@@ -333,10 +359,264 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
       root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
     return;
   }
+  // A local holder later attached by a durable root now belongs to the capped durable share;
+  // release its slot in the local cap (it stays indexed - the dedup below is a no-op for it).
+  _local_anchor_tags.erase(tag);
+  // The upgrade grows the durable share without a new index push (the dedup in
+  // indexAnchorForRotation() returns early), so the durable cap is checked here too. The just
+  // upgraded tag may itself be among the evicted oldest entries; the next traversal report of its
+  // durable edge re-enlists it (reenlistEvictedDurableAnchor()).
+  evictOldestDurableAnchors();
+  indexAnchorForRotation(tag, own_class_tag);
+}
+
+void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
+                                                jlong own_class_tag) {
+  if (_static_anchor_index_tags.count(tag) > 0) {
+    return; // already indexed (durable root or earlier local report)
+  }
+  auto shape = _class_shape_cache.find(own_class_tag);
+  bool confirmed_container = false;
+  if (shape != _class_shape_cache.end()) {
+    if (shape->second != (u8)AnchorClassShape::CONTAINER) {
+      return; // classified non-container: never indexed
+    }
+    if (_local_anchor_tags.size() < LOCAL_ANCHOR_INDEX_CAP) {
+      _local_anchor_tags.emplace(tag, own_class_tag);
+      indexAnchorForRotation(tag, own_class_tag);
+      return;
+    }
+    // At the cap: defer to resolvePendingLocalAnchors(), which may compact dead local entries
+    // (it can take the frontier lock; this callback must not).
+    confirmed_container = true;
+  }
+  if (_pending_local_anchors.size() >= PENDING_LOCAL_ANCHOR_CAP) {
+    if (!confirmed_container || _pending_local_anchor_tags.count(tag) > 0) {
+      return; // re-reported by the next root enumeration
+    }
+    // A confirmed container is walkable as soon as a local slot frees, so it outranks an entry not
+    // yet confirmed as a container: evict the oldest such entry (re-reported by the next root
+    // enumeration). Forward-only cursor: while the buffer is full nothing is appended, the only
+    // overwrite is at the cursor with a container, and skipped slots are containers, so every slot
+    // below the cursor stays a confirmed container and the scan totals <= PENDING_LOCAL_ANCHOR_CAP
+    // per enumeration.
+    if (_pending_local_evict_cursor > _pending_local_anchors.size()) {
+      _pending_local_evict_cursor = 0; // defensive; cannot happen while the buffer is full
+    }
+    while (_pending_local_evict_cursor < _pending_local_anchors.size()) {
+      auto s = _class_shape_cache.find(
+          _pending_local_anchors[_pending_local_evict_cursor].class_tag);
+      if (s == _class_shape_cache.end() ||
+          s->second != (u8)AnchorClassShape::CONTAINER) {
+        break;
+      }
+      _pending_local_evict_cursor++;
+    }
+    if (_pending_local_evict_cursor >= _pending_local_anchors.size()) {
+      return; // only confirmed containers parked: dropped, re-reported by the next enumeration
+    }
+    PendingLocalAnchor &victim = _pending_local_anchors[_pending_local_evict_cursor++];
+    _pending_local_anchor_tags.erase(victim.tag);
+    victim = PendingLocalAnchor{tag, own_class_tag};
+    _pending_local_anchor_tags.insert(tag);
+    return;
+  }
+  if (!_pending_local_anchor_tags.insert(tag).second) {
+    return;
+  }
+  _pending_local_anchors.push_back(PendingLocalAnchor{tag, own_class_tag});
+}
+
+void ReferenceChainTracker::resolvePendingLocalAnchors() {
+  if (_pending_local_anchors.empty()) {
+    return;
+  }
+  bool compacted = false;
+  for (const PendingLocalAnchor &pending : _pending_local_anchors) {
+    if (_static_anchor_index_tags.count(pending.tag) > 0) {
+      continue;
+    }
+    auto shape = _class_shape_cache.find(pending.class_tag);
+    if (shape == _class_shape_cache.end() ||
+        shape->second != (u8)AnchorClassShape::CONTAINER) {
+      continue; // non-container, or still unclassified: dropped (see the buffer's comment)
+    }
+    if (_local_anchor_tags.size() >= LOCAL_ANCHOR_INDEX_CAP && !compacted) {
+      // At most one compaction attempt per call. After a compaction that removed nothing (local
+      // share full of live containers), skip the next LOCAL_ANCHOR_COMPACT_BACKOFF attempts so a
+      // saturated-but-live share does not pay the locked O(cap) scan every pass.
+      compacted = true;
+      if (_local_compact_backoff > 0) {
+        _local_compact_backoff--;
+      } else {
+        _local_compact_backoff =
+            compactLocalAnchors() == 0 ? LOCAL_ANCHOR_COMPACT_BACKOFF : 0;
+      }
+    }
+    if (_local_anchor_tags.size() >= LOCAL_ANCHOR_INDEX_CAP) {
+      continue; // still full (live containers, or compaction backed off): the cap holds
+    }
+    _local_anchor_tags.emplace(pending.tag, pending.class_tag);
+    indexAnchorForRotation(pending.tag, pending.class_tag);
+  }
+  // Keep capacity: the buffer refills on every root enumeration.
+  _pending_local_anchors.clear();
+  _pending_local_anchor_tags.clear();
+  _pending_local_evict_cursor = 0;
+}
+
+size_t ReferenceChainTracker::compactLocalAnchors() {
+  if (_local_anchor_tags.empty()) {
+    return 0;
+  }
+  std::unordered_set<jlong> removed;
+  _frontier->withSharedLock([&](const FrontierTable *frontier) {
+    // Only the local share (O(cap)): the durable share is never compacted here.
+    for (const auto &local : _local_anchor_tags) {
+      FrontierEntry entry{};
+      // Same eligibility as collectStaticFieldAnchorsForRotation(): a released (ABANDONED) entry
+      // is a dead object and can never be selected again.
+      if (!frontier->lookupLocked(local.first, &entry) ||
+          !isSelectableAnchor(entry, local.second) ||
+          (entry.state != FrontierEntryState::FRONTIER &&
+           entry.state != FrontierEntryState::EXPANDED)) {
+        removed.insert(local.first);
+      }
+    }
+  });
+  if (removed.empty()) {
+    return 0;
+  }
+  eraseAnchorEntries(removed);
+  return removed.size();
+}
+
+size_t ReferenceChainTracker::evictOldestDurableAnchors() {
+  // The local share is capped and self-compacting; only entries outside it count against the
+  // durable cap.
+  size_t durable = _static_anchor_index_tags.size() - _local_anchor_tags.size();
+  if (durable <= DURABLE_ANCHOR_INDEX_CAP) {
+    return 0;
+  }
+  // Evict enough oldest entries to drop the share to cap - DURABLE_ANCHOR_EVICT_BATCH, so one
+  // O(index) compaction amortizes over ~DURABLE_ANCHOR_EVICT_BATCH admissions instead of being
+  // paid per admission. to_evict <= durable always (DURABLE_ANCHOR_INDEX_CAP > batch).
+  size_t to_evict =
+      durable - DURABLE_ANCHOR_INDEX_CAP + DURABLE_ANCHOR_EVICT_BATCH;
+  // FIFO by index position (appends are at the back). Local-share entries keep their slots -
+  // their cap and compaction live in noteLocalRootHolder()/compactLocalAnchors().
+  std::unordered_set<jlong> evicted;
+  evicted.reserve(to_evict);
+  for (size_t i = 0;
+       i < _static_anchor_index.size() && evicted.size() < to_evict;
+       i++) {
+    jlong tag = _static_anchor_index[i];
+    if (_local_anchor_tags.count(tag) > 0) {
+      continue;
+    }
+    evicted.insert(tag);
+  }
+  eraseAnchorEntries(evicted);
+  // Record a resweep request unconditionally (see _durable_anchor_resweep_gen): a holder
+  // displaced while admissions keep the population above the cap must be re-swept even when
+  // evictions stop. No cursor restart here: with churn above the cap an eviction fires every
+  // pass, and an unpaced cursor restart on each eviction would reset a mid-lap cursor so laps
+  // over large class lists never complete (later static fields never visited). The unserved generation alone is the scheduling contract - the lap in flight
+  // finishes, then the next fresh lap from class 0 serves the request.
+  _durable_anchor_resweep_gen++;
+  return evicted.size();
+}
+
+// See the declaration in referenceChains.h.
+void ReferenceChainTracker::removeMissingAnchors(
+    const std::vector<jlong> &missing) {
+  if (missing.empty()) {
+    return;
+  }
+  eraseAnchorEntries(
+      std::unordered_set<jlong>(missing.begin(), missing.end()));
+}
+
+// See the declaration in referenceChains.h.
+void ReferenceChainTracker::eraseAnchorEntries(
+    const std::unordered_set<jlong> &removed) {
+  if (removed.empty()) {
+    return;
+  }
+  // Stable in-place compaction of the two parallel vectors keeps relative order, so the fresh
+  // queue (a suffix of the index) stays a suffix once the same tags leave it too. Positions
+  // shift: the collector clamps out-of-range cursors; in-range ones only lose fairness for one
+  // lap.
+  size_t out = 0;
+  for (size_t i = 0; i < _static_anchor_index.size(); i++) {
+    jlong tag = _static_anchor_index[i];
+    if (removed.count(tag) > 0) {
+      continue;
+    }
+    _static_anchor_index[out] = tag;
+    if (i < _static_anchor_own_class_tags.size()) {
+      _static_anchor_own_class_tags[out] = _static_anchor_own_class_tags[i];
+    }
+    out++;
+  }
+  _static_anchor_index.resize(out);
+  if (_static_anchor_own_class_tags.size() > out) {
+    _static_anchor_own_class_tags.resize(out);
+  }
+  for (jlong tag : removed) {
+    _static_anchor_index_tags.erase(tag);
+    _local_anchor_tags.erase(tag);
+  }
+  _static_anchor_fresh_queue.erase(
+      std::remove_if(_static_anchor_fresh_queue.begin(),
+                     _static_anchor_fresh_queue.end(),
+                     [&](jlong tag) { return removed.count(tag) > 0; }),
+      _static_anchor_fresh_queue.end());
+}
+
+void ReferenceChainTracker::reenlistEvictedDurableAnchor(
+    FrontierTable *frontier, jlong tag, jlong class_tag) {
+  // O(1) fast path: fresh admissions, prior re-enlistments and never-evicted tags are all still
+  // indexed, and the traversal callbacks hit this for every rediscovered durable root - only the
+  // rare evicted tag pays the frontier lookup below.
+  if (_static_anchor_index_tags.count(tag) > 0) {
+    return;
+  }
+  FrontierEntry entry{};
+  // isSelectableAnchor, not a root-attached-only gate: improveChain()/reparentToDurableRoot()
+  // re-parent confirmed containers under a durable root, so a rediscovered evicted anchor can
+  // legitimately carry parent_tag != 0 - and then also a stale transient root_kind, which the
+  // root-kind filter inside addToStaticAnchorIndex() would reject. Rotation eligibility (root-
+  // attached durable kind, or a CONTAINER-shaped holder) is the admission contract, and
+  // indexAnchorForRotation() is the unfiltered durable-share index push.
+  if (!frontier->lookup(tag, &entry) ||
+      !isSelectableAnchor(entry, class_tag)) {
+    return; // gone from the frontier, or no longer a rotation-eligible anchor
+  }
+  indexAnchorForRotation(tag, class_tag);
+}
+
+bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
+                                               jlong own_class_tag) const {
+  if (entry.parent_tag == 0 &&
+      (entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+       entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL)) {
+    return true;
+  }
+  auto shape = _class_shape_cache.find(own_class_tag);
+  return shape != _class_shape_cache.end() &&
+         shape->second == (u8)AnchorClassShape::CONTAINER;
+}
+
+void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
+                                                   jlong own_class_tag) {
   // Dedup: a push at first admission and another at upgrade would double-add.
   if (!_static_anchor_index_tags.insert(tag).second) {
     return;
   }
+  // Checked after the insert so the count includes the incoming tag; the batch evicts only the
+  // oldest positions, never the tag being admitted here.
+  evictOldestDurableAnchors();
   _static_anchor_index.push_back(tag);
   _static_anchor_own_class_tags.push_back(own_class_tag);
   // Walk newly admitted anchors before the fair cursors.
@@ -469,30 +749,43 @@ bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
   return found;
 }
 
+std::vector<jlong>
+ReferenceChainTracker::collectUnclassifiedAnchorClassTags() const {
+  // Collect up to ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags that appear in the pending
+  // local-holder buffer or the anchor index but are not yet classified. Pending holders go first:
+  // resolvePendingLocalAnchors() drops any still unclassified after this call, while indexed
+  // durable anchors simply wait for a later pass.
+  std::vector<jlong> unknown;
+  unknown.reserve(8);
+  std::unordered_set<jlong> seen;
+  auto consider = [&](jlong class_tag) {
+    if (class_tag == 0 || seen.count(class_tag) > 0 ||
+        _class_shape_cache.count(class_tag) > 0) {
+      return true;
+    }
+    seen.insert(class_tag);
+    unknown.push_back(class_tag);
+    return (int)unknown.size() < ANCHOR_SHAPE_RECONCILE_BUDGET;
+  };
+  bool room = true;
+  for (size_t i = 0; room && i < _pending_local_anchors.size(); i++) {
+    room = consider(_pending_local_anchors[i].class_tag);
+  }
+  for (size_t i = 0; room && i < _static_anchor_own_class_tags.size(); i++) {
+    room = consider(_static_anchor_own_class_tags[i]);
+  }
+  return unknown;
+}
+
 void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
                                                         JNIEnv *jni) {
   if (jni == nullptr) {
     return;
   }
-  if (_static_anchor_own_class_tags.empty()) {
+  if (_static_anchor_own_class_tags.empty() && _pending_local_anchors.empty()) {
     return;
   }
-  // Collect up to ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags that appear in the anchor index
-  // but are not yet classified.
-  std::vector<jlong> unknown;
-  unknown.reserve(8);
-  std::unordered_set<jlong> seen;
-  for (jlong class_tag : _static_anchor_own_class_tags) {
-    if (class_tag == 0 || seen.count(class_tag) > 0 ||
-        _class_shape_cache.count(class_tag) > 0) {
-      continue;
-    }
-    seen.insert(class_tag);
-    unknown.push_back(class_tag);
-    if ((int)unknown.size() >= ANCHOR_SHAPE_RECONCILE_BUDGET) {
-      break;
-    }
-  }
+  std::vector<jlong> unknown = collectUnclassifiedAnchorClassTags();
   if (unknown.empty()) {
     return;
   }
@@ -599,6 +892,23 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
                               &resolved_count, &objects,
                               &resolved_tags) != JVMTI_ERROR_NONE) {
     return;
+  }
+  if ((jint)anchor_tags.size() > resolved_count) {
+    // Anchors absent from the resolution are collected: they can never be walked again, so their
+    // index slots are pure capacity waste - and a dead local container's frontier record stays
+    // selectable (EXPANDED), so compaction alone would keep rejecting replacement live containers
+    // until a search restart cleared the frontier. Reclaim the slots here; the frontier record
+    // itself stays - release machinery owns dead-entry cleanup.
+    std::unordered_set<jlong> resolved(resolved_tags,
+                                       resolved_tags + resolved_count);
+    std::vector<jlong> missing;
+    missing.reserve(anchor_tags.size() - resolved.size());
+    for (jlong tag : anchor_tags) {
+      if (resolved.count(tag) == 0) {
+        missing.push_back(tag);
+      }
+    }
+    removeMissingAnchors(missing);
   }
   int walked = 0;
   // First index the walk did NOT consume (breaks before an anchor's walk report i, breaks after
