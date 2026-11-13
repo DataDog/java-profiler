@@ -187,7 +187,11 @@ next function it calls; the configuration contract remains necessary.
 
 1. Locate the profiler library and resolve its allocation imports using the
    existing resolution behavior. Resolution can call allocation functions; this
-   design does not promise an allocation-free startup.
+   design does not promise an allocation-free startup. A required-resolution
+   failure returns the resolution error before any commit, nested probe, mark
+   or seed; the error text and its caching are unchanged. (The nested probe no
+   longer runs in that branch: its temporary write can land in the image that
+   owns the `posix_memalign` target, which can be a ddprof hook image.)
 2. Build candidate forwarding state locally. Do not commit compatibility success
    or publish new forwarding state yet.
 3. Inspect the current imports and candidate forwarding targets.
