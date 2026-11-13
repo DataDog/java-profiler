@@ -728,15 +728,29 @@ static void observeSocketPatchForTest(const char* phase) {
 }
 #endif
 
-bool LibraryPatcher::patch_socket_functions(bool require_active) {
+bool LibraryPatcher::patch_socket_functions(bool require_active,
+                                            std::atomic<bool>* activating_owner) {
+#ifdef UNIT_TEST
+  if (!require_active) observeSocketPatchForTest("before_start_snapshot");
+#endif
   u64 generation;
   {
     ExclusiveLockGuard locker(&_lock);
     if (require_active && !_socket_active.load(std::memory_order_relaxed)) {
       return false;
     }
+    if (!require_active) {
+      // Invalidate older refreshes before the requesting owner becomes visible.
+      _socket_generation++;
+      if (activating_owner != nullptr) {
+        activating_owner->store(true, std::memory_order_release);
+      }
+    }
     generation = _socket_generation;
   }
+#ifdef UNIT_TEST
+  if (!require_active) observeSocketPatchForTest("start_snapshot");
+#endif
   auto disable_and_unpatch = [generation, require_active]() {
     std::vector<SocketPatchedLibrary> libraries_to_release;
     {
@@ -997,7 +1011,6 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
         remember_socket_library_unlocked(lib->imageBase());
       }
       if (success) {
-        if (!require_active) _socket_generation++;
         _socket_active.store(true, std::memory_order_release);
       }
     }

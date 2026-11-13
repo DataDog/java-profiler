@@ -337,8 +337,7 @@ Error NativeSocketInterposer::start() {
     Log::warn("NativeSocketInterposer: failed to mark one or more hook symbols; "
               "native call stacks for socket samples may contain profiler frames");
   }
-  _active.store(true, std::memory_order_release);
-  if (!LibraryPatcher::patch_socket_functions()) {
+  if (!LibraryPatcher::patch_socket_functions(false, &_active)) {
     _active.store(false, std::memory_order_release);
     return Error("failed to install native I/O hooks");
   }

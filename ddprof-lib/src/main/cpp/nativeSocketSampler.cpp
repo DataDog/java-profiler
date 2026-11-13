@@ -410,8 +410,7 @@ Error NativeSocketSampler::start(Arguments &args) {
                   "native call stacks for socket samples may be incomplete");
     }
 
-    _active.store(true, std::memory_order_release);
-    if (!LibraryPatcher::patch_socket_functions()) {
+    if (!LibraryPatcher::patch_socket_functions(false, &_active)) {
         _active.store(false, std::memory_order_release);
         // patch_socket_functions() covers several distinct, already-logged
         // failure modes (unresolvable JDK directory, mprotect/import-table

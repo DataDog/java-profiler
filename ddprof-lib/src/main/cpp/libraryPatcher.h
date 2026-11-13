@@ -100,7 +100,9 @@ public:
   static void patch_libraries();
   static void unpatch_libraries();
   static void patch_sigaction();
-  static bool patch_socket_functions(bool require_active = false);
+  // Owner starts reserve a generation and publish activation together under _lock.
+  static bool patch_socket_functions(bool require_active = false,
+                                     std::atomic<bool>* activating_owner = nullptr);
   static void unpatch_socket_functions();
   static bool unpatch_socket_functions_if_inactive();
 #ifdef UNIT_TEST
@@ -135,8 +137,10 @@ public:
   static void patch_libraries() { }
   static void unpatch_libraries() { }
   static void patch_sigaction() { }
-  static bool patch_socket_functions(bool require_active = false) {
+  static bool patch_socket_functions(bool require_active = false,
+                                     std::atomic<bool>* activating_owner = nullptr) {
     (void)require_active;
+    (void)activating_owner;
     return false;
   }
   static void unpatch_socket_functions() { }

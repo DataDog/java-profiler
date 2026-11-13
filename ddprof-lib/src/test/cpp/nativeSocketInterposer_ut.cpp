@@ -1248,10 +1248,59 @@ private:
 
 ScopedSocketImportFailure* ScopedSocketImportFailure::_current = nullptr;
 
+// Pause a real owner's start before the patcher's generation snapshot. A
+// running refresh can fail in this window, before start resumes and succeeds.
+class PausedSocketOwnerStart {
+public:
+  explicit PausedSocketOwnerStart(bool start_sampler) {
+    _current = this;
+    LibraryPatcher::setSocketPatchObserverForTest(observe);
+    _worker = std::async(std::launch::async, [start_sampler]() {
+      Arguments args;
+      return !(start_sampler ? NativeSocketSampler::instance()->start(args)
+                             : NativeSocketInterposer::instance()->start());
+    });
+  }
+
+  ~PausedSocketOwnerStart() {
+    resume();
+    if (_worker.valid()) _worker.get();
+    LibraryPatcher::setSocketPatchObserverForTest(nullptr);
+    _current = nullptr;
+  }
+
+  bool waitSnapshot() {
+    return _snapshot.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+  }
+  void resume() {
+    if (!_resumed) { _resumed = true; _resume.set_value(); }
+  }
+  bool finish() {
+    resume();
+    return _worker.get();
+  }
+
+private:
+  static void observe(const char* phase) {
+    if (strcmp(phase, "before_start_snapshot") == 0) {
+      _current->_at_snapshot.set_value();
+      _current->_resume.get_future().wait();
+    }
+  }
+  static PausedSocketOwnerStart* _current;
+  std::promise<void> _at_snapshot, _resume;
+  std::future<void> _snapshot = _at_snapshot.get_future();
+  std::future<bool> _worker;
+  bool _resumed = false;
+};
+
+PausedSocketOwnerStart* PausedSocketOwnerStart::_current = nullptr;
+
 // Only the refresh thread pauses: the test thread must be able to reinstall.
 class PausedSocketRefresh {
 public:
-  PausedSocketRefresh() {
+  explicit PausedSocketRefresh(bool resume_at_owner_snapshot = false)
+      : _resume_at_owner_snapshot(resume_at_owner_snapshot) {
     _current = this;
     LibraryPatcher::setSocketPatchObserverForTest(observe);
     _worker = std::async(std::launch::async, []() {
@@ -1285,7 +1334,13 @@ public:
 
 private:
   static void observe(const char* phase) {
-    if (!_refresh_thread) return;
+    if (!_refresh_thread) {
+      if (_current->_resume_at_owner_snapshot && strcmp(phase, "start_snapshot") == 0) {
+        _current->resumeCommit();
+        EXPECT_TRUE(_current->waitResult());
+      }
+      return;
+    }
     if (strcmp(phase, "committed") == 0) {
       _current->_committed = true;
     } else if (strcmp(phase, "before_commit") == 0) {
@@ -1304,6 +1359,7 @@ private:
   std::future<void> _worker;
   bool _commit_resumed = false, _result_resumed = false;
   bool _committed = false;
+  bool _resume_at_owner_snapshot;
 };
 
 PausedSocketRefresh* PausedSocketRefresh::_current = nullptr;
@@ -1559,6 +1615,91 @@ TEST_F(LibraryPatcherSocketTransactionTest,
     TearDown();
     _exit(HasFailure() ? 1 : 0);
   }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(LibraryPatcherSocketTransactionTest,
+       PreSnapshotRefreshFailureCannotDisableSuccessfulOwnerStart) {
+  for (bool start_sampler : {false, true}) {
+    SCOPED_TRACE(start_sampler ? "starting sampler" : "starting interposer");
+    ASSERT_EXIT({
+      initializeFixture();
+      if (HasFatalFailure()) _exit(1);
+      ScopedNativeSocketInterposerActive interposer_active(start_sampler);
+      ScopedNativeSocketSamplerActive sampler_active(!start_sampler);
+      ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+      loadNetworkLibrary(1, "libnio.so");
+      ASSERT_FALSE(HasFatalFailure());
+      {
+        PausedSocketOwnerStart starting(start_sampler);
+        ASSERT_TRUE(starting.waitSnapshot());
+        {
+          ScopedSocketImportFailure failure(libraries[1], slots[1][0]);
+          LibraryPatcher::install_socket_hooks();
+          ASSERT_EQ(1, failure.calls);
+          ASSERT_TRUE(failure.saw_partial_write);
+        }
+        // Prove this was a real RUNNING refresh failure, not a cancelled/no-op
+        // refresh or a fault that also affects the subsequent installation.
+        expectImports(false, 2);
+        ASSERT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+        ASSERT_FALSE(NativeSocketInterposer::instance()->active());
+        ASSERT_FALSE(NativeSocketSampler::active());
+        ASSERT_TRUE(starting.finish());
+        TEST_LOG("pre-snapshot refresh rolled back partial write; %s start succeeded; "
+                 "interposer_active=%d sampler_active=%d",
+                 start_sampler ? "sampler" : "interposer",
+                 NativeSocketInterposer::instance()->active(), NativeSocketSampler::active());
+      }
+      EXPECT_EQ(!start_sampler, NativeSocketInterposer::instance()->active());
+      EXPECT_EQ(start_sampler, NativeSocketSampler::active());
+      EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+      EXPECT_EQ(4, LibraryPatcher::socket_patch_count_for_test());
+      EXPECT_EQ(2, LibraryPatcher::socket_library_count_for_test());
+      expectImports(true, 2);
+      expectPublishedForwarders();
+      NativeSocketInterposer::instance()->stop();
+      NativeSocketSampler::instance()->stop();
+      expectImports(false, 2);
+      TearDown();
+      _exit(HasFailure() ? 1 : 0);
+    }, ::testing::ExitedWithCode(0), "");
+  }
+}
+
+TEST_F(LibraryPatcherSocketTransactionTest,
+       OwnerActivationReservationCancelsOlderRefreshBeforeStartCommit) {
+  for (bool start_sampler : {false, true}) {
+    SCOPED_TRACE(start_sampler ? "starting sampler" : "starting interposer");
+    ASSERT_EXIT({
+      initializeFixture();
+      if (HasFatalFailure()) _exit(1);
+      ScopedNativeSocketInterposerActive interposer_active(start_sampler);
+      ScopedNativeSocketSamplerActive sampler_active(!start_sampler);
+      ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+      {
+        PausedSocketRefresh refresh(true);
+        ASSERT_TRUE(refresh.waitCommit());
+        // Resume the older refresh after owner reservation, before start's
+        // discovery/commit, so a commit-time-only generation change is too late.
+        Arguments args;
+        ASSERT_FALSE(start_sampler ? NativeSocketSampler::instance()->start(args)
+                                   : NativeSocketInterposer::instance()->start());
+        ASSERT_TRUE(refresh.waitResult());
+        EXPECT_FALSE(refresh.committed());
+        refresh.resumeResult();
+      }
+      EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+      EXPECT_TRUE(NativeSocketSampler::active());
+      EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+      EXPECT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
+      expectImports(true, 1);
+      NativeSocketInterposer::instance()->stop();
+      NativeSocketSampler::instance()->stop();
+      expectImports(false, 1);
+      TearDown();
+      _exit(HasFailure() ? 1 : 0);
+    }, ::testing::ExitedWithCode(0), "");
+  }
 }
 
 TEST_F(LibraryPatcherSocketTransactionTest,
