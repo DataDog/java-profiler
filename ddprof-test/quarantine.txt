@@ -28,7 +28,6 @@
 #              target only the slow suite. Leave as "-" to quarantine
 #              everywhere; prefer narrowing it, so the same test breaking
 #              elsewhere still gates.
-<<<<<<< HEAD
 #
 #              The C++ gtest cells (GitLab sanitizer jobs, glibc-<config>-<arch>
 #              e.g. glibc-asan-aarch64) carry no jdk axis: the native binaries
@@ -39,8 +38,6 @@
 #              id against the TEST(...) declarations in
 #              ddprof-lib/src/test/cpp, so an id no source declares fails the
 #              PR instead of quarantining nothing.
-=======
->>>>>>> 7e985788e (Remove PROF-16305 quarantine from reference-chain slow tests)
 #   reason     Free text — what is unreliable and how often. Last field, so it
 #              may contain anything but "|".
 #
