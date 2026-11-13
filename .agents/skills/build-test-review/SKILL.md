@@ -40,7 +40,10 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
      the [fresh-context](../pre-pr-review/SKILL.md#fresh-context) brief. It names the
      range explicitly, reports the findings and fixes nothing.
    - **S2 Test** runs the `test-drive` acceptance criteria in a fresh clone of the
-     candidate commit, never in the worktree. It reports each criterion as `passed`,
+     candidate commit, never in the worktree. Each drive runs without MCP servers and
+     with only the tools that its criterion needs, for example `claude -p` with
+     `--strict-mcp-config` and `--allowedTools`. Never skip hooks or bypass
+     permissions. It reports each criterion as `passed`,
      `failed`, `blocked` or `inconclusive`, with the commit, the harness and its
      version, and the observed result. It changes nothing on the branch.
 
