@@ -50,6 +50,10 @@ public final class ReferenceChainTestHooks {
     return JavaProfiler.runReferenceChainPass0();
   }
 
+  public static void setRootEnumErrorInjection0(boolean enabled) {
+    JavaProfiler.setRootEnumErrorInjection0(enabled);
+  }
+
   public static void setReferenceChainPassSpacingForTest0(long msSinceLastPass, long cadenceMs) {
     JavaProfiler.setReferenceChainPassSpacingForTest0(msSinceLastPass, cadenceMs);
   }

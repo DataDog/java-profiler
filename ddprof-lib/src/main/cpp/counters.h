@@ -277,6 +277,12 @@
    * release is retried on a later call rather than proceeding, but this     \
    * counts how often that retry path is taken. */                           \
   X(REFERENCE_CHAIN_TAG_RELEASE_FAILED, "reference_chain_tag_release_failed") \
+  /* ReferenceChainTracker::runPassManualWalk()'s root/stack-ref enumeration  \
+   * (IterateOverReachableObjects) failed with a JVMTI error - the attempt     \
+   * learned nothing about roots and _root_enum_incomplete holds the terminal  \
+   * ladder; MAX_CONSECUTIVE_ENUM_ERRORS consecutive failures abandon the     \
+   * search with SearchAbandonReason::ROOT_ENUM_ERROR. */                     \
+  X(REFERENCE_CHAIN_ROOT_ENUM_ERRORS, "reference_chain_root_enum_errors")      \
   /* The profiler-side reference-chain writer could not acquire a            \
    * sample-record lock within its bounded retry budget and dropped the      \
    * already-dequeued datadog.ReferenceChain event for this dump - not       \
