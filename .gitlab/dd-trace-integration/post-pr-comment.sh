@@ -181,8 +181,9 @@ for config_dir in "${RESULTS_DIR}"/*; do
   QUARANTINED_ENTRIES+="${QUAR_CFG_ENTRIES}"
 done
 
-# Quarantined cells are real observed results, so a run whose failures are
-# all quarantined must not take the "no results were produced" branch below.
+# Quarantined scenarios are observed results too: a run whose only outcomes
+# are quarantined (every cell otherwise incomplete, so TOTAL is 0) must still
+# render its quarantine details, not the "no results were produced" branch.
 TOTAL=$((TOTAL_PASS + TOTAL_FAIL + TOTAL_QUARANTINED))
 
 # A configuration that produced no readable validation log is not a pass. Its
@@ -248,9 +249,10 @@ if [ "${OVERALL_STATUS}" = "success" ] && [ "${TOTAL_QUARANTINED}" -eq 0 ]; then
   COMMENT_BODY=":white_check_mark: **All ${TOTAL_PASS} integration tests passed**
 
 :bar_chart: [Dashboard](${DASHBOARD_URL}) · :construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
-elif [ "${TOTAL}" -eq 0 ]; then
-  # No results produced at all - the test matrix itself never ran (e.g. a setup
-  # or prerequisite failure), not a clean pass/fail outcome.
+elif [ "${TOTAL}" -eq 0 ] && [ -z "${QUARANTINED_ENTRIES}" ]; then
+  # Nothing was observed at all - no pass, fail, or quarantined scenario - so
+  # the test matrix itself never ran (e.g. a setup or prerequisite failure),
+  # not a clean pass/fail outcome.
   COMMENT_BODY=":rotating_light: **Integration tests could not run — no results were produced**
 
 The test matrix in \`${RESULTS_DIR}\` is empty. This usually means a setup step

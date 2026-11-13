@@ -310,6 +310,23 @@ assert_body_contains "the missing log is still reported" "**1** without a result
 assert_body_contains "the quarantined details survive the missing log" "### Quarantined failures"
 assert_body_contains "the quarantined entry survives the missing log" "PROF-16618"
 
+# --- quarantine details survive an all-incomplete matrix ---
+#
+# Every job lost its logs except one cell's quarantined profiler-only log.
+# TOTAL stays 0 (an unknown cell is not a quarantined result), but the
+# observed quarantined failure must still render instead of the
+# "no results were produced" branch; the pipeline still gates.
+Q5="${WORK}/q5.txt"
+: > "${Q5}"
+add_quarantine "${Q5}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "flake"
+mkdir -p "${WORK}/all-incomplete/glibc-x64-openj9-jdk25"
+echo "VALIDATION_FAILED whatever" > "${WORK}/all-incomplete/glibc-x64-openj9-jdk25/profiler-only-glibc-x64-openj9-jdk25.log"
+run_script "${WORK}/all-incomplete" "${Q5}"
+assert_exit "an all-incomplete matrix with a quarantined failure still gates" 1
+assert_body_lacks "the no-results branch is not taken over quarantine details" "no results were produced"
+assert_body_contains "the quarantined section renders on an all-incomplete matrix" "### Quarantined failures"
+assert_body_contains "the quarantine ticket renders on an all-incomplete matrix" "PROF-16618"
+
 # --- a glob entry quarantines every cell it matches, and only those ---
 
 Q4="${WORK}/q4.txt"
