@@ -304,6 +304,12 @@ current ownership stamp.
 At capacity, the cache first evicts entries from earlier searches. If no slot becomes
 available, it drops the new chain and increments `REFERENCE_CHAIN_EVENTS_DROPPED`.
 
+Deferred invalidations reach the cache as encoded EVICT or REBUILD requests in a bounded pending buffer. EVICT (noise eviction, event filter) erases the cached chain. REBUILD (improved path, root-kind change, a just-correlated leak tag) keeps the chain: the BFS-thread poll rebuilds it from the intact frontier entry and replaces the cache entry on success, at most 8 rebuilds per poll; entries over that budget stay pending for later polls. When the buffer is full, the new request is dropped and the cached chain is kept.
+
+Callbacks enqueue these requests onto a pending queue guarded by a spin lock, not a
+lock-free protocol. Candidate polling and dump snapshots drain it; a dump can drain
+while traversal is active. Callbacks do not acquire the resolved-cache lock.
+
 `drainPendingChainEvents()` snapshots eligible cached chains, keeps them for later dumps,
 and re-stamps each copy. Leak-tag incarnation mismatches remove chains for former owners.
 This does not guarantee a chain for every live sample in every chunk.
@@ -314,10 +320,6 @@ live-object events using both tag and incarnation.
 
 The serializer applies a separate buffer-safe hop cap. `totalHops` records the untruncated
 length. Edge labels are emitted only when all emitted hops have labels.
-
-Callbacks queue bounded, exact-source-tag invalidations under a pending spin lock, not a
-lock-free protocol. Candidate polling and dump snapshots drain them; a dump can drain
-while traversal is active. Callbacks do not acquire the resolved-cache lock.
 
 Dump and stop write `datadog.ReferenceChain` events; the traversal thread does not write
 JFR events directly. Stop joins that thread and emits pending output before clearing
