@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-13 10:16:38 EST
+**Date:** 2026-11-13 10:17:58 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 90 |
-| CPU Cores (end) | 94 |
+| CPU Cores (start) | 85 |
+| CPU Cores (end) | 85 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 443 |
-| Sample Rate | 7.38/sec |
-| Health Score | 461% |
+| CPU Samples | 454 |
+| Sample Rate | 7.57/sec |
+| Health Score | 473% |
 | Threads | 9 |
-| Allocations | 394 |
+| Allocations | 376 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 541 |
-| Sample Rate | 9.02/sec |
-| Health Score | 564% |
-| Threads | 11 |
-| Allocations | 468 |
+| CPU Samples | 520 |
+| Sample Rate | 8.67/sec |
+| Health Score | 542% |
+| Threads | 10 |
+| Allocations | 511 |
 
 <details>
-<summary>CPU Timeline (3 unique values: 90-96 cores)</summary>
+<summary>CPU Timeline (1 unique values: 85-85 cores)</summary>
 
 ```
-1794582700 90
-1794582705 90
-1794582710 90
-1794582715 90
-1794582720 90
-1794582725 96
-1794582730 96
-1794582735 96
-1794582740 96
-1794582745 96
-1794582750 96
-1794582755 96
-1794582760 96
-1794582765 96
-1794582770 96
-1794582775 94
-1794582780 94
-1794582785 94
-1794582790 94
-1794582795 94
+1794582773 85
+1794582778 85
+1794582783 85
+1794582788 85
+1794582793 85
+1794582798 85
+1794582803 85
+1794582808 85
+1794582813 85
+1794582818 85
+1794582823 85
+1794582828 85
+1794582833 85
+1794582838 85
+1794582843 85
+1794582848 85
+1794582853 85
+1794582858 85
+1794582863 85
+1794582868 85
 ```
 </details>
 
