@@ -191,28 +191,6 @@ static void splitmix64_seed(u64 seed) {
     __atomic_store_n(&_xo_state[1], seed ^ (seed >> 31), __ATOMIC_RELAXED);
 }
 
-// UNIT_TEST-only seam for the admission gtests: read and seed the resolver
-// state. Only gtest configurations define UNIT_TEST; normal builds compile
-// none of this.
-#ifdef UNIT_TEST
-class MallocHookerTestAccessor {
-  public:
-    static void* origMalloc();
-    static void* origCalloc();
-    static void* origRealloc();
-    static void* origPosixMemalign();
-    static void* origAlignedAlloc();
-    static bool initialized();
-    static int patchedLibs();
-    static void seedOrigMalloc(void* fn);
-    static void seedOrigCalloc(void* fn);
-    static void seedOrigRealloc(void* fn);
-    static void seedOrigPosixMemalign(void* fn);
-    static void seedOrigAlignedAlloc(void* fn);
-    static void resetInitialized();
-};
-#endif
-
 Error MallocHooker::initialize() {
     static const char* const RESOLUTION_ERROR =
         "Failed to resolve malloc symbols; native memory profiling unavailable";
@@ -360,7 +338,7 @@ void MallocHookerTestAccessor::seedOrigPosixMemalign(void* fn) {
 void MallocHookerTestAccessor::seedOrigAlignedAlloc(void* fn) {
     _orig_aligned_alloc = reinterpret_cast<void* (*)(size_t, size_t)>(fn);
 }
-void MallocHookerTestAccessor::resetInitialized() { MallocHooker::_initialized = false; }
+void MallocHookerTestAccessor::setInitialized(bool value) { MallocHooker::_initialized = value; }
 #endif
 
 void MallocHooker::installHooks() {
