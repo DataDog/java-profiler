@@ -2397,8 +2397,8 @@ Error LivenessTracker::initialize(Arguments &args) {
   // _leak_signal_enabled members' own comments in livenessTracker.h). Updated
   // unconditionally alongside _record_heap_usage below, ahead of the
   // _initialized guard, for the same reason: each profiler start should
-  // observe the flag it was actually started with, even though the tracking
-  // table itself persists across recordings.
+  // observe the flag it was actually started with, also when a start() with no
+  // release() before it keeps the table.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
   // See _leak_signal_enabled's comment for the derivation and the ordering rationale.
   _leak_signal_enabled.store(args._gc_generations
@@ -2411,7 +2411,7 @@ Error LivenessTracker::initialize(Arguments &args) {
 
   // _record_heap_usage controls per-session JFR event emission only, not the
   // tracking table. Update it before the _initialized guard so each profiler
-  // start gets the correct setting even when the table persists across recordings.
+  // start gets the correct setting, also when the table is kept.
   _record_heap_usage = args._record_heap_usage;
 
   // Fresh recording: no chase is open, so no watched tids and no urgency

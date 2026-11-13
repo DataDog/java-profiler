@@ -173,9 +173,11 @@ pool to all free. Each slot that had an owner gets a new incarnation. Leak-candi
 selection starts over in the next recording. `ReferenceChainTracker::releaseSearchTags()`
 clears only frontier tags, not pool tags.
 
-If the clear fails, the next `start()` tries it again before it rebuilds the pool. If that
-try also fails, the pool hands out no tags for that recording. No chain then names a tracked
-leak instance. The traversal still runs and emits chains keyed by frontier tags.
+If the clear fails, a later `start()` or `release()` tries it again. `start()` tries before
+it rebuilds the pool. If that try also fails, the pool hands out no tags for that recording,
+so no new instance gets a leak tag. Objects can still carry pool tags from an earlier
+recording. The walk treats such a tag as a leak tag, so the recording can emit chains keyed
+by it.
 
 Candidate representatives are weak references, not artificial traversal seeds. Tagging
 correlates an existing frontier entry instead of overwriting its tag. A retained path must

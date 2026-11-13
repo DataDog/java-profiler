@@ -671,22 +671,26 @@ chains are described in
   published entry, so the stacks of live objects survive trace-storage rotation
   within a recording (see [CallTraceStorage.md](CallTraceStorage.md)).
   `release()` clears the checkers, so each recording registers exactly one.
-- **`stop()`** cleans up and flushes the table into the final chunk, but
+- **`stop()`** first bumps the table generation under the exclusive lock, so an
+  allocation callback that straddles the stop is dropped. It then cleans up and
+  flushes the table into the final chunk, but
   deliberately leaves GC notifications enabled (`onGC()` ignores them while the
   tracker is released).
 - **`release()`** runs from `Profiler::releaseRecordingMemory()`, after the final
   chunk is written and the reference-chain BFS thread is joined. It first unregisters
-  its own liveness checker, on every path. It then clears the
-  JVMTI tag of every object still carrying a leak-pool tag (one
+  its own liveness checker, on every path. When a pool tag is out or an earlier
+  clear failed, it then clears the JVMTI tag of every object still carrying a
+  leak-pool tag (one
   `GetObjectsWithTags` over the pool; `releaseSearchTags()` clears only search
   tags), then under the exclusive lock deletes every entry's weak ref and the
   population representatives' weak refs, frees the table, and zeroes
-  `_table_cap`/`_table_max_cap`/`_enabled`. It then rebuilds the leak-tag pool as
+  `_table_cap`/`_table_max_cap`/`_enabled`. It then resets the leak-tag pool to
   all free, and resets `_initialized` so the next
-  `start()` initializes from scratch. If the leak tags cannot be cleared here and
-  again at the next `start()`, that recording hands out no leak tags: leak reference
-  chains are missing for it, allocation and liveness sampling continue, and each
-  `start()` retries the clear. An allocation callback still in flight
+  `start()` initializes from scratch. If the clear fails here, a later `start()` or
+  `release()` tries it again. If the retry at the next `start()` also fails, that
+  recording hands out no leak tags. Allocation and liveness sampling continue.
+  Objects can still carry pool tags from an earlier recording, and the
+  reference-chain walk can emit chains keyed by those tags. An allocation callback still in flight
   finds no capacity and deletes only its own, never-inserted weak ref. Apart from unregistering
   the checker, it is a no-op when no table was allocated.
 
