@@ -446,6 +446,38 @@ class RetryPolicyTest(unittest.TestCase):
                          [unittest.mock.call(gate._RETRY_BACKOFF_SECONDS)])
 
 
+class BodyReadRetryTest(unittest.TestCase):
+    """A transport failure during response-body read goes through the
+    same retry and ApiError conversion as the request itself — it must
+    never escape the transport handler."""
+
+    def test_body_read_failure_is_retried_until_success(self):
+        class FailingRead(FakeResponse):
+            def __init__(self, failures):
+                super().__init__(200, [])
+                self.failures = failures
+
+            def read(self):
+                if self.failures:
+                    self.failures -= 1
+                    raise OSError("connection reset during body read")
+                return self._body
+
+        transport = testlib.FakeTransport([FailingRead(1), FakeResponse(200, [])])
+        self.assertEqual(make_client(transport).list_open_main_prs(), [])
+        self.assertEqual(len(transport.calls), 2)
+
+    def test_body_read_failure_exhausts_attempts_and_fails_closed(self):
+        class AlwaysFailingRead(FakeResponse):
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        transport = testlib.FakeTransport([AlwaysFailingRead(200, [])] * 3)
+        with self.assertRaises(gate.ApiError):
+            make_client(transport).read_statuses(SHA)
+        self.assertEqual(len(transport.calls), 3)
+
+
 class ResponseClosingTest(unittest.TestCase):
     """Every response opened in _fetch is closed on every exit path."""
 
@@ -474,6 +506,16 @@ class ResponseClosingTest(unittest.TestCase):
         transport = testlib.FakeTransport([error, FakeResponse(200, [])])
         self.assertEqual(make_client(transport).list_open_main_prs(), [])
         self.assertTrue(error.closed)
+
+    def test_failed_body_read_still_closes_the_response(self):
+        class FailingRead(ClosingResponse):
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        response = FailingRead(200, [])
+        transport = testlib.FakeTransport([response, FakeResponse(200, [])])
+        self.assertEqual(make_client(transport).list_open_main_prs(), [])
+        self.assertTrue(response.closed)
 
 
 class MatchesDecisionTest(unittest.TestCase):

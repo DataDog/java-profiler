@@ -334,6 +334,12 @@ class GitHubClient:
             window = None
             try:
                 response = self._transport(request)
+                try:
+                    status = response.status
+                    headers = getattr(response, "headers", None) or {}
+                    body = response.read()
+                finally:
+                    _close_quietly(response)
             except urllib.error.HTTPError as error:
                 _close_quietly(error)
                 if error.code < 500 and not _is_rate_limited(error.code, error.headers):
@@ -345,12 +351,6 @@ class GitHubClient:
             except Exception as error:  # any transport failure retries
                 failure = error
             else:
-                status = response.status
-                headers = getattr(response, "headers", None) or {}
-                try:
-                    body = response.read()
-                finally:
-                    _close_quietly(response)
                 if 200 <= status < 300:
                     return body, headers.get("Link")
                 failure = ApiError("HTTP %s for %s" % (status, url))
@@ -766,6 +766,8 @@ def _note_unmatched_summary(env, selector, numbers):
             handle.write("bits gate: workflow_run selectors matched no open-main PR; "
                          "publishing the run head only (numbers=%r)\n" % (numbers,))
     except OSError:
+        # Best effort by the contract above: a failed summary write must
+        # not change the exit code or stdout.
         pass
 
 
