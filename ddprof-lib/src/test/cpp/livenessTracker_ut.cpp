@@ -1435,6 +1435,75 @@ TEST_F(SelectLeakCandidatesTest, ScratchOverflowPreservesStrongEarlyThreads) {
     }
 }
 
+// Victim selection among equal retained sets must keep the FIRST minimal slot (strictly-less
+// comparison): flipping it to <= evicts the last minimal thread instead. Thread 2 is the first
+// minimal slot and thread 1 ties with it at the same count - thread 2 must lose its history
+// (absent from the fold every epoch) while thread 1's survives.
+TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsFirstMinimalSlot) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::vector<std::pair<jint, u32>> cohorts;
+    cohorts.emplace_back(1, 12);
+    cohorts.emplace_back(2, 12);
+    for (int tid = 3; tid <= 16; tid++) {
+        cohorts.emplace_back(tid, 13);
+    }
+    cohorts.emplace_back(17, 1);
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        LivenessTrackerTestAccessor::recordThreadCohorts(tracker, slot, cohorts);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    auto contains_tid = [&out](jint tid) {
+        for (int i = 0; i < out[0].qualifying_tid_count; i++) {
+            if (out[0].qualifying_tids[i] == tid) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // Thread 1 ties with thread 2 at the global minimum count: the scan keeps the first minimal
+    // slot, so thread 1 is evicted by the overflow thread every epoch and never reaches the fold,
+    // while thread 2's history qualifies.
+    EXPECT_TRUE(contains_tid(2));
+    EXPECT_FALSE(contains_tid(1));
+}
+
+// The victim scan must consider slot 0 a candidate: the global minimum (thread 1, the only count
+// that clears the bar here) sits at slot 0, and the scan evicts it on every overflow arrival, so
+// its history never reaches the fold. (Pins the scan's min-selection; comparing slot 0 with
+// itself at a loop start of 0 is a no-op, so no mutation of the start index is observable.)
+TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsTheGlobalMinimumThread) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::vector<std::pair<jint, u32>> cohorts;
+    cohorts.emplace_back(1, 8);
+    for (int tid = 2; tid <= 16; tid++) {
+        cohorts.emplace_back(tid, 9);
+    }
+    cohorts.emplace_back(17, 1);
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        LivenessTrackerTestAccessor::recordThreadCohorts(tracker, slot, cohorts);
+    }
+    KlassCandidate out[5];
+    ASSERT_EQ(1, tracker->selectLeakCandidates(out, 5));
+    auto contains_tid = [&out](jint tid) {
+        for (int i = 0; i < out[0].qualifying_tid_count; i++) {
+            if (out[0].qualifying_tids[i] == tid) {
+                return true;
+            }
+        }
+        return false;
+    };
+    EXPECT_FALSE(contains_tid(1));
+    // Thread 1's history is evicted on every overflow arrival and never reaches the fold; the
+    // qualifying threads are the 9-count threads the scan never minimizes onto.
+}
+
 TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
     LivenessTracker *tracker = LivenessTracker::instance();
     LivenessTrackerTestAccessor::setSessionGatesForTest(
