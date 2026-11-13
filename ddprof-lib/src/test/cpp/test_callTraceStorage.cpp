@@ -102,7 +102,8 @@ TEST(CallTraceStorageAcquireTest, UnusableTableLeavesNoTablePublished) {
         EXPECT_EQ(nullptr, storage.activeTableForTest()) << "unusable table " << index;
     }
 
-    storage.unusableTableForTest(-1);
+    EXPECT_THROW(storage.unusableTableForTest(3), std::out_of_range);
+    storage.unusableTableForTest(CallTraceStorage::NO_UNUSABLE_TABLE);
     EXPECT_TRUE(storage.acquire());
     EXPECT_NE(nullptr, storage.activeTableForTest());
 }

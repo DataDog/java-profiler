@@ -19,6 +19,9 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#ifdef UNIT_TEST
+#include <stdexcept>
+#endif
 
 // Forward declarations
 class CallTraceHashTable;
@@ -89,7 +92,7 @@ private:
     bool allocateTables();
 #ifdef UNIT_TEST
     bool _fail_allocation_for_test = false;
-    int _unusable_table_for_test = -1;
+    int _unusable_table_for_test = NO_UNUSABLE_TABLE;
 #endif
     // Swaps the three table pointers to nullptr and deletes the tables once
     // drained (a table still guarded after the timeout is leaked).
@@ -154,9 +157,15 @@ public:
 #ifdef UNIT_TEST
     // Makes allocateTables() fail as if memory ran out.
     void failAllocationForTest(bool fail) { _fail_allocation_for_test = fail; }
+    static constexpr int NO_UNUSABLE_TABLE = -1;
     // Makes allocateTables() build table `index` (0 active, 1 standby, 2 scratch)
-    // as if its first allocation failed; -1 builds all three usable.
-    void unusableTableForTest(int index) { _unusable_table_for_test = index; }
+    // as if its first allocation failed.
+    void unusableTableForTest(int index) {
+        if (index < NO_UNUSABLE_TABLE || index > 2) {
+            throw std::out_of_range("unusableTableForTest: index must be -1..2");
+        }
+        _unusable_table_for_test = index;
+    }
 #endif
 };
 

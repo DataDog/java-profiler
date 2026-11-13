@@ -3412,6 +3412,7 @@ protected:
         VMTestAccessor::setHotspot(saved_hotspot);
         VMTestAccessor::setHotspotVersion(saved_hotspot_version);
         g_mock_jvm = nullptr;
+        g_get_objects_with_tags_calls = 0;
         restoreDefaultSignalHandlers();
     }
 

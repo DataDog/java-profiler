@@ -68,7 +68,7 @@ bool CallTraceStorage::allocateTables() {
         scratch_table = std::make_unique<CallTraceHashTable>();
 #ifdef UNIT_TEST
         CallTraceHashTable *built[] = {active_table.get(), standby_table.get(), scratch_table.get()};
-        if (_unusable_table_for_test >= 0 && _unusable_table_for_test < 3) {
+        if (_unusable_table_for_test != NO_UNUSABLE_TABLE) {
             built[_unusable_table_for_test]->dropTableForTest();
         }
 #endif
