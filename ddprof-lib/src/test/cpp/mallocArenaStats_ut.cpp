@@ -230,7 +230,9 @@ TEST(MallocArenaStats, ContiguousChurnIsReturnedToTheOS) {
 
 // Stranding requires LIVE allocations interleaved among the freed ones: they pin
 // the region so the free chunks cannot coalesce to the top and be returned.
-// Measured here: 117.5 MiB retained, of which malloc_trim reclaims 0.03 MiB.
+// Measured here: 117.5 MiB of free-but-held chunks in `mallinfo2().fordblks`,
+// with 0.03 MiB leaving that accounting across malloc_trim; fordblks cannot see
+// a release done by madvise, so it makes no residency or reclamation claim.
 //
 // This is why the counter separates `keepcost` (the trimmable top block) from
 // total free-but-held, and why arena slack is a property of the whole process's
@@ -266,7 +268,8 @@ TEST(MallocArenaStats, InterleavedSurvivorsStrandFreeChunksBeyondTrim) {
   ASSERT_TRUE(sentinelSnapshot(&post_trim));
 
   EXPECT_GT(post_trim.fordblks, 0u)
-      << "trim reclaimed everything; interleaving failed to strand chunks";
+      << "fordblks holds no free-but-held chunks after trim; interleaving failed "
+         "to strand chunks";
 
   // keepcost is the main arena's top chunk. malloc_trim(0) shrinks that top to
   // about a page and never grows it, while the interleaved free chunks stay
@@ -280,7 +283,7 @@ TEST(MallocArenaStats, InterleavedSurvivorsStrandFreeChunksBeyondTrim) {
   expectMallinfoInvariants(pre_trim, "pre_trim");
   expectMallinfoInvariants(post_trim, "post_trim");
 
-  printf("[TRIM] free_held before trim: %.2f MiB, after trim: %.2f MiB "
+  printf("[TRIM] free_held (fordblks) before trim: %.2f MiB, after trim: %.2f MiB "
          "(reclaimed %.2f MiB)\n",
          (double)pre_trim.fordblks / (1024 * 1024),
          (double)post_trim.fordblks / (1024 * 1024),
