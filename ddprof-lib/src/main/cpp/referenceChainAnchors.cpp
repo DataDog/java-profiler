@@ -152,7 +152,8 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     for (size_t i = 0; i < _static_anchor_index.size(); i++) {
       jlong tag = _static_anchor_index[i];
       FrontierEntry entry{};
-      if (!frontier->lookupLocked(tag, &entry)) {
+      if (!frontier->lookupLocked(tag, &entry) ||
+          entry.state == FrontierEntryState::ABANDONED) {
         _static_anchor_index_class_tags.erase(tag);
         continue;
       }

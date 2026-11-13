@@ -647,25 +647,46 @@ TEST_F(ReferenceChainsBfsTest, DeadAnchorIndexEntriesArePruned) {
     ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
     int holderA = addNode();
     int holderB = addNode();
+    int holderC = addNode();
     node_tags[holderA] = tracker->nextTag();
-    node_tags[holderB] = tracker->nextTag();
+    // Beyond any slot the two inserted holders can grow the table to: the released-tag shape.
+    node_tags[holderB] = 5000;
+    node_tags[holderC] = tracker->nextTag();
+    FrontierTable *frontier = tracker->frontierTable();
     const jlong unknown_class_tag = -106;
     ReferenceChainPassContext ctx{};
     ctx.tracker = tracker;
-    ctx.frontier = tracker->frontierTable();
+    ctx.frontier = frontier;
     ctx.hop_cap = 64;
     ctx.budget = 1000;
-    for (int holder : {holderA, holderB}) {
+    // HolderA gets a real frontier slot, so clearing it produces the production ABANDONED state
+    // that lookupLocked() still finds; holderC stays live; holderB's tag is never allocated in
+    // the table.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[holderA], 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[holderC], 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    for (int holder : {holderA, holderB, holderC}) {
         ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
                   ReferenceChainsTestAccessor::reportHeapRootForTest(
                       JVMTI_HEAP_ROOT_STACK_LOCAL, unknown_class_tag,
                       &node_tags[holder], &ctx));
     }
-    ASSERT_EQ(2u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+    ASSERT_EQ(3u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
 
-    // Every frontier entry dies (frontier tags are released and re-minted between passes).
+    // HolderA's slot is cleared to ABANDONED (the production death path - lookupLocked still
+    // finds it), holderB's slot is beyond the table, holderC stays live. Both dead shapes must
+    // leave the index.
     tracker->frontierTable()->clear(node_tags[holderA]);
-    tracker->frontierTable()->clear(node_tags[holderB]);
+    ASSERT_TRUE(
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+    EXPECT_EQ(node_tags[holderC],
+              ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest()[0]);
+
+    tracker->frontierTable()->clear(node_tags[holderC]);
     ASSERT_TRUE(
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
     ASSERT_TRUE(ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().empty());
