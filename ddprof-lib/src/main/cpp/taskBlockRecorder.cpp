@@ -70,7 +70,7 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
 #endif
 
   if (!activity.active()) {
-    // TaskBlockActivity's constructor already incremented TASK_BLOCK_DROPPED_ROTATION.
+    // tryEnterTaskBlockActivity() already counted the admission rejection.
     return false;
   }
   if (!recording_enabled || !exited) {

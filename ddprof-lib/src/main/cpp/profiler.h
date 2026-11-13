@@ -725,7 +725,7 @@ public:
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
   enum class TaskBlockActivityStage {
-    BEFORE_RESERVATION, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
+    BEFORE_RESERVATION, BEFORE_RESERVATION_CAS, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
   };
   using TaskBlockActivityHook = void (*)(TaskBlockActivityStage stage);
   static void setTaskBlockActivityHookForTest(TaskBlockActivityHook hook);

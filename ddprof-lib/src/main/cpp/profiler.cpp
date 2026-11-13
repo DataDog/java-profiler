@@ -1251,20 +1251,37 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
 
 bool Profiler::tryEnterTaskBlockActivity() {
   u64 state = _task_block_activity_state.load(std::memory_order_acquire);
-  if (state & TASK_BLOCK_CLOSED) return false;
+  if (state & TASK_BLOCK_CLOSED) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return false;
+  }
 #ifdef UNIT_TEST
   runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION);
 #endif
   // Admission and closure share one atomic modification order. A successful
   // CAS before closure contributes to the count rotation drains; a CAS after
   // closure fails and cannot add a reservation while the closed bit is set.
+  // Match SpinLock's 256-attempt signal-handler shared-acquisition budget.
+  // Exhaustion drops only this observation: failed CAS attempts never reserve
+  // activity, so there is no count to release or for rotation to drain. This
+  // bounds retries, not wall-clock latency, without waiting or taking a lock.
   bool admitted = false;
-  while (!(state & TASK_BLOCK_CLOSED)) {
+  int failures = 0;
+  while (!(state & TASK_BLOCK_CLOSED) &&
+         failures < SpinLock::DEFAULT_SHARED_SPIN_BUDGET) {
+#ifdef UNIT_TEST
+    runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION_CAS);
+#endif
     if (_task_block_activity_state.compare_exchange_weak(
             state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
       admitted = true;
       break;
     }
+    ++failures;
+  }
+  if (!admitted) {
+    Counters::increment((state & TASK_BLOCK_CLOSED) ? TASK_BLOCK_DROPPED_ROTATION
+                                                 : TASK_BLOCK_DROPPED_ADMISSION);
   }
 #ifdef UNIT_TEST
   runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);

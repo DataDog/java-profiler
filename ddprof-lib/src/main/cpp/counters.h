@@ -106,6 +106,7 @@
   X(TASK_BLOCK_STACK_CAPTURE_FAILED, "task_block_stack_capture_failed")      \
   X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                     \
   X(TASK_BLOCK_DROPPED_ROTATION, "task_block_dropped_rotation")               \
+  X(TASK_BLOCK_DROPPED_ADMISSION, "task_block_dropped_admission")             \
   X(TASK_BLOCK_SKIPPED_THREAD_MISMATCH, "task_block_skipped_thread_mismatch") \
   X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
