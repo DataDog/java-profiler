@@ -93,7 +93,10 @@ ImageMetadata resolveMetadata(const LoadedImage& image, const ElfProgramHeader* 
 
     const ElfW(Dyn)* entries = (const ElfW(Dyn)*)dyn_addr;
     size_t count = dyn->p_filesz / sizeof(ElfW(Dyn));
-    uintptr_t symtab_raw = 0, strtab_raw = 0, hash_raw = 0;
+    // Separate slots for the two hash-table tags: with one shared slot the
+    // later DT_HASH entry would overwrite the DT_GNU_HASH address, and a GNU
+    // walk would silently run against the SysV table.
+    uintptr_t symtab_raw = 0, strtab_raw = 0, gnu_raw = 0, sysv_raw = 0;
     bool has_symtab = false, has_strtab = false, has_strsz = false, has_gnu = false, has_sysv = false;
     for (size_t i = 0; i < count; i++) {
         if (entries[i].d_tag == DT_NULL) break;
@@ -111,11 +114,11 @@ ImageMetadata resolveMetadata(const LoadedImage& image, const ElfProgramHeader* 
                 has_strsz = true;
                 break;
             case DT_GNU_HASH:
-                hash_raw = entries[i].d_un.d_ptr;
+                gnu_raw = entries[i].d_un.d_ptr;
                 has_gnu = true;
                 break;
             case DT_HASH:
-                hash_raw = entries[i].d_un.d_ptr;
+                sysv_raw = entries[i].d_un.d_ptr;
                 has_sysv = true;
                 break;
             default:
@@ -138,11 +141,11 @@ ImageMetadata resolveMetadata(const LoadedImage& image, const ElfProgramHeader* 
     if (has_gnu) {
         md.has_hash = true;
         md.gnu_hash = true;
-        md.hash = image.dynamicPointer(hash_raw);
+        md.hash = image.dynamicPointer(gnu_raw);
     } else if (has_sysv) {
         md.has_hash = true;
         md.gnu_hash = false;
-        md.hash = image.dynamicPointer(hash_raw);
+        md.hash = image.dynamicPointer(sysv_raw);
     } else {
         md.failure = NO_HASH_TABLE;
     }
