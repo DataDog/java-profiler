@@ -209,6 +209,24 @@ run_script "${WORK}/one-quarantined" "${Q_ESC}"
 assert_exit "a reason with backslash escapes does not change gating" 0
 assert_body_contains "the reason text is rendered verbatim" 'path C:\temp logged, exit \c code'
 assert_body_contains "a backslash-heavy reason does not truncate the sections after it" "### Links"
+
+# --- one cell with both scenarios quarantined: one shield, two bullets ---
+
+Q_BOTH="${WORK}/q-both.txt"
+: > "${Q_BOTH}"
+add_quarantine "${Q_BOTH}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16618" "2027-02-10" "flake A"
+add_quarantine "${Q_BOTH}" "glibc-x64-openj9-jdk25/tracer-profiler" "PROF-16618" "2027-02-10" "flake B"
+build_matrix "${WORK}/both-quarantined" "fail:glibc-x64-openj9-jdk25"
+run_script "${WORK}/both-quarantined" "${Q_BOTH}"
+assert_exit "a cell with both scenarios quarantined exits 0" 0
+assert_body_contains "the quarantined section header is present" "### Quarantined failures"
+assert_body_contains "the fully quarantined cell is counted once" "**1** quarantined"
+assert_body_lacks "the cell is not counted as failed" "**1** failed"
+# The needle quotes the comment's literal backticks; they are data, not substitution.
+# shellcheck disable=SC2016
+assert_body_contains "the first scenario bullet is listed" '`glibc-x64-openj9-jdk25/profiler-only` — PROF-16618, review_by 2027-02-10, flake A'
+# shellcheck disable=SC2016
+assert_body_contains "the second scenario bullet is listed" '`glibc-x64-openj9-jdk25/tracer-profiler` — PROF-16618, review_by 2027-02-10, flake B'
 EXPECTED_HEADER="| Platform |$(printf ' JDK %s |' "${JDKS[@]}")"
 assert_body_contains "the matrix header is generated from the JDK list" "${EXPECTED_HEADER}"
 
