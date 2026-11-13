@@ -36,6 +36,12 @@ markers_nr_throttled() {
     elif [ -f "$1/cpu/cpu.stat" ]; then
         markers_stat_file="$1/cpu/cpu.stat"
     fi
+    # No candidate was found: an empty filename would make sed read the
+    # sampler's stdin instead of taking the NA fallback below.
+    if [ -z "$markers_stat_file" ]; then
+        printf 'NA\n'
+        return
+    fi
     markers_value=$(sed -n 's/^nr_throttled \([0-9][0-9]*\).*/\1/p' "$markers_stat_file" 2>/dev/null)
     if [ -n "$markers_value" ]; then
         printf '%s\n' "$markers_value"
