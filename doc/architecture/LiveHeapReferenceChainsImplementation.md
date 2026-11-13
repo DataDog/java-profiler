@@ -165,13 +165,15 @@ for tracked instances from their qualifying allocating threads.
 The pool holds 256 positive leak tags. Each reuse has an incarnation value, so a chain
 bound to an earlier owner can be rejected after the tag is released or reused.
 
-Leak tags, like the rest of the `LivenessTracker` state, are recording-scoped. When a
-recording stops, `LivenessTracker::release()` clears the JVMTI tag of every object that still
-carries a pool tag (one `GetObjectsWithTags` over the pool; `releaseSearchTags()` only clears
-frontier tags), frees the tracking table and the per-klass population, and rebuilds the pool
-as all free, bumping the incarnation of every slot that had an owner. Leak-candidate
-selection therefore starts over in the next recording and needs a few GC cycles to find
-candidates again.
+Leak tags are recording-scoped, like the rest of the `LivenessTracker` state. When a
+recording stops, `LivenessTracker::release()` frees the tracking table and the per-klass
+population. If a pool tag is out or an earlier clear failed, it also clears the pool tags on
+objects with one `GetObjectsWithTags` call. `releaseSearchTags()` clears only frontier tags. The pool is then
+rebuilt as all free, and each slot that had an owner gets a new incarnation. Leak-candidate
+selection starts over in the next recording.
+
+If the clear fails, the next `start()` tries it again. If that try also fails, the pool hands
+out no tags, and that recording has no leak reference chains.
 
 Candidate representatives are weak references, not artificial traversal seeds. Tagging
 correlates an existing frontier entry instead of overwriting its tag. A retained path must
