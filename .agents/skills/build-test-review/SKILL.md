@@ -26,15 +26,17 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 3. **Sub-sessions.** In Claude Code, run each sub-session as a fresh subagent: the
    `Agent` tool with `general-purpose`, never `fork`, which inherits this conversation.
    The prompt names only the ticket, the part, the worktree and, for a fix round, the
-   triaged findings or the failed checks, quoted. Never give your own view of the
+   triaged findings or the failed checks, quoted, and any `blocked` check that the
+   engineer accepted (step 5). Never give your own view of the
    change or of its defects. Tell the sub-session to read its part on the ticket, to
    write nothing to the ticket, and to return a report.
    - **S1 Build** changes the code. It does not start another orchestration skill,
      such as the cairn `dev-process` pipeline or `sphinx:implement`. It runs the
      `local` acceptance criteria, the checks that `verify-profiler-change` names for
      the kind of change, and the `pre-pr-review` step 2 self-checks. It commits
-     locally only when they pass, or when the engineer accepted a `blocked` check
-     (step 5). It does not push. Its report names the commit and each check as
+     locally only when they pass, or when its prompt quotes the engineer's
+     acceptance of a check that stays `blocked`. Otherwise it reports without a
+     commit. It does not push. Its report names the commit and each check as
      `passed`, `failed`, `blocked` or `inconclusive`.
    - **S3 Review** runs the reviewer as `pre-pr-review` step 3 says: the
      [reviewer table](../pre-pr-review/SKILL.md#reviewer-table) and its fallback, and
@@ -70,8 +72,10 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    - a finding or a test result needs a change to the accepted Design or acceptance
      criteria. Propose the change; after the engineer accepts it, amend the ticket as
      `work-planning` says, then continue;
-   - a required check in S1 or S2 is `blocked` or `inconclusive`. Do not close
-     until each required check has passed, or the engineer accepts the gap;
+   - a sub-session reports a required check as `blocked`, or as `inconclusive` after
+     running it on the current candidate. A result that is only stale under step 4
+     does not count. Do not close until each required check has passed, or the
+     engineer accepts the gap;
    - the round limit of the `pre-pr-review` Findings step is reached;
    - the next run is likely to exceed the `pre-pr-review`
      [Cost](../pre-pr-review/SKILL.md#review-cost) budget;
@@ -82,16 +86,17 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    The commits are not pushed yet: name them by hash, and add the links after the
    engineer pushes. Then run `pre-pr-review` step 0 and steps 4 to 7 in this
    session. The S3 reviews are its step 3 reviews, its step 4 fixes go through S1 as
-   in step 4 above, and the marker names this session. For its step 7, use the sub-session reports and this
-   session's own mistakes. Do not push and do not open a PR: tell the engineer that
-   the branch is ready, and that they open the PR with the `pr-writing` skill.
+   in step 4 above, and the marker names this session. For its step 7, use the
+   sub-session reports and this session's own mistakes. Do not push and do not open
+   a PR: tell the engineer that the branch is ready, and that they open the PR with
+   the `pr-writing` skill.
 
 ## Pi
 
 In Pi, do not call a subagent tool for any purpose, also when an extension such as
-`pi-subagents` provides one. Say so, then run S1, S3 and S2 one after another in this session, with the same
-loop and stops. Pi has no review tool, so S3 follows `pre-pr-review` step 3 for a
-missing reviewer.
+`pi-subagents` provides one. Say so, then run S1, S3 and S2 one after another in
+this session, with the same loop and stops. Pi has no review tool, so S3 follows
+`pre-pr-review` step 3 for a missing reviewer.
 
 ## `gh` in test drives
 
