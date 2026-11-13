@@ -42,6 +42,8 @@ import java.util.regex.Pattern;
  *   <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
  *       process; each step is either the literal {@code STOP} (calls {@link JavaProfiler#stop()})
  *       or a comma delimited profiler command list (calls {@link JavaProfiler#execute(String)})
+ *   <li>nativemem-exclusion &lt;steps&gt; - runs scripted native-memory admission steps in a child JVM
+ *       using {@code libddproftest} as the ddprof stand-in; prints outcomes for the parent test
  *   <li>lazy-trace-id &lt;comma delimited profiler command list, required&gt; - starts the
  *       profiler, spins in {@code com.datadoghq.profiler.generated.LazyTraceIdProbe} (defined by
  *       its own class loader, so it has no jmethodIDs until the profiler resolves its frames) and
@@ -222,6 +224,69 @@ public class ExternalLauncher {
     lineNumberSink = acc;
   }
 
+  /**
+   * Runs the scripted native-memory admission scenario. Each step prints its result so the parent
+   * test can assert the child outcome without parsing a JFR file from this process.
+   */
+  private static void runNativememExclusionScenario(String spec) throws Exception {
+    boolean loaded = false;
+    for (String step : spec.split(";")) {
+      if (step.isEmpty()) {
+        continue;
+      }
+      int colon = step.indexOf(':');
+      String name = colon < 0 ? step : step.substring(0, colon);
+      String argument = colon < 0 ? "" : step.substring(colon + 1);
+      switch (name) {
+        case "LOAD":
+          com.datadoghq.profiler.nativemem.DdprofStandin.startMarkerCalls();
+          loaded = true;
+          com.datadoghq.profiler.nativemem.DdprofStandin.allocate(0, 0);
+          System.out.println("[load] ok");
+          break;
+        case "INSTALL":
+          System.out.println("[standin] installed=" + com.datadoghq.profiler.nativemem.DdprofStandin.install());
+          break;
+        case "RESTORE":
+          System.out.println("[standin] restored=" + com.datadoghq.profiler.nativemem.DdprofStandin.restore());
+          break;
+        case "START":
+          JavaProfiler instance = JavaProfiler.getInstance();
+          try {
+            instance.execute(argument);
+            System.out.println("[start] ok");
+          } catch (RuntimeException e) {
+            System.out.println("[start] error=" + e.getMessage());
+          }
+          break;
+        case "LOADPROFILER":
+          JavaProfiler.getInstance();
+          System.out.println("[loadprofiler] ok");
+          break;
+        case "STOP":
+          JavaProfiler.getInstance().stop();
+          System.out.println("[stop] ok");
+          break;
+        case "CPUWORK":
+          runEntryFrameWorkload();
+          break;
+        case "ALLOC":
+          if (!loaded) {
+            throw new IllegalStateException("ALLOC before LOAD");
+          }
+          com.datadoghq.profiler.nativemem.DdprofStandin.allocate(1024, Integer.parseInt(argument));
+          break;
+        case "MARKERS":
+          System.out.println("[markers] start="
+              + com.datadoghq.profiler.nativemem.DdprofStandin.startMarkerCalls()
+              + " stop=" + com.datadoghq.profiler.nativemem.DdprofStandin.stopMarkerCalls());
+          break;
+        default:
+          throw new IllegalStateException("unknown scenario step " + name);
+      }
+    }
+  }
+
   public static void main(String[] args) throws Exception {
     Thread worker = null;
     try {
@@ -256,6 +321,12 @@ public class ExternalLauncher {
             instance.execute(commands);
           }
         }
+      } else if (args[0].equals("nativemem-exclusion")) {
+        // Steps are separated by ';' and each step can be passed one ':'-delimited argument.
+        // The child prints outcomes and exits so the parent can assert the admission result.
+        runNativememExclusionScenario(args.length > 1 ? args[1] : "");
+        System.out.flush();
+        System.exit(0);
       } else if (args[0].equals("profiler-sequence")) {
         JavaProfiler instance = JavaProfiler.getInstance();
         if (args.length == 2) {

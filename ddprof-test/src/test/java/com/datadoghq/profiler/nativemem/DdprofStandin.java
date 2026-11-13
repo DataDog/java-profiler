@@ -14,7 +14,7 @@ package com.datadoghq.profiler.nativemem;
  * builds everywhere, but {@code install()}/{@code restore()} link only on
  * Linux and must not be called elsewhere.
  */
-final class DdprofStandin {
+public final class DdprofStandin {
     static {
         System.loadLibrary("ddproftest");
     }
@@ -22,16 +22,22 @@ final class DdprofStandin {
     // Rewrites the profiler's own allocation GOT slots to stand-in
     // forwarding hooks. Returns 0 on success, -1 when the profiler image or
     // its relocations could not be inspected.
-    static native int install();
+    public static native int install();
 
     // Restores the saved allocation GOT slot values. Returns 0 on success.
-    static native int restore();
+    public static native int restore();
+
+    // Runs the native allocation workload through libddproftest. Kept here
+    // so the external launcher can invoke the package-private helper.
+    public static void allocate(long size, int count) {
+        NativeAllocHelper.nativeMalloc(size, count);
+    }
 
     // Times the two marker functions were called. The admission check must
     // never call a marker, so tests assert these stay 0 across it.
-    static native long startMarkerCalls();
+    public static native long startMarkerCalls();
 
-    static native long stopMarkerCalls();
+    public static native long stopMarkerCalls();
 
     private DdprofStandin() {}
 }
