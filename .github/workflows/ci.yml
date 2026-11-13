@@ -117,7 +117,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y binutils g++ jq
           status=0
-          for t in utils/tests/*.sh .github/scripts/tests/test_check_pr_ticket.sh; do
+          for t in utils/tests/*.sh .github/scripts/tests/test_check_pr_ticket.sh .github/scripts/tests/test_bits_review_gate.sh; do
             echo "::group::$t"
             bash "$t" || { echo "::error::$t failed"; status=1; }
             echo "::endgroup::"
