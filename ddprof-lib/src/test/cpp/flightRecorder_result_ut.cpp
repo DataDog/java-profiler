@@ -133,7 +133,10 @@ TEST(FlightRecorderResultTest, LightweightShortBurstsSerializeEveryUnitOfWeight)
       u64 weight;
       if (!BaseWallClock::wallPrecheckForTest(current.get(), true, event._thread_state, weight, true)) {
         event._weight = weight;
-        EXPECT_TRUE(profiler->recordWallSample(nullptr, 1, tid, 0, &event, slot));
+        WallSampleRequest request;
+        request.tid = tid;
+        request.trace_epoch = profiler->recordingEpoch();
+        EXPECT_TRUE(profiler->recordWallSample(nullptr, 1, 0, &event, request).ordinary_recorded);
       }
     }
   }

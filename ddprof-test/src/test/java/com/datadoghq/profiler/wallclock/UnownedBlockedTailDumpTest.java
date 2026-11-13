@@ -22,13 +22,13 @@ import org.junit.jupiter.params.provider.CsvSource;
 /** Reproduces missing tail stacks using real sampling writes, JFR dumps, and constant pools. */
 public class UnownedBlockedTailDumpTest extends AbstractProfilerTest {
   /**
-   * Forces each unsafe interleaving without relying on timer scheduling or worker sleep durations.
-   * The debug driver controls only OS-state inputs, stack capture, and where the dump runs.
+   * Exercises each dump boundary without relying on timer scheduling or worker sleep durations. The
+   * debug driver controls only OS-state inputs, stack capture, and where the dump runs.
    */
   @ParameterizedTest(name = "dumpAfterPrimary={0}, resetBeforeTail={1}")
   @CsvSource({"true, false", "false, false", "false, true"})
   public void deferredTailRetainsItsStackAcrossDump(
-      boolean beforePublication, boolean resetBeforeTail) throws Exception {
+      boolean dumpAfterPrimary, boolean resetBeforeTail) throws Exception {
     Assumptions.assumeTrue(isDebugBuild(), "Requires the debug-only synchronous sampling driver");
     profiler.clearTraceContext();
     long threadId = Thread.currentThread().getId();
@@ -39,17 +39,17 @@ public class UnownedBlockedTailDumpTest extends AbstractProfilerTest {
       profiler.clearTraceContext();
       assertFalse(
           JavaProfilerTestSupport.recordUnownedWallTailAcrossDumpForTest(
-              snapshot.toAbsolutePath().toString(), beforePublication, resetBeforeTail),
+              snapshot.toAbsolutePath().toString(), dumpAfterPrimary, resetBeforeTail),
           "An active logical context must bypass unowned fallback");
       profiler.removeThread();
       assertTrue(
           JavaProfilerTestSupport.recordUnownedWallTailAcrossDumpForTest(
-              snapshot.toAbsolutePath().toString(), beforePublication, resetBeforeTail),
+              snapshot.toAbsolutePath().toString(), dumpAfterPrimary, resetBeforeTail),
           "Failed to record the primary samples or dump the first chunk");
       stopProfiler();
 
       // Positive controls: the initial blocked stack and the later fresh stack
-      // resolve correctly. Only the deferred tail reuses the retired trace ID.
+      // resolve correctly. The deferred tail reuses the preserved trace ID.
       assertSampleStack(
           verifyEvents(snapshot, "datadog.MethodSample", true), threadId, "SLEEPING", "JAVA");
       assertSampleStack(verifyEvents("datadog.MethodSample"), threadId, "RUNNABLE", "JAVA");

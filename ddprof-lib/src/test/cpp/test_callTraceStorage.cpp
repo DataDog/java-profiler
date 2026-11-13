@@ -14,6 +14,8 @@
 #include <condition_variable>
 #include <mutex>
 #include "callTraceHashTable.h"
+#include "wallClockBlockTracker.h"
+#include "scopedPreservationCopyFailure.h"
 #include "gtest_crash_handler.h"
 #include "arch.h"
 #include "counters.h"
@@ -51,6 +53,145 @@ protected:
 
     std::unique_ptr<CallTraceStorage> storage;
 };
+
+// LivenessTracker::getLiveTraceIds clears its output even when disabled.
+// Each collector owns its output; it must not erase another collector's roots.
+TEST_F(CallTraceStorageTest, ClearingCollectorCannotEraseZeroWeightWallRoot) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    WallClockBlockTracker tracker;
+    ASSERT_TRUE(tracker.ensureAllocated());
+    ASGCT_CallFrame frame;
+    frame.bci = 39;
+    frame.method_id = (jmethodID)0x7745;
+    const u64 id = storage->put(1, &frame, false, 1);
+    ASSERT_NE(0U, id);
+    ASSERT_NE(CallTraceStorage::DROPPED_TRACE_ID, id);
+    // Cover a bitmap word beyond the low word as well as the real callback.
+    const ThreadFilter::SlotID slot = 65;
+    tracker.publishUnownedTrace(slot, id, OSThreadState::SLEEPING);
+    ASSERT_EQ(0U, tracker.slotForId(slot)->unowned_blocked_pending_weight.load());
+    storage->registerLivenessChecker(
+        [&](CallTraceIdSet& live) { tracker.collectLiveTraceIds(live); },
+        [&](const CallTraceIdSet& failed) { tracker.onUnpreservedTraceIds(failed); });
+    storage->registerLivenessChecker(
+        [](CallTraceIdSet& live) { live.clear(); });
+
+    for (int dump = 0; dump < 3; ++dump) {
+        storage->processTraces([&](const CallTraceSet& traces) {
+            auto* preserved = findTraceById(traces, id);
+            ASSERT_NE(nullptr, preserved) << "Root disappeared at dump " << dump;
+            ASSERT_EQ(1, preserved->num_frames);
+            EXPECT_EQ(39, preserved->frames[0].bci);
+            EXPECT_EQ(frame.method_id, preserved->frames[0].method_id);
+        });
+        EXPECT_EQ(id, tracker.slotForId(slot)->unowned_blocked_call_trace_id.load());
+    }
+}
+
+TEST_F(CallTraceStorageTest, ExactIdCopyReportsExistingAndCopiedFrames) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    CallTraceHashTable destination;
+    const u64 first_id = (42ULL << 32) | 7;
+    const u64 second_id = (43ULL << 32) | 7;
+    CallTrace first(false, 1, first_id);
+    first.frames[0].bci = 37;
+    first.frames[0].method_id = (jmethodID)0x7742;
+    CallTrace second(false, 1, second_id);
+    second.frames[0] = first.frames[0];
+
+    ASSERT_TRUE(destination.putWithExistingId(&first, 1));
+    ASSERT_TRUE(destination.putWithExistingId(&first, 1));
+    ASSERT_TRUE(destination.putWithExistingId(&second, 1));
+    CallTraceSet traces;
+    destination.collect(traces);
+    ASSERT_EQ(2U, traces.size());
+    for (u64 id : {first_id, second_id}) {
+        auto* copied = findTraceById(traces, id);
+        ASSERT_NE(nullptr, copied);
+        EXPECT_EQ(1, copied->num_frames);
+        EXPECT_EQ(37, copied->frames[0].bci);
+        EXPECT_EQ(first.frames[0].method_id, copied->frames[0].method_id);
+    }
+}
+
+TEST_F(CallTraceStorageTest, FailedExactIdCopyCanBeRetried) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    CallTraceHashTable destination;
+    const u64 id = (44ULL << 32) | 8;
+    CallTrace source(false, 1, id);
+    source.frames[0].bci = 38;
+    source.frames[0].method_id = (jmethodID)0x7744;
+    {
+        ScopedPreservationCopyFailure failure(id);
+        EXPECT_FALSE(destination.putWithExistingId(&source, 1));
+        CallTraceSet traces;
+        destination.collect(traces);
+        EXPECT_EQ(nullptr, findTraceById(traces, id));
+    }
+    ASSERT_TRUE(destination.putWithExistingId(&source, 1));
+    CallTraceSet traces;
+    destination.collect(traces);
+    ASSERT_EQ(1U, traces.size());
+    auto* copied = findTraceById(traces, id);
+    ASSERT_NE(nullptr, copied);
+    EXPECT_EQ(38, copied->frames[0].bci);
+    EXPECT_EQ(source.frames[0].method_id, copied->frames[0].method_id);
+}
+
+TEST_F(CallTraceStorageTest, CompletionReportsOnlyUnpreservedHeapAndWallRequests) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+    ASGCT_CallFrame frame{};
+    frame.bci = 40;
+    frame.method_id = (jmethodID)0x7750;
+    const u64 heap_id = storage->put(1, &frame, false, 1);
+    ASSERT_GT(heap_id >> 32, 0ULL);
+    // Keep the existing one-argument heap registration contract. Its trace
+    // reaches standby before the wall traces enter the new active table.
+    storage->registerLivenessChecker([&](CallTraceIdSet& live) { live.insert(heap_id); });
+    storage->processTraces([](const CallTraceSet&) {});
+    frame.bci = 41;
+    const u64 wall_ok = storage->put(1, &frame, false, 1);
+    frame.bci = 42;
+    const u64 wall_failed = storage->put(1, &frame, false, 1);
+    ASSERT_GT(wall_ok >> 32, 0ULL);
+    ASSERT_GT(wall_failed >> 32, 0ULL);
+    const u64 absent = (0xffffULL << 32) | 123;
+    CallTraceIdSet unpreserved;
+    int completions = 0;
+    storage->registerLivenessChecker(
+        [&](CallTraceIdSet& live) {
+            live.insert(wall_ok);
+            live.insert(wall_failed);
+            live.insert(absent);
+        },
+        [&](const CallTraceIdSet& failed) {
+            ++completions;
+            unpreserved = failed;
+        });
+    {
+        ScopedPreservationCopyFailure failure(wall_failed);
+        storage->processTraces([&](const CallTraceSet& traces) {
+            EXPECT_NE(nullptr, findTraceById(traces, heap_id));
+            EXPECT_NE(nullptr, findTraceById(traces, wall_ok));
+            EXPECT_NE(nullptr, findTraceById(traces, wall_failed));
+            EXPECT_EQ(nullptr, findTraceById(traces, absent));
+        });
+    }
+    EXPECT_EQ(1, completions);
+    EXPECT_EQ(CallTraceIdSet({wall_failed, absent}), unpreserved);
+    // A current-chunk source trace is not proof that it reached the next pool.
+    storage->processTraces([&](const CallTraceSet& traces) {
+        EXPECT_NE(nullptr, findTraceById(traces, heap_id));
+        auto* kept = findTraceById(traces, wall_ok);
+        ASSERT_NE(nullptr, kept);
+        EXPECT_EQ(41, kept->frames[0].bci);
+        EXPECT_EQ(frame.method_id, kept->frames[0].method_id);
+        EXPECT_EQ(nullptr, findTraceById(traces, wall_failed));
+        EXPECT_EQ(nullptr, findTraceById(traces, absent));
+    });
+    EXPECT_EQ(2, completions);
+    EXPECT_EQ(CallTraceIdSet({wall_failed, absent}), unpreserved);
+}
 
 TEST_F(CallTraceStorageTest, BasicFunctionality) {
     ProfiledThread::initCurrentThreadSignalSafe();

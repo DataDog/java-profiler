@@ -14,6 +14,7 @@
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
+#include "context_api.h"
 #include "nativeMem.h"
 #include "ctimer.h"
 #include "signalInflight.h"
@@ -109,7 +110,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   // never uses those hooks does not reserve one of the bounded registry slots.
   // The wall timer only looks up entries; it never allocates them.
   if (_thread_filter.enabled()) {
-    int slot_id = _thread_filter.registerThread(tid);
+    int slot_id = _thread_filter.registerThread(tid, current->logicalContextWindowState());
     current->setFilterSlotId(slot_id);
   }
   if (thread != NULL) {
@@ -322,6 +323,13 @@ int Profiler::registerThreadInEngines(int tid) {
   return cpu->registerThread(tid);
 }
 #ifdef UNIT_TEST
+u32 Profiler::exchangeNumContextAttributesForTest(u32 count) {
+  assert(count <= DD_TAGS_CAPACITY);
+  u32 previous = _num_context_attributes;
+  _num_context_attributes = count;
+  return previous;
+}
+
 static std::atomic<int> g_test_last_unregistered_tid{-1};
 static std::atomic<Profiler::TaskBlockRecordOverride>
     g_test_task_block_record_override{nullptr};
@@ -911,63 +919,136 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
     return;
   }
 
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  writeSampleEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordUnownedBlockedTail(
-    int tid, WallClockBlockTracker::BlockState *slot, u64 weight) {
+bool Profiler::writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
+                                const Context* context) {
+#ifdef UNIT_TEST
+  if (sampleWriteHookForTest != nullptr) {
+    return sampleWriteHookForTest(lock_index, trace_id, event, context, sampleWriteHookArgForTest);
+  }
+#endif
+  if (type == BCI_WALL && context != nullptr) {
+    return _jfr.recordWallSample(lock_index, tid, trace_id, static_cast<ExecutionEvent*>(event), *context);
+  }
+  return _jfr.recordEvent(lock_index, tid, trace_id, type, event);
+}
+
+WallClockBlockTracker::BlockState* Profiler::wallSampleSlot(const WallSampleRequest& request) {
+  auto* identity = _thread_filter.activeSlotForId(request.slot_id, request.tid);
+  if (identity == nullptr || identity->lifecycleGeneration() != request.lifecycle_generation ||
+      _thread_filter.recordingEpoch() != request.registry_epoch) return nullptr;
+  return _block_tracker.slotForId(request.slot_id);
+}
+
+WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
+                                           ExecutionEvent* event, const WallSampleRequest& request) {
+  WallSampleResult result;
   atomicIncRelaxed(_total_samples);
-
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+  RecordingStripe stripe(_locks, getLockIndex(request.tid));
+  if (!stripe.owned()) {
     atomicIncRelaxed(_failures[-ticks_skipped]);
-    slot->discardUnownedBlockedTail();
-    return;
+    return result;
   }
 
-  // Preparation leaves this reference visible to the liveness checker. Load it
-  // under the stripe as a slot reset may have discarded it since preparation.
-  u64 call_trace_id = slot->unowned_blocked_call_trace_id.load(std::memory_order_acquire);
-  OSThreadState state = slot->unowned_blocked_state.load(std::memory_order_acquire);
-  if (call_trace_id != 0 && state != OSThreadState::UNKNOWN) {
-    ExecutionEvent event;
-    event._thread_state = state;
-    event._execution_mode = ExecutionMode::UNKNOWN;
-    event._weight = weight;
-    _jfr.recordEvent(lock_index, tid, call_trace_id, BCI_WALL, &event);
+  auto* block = wallSampleSlot(request);
+  Context origin{};
+  u64 publication = 0;
+  bool origin_readable = block != nullptr && request.context_captured &&
+      _block_tracker.readUnownedContext(request.slot_id, origin, publication);
+  bool publishable = block != nullptr && request.context_captured &&
+      _block_tracker.canPublishUnownedContext(request.slot_id);
+  bool matching_periodic = request.unowned_sample && origin_readable && publishable &&
+      !request.force_unowned_ordinary && publication == request.context_publication &&
+      origin.equals(request.context) &&
+      _block_tracker.unownedWeightMatchesEpoch(request.slot_id, request.sampling_epoch_start);
+  if (block != nullptr && request.unowned_sample) {
+    event->_weight = matching_periodic
+        ? block->unowned_blocked_pending_weight.load(std::memory_order_acquire) + 1 : 1;
+    if (matching_periodic) event->_sample_ticks = request.sampling_epoch_start;
   }
-  slot->discardUnownedBlockedTail();
-  _locks[lock_index].unlock();
+  // A dump can invalidate the ordinary collapsing cache before this stripe
+  // is acquired. Preserved unowned roots, unlike that cache, survive a dump.
+  if (recordingEpoch() != request.trace_epoch) {
+    call_trace_id = 0;
+  }
+  u64 recorded_id = 0;
+  result.ordinary_recorded = recordSampleLocked(stripe.index(), ucontext, counter,
+      request.tid, BCI_WALL, call_trace_id, event, &recorded_id,
+      request.context_captured ? &request.context : nullptr);
+  if (block == nullptr || wallSampleSlot(request) != block) {
+    return result;
+  }
+  if (matching_periodic && result.ordinary_recorded) {
+    // Pending provenance remains intact until the weighted write succeeds.
+    block->unowned_blocked_pending_weight.store(0, std::memory_order_release);
+    _block_tracker.clearUnownedWeightSegments(request.slot_id);
+  }
+  if (result.ordinary_recorded && request.arm_state != OSThreadState::UNKNOWN &&
+      block->blockGeneration() == request.block_generation &&
+      block->activeBlockState() == request.arm_state) {
+    block->markBlockGenerationSampled(request.block_generation);
+  }
+
+  u64 tail_id = 0, tail_weight = 0;
+  OSThreadState tail_state = OSThreadState::UNKNOWN;
+  bool has_tail = block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state);
+  if (!matching_periodic && origin_readable && has_tail &&
+      (request.flush_tail || request.unowned_sample)) {
+    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+    size_t count = _block_tracker.copyUnownedWeightSegments(request.slot_id, segments);
+    bool all_recorded = count != 0;
+    for (size_t i = 0; i < count; ++i) {
+      ExecutionEvent deferred;
+      deferred._thread_state = tail_state;
+      deferred._execution_mode = ExecutionMode::UNKNOWN;
+      deferred._weight = segments[i].weight;
+      deferred._sample_ticks = segments[i].epoch_start;
+      atomicIncRelaxed(_total_samples);
+      bool recorded = writeSampleEvent(stripe.index(), request.tid, tail_id,
+                                      BCI_WALL, &deferred, &origin);
+      if (wallSampleSlot(request) != block) return result;
+      if (recorded) {
+        _block_tracker.commitUnownedWeightSegment(request.slot_id, segments[i]);
+        Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+      } else {
+        all_recorded = false;
+      }
+    }
+    result.tail_recorded = all_recorded &&
+        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+    if (result.tail_recorded) {
+      if (request.unowned_sample) {
+        block->clearUnownedBlockedTailKeepingCadence();
+      } else {
+        block->resetUnownedBlockedSampling();
+      }
+    }
+  }
+  if (request.unowned_sample && result.ordinary_recorded) {
+    // Never replace A's positive tail merely because B's ordinary write worked.
+    // Missing metadata also retains A rather than recapturing live TLS for it.
+    bool no_origin = block->unowned_blocked_call_trace_id.load(std::memory_order_acquire) == 0 &&
+        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+    if (publishable && (matching_periodic || no_origin ||
+        (origin_readable && (!has_tail || result.tail_recorded)))) {
+      _block_tracker.publishUnownedTrace(request.slot_id, recorded_id,
+                                        request.observed_state, request.context);
+    }
+    Counters::increment(WC_UNOWNED_BLOCKED_RECORDED);
+  }
+  return result;
 }
 
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event) {
-  return recordSampleImpl<false>(ucontext, counter, tid, event_type,
-                                  call_trace_id, event, nullptr);
-}
-
-bool Profiler::recordWallSample(
-    void *ucontext, u64 counter, int tid, u64 call_trace_id,
-    ExecutionEvent *event, WallClockBlockTracker::BlockState *unowned_slot) {
-  return recordSampleImpl<true>(ucontext, counter, tid, BCI_WALL,
-                                 call_trace_id, event, unowned_slot);
-}
-
-template<bool cache_unowned_wall>
-bool Profiler::recordSampleImpl(
-    void *ucontext, u64 counter, int tid, jint event_type,
-    u64 call_trace_id, Event *event,
-    WallClockBlockTracker::BlockState *unowned_slot) {
   atomicIncRelaxed(_total_samples);
 
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+  RecordingStripe stripe(_locks, getLockIndex(tid));
+  if (!stripe.owned()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
 
@@ -979,6 +1060,13 @@ bool Profiler::recordSampleImpl(
     return false;
   }
 
+  return recordSampleLocked(stripe.index(), ucontext, counter, tid, event_type,
+                            call_trace_id, event, nullptr);
+}
+
+bool Profiler::recordSampleLocked(u32 lock_index, void* ucontext, u64 counter, int tid,
+                                  jint event_type, u64 call_trace_id, Event* event,
+                                  u64* recorded_call_trace_id, const Context* context) {
   bool truncated = false;
   // in lightweight mode we're just sampling the the context associated with the
   // passage of CPU or wall time, we use the same event definitions but we
@@ -1023,15 +1111,11 @@ bool Profiler::recordSampleImpl(
     }
 #endif // COUNTERS
   }
-  bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
-  if constexpr (cache_unowned_wall) {
-    if (recorded && call_trace_id != 0 && unowned_slot != nullptr) {
-      unowned_slot->recordUnownedBlockedSample(
-          call_trace_id, static_cast<ExecutionEvent *>(event)->_thread_state);
-    }
+  bool recorded = writeSampleEvent(lock_index, tid, call_trace_id, event_type, event, context);
+  if (recorded && recorded_call_trace_id != nullptr) {
+    *recorded_call_trace_id = call_trace_id;
   }
 
-  _locks[lock_index].unlock();
   return recorded;
 }
 
@@ -1966,6 +2050,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
   _task_block_enabled.store(false, std::memory_order_release);
+  // A previous mixed-success or failed start must not leave a stale mask that a
+  // later stop() would act on; success publishes `activated` below.
+  _activated_mask = 0;
 
   // Sanity checks run at most once per process, across start and stop cycles.
   // Profiler::start() sets sanity_checked to true before it checks
@@ -2114,6 +2201,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
 
   const char *filter = args._filter != nullptr ? args._filter : "0";
+  _block_tracker.setUnownedContextSnapshotsNeeded(
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
+      _wall_engine == &wall_asgct_engine && !_omit_stacktraces);
   const bool track_unfiltered_wall =
       (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
       args._filter != nullptr && args._filter[0] == '\0' &&
@@ -2127,17 +2217,19 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.clearActive();
   }
 
-  // Set up the sampled thread's TLS in both modes. Context filtering also
-  // pre-registers the caller; unfiltered tracking waits for its first hook.
-  // Retained unfiltered slots remain ineligible until their owner refreshes
-  // against the new recording epoch in ThreadFilter::ensureCurrentThreadSlot().
+  // Set up the sampled thread's TLS in both modes. Only context-filtered
+  // recordings (enabled()) eagerly register the calling thread. In
+  // unfiltered-wall-precheck mode the caller binds lazily through
+  // ThreadFilter::ensureOwnerSlot() on its first hook, like every other thread.
+  // Retained unfiltered slots stay ineligible until their owner refreshes
+  // against the new recording epoch.
   if (_thread_filter.registryActive()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int tid = current->tid();
     if (_thread_filter.enabled() &&
         _thread_filter.activeSlotForId(current->filterSlotId(), tid) == nullptr) {
-      current->setFilterSlotId(_thread_filter.registerThread(tid));
+      current->setFilterSlotId(_thread_filter.registerThread(tid, current->logicalContextWindowState()));
     }
   }
 
@@ -2827,10 +2919,15 @@ int Profiler::resetRecordingState() {
     _context_value_dict_reset.store(true, std::memory_order_release);
   }
 
-  if (!_omit_stacktraces) {
-    lockAll();
-    _call_trace_storage.clear();
-    unlockAll();
+  {
+    RecordingLocks locks(this);
+    // Fresh-start clearing invalidates every cached root, including context-
+    // filtered slots whose registry epoch is zero. stop() has drained handlers;
+    // a repeated start is rejected before reaching this reset.
+    _block_tracker.resetAll();
+    if (!_omit_stacktraces) {
+      _call_trace_storage.clear();
+    }
   }
 
   Counters::reset();

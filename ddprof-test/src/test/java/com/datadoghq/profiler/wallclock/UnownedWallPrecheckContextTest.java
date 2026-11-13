@@ -13,7 +13,7 @@ import com.datadoghq.profiler.Platform;
 import java.util.concurrent.FutureTask;
 import org.junit.jupiter.api.Test;
 
-/** Verifies that deferred blocked weight cannot cross a context-window boundary. */
+/** Verifies that deferred blocked weight retains its original fields across context windows. */
 public class UnownedWallPrecheckContextTest extends AbstractProfilerTest {
   private static volatile long sink;
 

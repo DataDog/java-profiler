@@ -560,3 +560,29 @@ TEST_F(TaskBlockRecorderOverflowTest, ThreadTableOverflowIsCountedBeforeSerializ
   EXPECT_EQ(1, changed_stripes);
   EXPECT_GT(total_after, total_before);
 }
+
+TEST_F(TaskBlockRecorderTest, InactiveExitRejectsMissingOrForeignCachedIdentity) {
+  for (bool missing_identity : {false, true}) {
+    SCOPED_TRACE(missing_identity);
+    ThreadFilter filter;
+    WallClockBlockTracker tracker;
+    filter.setBlockTracker(&tracker);
+    filter.init("", true);
+    const int slot_id = filter.registerThread(54321);
+    ASSERT_GE(slot_id, 0);
+    const u64 token = tracker.enterBlockedRun(
+        &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+    ASSERT_NE(0ULL, token);
+    std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+        ProfiledThread::forTid(12345), ProfiledThread::deleteForTest);
+    current->setFilterSlotId(missing_identity ? -1 : slot_id);
+    Context context{};
+    ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+    filter.deactivateRecording();
+    EXPECT_FALSE(recordTaskBlockAtExit(
+        current.get(), &filter, &tracker, nullptr, 0, token, 0, 0));
+    EXPECT_EQ(BlockRunOwner::TASK_BLOCK, tracker.slotForId(slot_id)->activeBlockOwner());
+    EXPECT_EQ(0, g_record_calls.load());
+    EXPECT_EQ(nullptr, filter.lookupByTid(current->tid()));
+  }
+}

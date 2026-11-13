@@ -285,6 +285,9 @@ private:
 
   // Encodes the stack-pool record header. A Java entry root can establish
   // completeness only when the walker has not already reported missing frames.
+  static void writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
+                                u64 correlation_id, ExecutionEvent *event);
+
   static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
                                    const MethodInfo *root);
 
@@ -454,13 +457,14 @@ public:
 
   void writeUnwindFailures(Buffer *buf);
 
-  void writeContextSnapshot(Buffer *buf, Context &context);
+  void writeContextSnapshot(Buffer *buf, const Context &context);
   void writeCurrentContext(Buffer *buf);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                              u64 correlation_id, ExecutionEvent *event);
   void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
-                          u64 correlation_id, ExecutionEvent *event);
+                          u64 correlation_id, ExecutionEvent *event,
+                          const Context *context = nullptr);
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
@@ -659,6 +663,8 @@ public:
 
   bool recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
+  bool recordWallSample(int lock_index, int tid, u64 call_trace_id,
+                       ExecutionEvent *event, const Context &context);
 
   // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
   // recording. `correlation_id` is the same jlong passed to the HotSpot

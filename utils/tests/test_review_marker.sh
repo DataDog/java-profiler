@@ -477,6 +477,10 @@ VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows ready of a revi
   hook "gh pr ready 12"
 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main expect "hook checks the PR's remote head" 2 "is stale" \
   hook "gh pr ready 12"
+VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows resolved bare ready of a reviewed PR head" 0 "" \
+  hook "gh pr ready"
+VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main expect "hook checks the remote head for bare ready" 2 "is stale" \
+  hook "gh pr ready" "$TEMP_DIR/h-wt"
 VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past -R" 0 "" \
   hook "gh pr ready -R DataDog/java-profiler 12"
 VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past --repo" 0 "" \
@@ -489,9 +493,10 @@ VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
   expect "hook reports an unfetched PR head" 2 "Rerunning the review will not help" hook "gh pr ready 12"
 GH_FAIL=1 expect "hook blocks ready of a PR it cannot resolve" 2 "cannot resolve the PR" \
   hook "gh pr ready 12"
-GH_FAIL=1 expect "hook checks the current branch for a bare ready" 2 "no review marker for branch feature" \
+GH_FAIL=1 expect "hook blocks unresolved bare ready on a stale current branch" 2 "cannot resolve the PR" \
   hook "gh pr ready"
-GH_FAIL=1 expect "bare ready falls back to a fresh current branch" 0 "" hook "gh pr ready" "$TEMP_DIR/h-wt"
+GH_FAIL=1 expect "hook blocks unresolved bare ready even on a fresh current branch" 2 "cannot resolve the PR" \
+  hook "gh pr ready" "$TEMP_DIR/h-wt"
 
 marker write --tool t >/dev/null
 expect "hook allows pr create when fresh" 0 "" hook "gh pr create --fill"
@@ -718,9 +723,14 @@ EOF
   expect "pi adapter ignores other tools" 0 "" pi_hook read "gh pr create"
   expect "pi adapter ignores unrelated bash" 0 "" pi_hook bash "ls -la"
   expect "pi adapter blocks pr create without marker" 2 "Run the pre-pr-review skill" pi_hook bash "gh pr create --fill"
+  mkdir -p ddprof-lib
+  expect "pi adapter blocks pr create from a subdirectory without marker" 2 "Run the pre-pr-review skill" \
+    pi_hook bash "gh pr create --fill" "$PWD/ddprof-lib"
   expect "pi adapter allows a checkout without the hook" 0 "" pi_hook bash "gh pr create" "$TEMP_DIR/nogit"
   marker write --tool t >/dev/null
   expect "pi adapter allows pr create when fresh" 0 "" pi_hook bash "gh pr create --fill"
+  expect "pi adapter allows pr create from a subdirectory when fresh" 0 "" \
+    pi_hook bash "gh pr create --fill" "$PWD/ddprof-lib"
 else
   echo "SKIP: pi adapter tests (node with --experimental-strip-types not found)"
 fi

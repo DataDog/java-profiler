@@ -94,7 +94,10 @@
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
   X(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK, "wc_signals_suppressed_owned_block")     \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
+  X(WC_UNOWNED_BLOCKED_TRACE_PRESERVATION_FAILED, "wc_unowned_blocked_trace_preservation_failed") \
+  X(WC_UNOWNED_BLOCKED_TAIL_RECORDED, "wc_unowned_blocked_tail_recorded") \
   X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
+  X(WC_UNOWNED_CONTEXT_SNAPSHOT_UNAVAILABLE, "wc_unowned_context_snapshot_unavailable") \
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(TASK_BLOCK_EMITTED, "task_block_emitted")                                 \
   X(TASK_BLOCK_SKIPPED_TRACE_CONTEXT, "task_block_skipped_trace_context")     \

@@ -40,6 +40,7 @@ public class PrecheckTest extends AbstractProfilerTest {
     Assumptions.assumeTrue(!Platform.isJ9());
     Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
     leaveClearedInitializedContext();
+    registerOutsideContextWindow();
 
     long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
     assertTrue(token != 0, "Expected native blockEnter to arm SLEEPING state");
