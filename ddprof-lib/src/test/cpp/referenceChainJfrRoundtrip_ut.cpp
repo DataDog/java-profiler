@@ -73,6 +73,7 @@
 #include "engine.h"
 #include "flightRecorder.h"
 #include "jfrMetadata.h"
+#include "referenceChainFrontier.h"
 #include "profiler.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -534,4 +535,76 @@ TEST_F(ReferenceChainJfrRoundtripTest, DefaultLivenessEventHasZeroLeakTag) {
     ObjectLivenessEvent event;
     EXPECT_EQ(0, event.leak_tag);
     EXPECT_EQ(0u, event.leak_tag_incarnation);
+}
+
+// recordReferenceChainAbandoned()'s kReasons[] table must map every
+// SearchAbandonReason value to a distinct string, indexed directly by the
+// enum value - a stale table silently serializes a genuinely-distinct
+// abandonment as "unknown", misattributing the cause in the
+// datadog.ReferenceChainAbandoned event. ROOT_ENUM_ERROR (5) pins the
+// table's tail - without its entry, the engine's enum-error abandonment
+// (referenceChainTraversal.cpp's error branch) serializes as "unknown";
+// an out-of-range value pins the bounds check.
+TEST_F(ReferenceChainJfrRoundtripTest,
+       AbandonedEventSerializesRootEnumErrorReason) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    args._jfr_options = JFR_SYNC_OPTS;
+
+    // Own file, NOT the companion JMC round-trip path - this test's events use
+    // reason values only (no class dictionary entries), and leaving them on
+    // the companion path would make the Java parser test resolve unrelated
+    // state.
+    const std::string path = chainRoundtripJfrPath() + ".abandoned";
+    int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
+    ASSERT_GE(fd, 0) << "could not open " << path << " for writing";
+
+    Recording rec(fd, args);
+    Buffer *buf = rec.buffer(/*lock_index=*/0);
+    rec.flushIfNeeded(buf, /*limit=*/0);
+
+    // Both events carry _start_time = 0 (single-byte var64) so the reason
+    // field's offset is computable without decoding the timestamp.
+    struct ReasonCase {
+        u8 reason;
+        const char *expected;
+    };
+    const ReasonCase cases[] = {
+        {SearchAbandonReason::ROOT_ENUM_ERROR, "root_enum_error"},
+        {250, "unknown"}, // out of table range - bounds check
+    };
+    for (const ReasonCase &c : cases) {
+        ReferenceChainAbandonedEvent event;
+        event._reason = c.reason;
+        event._start_time = 0;
+
+        int offset_before = buf->offset();
+        rec.recordReferenceChainAbandoned(buf, &event);
+        int offset_after = buf->offset();
+        EXPECT_LE(offset_after, RECORDING_BUFFER_LIMIT);
+        EXPECT_GT(offset_after, offset_before);
+
+        // Field order (recordReferenceChainAbandoned): 1-byte size prefix
+        // (writeEventSizePrefix patches one byte - this event is always <
+        // 128 bytes), var64 type id, var64 startTime, then the reason putUtf8
+        // = 1 encoding-tag byte + var32 length + payload. _start_time = 0
+        // makes the timestamp var64 exactly one byte.
+        const char *data = buf->data() + offset_before;
+        int off = 1; // size prefix
+        off += sizeOfVar64((u64)T_REFERENCE_CHAIN_ABANDONED);
+        off += sizeOfVar64(0);
+        EXPECT_EQ(3, data[off])
+            << "reason putUtf8's encoding-tag byte must precede its length";
+        off += 1;
+        u32 len = decodeVar32(data, &off);
+        u32 expected_len = (u32)strlen(c.expected);
+        ASSERT_EQ(expected_len, len)
+            << "reason " << (int)c.reason << " must serialize as "
+            << c.expected;
+        EXPECT_EQ(0, memcmp(data + off, c.expected, expected_len))
+            << "reason " << (int)c.reason << " must serialize as "
+            << c.expected;
+    }
+
+    unlink(path.c_str());
 }

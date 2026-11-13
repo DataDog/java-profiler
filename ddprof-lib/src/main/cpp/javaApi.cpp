@@ -1229,6 +1229,13 @@ Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
 }
 
 extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setRootEnumErrorInjection0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  ReferenceChainTracker::instance()->setRootEnumErrorInjectionForTest(
+      enabled == JNI_TRUE);
+}
+
+extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
     JNIEnv *env, jclass unused) {
   ProfiledThread::initCurrentThreadSignalSafe();
@@ -1585,6 +1592,10 @@ Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
     JNIEnv *env, jclass unused) {
   return JNI_FALSE;
 }
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setRootEnumErrorInjection0(
+    JNIEnv *env, jclass unused, jboolean enabled) {}
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
