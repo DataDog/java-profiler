@@ -1107,6 +1107,189 @@ python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
   || fail "the same test on disjoint cells should be allowed"
 pass "one test may have separate entries for separate cells"
 
+echo "== validate cross-checks gtest ids against the source declarations =="
+
+# Fixture tree with the same declaration shapes the real gtest suites use.
+GTEST_SRC="$TEMP_DIR/gtest-src"
+mkdir -p "$GTEST_SRC"
+cat > "$GTEST_SRC/suite.cpp" <<'EOS'
+TEST(WobblySuite, sometimesFails) { }
+TEST_F(WobblySuite, aFixtureCase) { }
+TEST_P(WobblySuite, aParameterizedCase) { }
+GTEST_TEST(PlainSuite, plainCase) { }
+INSTANTIATE_TEST_SUITE_P(MyInst, WobblySuite, testing::Values(1))
+EOS
+cat > "$GTEST_SRC/typed.cpp" <<'EOS'
+TYPED_TEST(WobblyTypedSuite, aTypedCase) { }
+EOS
+# Suites can declare their cases in .inc files the suite .cpp includes.
+cat > "$GTEST_SRC/includedCases.inc" <<'EOS'
+TEST(IncSuite, anIncludedCase) { }
+EOS
+# A stray non-UTF-8 byte in a comment must not crash the scan.
+printf '// author: \xff\xfe note
+TEST(NonUtf8Suite, aCase) { }
+' > "$GTEST_SRC/nonutf8.cpp"
+
+GTEST_ARGS=(--gtest-src "$GTEST_SRC")
+
+write_list "$LIST" "$(entry WobblySuite.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry whose TEST declaration exists should be accepted"
+pass "a gtest entry matching a TEST declaration is accepted"
+
+write_list "$LIST" "$(entry WobblySuite.missingCase PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a gtest entry with no matching declaration should be rejected"
+fi
+pass "a gtest entry naming a case no source declares is rejected"
+
+write_list "$LIST" "$(entry WobblySuite.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a class-wide gtest entry whose suite is declared should be accepted"
+pass "a class-wide gtest entry for a declared suite is accepted"
+
+write_list "$LIST" "$(entry GhostSuite.* PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a class-wide gtest entry for an undeclared suite should be rejected"
+fi
+pass "a class-wide gtest entry for an undeclared suite is rejected"
+
+write_list "$LIST" "$(entry WobblySuite.aFixtureCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry matching a TEST_F declaration should be accepted"
+pass "a gtest entry matching a TEST_F declaration is accepted"
+
+# GTEST_TEST declares an ordinary test with an undecorated report id, so
+# the exact entry matches covers().
+write_list "$LIST" "$(entry PlainSuite.plainCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry matching a GTEST_TEST declaration should be accepted"
+pass "a gtest entry matching a GTEST_TEST declaration is accepted"
+
+# A case declared in an .inc file the suite includes is as real as one in the
+# .cpp: the scan must find it or valid quarantines get rejected.
+write_list "$LIST" "$(entry IncSuite.anIncludedCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a gtest entry declared in an .inc file should be accepted"
+pass "a gtest entry declared in an .inc file is accepted"
+
+write_list "$LIST" "$(entry IncSuite.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a class-wide gtest entry for an .inc-declared suite should be accepted"
+pass "a class-wide gtest entry for an .inc-declared suite is accepted"
+
+# Value-parameterized suites report '<inst>/<Suite>.<case>/<idx>'; covers()
+# compares an exact entry verbatim, so the bare form can never fire -- only
+# the class-wide form survives the classname reduction.
+write_list "$LIST" "$(entry WobblySuite.aParameterizedCase PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a bare exact id for a value-parameterized suite should be rejected"
+fi
+pass "a bare exact id for a value-parameterized suite is rejected"
+
+write_list "$LIST" "$(entry MyInst/WobblySuite.aParameterizedCase PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "an exact id carrying instantiation decoration should be rejected"
+fi
+pass "an exact id carrying instantiation decoration is rejected"
+
+write_list "$LIST" "$(entry WobblySuite PROF-1 "$(day_offset 30)")"
+validate_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" 2>&1 || true)
+echo "$validate_out" | grep -q "no case segment" \
+  || fail "a caseless bare suite id should hit the 'no case segment' complaint, got: $validate_out"
+pass "a caseless bare suite id is rejected with the 'no case segment' complaint"
+
+write_list "$LIST" "$(entry WobblySuite. PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null 2>&1; then
+  fail "a trailing-dot id like 'WobblySuite.' should be rejected"
+fi
+pass "a trailing-dot id is rejected"
+
+write_list "$LIST" "$(entry WobblyTypedSuite.aTypedCase PROF-1 "$(day_offset 30)")"
+validate_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" 2>&1 || true)
+echo "$validate_out" | grep -q "TYPED_TEST" \
+  || fail "a bare exact id for a typed case should hit the TYPED_TEST rejection, got: $validate_out"
+pass "a bare exact id for a TYPED_TEST case is rejected"
+
+write_list "$LIST" "$(entry NonUtf8Suite.aCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a non-UTF-8 byte in a scanned source must not break the cross-check"
+pass "a non-UTF-8 byte in a scanned source does not break the cross-check"
+
+# A case with a '/<idx>' suffix is exact-decoration: covers() compares the
+# entry verbatim and the plain-TEST report id carries no index, so the
+# decoration check must reject it -- the declaration lookup stays out of the
+# way (its reduced id would misleadingly 'match').
+write_list "$LIST" "$(entry WobblySuite.sometimesFails/0 PROF-1 "$(day_offset 30)")"
+validate_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" 2>&1 || true)
+echo "$validate_out" | grep -q "instantiation decoration" \
+  || fail "an indexed case must hit the decoration check, got: $validate_out"
+echo "$validate_out" | grep -q "matches no TEST declaration" \
+  && fail "the declaration cross-check must not flag an index-suffixed case"
+pass "an index-suffixed case hits the decoration check, not the declaration check"
+
+write_list "$LIST" "$(entry MyInst/WobblySuite.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate "${GTEST_ARGS[@]}" >/dev/null \
+  || fail "a decorated class-wide entry should resolve to the bare declared suite"
+pass "a decorated instantiation entry resolves to the bare declared suite"
+
+# Java ids always carry a package: with no declarations findable at all, they
+# must stay out of the C++ cross-check rather than fail it. A class-wide Java
+# entry keeps its whole classname -- splitting 'a.B.*' at the last dot would
+# reduce the suite to 'a' and read it as gtest-shaped.
+mkdir -p "$TEMP_DIR/empty-gtest-src"
+write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null \
+  || fail "a Java-shaped entry must not be checked against the C++ sources"
+pass "a Java-shaped entry skips the gtest declaration cross-check"
+
+write_list "$LIST" "$(entry a.B.* PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null \
+  || fail "a class-wide Java entry must not be read as a gtest suite 'a'"
+pass "a class-wide Java entry skips the gtest declaration cross-check"
+
+# A list placed outside a repo layout has no derived gtest tree beside it:
+# the cross-check skips, and the skip must be visible as a warning.
+write_list "$TEMP_DIR/derived-list.txt" "$(entry a.B.c PROF-1 "$(day_offset 30)")"
+derived_out=$(python3 "$SCRIPTS/quarantine.py" --list "$TEMP_DIR/derived-list.txt" validate 2>&1 || true)
+echo "$derived_out" | grep -q "::warning::gtest sources not found" \
+  || fail "a skipped derived-default cross-check must print a warning, got: $derived_out"
+pass "a missing derived gtest tree prints a skip warning"
+
+# The derived default is the path CI relies on, so it must be exercised
+# positively too: a repo-shaped tree with no --gtest-src runs the
+# cross-check and a declared id passes while an undeclared one fails.
+DERIVED_REPO="$TEMP_DIR/derived-repo"
+mkdir -p "$DERIVED_REPO/ddprof-lib/src/test/cpp" "$DERIVED_REPO/ddprof-test"
+printf 'TEST(DerivedSuite, aDerivedCase) { }\n' > "$DERIVED_REPO/ddprof-lib/src/test/cpp/derived.cpp"
+write_list "$DERIVED_REPO/ddprof-test/quarantine.txt" "$(entry DerivedSuite.aDerivedCase PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/quarantine.py" --list "$DERIVED_REPO/ddprof-test/quarantine.txt" validate >/dev/null \
+  || fail "a declared id found via the derived gtest tree should be accepted"
+pass "the derived gtest tree drives the cross-check without --gtest-src"
+write_list "$DERIVED_REPO/ddprof-test/quarantine.txt" "$(entry DerivedSuite.missingCase PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$DERIVED_REPO/ddprof-test/quarantine.txt" validate >/dev/null 2>&1; then
+  fail "an undeclared id must be rejected when the tree is found via the derived default"
+fi
+pass "the derived gtest tree cross-check rejects an undeclared id"
+
+# An explicit --gtest-src that does not exist is a silent no-op of the
+# whole cross-check unless it warns: a typo or a failed checkout would
+# otherwise turn the gate off invisibly.
+write_list "$LIST" "$(entry WobblySuite.sometimesFails PROF-1 "$(day_offset 30)")"
+explicit_out=$(python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/no-such-tree" 2>&1 || true)
+echo "$explicit_out" | grep -q "::warning::gtest sources not found" \
+  || fail "a missing explicit --gtest-src must print a warning, got: $explicit_out"
+pass "a missing explicit gtest tree prints a skip warning"
+
+# And a bare-suite id against an empty tree is exactly the mute that never
+# matches -- the failure mode this cross-check exists to catch.
+write_list "$LIST" "$(entry WobblySuite.sometimesFails PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate --gtest-src "$TEMP_DIR/empty-gtest-src" >/dev/null 2>&1; then
+  fail "a gtest entry against a tree declaring nothing should be rejected"
+fi
+pass "a gtest entry against a tree declaring nothing is rejected"
+
 echo "== flake_summary.py renders =="
 
 CASE="$TEMP_DIR/case-summary"
