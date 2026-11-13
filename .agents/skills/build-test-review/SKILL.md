@@ -33,19 +33,21 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
      such as the cairn `dev-process` pipeline or `sphinx:implement`. It runs the
      `local` acceptance criteria, the checks that `verify-profiler-change` names for
      the kind of change, and the `pre-pr-review` step 2 self-checks. It commits
-     locally only when they pass, and it does not push. Its report names the commit
-     and each check with its result.
+     locally only when they pass, or when the engineer accepted a `blocked` check
+     (step 5). It does not push. Its report names the commit and each check as
+     `passed`, `failed`, `blocked` or `inconclusive`.
    - **S3 Review** runs the reviewer as `pre-pr-review` step 3 says: the
      [reviewer table](../pre-pr-review/SKILL.md#reviewer-table) and its fallback, and
      the [fresh-context](../pre-pr-review/SKILL.md#fresh-context) brief. It names the
      range explicitly, reports the findings and fixes nothing.
    - **S2 Test** runs the `test-drive` acceptance criteria in a fresh clone of the
      candidate commit, never in the worktree. Each drive runs without MCP servers and
-     with only the tools that its criterion needs, for example `claude -p` with
-     `--strict-mcp-config` and `--allowedTools`. Never skip hooks or bypass
-     permissions. It reports each criterion as `passed`,
-     `failed`, `blocked` or `inconclusive`, with the commit, the harness and its
-     version, and the observed result. It changes nothing on the branch.
+     with only the tools that its criterion needs: for example `claude -p` with
+     `--strict-mcp-config`, `--tools` to limit the available tools, and
+     `--allowedTools` to permit them. Never skip hooks or bypass permissions. It
+     reports each criterion as `passed`, `failed`, `blocked` or `inconclusive`, with
+     the commit, the harness and its version, and the observed result. It changes
+     nothing on the branch.
 
 4. **Loop.**
    1. Run S1.
@@ -68,6 +70,8 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    - a finding or a test result needs a change to the accepted Design or acceptance
      criteria. Propose the change; after the engineer accepts it, amend the ticket as
      `work-planning` says, then continue;
+   - a required check in S1 or S2 is `blocked` or `inconclusive`. Do not close
+     until each required check has passed, or the engineer accepts the gap;
    - the round limit of the `pre-pr-review` Findings step is reached;
    - the next run is likely to exceed the `pre-pr-review`
      [Cost](../pre-pr-review/SKILL.md#review-cost) budget;
@@ -75,9 +79,10 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
      Propose to move it to its own ticket.
 
 6. **Close.** Tick the checklist and post the evidence table as `ticket-writing` says.
-   Then run `pre-pr-review` steps 4 to 7 in this session. The S3 reviews are its
-   step 3 reviews, its step 4 fixes go through S1 as in step 4 above, and the marker
-   names this session. For its step 7, use the sub-session reports and this
+   The commits are not pushed yet: name them by hash, and add the links after the
+   engineer pushes. Then run `pre-pr-review` step 0 and steps 4 to 7 in this
+   session. The S3 reviews are its step 3 reviews, its step 4 fixes go through S1 as
+   in step 4 above, and the marker names this session. For its step 7, use the sub-session reports and this
    session's own mistakes. Do not push and do not open a PR: tell the engineer that
    the branch is ready, and that they open the PR with the `pr-writing` skill.
 
