@@ -177,6 +177,7 @@ before working on a subsystem.
 | Per-sampler perf counters (`-PenableSamplerPerf`) | [doc/reference/SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md) |
 | Test flakiness analysis | [doc/reference/TestFlakinessAnalysis.md](doc/reference/TestFlakinessAnalysis.md) |
 | Demo leak app (`demo-java-leak`: self-driven HTTP server with a strong-ref leak cache and post-GC watermark flush; no profiler dependency) | [doc/architecture/DemoJavaLeakApp.md](doc/architecture/DemoJavaLeakApp.md) |
+| Bits review merge gate (CI status publisher/policy: trusted-bot allowlist, PASS bound to the exact head SHA and shared as a conjunction across main PRs — never a transferable approval, no fallback or override) | [doc/BitsReviewMergeGateDesign.md](doc/BitsReviewMergeGateDesign.md) |
 
 Key source locations: Java API `ddprof-lib/src/main/java/com/datadoghq/profiler/JavaProfiler.java`;
 C++ engine `ddprof-lib/src/main/cpp/` (implementation-specific code under `hotspot/`, `j9/`,
@@ -502,6 +503,10 @@ it must be disclosed per the rule at the top of this file. These rules always ap
 - **A ticket on every PR.** The PR title or body references a Jira `PROF-<n>` key or
   a GitHub issue `#<n>`. Enforced in CI: the `PR ticket reference` workflow
   (`.github/workflows/pr-ticket.yml`) fails the PR otherwise; bot PRs are exempt.
+
+The `bits-review-gate` workflow publishes the `bits-review/head` commit status
+for PR heads targeting `main`; see [doc/BitsReviewMergeGateDesign.md](doc/BitsReviewMergeGateDesign.md)
+for the design and its current activation status.
 
 Isolation, parallel sessions and the rest of the tracking contract are in
 [doc/WorkTracking.md](doc/WorkTracking.md) and enforced by review discipline. Existing
