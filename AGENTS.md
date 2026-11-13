@@ -115,6 +115,10 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
 - Flaky native gtests: the Tier 1 GitLab jobs gate through `ddprof-test/quarantine.txt`
   with cell `glibc-<config>-<arch>` (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md),
   Tier 1) — a flaky gtest gets an entry with a PROF ticket, same as the Java cells.
+- Flaky dd-trace-integration cells: the Tier 3 GitLab jobs gate through
+  `post-pr-comment.sh`, and a flaky cell+scenario is quarantined in
+  `.gitlab/dd-trace-integration/quarantine.txt` with a PROF ticket and an expiry
+  (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md), Tier 3).
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
