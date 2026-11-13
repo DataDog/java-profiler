@@ -19,6 +19,7 @@
 
 #include <link.h>
 
+#include "arch.h"
 #include "loadedImage_linux.h"
 
 namespace {
@@ -444,5 +445,120 @@ AdmissionVerdict classifyImage(const void* phdrs, int phnum, uintptr_t load_bias
 }
 
 } // namespace ElfMarkerLookup
+
+namespace {
+
+// Fixed stack context one dl_iterate_phdr() walk carries through the
+// callback. assigned[] marks targets whose verdict was already fixed by a
+// previous object; classification is repeated only for objects that still
+// contain at least one unassigned target.
+struct OwnerWalkContext {
+    const void* const* targets;
+    AdmissionVerdict* verdicts;
+    bool assigned[MALLOC_ADMISSION_MAX_TARGETS];
+    int count;
+    int unassigned;
+    int images_classified;
+};
+
+// One reported object: contains the targets it owns, classifies the object
+// once, and assigns that verdict to every target it contains (per-attempt
+// owner deduplication; a verdict is reused only within this callback
+// invocation, which is the only moment the object is known mapped).
+//
+// Callback contract: no allocation, no lock, no log (including TEST_LOG), no
+// loader call, no TLS touch, no call into an inspected image, marker or
+// IFUNC resolver, and no call through a PLT/GOT entry — only internal-
+// linkage code and inline compiler builtins. The image classification is the
+// internal-linkage classifier; the externally visible
+// ElfMarkerLookup::classifyImage wrapper is never called from here.
+int ownerWalkCallback(struct dl_phdr_info* info, size_t size, void* data) {
+    OwnerWalkContext* ctx = (OwnerWalkContext*)data;
+    (void)size;
+
+    // Containment pass: overflow-checked PT_LOAD membership for each
+    // unassigned target. Target pointers are stripped (PAC) before the
+    // comparison; dlpi_addr and p_vaddr are loader-normalized bases.
+    bool contains[MALLOC_ADMISSION_MAX_TARGETS];
+    bool any = false;
+    for (int t = 0; t < ctx->count; t++) {
+        contains[t] = false;
+        if (ctx->assigned[t]) continue;
+        uintptr_t target = (uintptr_t)stripPointer(ctx->targets[t]);
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const ElfProgramHeader* ph = &info->dlpi_phdr[i];
+            if (ph->p_type != PT_LOAD) continue;
+            uintptr_t start;
+            if (__builtin_add_overflow((uintptr_t)info->dlpi_addr, (uintptr_t)ph->p_vaddr, &start)) continue;
+            if (target < start) continue;
+            uintptr_t end;
+            if (__builtin_add_overflow(start, (uintptr_t)ph->p_memsz, &end)) continue;
+            if (target >= end) continue;
+            contains[t] = true;
+            any = true;
+            break;
+        }
+    }
+    if (!any) return 0;
+
+    // One classification per containing object, then every contained target
+    // takes that verdict.
+    AdmissionVerdict verdict = classifyImageInternal(info->dlpi_phdr, info->dlpi_phnum,
+                                                     (uintptr_t)info->dlpi_addr);
+    ctx->images_classified++;
+    for (int t = 0; t < ctx->count; t++) {
+        if (!contains[t] || ctx->assigned[t]) continue;
+        ctx->verdicts[t] = verdict;
+        ctx->assigned[t] = true;
+        ctx->unassigned--;
+    }
+
+    // The walk ends on the first recognized ddprof owner: the start is
+    // rejected regardless of the remaining targets, so they need no verdict.
+    if (verdict.outcome == DDPROF) return 1;
+    return ctx->unassigned == 0 ? 1 : 0;
+}
+
+// The Linux owner classification: one dl_iterate_phdr() call per attempt with
+// the whole context on the stack. After the walk, every target no object
+// claimed is INDETERMINATE (NO_OWNER): anonymous executable memory, or an
+// object unloaded before the walk reported it. Returns the number of images
+// classified.
+int classifyOwnersWalk(const void* const* targets, int count, AdmissionVerdict* verdicts) {
+    OwnerWalkContext ctx;
+    ctx.targets = targets;
+    ctx.verdicts = verdicts;
+    ctx.count = count;
+    ctx.unassigned = count;
+    ctx.images_classified = 0;
+    for (int i = 0; i < count; i++) {
+        ctx.assigned[i] = false;
+        verdicts[i].outcome = INDETERMINATE;
+        verdicts[i].reason = NO_OWNER;
+    }
+
+    dl_iterate_phdr(ownerWalkCallback, &ctx);
+
+    return ctx.images_classified;
+}
+
+} // namespace
+
+// The loader-walk lifetime basis: glibc 2.39 elf/dl-iteratephdr.c takes
+// dl_load_write_lock before the object loop and releases it only after the
+// loop that calls the callback; glibc 2.39 elf/dl-close.c unmaps and unlinks
+// a map only while holding that same lock; musl 1.2.5 src/ldso/dlclose.c
+// validates the handle and never unmaps. A reported object therefore stays
+// mapped for the whole callback — no loader handle is acquired and none is
+// released. Containment is checked against the loader's live program headers
+// of the same object, so a stale CodeCache for a reused range cannot
+// misattribute the owner (LibraryPatcher::LiveLibraryWalk relies on the same
+// mechanism). This walk must never be started while LibraryPatcher::_lock,
+// MallocHooker::_patch_lock or Symbols::_parse_lock is held: the callers are
+// the admission path inside MallocHooker::initialize(), which runs before
+// patching and does not hold any of them.
+int MallocAdmission::classifyOwners(const void* const* targets, int count, AdmissionVerdict* verdicts) {
+    return classifyOwnersWalk(targets, count, verdicts);
+}
 
 #endif // __linux__
