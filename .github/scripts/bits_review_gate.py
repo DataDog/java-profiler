@@ -361,6 +361,9 @@ class GitHubClient:
                     # break the one-attempt contract.
                     raise ApiError("HTTP %s for %s" % (status, url)) from error
                 failure = error
+                if status is not None and _is_rate_limited(status, headers):
+                    rate_limited_last = True
+                    window = _rate_limit_window_seconds(headers)
             else:
                 if 200 <= status < 300:
                     return body, headers.get("Link")

@@ -503,6 +503,70 @@ class BodyReadRetryTest(unittest.TestCase):
             make_client(transport).list_open_main_prs()
         self.assertEqual(len(transport.calls), 3)
 
+    def test_status_exactly_500_body_read_failure_still_retries(self):
+        # Pins the classification boundary: 500 is retryable, so a
+        # `>= 500` regression to `> 500` fails here.
+        class FailingRead(FakeResponse):
+            def __init__(self, status):
+                super().__init__(status, [])
+
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        transport = testlib.FakeTransport([FailingRead(500)] * 3)
+        with self.assertRaises(gate.ApiError):
+            make_client(transport).list_open_main_prs()
+        self.assertEqual(len(transport.calls), 3)
+
+    def test_status_exactly_300_body_read_failure_gets_one_attempt(self):
+        # Pins the other boundary: 300 is neither 2xx nor retryable, so a
+        # `< 300` regression to `<= 300` fails here.
+        class FailingRead(FakeResponse):
+            def __init__(self, status):
+                super().__init__(status, [])
+
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        transport = testlib.FakeTransport([FailingRead(300)])
+        with self.assertRaises(gate.ApiError):
+            make_client(transport).list_open_main_prs()
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_rate_limited_body_read_failure_raises_rate_limit_error(self):
+        # A rate-limited response whose body read fails must follow the
+        # rate-limit protocol — window honored, RateLimitError at
+        # exhaustion — not a generic transport ApiError.
+        class FailingRateLimitedRead(FakeResponse):
+            def __init__(self, status, headers):
+                super().__init__(status, [])
+                self.headers = headers
+
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        transport = testlib.FakeTransport(
+            [FailingRateLimitedRead(429, {"Retry-After": "0"})] * 3)
+        with self.assertRaises(gate.RateLimitError) as raised:
+            make_client(transport).list_open_main_prs()
+        self.assertIn("rate limit for", str(raised.exception))
+        self.assertEqual(len(transport.calls), 3)
+
+    def test_rate_limited_body_read_failure_honors_the_cap_and_fails_fast(self):
+        class FailingRateLimitedRead(FakeResponse):
+            def __init__(self, status, headers):
+                super().__init__(status, [])
+                self.headers = headers
+
+            def read(self):
+                raise OSError("connection reset during body read")
+
+        transport = testlib.FakeTransport(
+            [FailingRateLimitedRead(429, {"Retry-After": "600"})])
+        with self.assertRaises(gate.RateLimitError):
+            make_client(transport).list_open_main_prs()
+        self.assertEqual(len(transport.calls), 1)
+
 
 class ResponseClosingTest(unittest.TestCase):
     """Every response opened in _fetch is closed on every exit path."""
