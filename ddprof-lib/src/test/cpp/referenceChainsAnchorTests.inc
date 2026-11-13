@@ -158,8 +158,9 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
             tag, 700000 + i, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
         ReferenceChainsTestAccessor::primeClassShapeForTest(700000 + i, true);
     }
-    // First collector call: all 200 anchors are fresh (nothing has had a first look yet), the lane
-    // keeps 16 and the rest spend their first look (they fall back to the fair container tier).
+    // First collector call: all 200 anchors are fresh (nothing has had a first look yet); the
+    // fresh lane serves the oldest 8 and the fair container tier the leftover 8 (the reserved
+    // split); the remaining 184 stay queued for their FIFO turn.
     std::vector<jlong> first =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             16);
@@ -192,42 +193,49 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             16);
     ASSERT_EQ(16u, second.size());
-    EXPECT_EQ(wrapper_tag, second[0])
-        << "the freshly admitted container must lead the walk order, not "
-           "wait behind the 184-container fair backlog";
-    EXPECT_NE(std::find(second.begin(), second.end(), fresh_unknown_tag),
-              second.end())
+    // FIFO: wave 1's unserved entries kept their queue positions and lead, in admission order.
+    EXPECT_EQ((jlong)516, second[0]);
+    EXPECT_EQ((jlong)523, second[7]);
+    // The fresh lane is the container lane: the classified NON-container was dropped from the
+    // queue (it keeps the other-tier fallback), the wrapper and the unclassified anchor stay
+    // queued behind wave 1.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        wrapper_tag));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        fresh_unknown_tag))
         << "an unclassified fresh anchor must ride the fresh lane (the "
            "wrapper admits a pass before reconcile classifies its class)";
-    EXPECT_EQ(std::find(second.begin(), second.end(), fresh_string_tag),
-              second.end())
-        << "a fresh NON-container stays in the other tier - the fresh lane "
-           "is the container lane, or fresh Strings would flood it";
-    // The fair container lap still gets the leftover budget. Call 1's fresh picks (500-515) spent
-    // the whole budget, so the fair cursor never advanced - call 2's fair picks start at tag 500
-    // again (a benign one-call overlap: walks are idempotent, and it only happens when fresh and
-    // fair coincide at a lap boundary).
-    EXPECT_NE(std::find(second.begin(), second.end(), (jlong)500),
-              second.end())
-        << "the fair container lap must still advance with the leftover "
-           "budget";
-    EXPECT_EQ(14, (int)std::count_if(second.begin(), second.end(),
-                                     [](jlong t) {
-                                       return t >= 500 && t < 500 + kBacklog;
-                                     }))
-        << "16 budget - 2 fresh picks = 14 fair-container picks";
 
-    // And the dropped fresh entries from call 1 (516-699 spent their first look) are still covered
-    // by the fair tier: a third call with no new admits must keep advancing the fair container
-    // cursor from wherever call 2 left it, not re-drain anything.
-    std::vector<jlong> third =
+    // The wrapper's wait is bounded by the queued backlog (FIFO turn), not by the fair cursor's
+    // ~100-pass lap over the 1633-entry production backlog: it is served within roughly
+    // kBacklog / (fresh budget per collect) collects. The classified NON-container is dropped
+    // from the queue when its turn arrives (its look is spent on the other tier).
+    int wrapper_turn = -1;
+    for (int collect = 0; collect < 40 && wrapper_turn < 0; collect++) {
+        std::vector<jlong> sel =
+            ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+                16);
+        if (std::find(sel.begin(), sel.end(), wrapper_tag) != sel.end()) {
+            wrapper_turn = collect;
+        }
+    }
+    ASSERT_GE(wrapper_turn, 0)
+        << "the late container must get its first look within the queue's "
+           "FIFO horizon";
+    EXPECT_LE(wrapper_turn, 26);
+    for (int collect = 0;
+         collect < 40 &&
+         ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+             fresh_string_tag);
+         collect++) {
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             16);
-    ASSERT_EQ(16u, third.size());
-    EXPECT_EQ(std::find(third.begin(), third.end(), wrapper_tag),
-              third.end())
-        << "the wrapper already had its first look - it must not be "
-           "re-selected while the fair cursor has 184 uncovered peers";
+    }
+    EXPECT_FALSE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        fresh_string_tag))
+        << "a fresh NON-container must be dropped from the queue at its FIFO "
+           "turn - the fresh lane is the container lane, or fresh Strings "
+           "would flood it";
 
     tracker->stop();
 }
@@ -1675,6 +1683,117 @@ TEST_F(ReferenceChainsBfsTest, AnchorShapeReconcilePrefersPendingHolders) {
     for (int j = 0; j < budget - fresh_pending; j++) {
         EXPECT_EQ(-(jlong)(9000 + j), req[fresh_pending + j]);
     }
+
+    tracker->stop();
+}
+
+// Under a stable anchor population above the durable cap, every pass re-enlists a wave of evicted
+// anchors far larger than one collect's budget. The fresh queue is the fairness mechanism: it is a
+// cross-pass FIFO (unserved entries keep their position), so the oldest re-enlisted anchors are
+// served first and coverage rotates through the population. A force-drained window instead
+// re-selected the same wave tail every pass and starved every other holder (8968 of 9000 got zero
+// selections in 20 passes).
+TEST_F(ReferenceChainsBfsTest, ReenlistedAnchorsGetFifoRotationTurns) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const int kHolders = 9000;
+    for (int t = 1; t <= kHolders; t++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, t, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    }
+    for (int t = 1; t <= kHolders; t++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            t, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    }
+    // FIFO service: the first collect serves the queue's oldest 32 entries, and a second collect
+    // with no enumeration in between serves the NEXT 32 - unserved entries keep their position.
+    std::vector<jlong> queue =
+        ReferenceChainsTestAccessor::freshQueueTagsForTest();
+    ASSERT_GE(queue.size(), 64u);
+    // The reserved split serves 16 fresh (the queue's oldest) + 16 fair-tier per collect.
+    std::vector<jlong> s1 =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(32);
+    ASSERT_EQ(32u, s1.size());
+    for (size_t i = 0; i < 16; i++) {
+        EXPECT_EQ(queue[i], s1[i]);
+    }
+    std::vector<jlong> s2 =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(32);
+    ASSERT_EQ(32u, s2.size());
+    for (size_t i = 0; i < 16; i++) {
+        EXPECT_EQ(queue[16 + i], s2[i]);
+    }
+
+    // Churn coverage: repeated enumerate+collect passes must spread selections across the
+    // population instead of re-selecting one region (the pre-fix behavior selected the same 32
+    // holders in every pass - 8968 of 9000 got zero selections). The 32-per-collect budget bounds
+    // coverage at 32 holders per pass, so full population coverage needs ~282 passes under this
+    // churn; 60 passes serve ~1984 selections and must reach well past the single fixed region.
+    std::unordered_set<jlong> distinct(s1.begin(), s1.end());
+    distinct.insert(s2.begin(), s2.end());
+    for (int pass = 0; pass < 60; pass++) {
+        for (int t = 1; t <= kHolders; t++) {
+            if (!ReferenceChainsTestAccessor::anchorIndexContainsForTest(t)) {
+                ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+                    t, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+            }
+        }
+        std::vector<jlong> selected =
+            ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(32);
+        distinct.insert(selected.begin(), selected.end());
+    }
+    EXPECT_GT(distinct.size(), 400u);
+
+    tracker->stop();
+}
+
+// A collected local container must free its anchor slot at the next walk: its frontier record
+// stays selectable (EXPANDED - GC callbacks do not clear it), so compaction alone keeps the slot
+// occupied and rejects replacement live containers until a search restart clears the frontier.
+// The walk's GetObjectsWithTags() resolution is the liveness signal: absent tags are reclaimed
+// immediately, and the freed slots admit new containers without any search reset.
+TEST_F(ReferenceChainsBfsTest, WalkReclaimsCollectedLocalAnchors) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    ReferenceChainsTestAccessor::primeClassShapeForTest(-700, true);
+    const size_t cap = ReferenceChainsTestAccessor::kLocalAnchorIndexCap;
+    for (size_t i = 0; i < cap; i++) {
+        jlong tag = 100 + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            tracker->frontierTable(), tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(tag, -700);
+    }
+    ASSERT_EQ(cap,
+              ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    // The first collect selects the fresh queue's head (the earliest-noted containers); mark them
+    // collected and walk them - the mock GetObjectsWithTags skips dead tags.
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(32);
+    ASSERT_EQ(32u, selected.size());
+    for (jlong tag : selected) {
+        dead_tags.insert(tag);
+    }
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+    for (jlong tag : selected) {
+        EXPECT_FALSE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(tag));
+    }
+
+    // The reclaimed slots admit a replacement live container directly - no frontier->clear(), no
+    // search restart, no pending-buffer detour.
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(5000, -700);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(5000));
 
     tracker->stop();
 }
