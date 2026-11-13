@@ -2722,8 +2722,8 @@ retry:
     return;
   }
   if (_table_generation.load(std::memory_order_relaxed) != table_generation) {
-    // The table was released (and maybe republished) since this callback
-    // captured its stack: call_trace_id may name a trace in a call-trace
+    // The recording stopped since this callback captured its stack: its final
+    // flush is done, and call_trace_id may name a trace in a call-trace
     // storage that is gone. See tableGeneration().
     _table_lock.unlockShared();
     env->DeleteWeakGlobalRef(ref);
@@ -2798,8 +2798,8 @@ retry:
       if (can_grow) {
         _table_lock.lock();
         if (_table_generation.load(std::memory_order_relaxed) != table_generation) {
-          // Released (and maybe republished) since this callback captured its
-          // stack: never grow the next recording's table on its behalf.
+          // The recording stopped since this callback captured its stack:
+          // never grow a stopped or later recording's table on its behalf.
           _table_lock.unlock();
           env->DeleteWeakGlobalRef(ref);
           skipped.set(0);
