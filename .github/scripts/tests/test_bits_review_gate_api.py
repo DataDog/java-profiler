@@ -679,6 +679,28 @@ class DefaultTransportTest(unittest.TestCase):
                 self.assertIsNone(handler.redirect_request(
                     request, None, code, "Moved", {}, "https://evil.example.test/x"))
 
+    def test_transport_goes_through_the_no_redirect_opener(self):
+        # Pins the wiring the guarded property depends on: reverting
+        # _urllib_transport to plain urlopen leaves the two tests above
+        # green while reintroducing redirect-token forwarding, so this
+        # one must fail on that revert.
+        recorded = []
+
+        class RecordingOpener:
+            def open(self, request, timeout=None):
+                recorded.append((request, timeout))
+                return object()
+
+        original = gate._NO_REDIRECT_OPENER
+        gate._NO_REDIRECT_OPENER = RecordingOpener()
+        try:
+            request = urllib.request.Request("https://api.example.test/repos/x")
+            gate._urllib_transport(request)
+        finally:
+            gate._NO_REDIRECT_OPENER = original
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0][1], gate._TIMEOUT_SECONDS)
+
 
 class GraphqlFailClosedTest(unittest.TestCase):
     """GraphQL errors and missing structure never yield a partial list."""
