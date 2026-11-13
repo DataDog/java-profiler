@@ -273,8 +273,13 @@ attempt using small fixed-capacity collections. Reuse an owner's classification
 only while its lifetime protection remains held. Do not add a process-lifetime
 owner-identity cache: mapping reuse and later hook changes would invalidate it.
 
-Owner lookup must protect the loaded image's lifetime and verify that the
-returned image still contains the target. Use RAII for acquired loader handles.
+Owner lookup finds the owning image and checks target containment inside one
+`dl_iterate_phdr()` callback. The loader holds its load write-lock for the
+whole iteration, and `dlclose()` unmaps only under that same lock (musl never
+unmaps), so a reported object stays mapped while its callback runs. No loader
+handle is acquired; lifetime is held by the loader iteration. Containment is
+checked against the loader's live program headers of the same object, so a
+stale `CodeCache` for a reused range cannot misattribute the owner.
 Read in-memory exported-symbol metadata with checked ranges and arithmetic.
 Use the architecture's pointer normalization for address comparisons without
 changing the saved callable function pointer. Do not require an on-disk file or
@@ -329,10 +334,11 @@ Use gtests for target classification, ELF bounds, import enumeration, state
 transitions, and resource ownership. Fixtures must exercise the production lookup
 against actual ELF definitions, not inject the expected classification result.
 Cover GNU hash, SysV hash, both tables, missing tables, invalid bucket/chain ranges,
-unterminated or cyclic chains, and size arithmetic boundaries. Cover wrong-kind
-marker definitions, owner lookup/pinning failure, and handle release on every
-inspection exit. Assert that inspection does not increment marker-function or
-resolver call counters. Use real released ddprof binaries and JNI workloads for
+unterminated or cyclic chains, and size arithmetic boundaries. Cover wrong-kind marker definitions, unattributable targets (`NO_OWNER` for
+anonymous or unloaded ranges), and the callback contract: no loader, lock,
+log or allocation call inside the callback, and admission concurrent with a
+`dlopen`/`dlclose` loop finishes without deadlock. Assert that inspection does
+not increment marker-function or resolver call counters. Use real released ddprof binaries and JNI workloads for
 end-to-end routing and mixed-engine behavior.
 
 For merged native/Java code, run the repository wrapper for `gtestDebug` and
