@@ -93,6 +93,7 @@ static int findProfilerImage(struct dl_phdr_info* info, size_t size, void* data)
  * relocation for the five allocation symbols. Returns 0 on success, -1 when
  * the image or the dynamic metadata cannot be inspected. */
 static int locateOperationSlots(struct ProfilerImage* image) {
+  memset(operation_slot_count, 0, sizeof(operation_slot_count));
   const ElfW(Phdr)* dynamic = NULL;
   for (ElfW(Half) i = 0; i < image->phnum; i++) {
     if (image->phdr[i].p_type == PT_DYNAMIC) {
@@ -141,6 +142,14 @@ static int locateOperationSlots(struct ProfilerImage* image) {
     if (base == 0) continue;
     for (size_t off = 0; off + sizeof(ElfW(Rela)) <= size; off += sizeof(ElfW(Rela))) {
       const ElfW(Rela)* entry = (const ElfW(Rela)*)(base + off);
+      unsigned int reloc_type = ELF64_R_TYPE(entry->r_info);
+#if defined(__aarch64__)
+      if (reloc_type != R_AARCH64_JUMP_SLOT && reloc_type != R_AARCH64_GLOB_DAT) continue;
+#elif defined(__x86_64__)
+      if (reloc_type != R_X86_64_JUMP_SLOT && reloc_type != R_X86_64_GLOB_DAT) continue;
+#else
+      continue;
+#endif
       size_t sym_index = ELF64_R_SYM(entry->r_info);
       const char* name = strtab + symtab[sym_index].st_name;
       for (int op = 0; op < 5; op++) {
@@ -182,6 +191,13 @@ static int rewriteSlots(void* const* new_values, int save_existing) {
       *slot = (void*)new_values[op];
     }
   }
+  if (save_existing) {
+    saved_malloc = (void* (*)(size_t))operation_saved[0][0];
+    saved_calloc = (void* (*)(size_t, size_t))operation_saved[1][0];
+    saved_realloc = (void* (*)(void*, size_t))operation_saved[2][0];
+    saved_posix_memalign = (int (*)(void**, size_t, size_t))operation_saved[3][0];
+    saved_aligned_alloc = (void* (*)(size_t, size_t))operation_saved[4][0];
+  }
   return 0;
 }
 
@@ -201,13 +217,13 @@ Java_com_datadoghq_profiler_nativemem_DdprofStandin_restore(JNIEnv* env, jclass 
   (void)env;
   (void)clazz;
   if (!installed) return 0;
-  void* saved_values[5];
   for (int op = 0; op < 5; op++) {
-    /* All slots of one operation were rewritten to the same forwarder; the
-     * first saved value is the original for all of them. */
-    saved_values[op] = operation_slot_count[op] > 0 ? operation_saved[op][0] : NULL;
+    for (int i = 0; i < operation_slot_count[op]; i++) {
+      void** slot = operation_slots[op][i];
+      if (makeSlotWritable(slot) != 0) return -1;
+      *slot = operation_saved[op][i];
+    }
   }
-  if (rewriteSlots(saved_values, 0) != 0) return -1;
   installed = 0;
   return 0;
 }
