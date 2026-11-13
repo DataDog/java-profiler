@@ -47,7 +47,7 @@ static void block_run_churn_worker(ThreadFilter* filter, WallClockBlockTracker* 
         if (i & 1) {
           tracker->exitBlockedRun(slot, WallClockBlockTracker::tokenGeneration(token));
         } else {
-          tracker->exitBlockedRun(slot);
+          tracker->resetSlot(slot, OSThreadState::RUNNABLE);
         }
       }
 

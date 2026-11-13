@@ -15,13 +15,45 @@
  */
 #include "wallClockBlockTracker.h"
 #include "nativeMem.h"
-
-WallClockBlockTracker::WallClockBlockTracker() {
-    NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(_slots)));
-}
+#include "signalSafety.h"
+#include <memory>
+#include <new>
 
 WallClockBlockTracker::~WallClockBlockTracker() {
-    NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(_slots)));
+    SlotStorage* storage = _storage.exchange(nullptr, std::memory_order_acq_rel);
+    if (storage != nullptr) {
+        delete storage;
+        NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(SlotStorage)));
+    }
+}
+
+bool WallClockBlockTracker::ensureAllocated() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    if (_storage.load(std::memory_order_acquire) != nullptr) {
+        return true;
+    }
+    std::unique_ptr<SlotStorage> fresh;
+#ifdef UNIT_TEST
+    if (!_allocation_failure.load(std::memory_order_acquire))
+#endif
+    {
+        fresh.reset(new (std::nothrow) SlotStorage());
+    }
+    if (fresh == nullptr) {
+        return false;
+    }
+#ifdef UNIT_TEST
+    if (_allocation_hook != nullptr) {
+        _allocation_hook(_allocation_hook_arg);
+    }
+#endif
+    SlotStorage* expected = nullptr;
+    if (_storage.compare_exchange_strong(expected, fresh.get(), std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) {
+        fresh.release();
+        NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(SlotStorage)));
+    }
+    return true;
 }
 
 u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
@@ -44,13 +76,6 @@ u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter:
     return WallClockBlockTracker::encodeBlockRunToken(slot_id, generation);
 }
 
-void WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id) {
-    BlockState* s = slotForId(slot_id);
-    if (s != nullptr) {
-        s->resetSlot(OSThreadState::RUNNABLE);
-    }
-}
-
 bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation) {
     BlockState* s = slotForId(slot_id);
     if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
@@ -67,9 +92,19 @@ void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id, OSThreadStat
     }
 }
 
+void WallClockBlockTracker::resetAtContextBoundary(ThreadFilter::SlotID slot_id) {
+    BlockState* s = slotForId(slot_id);
+    if (s != nullptr && s->needsContextBoundaryReset()) {
+        s->resetSlot(OSThreadState::UNKNOWN);
+    }
+}
+
 void WallClockBlockTracker::resetAll() {
-    for (ThreadFilter::SlotID slot_id = 0; slot_id < ThreadFilter::kMaxThreads; ++slot_id) {
-        _slots[slot_id].resetSlot(OSThreadState::UNKNOWN);
+    SlotStorage* storage = _storage.load(std::memory_order_acquire);
+    if (storage != nullptr) {
+        for (auto& s : storage->slots) {
+            s.resetSlot(OSThreadState::UNKNOWN);
+        }
     }
 }
 

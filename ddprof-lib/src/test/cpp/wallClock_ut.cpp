@@ -76,8 +76,9 @@ private:
 class WallClockAccountingTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        ASSERT_TRUE(tracker.ensureAllocated());
         baseline = NativeMem::live(NM_WALLCLOCK);
-        ASSERT_GT(baseline, 0);  // The profiler's tracker remains resident.
+        ASSERT_GT(baseline, 0);
         previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
         first.enableEvents(true);
     }
@@ -92,6 +93,7 @@ protected:
     }
 
     Arguments args;
+    WallClockBlockTracker tracker;
     AccountingWallClock first;
     AccountingWallClock second;
     long long baseline = 0;

@@ -439,8 +439,9 @@ clear membership and eagerly reset all tracker slots. Context entry/exit drops
 unowned deferred tails: original context attributes are not retained with them.
 
 Timer backing capacity is accounted with allocation deltas and retracted on exit,
-not by replacing the shared `NM_WALLCLOCK` gauge. The tracker's eager slots array
-is accounted independently at construction/destruction even without prechecks.
+not by replacing the shared `NM_WALLCLOCK` gauge. The tracker allocates its backing
+on first registry registration and accounts it independently until destruction.
+Allocation failure leaves suppression inactive; a later registration retries.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h:23`), and joins it (`wallClock.cpp:330-339`).

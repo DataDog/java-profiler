@@ -147,6 +147,11 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         return -1;
     }
 
+    if (_block_tracker != nullptr) {
+        // Failure disables suppression, not identity registration.
+        _block_tracker->ensureAllocated();
+    }
+
     SlotID existing = lookupSlotIdByTid(tid);
     if (existing >= 0) {
         RecordingEpoch epoch = recordingEpoch();
@@ -455,7 +460,7 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
         // Deferred tails carry a stack but no original context attributes.
         // Drop them at the boundary rather than serializing a later context.
         if (_block_tracker != nullptr) {
-            _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+            _block_tracker->resetAtContextBoundary(slot_id);
         }
         slot.enterContextWindow();
         return true;
@@ -482,7 +487,7 @@ void ThreadFilter::remove(SlotID slot_id) {
     }
 
     if (chunk->slots[slot_idx].exitContextWindow() && _block_tracker != nullptr) {
-        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+        _block_tracker->resetAtContextBoundary(slot_id);
     }
 }
 

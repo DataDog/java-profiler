@@ -41,19 +41,11 @@ enum class BlockRunOwner : int {
 // tests can pair a tracker with any ThreadFilter instance.
 class WallClockBlockTracker {
 public:
-    // Reports/retracts the ~128 KiB eager _slots allocation to NativeMem
-    // (NM_WALLCLOCK) -- unlike ThreadFilter's own chunk storage, this array
-    // is not lazily allocated, so every process that constructs a
-    // WallClockBlockTracker (currently: Profiler, unconditionally) pays for
-    // it whether or not wall precheck is ever used, and that cost should be
-    // visible in memory accounting.
-    WallClockBlockTracker();
+    WallClockBlockTracker() = default;
     ~WallClockBlockTracker();
 
-    // One cache line per slot, mirroring ThreadFilter::Slot's own
-    // false-sharing avoidance. BlockState instances are process-lifetime
-    // (owned by WallClockBlockTracker's inline array), so a captured
-    // BlockState* is always dereferenceable.
+    // One cache line per slot. Published backing survives registry resets and
+    // recording restarts, so captured pointers remain valid until destruction.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) BlockState {
         static constexpr u64 kUnownedBlockedFallbackRatio = 10;
 
@@ -180,7 +172,26 @@ public:
             *generation_out = generation;
             return true;
         }
+        bool needsContextBoundaryReset() const {
+            // Generation and context epoch survive resetSlot; only its payload
+            // matters here, including deferred tails without an active owner.
+            return activeBlockOwner() != BlockRunOwner::NONE ||
+                   activeBlockState() != OSThreadState::UNKNOWN || sampledThisRun() ||
+                   last_sampled_state.load(std::memory_order_acquire) != OSThreadState::UNKNOWN ||
+                   unowned_blocked_pending_weight.load(std::memory_order_acquire) != 0 ||
+                   unowned_blocked_decision_count.load(std::memory_order_acquire) != 0 ||
+                   unowned_blocked_call_trace_id.load(std::memory_order_acquire) != 0 ||
+                   unowned_blocked_state.load(std::memory_order_acquire) != OSThreadState::UNKNOWN;
+        }
+#ifdef UNIT_TEST
+        // Counts entry into the real write path without changing BlockState's layout.
+        inline static std::atomic<u64> reset_count_for_test{0};
+#endif
         inline void resetSlot(OSThreadState state) {
+#ifdef UNIT_TEST
+            // Observation only; this counter publishes no payload.
+            reset_count_for_test.fetch_add(1, std::memory_order_relaxed);
+#endif
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
@@ -203,12 +214,15 @@ public:
     static_assert(std::atomic<u64>::is_always_lock_free,
                   "BlockState u64 fields must be lock-free for signal-handler safety");
 
-    // Returns nullptr if slot_id is out of range. Storage is a single eager
-    // allocation sized to ThreadFilter::kMaxThreads (unlike ThreadFilter's own
-    // lazily-chunked storage), so lookup is a direct array index.
+    // Not signal-safe. Registry registration prepares backing under its mutex;
+    // failure leaves lookups inert and the next registration retries.
+    bool ensureAllocated();
+
+    // Returns nullptr for an invalid slot or before backing allocation.
     inline BlockState* slotForId(ThreadFilter::SlotID slot_id) const {
         if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
-        return const_cast<BlockState*>(&_slots[slot_id]);
+        SlotStorage* storage = _storage.load(std::memory_order_acquire);
+        return storage != nullptr ? &storage->slots[slot_id] : nullptr;
     }
 
     // Block-run tokens returned by enterBlockedRun() pack the generation in the
@@ -225,21 +239,28 @@ public:
 
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                         OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
-    // Unconditional cleanup, used only by tests and the fuzzer (registry
-    // reset/unregister paths use resetSlot()). Normal block lifecycles must
-    // use the generation-checked overload so they cannot clear another owner.
-    void exitBlockedRun(ThreadFilter::SlotID slot_id);
     bool exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation);
     // Clears stale suppression state so a new/reused slot cannot inherit a
     // predecessor's active block or once-per-run sampled marker. Called by
     // ThreadFilter at its own registry-lifecycle decision points.
     void resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state);
     void resetAll();
+    void resetAtContextBoundary(ThreadFilter::SlotID slot_id);
     // Reads the complete timer-side suppression payload and rejects it if slot
     // identity or block lifecycle changes before final validation.
     bool shouldSuppressOwnedBlock(ThreadFilter* registry, const ThreadEntry& entry) const;
 
 #ifdef UNIT_TEST
+    using AllocationHook = void (*)(void*);
+    void setAllocationHookForTest(AllocationHook hook, void* arg) {
+        _allocation_hook = hook;
+        _allocation_hook_arg = arg;
+    }
+
+    void setAllocationFailureForTest(bool fail) {
+        _allocation_failure.store(fail, std::memory_order_release);
+    }
+
     // Pauses a JNI park/block hook after its caller resolved the registry slot,
     // before admission reads or changes that slot's block state.
     using BlockAdmissionHook = void (*)(void*);
@@ -256,9 +277,15 @@ public:
 #endif
 
 private:
-    std::array<BlockState, ThreadFilter::kMaxThreads> _slots;
+    struct SlotStorage {
+        std::array<BlockState, ThreadFilter::kMaxThreads> slots;
+    };
+    std::atomic<SlotStorage*> _storage{nullptr};
 
 #ifdef UNIT_TEST
+    std::atomic<bool> _allocation_failure{false};
+    AllocationHook _allocation_hook = nullptr;
+    void* _allocation_hook_arg = nullptr;
     BlockAdmissionHook _block_admission_hook = nullptr;
     void* _block_admission_hook_arg = nullptr;
     SuppressionSnapshotHook _suppression_snapshot_hook = nullptr;

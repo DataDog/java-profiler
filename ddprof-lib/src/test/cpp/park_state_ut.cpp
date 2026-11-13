@@ -340,7 +340,7 @@ TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   EXPECT_TRUE(slot->sampledThisRun() &&
               slot->activeBlockState() == slot->lastSampledState());
 
-  tracker.exitBlockedRun(slot_id);
+  tracker.resetSlot(slot_id, OSThreadState::RUNNABLE);
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
   EXPECT_FALSE(slot->sampledThisRun());
   EXPECT_EQ(OSThreadState::RUNNABLE, slot->lastSampledState());

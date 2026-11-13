@@ -19,7 +19,23 @@
 #include "threadFilter.h"
 #include "wallClockBlockTracker.h"
 #include "../../main/cpp/gtest_crash_handler.h"
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <type_traits>
+#include <utility>
+
+template <typename T, typename = void>
+struct HasUncheckedExit : std::false_type {};
+
+template <typename T>
+struct HasUncheckedExit<T, std::void_t<decltype(std::declval<T&>().exitBlockedRun(
+                               std::declval<ThreadFilter::SlotID>()))>> : std::true_type {};
+
+static_assert(!HasUncheckedExit<WallClockBlockTracker>::value,
+              "Block exits require a generation; unconditional cleanup uses resetSlot");
 
 // Test name for crash handler
 static constexpr char WALLCLOCK_BLOCK_TRACKER_TEST_NAME[] = "WallClockBlockTrackerTest";
@@ -56,6 +72,8 @@ TEST_F(WallClockBlockTrackerTest, GenerationCheckedExitDoesNotClearAnotherOwner)
     ASSERT_NE(nullptr, block_slot);
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
 
+    EXPECT_FALSE(tracker->exitBlockedRun(slot_id, 0));
+    EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
     EXPECT_FALSE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(first_token) + 1));
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
 
@@ -245,19 +263,166 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryWithoutOwnedRunResetsUnownedTail) 
     EXPECT_FALSE(block_slot->flushUnownedBlockedTail(trace, weight, state));
 }
 
-// The ~128 KiB _slots array is an eager, unconditional allocation (unlike
-// ThreadFilter's lazily-chunked storage), so every WallClockBlockTracker must
-// report it to NativeMem (NM_WALLCLOCK) at construction and retract it at
-// destruction.
-TEST(WallClockBlockTrackerNativeMemTest, ConstructionAndDestructionAccountForSlotsArray) {
-    long long before = NativeMem::live(NM_WALLCLOCK);
+TEST(WallClockBlockTrackerNativeMemTest, LazyBackingIsAccountedOnceAndSurvivesResets) {
+    const long long before = NativeMem::live(NM_WALLCLOCK);
     {
         WallClockBlockTracker local_tracker;
+        ThreadFilter registry;
+        registry.setBlockTracker(&local_tracker);
+        EXPECT_LT(sizeof(local_tracker), DEFAULT_CACHE_LINE_SIZE * 2u);
+        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(nullptr, local_tracker.slotForId(0));
+        registry.init("");
+        local_tracker.resetAll();
+        local_tracker.resetSlot(0, OSThreadState::UNKNOWN);
+        local_tracker.resetAtContextBoundary(0);
+        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(nullptr, local_tracker.slotForId(0));
+
+        registry.init("enabled");
+        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+        int slot_id = registry.registerThread(9001);
+        ASSERT_GE(slot_id, 0);
+        auto* block = local_tracker.slotForId(slot_id);
+        ASSERT_NE(nullptr, block);
+        EXPECT_EQ(0u, reinterpret_cast<uintptr_t>(block) % DEFAULT_CACHE_LINE_SIZE);
+        EXPECT_EQ(OSThreadState::UNKNOWN, block->activeBlockState());
+        EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
+        EXPECT_FALSE(block->sampledThisRun());
+        const long long allocated = before + sizeof(WallClockBlockTracker::BlockState) *
+                                                ThreadFilter::kMaxThreads;
+        EXPECT_EQ(allocated, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_TRUE(local_tracker.ensureAllocated());
+        EXPECT_EQ(slot_id, registry.registerThread(9001));
+        local_tracker.resetAll();
+        registry.deactivateRecording();
+        registry.init("enabled");
+        EXPECT_EQ(slot_id, registry.registerThread(9001));
+        registry.unregisterThread(slot_id);
+        EXPECT_EQ(block, local_tracker.slotForId(slot_id));
+        EXPECT_EQ(allocated, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(nullptr, local_tracker.slotForId(-1));
+        EXPECT_EQ(nullptr, local_tracker.slotForId(ThreadFilter::kMaxThreads));
+    }
+    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+}
+
+TEST(WallClockBlockTrackerNativeMemTest, ConcurrentBackingPublicationAccountsOnlyTheWinner) {
+    const long long before = NativeMem::live(NM_WALLCLOCK);
+    {
+        WallClockBlockTracker local_tracker;
+        struct Allocations {
+            std::mutex mutex;
+            std::condition_variable ready;
+            int arrived = 0;
+            static void meet(void* arg) {
+                auto* self = static_cast<Allocations*>(arg);
+                std::unique_lock<std::mutex> lock(self->mutex);
+                ++self->arrived;
+                self->ready.notify_all();
+                EXPECT_TRUE(self->ready.wait_for(lock, std::chrono::seconds(5),
+                                                [&] { return self->arrived == 2; }));
+            }
+        } allocations;
+        local_tracker.setAllocationHookForTest(Allocations::meet, &allocations);
+        WallClockBlockTracker::BlockState* first = nullptr;
+        WallClockBlockTracker::BlockState* second = nullptr;
+        std::thread a([&] {
+            EXPECT_TRUE(local_tracker.ensureAllocated());
+            first = local_tracker.slotForId(0);
+        });
+        std::thread b([&] {
+            EXPECT_TRUE(local_tracker.ensureAllocated());
+            second = local_tracker.slotForId(0);
+        });
+        a.join();
+        b.join();
+        local_tracker.setAllocationHookForTest(nullptr, nullptr);
+        EXPECT_EQ(2, allocations.arrived);
+        ASSERT_NE(nullptr, first);
+        EXPECT_EQ(first, second);
         EXPECT_EQ(before + static_cast<long long>(sizeof(WallClockBlockTracker::BlockState)) *
-                                ThreadFilter::kMaxThreads,
+                               ThreadFilter::kMaxThreads,
                   NativeMem::live(NM_WALLCLOCK));
     }
     EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+}
+
+TEST_F(WallClockBlockTrackerTest, AllocationFailureKeepsRegistrationAndSuppressionFailOpen) {
+    const long long before = NativeMem::live(NM_WALLCLOCK);
+    tracker->setAllocationFailureForTest(true);
+    int slot_id = filter->registerThread(9002);
+    ASSERT_GE(slot_id, 0);
+    EXPECT_EQ(nullptr, tracker->slotForId(slot_id));
+    EXPECT_EQ(0u, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
+    auto* identity = filter->slotForId(slot_id);
+    ThreadEntry entry{9002, identity, slot_id, identity->lifecycleGeneration(),
+                      identity->recordingEpoch()};
+    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    EXPECT_FALSE(tracker->exitBlockedRun(slot_id, 1));
+    EXPECT_TRUE(filter->add(9002, slot_id));
+    filter->remove(slot_id);
+    tracker->resetAll();
+    EXPECT_EQ(nullptr, tracker->slotForId(slot_id));
+    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+
+    tracker->setAllocationFailureForTest(false);
+    // Hot lookups must stay allocation-free even when allocation could succeed.
+    EXPECT_EQ(nullptr, tracker->slotForId(slot_id));
+    EXPECT_EQ(0u, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
+    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+    ASSERT_EQ(slot_id, filter->registerThread(9002));
+    ASSERT_NE(nullptr, tracker->slotForId(slot_id));
+    EXPECT_NE(0u, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
+    EXPECT_EQ(before + static_cast<long long>(sizeof(WallClockBlockTracker::BlockState)) *
+                           ThreadFilter::kMaxThreads,
+              NativeMem::live(NM_WALLCLOCK));
+    filter.reset();
+    tracker.reset();
+    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+}
+
+TEST_F(WallClockBlockTrackerTest, ContextEntryWithCleanTrackerPerformsNoResetWrites) {
+    const int slot_id = filter->registerThread(9003);
+    ASSERT_GE(slot_id, 0);
+    const u64 before = WallClockBlockTracker::BlockState::reset_count_for_test.load();
+    EXPECT_TRUE(filter->add(9003, slot_id));
+    EXPECT_TRUE(filter->add(9003, slot_id));
+    filter->remove(slot_id);
+    EXPECT_EQ(before, WallClockBlockTracker::BlockState::reset_count_for_test.load());
+}
+
+TEST_F(WallClockBlockTrackerTest, ContextBoundariesResetEveryDirtyPayloadField) {
+    const int slot_id = filter->registerThread(9004);
+    ASSERT_GE(slot_id, 0);
+    auto* block = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, block);
+    using Block = WallClockBlockTracker::BlockState;
+    using Dirty = void (*)(Block*);
+    const Dirty dirty_fields[] = {
+        [](Block* b) { b->active_block_owner.store(static_cast<int>(BlockRunOwner::JAVA)); },
+        [](Block* b) { b->active_block_state.store(OSThreadState::SLEEPING); },
+        [](Block* b) { b->sampled_this_run.store(true); },
+        [](Block* b) { b->last_sampled_state.store(OSThreadState::RUNNABLE); },
+        [](Block* b) { b->unowned_blocked_pending_weight.store(1); },
+        [](Block* b) { b->unowned_blocked_decision_count.store(1); },
+        [](Block* b) { b->unowned_blocked_call_trace_id.store(123); },
+        [](Block* b) { b->unowned_blocked_state.store(OSThreadState::SLEEPING); },
+    };
+    for (size_t field = 0; field < std::size(dirty_fields); ++field) {
+        SCOPED_TRACE(field);
+        dirty_fields[field](block);
+        u64 before = Block::reset_count_for_test.load();
+        ASSERT_TRUE(filter->add(9004, slot_id));
+        EXPECT_EQ(before + 1, Block::reset_count_for_test.load());
+        EXPECT_FALSE(block->needsContextBoundaryReset());
+        dirty_fields[field](block);
+        before = Block::reset_count_for_test.load();
+        filter->remove(slot_id);
+        EXPECT_EQ(before + 1, Block::reset_count_for_test.load());
+        EXPECT_FALSE(block->needsContextBoundaryReset());
+    }
 }
 
 TEST_F(WallClockBlockTrackerTest, ContextExitResetsUnownedTail) {

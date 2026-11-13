@@ -17,7 +17,7 @@
  *   op < 0xB0: exitBlockedRun(slot_id, generation) - generation-checked; an
  *              extra fuzzed byte decides whether the real generation is used
  *              or corrupted, to exercise the stale-token rejection path
- *   op < 0xD0: exitBlockedRun(slot_id) - unconditional
+ *   op < 0xD0: resetSlot(slot_id, RUNNABLE) - unconditional
  *   op < 0xF0: unregisterThreadByTid(tid)
  *   op >= 0xF0: init("", true) - starts a new recording epoch while retaining
  *               native owners; their block state is refreshed on registration
@@ -176,7 +176,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     } else if (op < 0xD0) {
       auto it = g_owner.find(tid);
       if (it != g_owner.end()) {
-        g_tracker->exitBlockedRun(it->second);
+        g_tracker->resetSlot(it->second, OSThreadState::RUNNABLE);
       }
     } else if (op < 0xF0) {
       g_filter->unregisterThreadByTid(tid);
