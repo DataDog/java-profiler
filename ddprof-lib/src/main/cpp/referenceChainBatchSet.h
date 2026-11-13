@@ -8,16 +8,17 @@
 
 #include "arch.h"
 #include <jni.h>
+#include <cassert>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
-#include <stdexcept>
 
 // Fixed-capacity open-addressing set for one traversal batch's tags and
 // per-tag flags: never thread_local, owned by ReferenceChainTracker and
 // reset per batch. Valid batch bookkeeping never heap-allocates.
 
-// Out-of-contract marker calls on absent tags throw std::logic_error, and
-// throwing may allocate: allocation freedom covers valid bookkeeping only.
+// Out-of-contract marker calls on absent tags are a program bug: assert in
+// debug builds, abort in release ones - never a silent out-of-bounds write.
 
 // Actors: the BFS thread writes before FollowReferences(); the callback on
 // the JVM's VM thread reads and records completion during that synchronous
@@ -56,10 +57,16 @@ class ReferenceChainBatchSet {
   }
 
   // Sets the descent-gate flag of a present tag. An absent tag breaks the
-  // caller contract (addResolved first) and throws in every build.
+  // caller contract (addResolved first) and is a program bug.
   void markMember(jlong tag) {
     const u32 i = findSlot(tag);
-    if (i == SLOTS) throw std::logic_error("markMember: unresolved tag");
+    // Unreachable: callers only pass tags addResolved'd in this batch. NDEBUG
+    // compiles the assert out; abort keeps the write below from corrupting
+    // _flags[SLOTS].
+    assert(i != SLOTS);
+    if (i == SLOTS) {
+      abort();
+    }
     _flags[i] |= MEMBER;
   }
 
@@ -68,7 +75,11 @@ class ReferenceChainBatchSet {
   // anyCompleted() true.
   void markCompleted(jlong tag) {
     const u32 i = findSlot(tag);
-    if (i == SLOTS) throw std::logic_error("markCompleted: unresolved tag");
+    // Same unreachable contract as markMember.
+    assert(i != SLOTS);
+    if (i == SLOTS) {
+      abort();
+    }
     if ((_flags[i] & COMPLETED) == 0) _completed_count++;
     _flags[i] |= COMPLETED;
   }

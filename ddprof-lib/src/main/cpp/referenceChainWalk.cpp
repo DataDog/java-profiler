@@ -521,7 +521,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         // The referrer changed to a different batch entry: the previous one (if any) has had
         // every child edge FollowReferences will ever report for it delivered already. The
         // cursor was a member when assigned, and the set is reset only between batches (never
-        // during this synchronous walk), so markCompleted cannot throw here.
+        // during this synchronous walk), so markCompleted never sees an absent tag here.
         if (ctx->_last_visited_batch_tag != 0) {
           ctx->batch->markCompleted(ctx->_last_visited_batch_tag);
         }
