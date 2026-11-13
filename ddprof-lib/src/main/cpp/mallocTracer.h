@@ -121,4 +121,25 @@ class MallocTracer : public Engine {
     static void maybeRecord(void* ret, size_t size);
 };
 
+// UNIT_TEST-only seam for the admission gtests (declarations; definitions in
+// mallocTracer.cpp). Only gtest configurations define UNIT_TEST.
+#ifdef UNIT_TEST
+class MallocHookerTestAccessor {
+  public:
+    static void* origMalloc();
+    static void* origCalloc();
+    static void* origRealloc();
+    static void* origPosixMemalign();
+    static void* origAlignedAlloc();
+    static bool initialized();
+    static int patchedLibs();
+    static void seedOrigMalloc(void* fn);
+    static void seedOrigCalloc(void* fn);
+    static void seedOrigRealloc(void* fn);
+    static void seedOrigPosixMemalign(void* fn);
+    static void seedOrigAlignedAlloc(void* fn);
+    static void setInitialized(bool value);
+};
+#endif
+
 #endif // _MALLOCTRACER_H
