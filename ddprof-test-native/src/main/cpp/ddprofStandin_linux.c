@@ -229,6 +229,13 @@ Java_com_datadoghq_profiler_nativemem_DdprofStandin_restore(JNIEnv* env, jclass 
 }
 
 JNIEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_nativemem_DdprofStandin_savedMalloc(JNIEnv* env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  return operation_slot_count[0] > 0 ? (jlong)(uintptr_t)operation_saved[0][0] : 0;
+}
+
+JNIEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_nativemem_DdprofStandin_startMarkerCalls(JNIEnv* env, jclass clazz) {
   (void)env;
   (void)clazz;

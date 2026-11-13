@@ -33,6 +33,11 @@ public final class DdprofStandin {
         NativeAllocHelper.nativeMalloc(size, count);
     }
 
+    // Returns the malloc value captured from the profiler's own GOT slot
+    // before the stand-in rewrites it. This test-only snapshot lets lifecycle
+    // tests verify restoration after a rejected cached attempt.
+    public static native long savedMalloc();
+
     // Times the two marker functions were called. The admission check must
     // never call a marker, so tests assert these stay 0 across it.
     public static native long startMarkerCalls();
