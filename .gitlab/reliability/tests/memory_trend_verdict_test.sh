@@ -114,11 +114,16 @@ write("short.log", emit(growth(4)))
 write("boundary-5.log", emit(growth(5)) + ["release_probe=not-applicable allocator=jemalloc"])
 write("boundary-4.log", emit(growth(4)))
 
-# NA share: exactly half the samples lack a markers record, and more than
-# half carry NA in either gated field.
-write("na-at.log", emit(g10, missing=range(0, 10, 2)) + ["release_probe=not-applicable allocator=jemalloc"])
+# NA share: exactly half the samples lack a markers record in the middle
+# of the window (a full span for the throttle delta), which sits at the
+# NA_SHARE_MAX bound; more than half NA in either gated field goes past it.
+write("na-at.log", emit(g10, missing=range(2, 7)) + ["release_probe=not-applicable allocator=jemalloc"])
 write("na-above-psi.log", emit(g10, na_psi=6))
 write("na-above-throttle.log", emit(g10, na_thr=6))
+# The throttling delta must span the window: a missing head or tail sample
+# shrinks the measured window, so the verdict stays inconclusive.
+write("na-head.log", emit(g10, missing=(0,)))
+write("na-tail.log", emit(g10, missing=(9,)))
 
 # psi_memory median, exactly at the bound and one step past it; psi_cpu is
 # recorded only, so a high psi_cpu never turns a quiet row inconclusive.
@@ -301,6 +306,10 @@ expect_reason_is "NA share at the bound is not an NA verdict" "Memory usage is t
 expect_verdict "NA share above the bound is inconclusive (NA psi_memory)" inconclusive na-above-psi.log gmalloc
 expect_reason "NA share above the bound names the count" "missing for 6 of 10"
 expect_verdict "NA share above the bound is inconclusive (NA throttle)" inconclusive na-above-throttle.log gmalloc
+expect_verdict "a missing head sample keeps the verdict inconclusive" inconclusive na-head.log gmalloc
+expect_reason "a missing head sample names the window" "Throttling readings do not span the full sample window"
+expect_verdict "a missing tail sample keeps the verdict inconclusive" inconclusive na-tail.log gmalloc
+expect_reason "a missing tail sample names the window" "Throttling readings do not span the full sample window"
 
 expect_verdict "psi_memory median at the bound still gets a verdict" fail psi-at.log jemalloc
 expect_verdict "psi_memory median above the bound is inconclusive" inconclusive psi-above.log gmalloc

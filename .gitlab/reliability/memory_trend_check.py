@@ -112,20 +112,39 @@ def compute_verdict(memory_log, sample_markers, probe, allocator):
     if len(memory_log) < 5:
         return "inconclusive", f"Only {len(memory_log)} memory samples were recorded, at least 5 are needed"
 
-    na_count = 0
+    psi_missing = 0
+    throttle_missing = 0
     psi_memory_values = []
     throttle_values = []
-    for markers in sample_markers:
+    # The throttling delta is a window difference, so the usable throttle
+    # readings must span every sample: a missing head or tail would
+    # otherwise shrink the measured window and underreport throttling.
+    first_throttle_sample = None
+    last_throttle_sample = None
+    for index, markers in enumerate(sample_markers):
         psi_memory = marker_value(markers, "psi_memory_some_avg10")
         throttled = marker_value(markers, "cpu_nr_throttled")
-        if psi_memory is None or throttled is None:
-            na_count += 1
+        if psi_memory is None:
+            psi_missing += 1
         else:
             psi_memory_values.append(psi_memory)
+        if throttled is None:
+            throttle_missing += 1
+        else:
             throttle_values.append(throttled)
+            if first_throttle_sample is None:
+                first_throttle_sample = index
+            last_throttle_sample = index
 
-    if na_count / len(memory_log) > NA_SHARE_MAX:
-        return "inconclusive", f"Load markers were missing for {na_count} of {len(memory_log)} memory samples"
+    # psi_memory and cpu_nr_throttled come from different sources and can
+    # fail independently, so each series is gated on its own missing share;
+    # at most half missing still leaves a usable majority for median and delta.
+    if psi_missing / len(memory_log) > NA_SHARE_MAX:
+        return "inconclusive", f"psi_memory markers were missing for {psi_missing} of {len(memory_log)} memory samples"
+    if throttle_missing / len(memory_log) > NA_SHARE_MAX:
+        return "inconclusive", f"Throttling markers were missing for {throttle_missing} of {len(memory_log)} memory samples"
+    if first_throttle_sample != 0 or last_throttle_sample != len(sample_markers) - 1:
+        return "inconclusive", "Throttling readings do not span the full sample window"
 
     psi_memory_median = float(np.median(psi_memory_values))
     if psi_memory_median > PSI_MEMORY_SOME_AVG10_MAX:
