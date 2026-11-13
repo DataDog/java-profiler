@@ -184,16 +184,6 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 }
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
-//
-// Threads that existed before the recording started (and so never received a
-// ThreadStart callback) bind their slot lazily on first use. Call sites below
-// use ThreadFilter::ensureCurrentThreadSlot(), which also self-heals a cached
-// slot that went stale (e.g. an unfiltered recording restart changed the
-// recording epoch) by re-deriving it through registerThread() - the only place the
-// filterThreadAdd0 (JavaCritical), parkEnter0, blockEnter0 and beginTaskBlock0
-// hooks can block on _registry_lock. A thread that cannot get a slot because
-// the registry is full retries on every call, but registerThread() rejects it
-// without taking the lock.
 
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
 // primitives or arrays of primitive types.
@@ -212,21 +202,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->registryActive())) {
-    return;
-  }
-  
-  int slot_id = thread_filter->ensureCurrentThreadSlot(current);
-  if (unlikely(slot_id < 0)) {
-    return;  // Failed to register thread
-  }
-  if (unlikely(!thread_filter->add(tid, slot_id))) {
-    // The cached slot_id no longer carries this thread's tid.
-    // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
-    // call re-runs ensureCurrentThreadSlot()'s registerThread() path
-    // instead of leaving this thread permanently outside the context window.
-    current->setFilterSlotId(-1);
-  }
+  thread_filter->onContextWindowEnter(*current);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -241,18 +217,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->registryActive())) {
-    return;
-  }
-
-  int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1 ||
-               thread_filter->activeSlotForId(slot_id, tid) == nullptr)) {
-    // No slot yet, or a cached slot left over from an earlier recording -
-    // either way this thread is not in the context window, nothing to remove
-    return;
-  }
-  thread_filter->remove(slot_id);
+  thread_filter->onContextWindowExit(*current);
 }
 
 
@@ -338,7 +303,7 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_setForceWallStartFailureForTest0(
     JNIEnv *env, jclass unused, jboolean force) {
 #ifdef DEBUG
   BaseWallClock::setForceStartFailureForTest(force);
@@ -346,7 +311,7 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForT
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmedForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_isForceWallStartFailureArmedForTest0(
     JNIEnv *env, jclass unused) {
 #ifdef DEBUG
   return BaseWallClock::isForceStartFailureForTest() ? JNI_TRUE : JNI_FALSE;
@@ -360,19 +325,24 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmed
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_isThreadRegistryActiveForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_isThreadRegistryActiveForTest0(
     JNIEnv *env, jclass unused) {
-  return Profiler::instance()->threadFilter()->registryActive();
+#ifdef DEBUG
+  return Profiler::instance()->threadFilter()->registryActive() ? JNI_TRUE : JNI_FALSE;
+#else
+  // Release: seam disabled. Callers gate on isForceWallStartFailureArmedForTest0().
+  return JNI_FALSE;
+#endif // DEBUG
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfilerTestSupport_recordUnownedWallTailAcrossDumpForTest0(
+Java_com_datadoghq_profiler_JavaProfiler_recordUnownedWallTailAcrossDumpForTest0(
     JNIEnv *env, jclass unused, jthread thread, jstring snapshot,
-    jboolean before_publication, jboolean reset_before_tail) {
+    jboolean dump_after_primary, jboolean reset_before_tail) {
 #ifdef DEBUG
   JniString path(env, snapshot);
   return BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
-      thread, path.c_str(), path.length(), before_publication == JNI_TRUE,
+      thread, path.c_str(), path.length(), dump_after_primary == JNI_TRUE,
       reset_before_tail == JNI_TRUE)
       ? JNI_TRUE : JNI_FALSE;
 #else
@@ -504,7 +474,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
   ThreadFilter *tf = profiler->threadFilter();
   Context context = ContextApi::snapshot();
   ThreadFilter::SlotID slot_id = tf->registryActive() && context.spanId == 0
-      ? tf->ensureCurrentThreadSlot(current) : -1;
+      ? tf->ensureOwnerSlot(*current) : -1;
   // Use the owner's epoch rather than a second global epoch read: stop/start
   // may race admission, but only this thread refreshes its retained identity.
   current->refreshBlockState(slot_id >= 0
@@ -585,6 +555,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   }
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
+    Counters::increment(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
   Profiler *profiler = Profiler::instance();
@@ -593,7 +564,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!task_block_armable && !tf->registryActive()) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
+  ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (slot_id < 0) return 0;
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   WallClockBlockTracker *tracker = profiler->blockTracker();
@@ -665,16 +636,30 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   if (!JVMSupport::isPlatformThread(env, thread)) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
+  ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (slot_id < 0) return 0;
 
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
+    // Recovery of an abandoned interval is intentionally NOT run here: the
+    // beginTaskBlock() javadoc keeps the open interval on every 0 return, so
+    // dropping the token before this check would break endTaskBlock() for a
+    // live nested interval. The cost is a deferral window: a thread that
+    // loses its endTaskBlock (exception without finally) and then issues
+    // every later beginTaskBlock under an active span keeps its TASK_BLOCK
+    // run armed - and its wall-clock signals suppressed - until it calls
+    // beginTaskBlock outside a trace context. Native code cannot tell that
+    // abandoned case from a nested live interval (both show a pending
+    // token), so the caller-visible contract wins.
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
+
   WallClockBlockTracker *tracker = profiler->blockTracker();
+  // Supersede only after all zero-return admission checks, preserving a live
+  // interval when a nested begin is rejected under an active trace context.
+  recoverAbandonedTaskBlock(current, tracker, slot_id);
   u64 token = enterOwnedBlockRun(
       current, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
   if (token == 0) return 0;

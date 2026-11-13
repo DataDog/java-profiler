@@ -68,6 +68,8 @@ namespace {
 std::vector<jvmtiFrameInfo> expected;
 jvmtiError stack_error = JVMTI_ERROR_NONE;
 int stack_calls = 0;
+jint last_start = -1;
+jint last_limit = -1;
 JNINativeInterface_ jni_table{};
 JNIEnv jni_env{&jni_table};
 
@@ -75,8 +77,10 @@ jint JNICALL getEnv(JavaVM*, void** out, jint) { *out = &jni_env; return JNI_OK;
 jvmtiError JNICALL getStackTrace(jvmtiEnv*, jthread, jint start, jint limit,
                                  jvmtiFrameInfo* out, jint* count) {
     stack_calls++;
+    last_start = start;
+    last_limit = limit;
     if (stack_error != JVMTI_ERROR_NONE) return stack_error;
-    *count = std::min(limit, static_cast<jint>(expected.size()) - start);
+    *count = std::min(limit, std::max(0, static_cast<jint>(expected.size()) - start));
     for (int i = 0; i < *count; i++) out[i] = expected[start + i];
     return JVMTI_ERROR_NONE;
 }
@@ -100,7 +104,7 @@ protected:
     pthread_key_t old_key = INVALID_KEY, key = INVALID_KEY;
     jfieldID old_tid = nullptr;
     uint64_t old_thread_size = 0, old_anchor_size = 0;
-    offset old_anchor_offset = -1, old_sp_offset = -1;
+    offset old_anchor_offset = -1, old_sp_offset = -1, old_cont_offset = -1;
     uintptr_t anchor_sp = 0;
     std::vector<CallTraceBuffer> buffer;
 
@@ -119,6 +123,7 @@ protected:
         JVMThreadTestAccessor::install(key, reinterpret_cast<jfieldID>(1));
         old_thread_size = TYPE_SIZE_NAME(VMThread); old_anchor_size = TYPE_SIZE_NAME(VMJavaFrameAnchor);
         old_anchor_offset = _thread_anchor_offset; old_sp_offset = _anchor_sp_offset;
+        old_cont_offset = _cont_entry_offset;
         TYPE_SIZE_NAME(VMThread) = sizeof(anchor_sp); TYPE_SIZE_NAME(VMJavaFrameAnchor) = sizeof(anchor_sp);
         _thread_anchor_offset = 0; _anchor_sp_offset = 0;
         buffer.resize(CallTraceBuffer::capacity(8, ALLOCSTACK_VM));
@@ -129,17 +134,58 @@ protected:
         Counters::set(ALLOC_STACK_VERIFIED, 0); Counters::set(ALLOC_STACK_MISMATCH, 0);
         Counters::set(ALLOC_STACK_VM_FALLBACK, 0); Counters::set(ALLOC_STACK_VM, 0);
         stack_error = JVMTI_ERROR_NONE; stack_calls = 0;
+        last_start = -1; last_limit = -1;
         expected = {{reinterpret_cast<jmethodID>(1), 7}};
     }
 
     void TearDown() override {
         ProfilerTestAccessor::state(old_profiler);
         _thread_anchor_offset = old_anchor_offset; _anchor_sp_offset = old_sp_offset;
+        _cont_entry_offset = old_cont_offset;
         TYPE_SIZE_NAME(VMThread) = old_thread_size; TYPE_SIZE_NAME(VMJavaFrameAnchor) = old_anchor_size;
         JVMThreadTestAccessor::install(old_key, old_tid);
         if (key != INVALID_KEY) pthread_key_delete(key);
         ProfiledThread::release();
         VMTestAccessor::state(old_vm);
+    }
+
+    u64 recordAllocationTrace() {
+        auto state = ProfilerTestAccessor::state();
+        state.mode = ALLOCSTACK_JVMTI;
+        ProfilerTestAccessor::state(state);
+        return Profiler::instance()->recordJVMTISample(
+            7, 1, reinterpret_cast<jthread>(1), BCI_ALLOC, nullptr, true);
+    }
+
+    u64 recordTaskTrace(int start_depth) {
+        TaskBlockEvent event{};
+        EXPECT_EQ(Profiler::TaskBlockRecordResult::RECORD_FAILED,
+                  Profiler::instance()->recordTaskBlock(
+                      1, reinterpret_cast<jthread>(1), start_depth, &event));
+        return event._callTraceId;
+    }
+
+    void assertTrace(u64 id, int count, bool truncated, int start = 0,
+                     bool continuation = false) {
+        bool found = false;
+        ProfilerTestAccessor::processTraces([&](const CallTraceSet& traces) {
+            for (const CallTrace* trace : traces) {
+                if (trace->trace_id != id) continue;
+                found = true;
+                EXPECT_EQ(count, trace->num_frames);
+                EXPECT_EQ(truncated, trace->truncated);
+                if (trace->num_frames != count || count == 0) continue;
+                EXPECT_EQ(expected[start].method, trace->frames[0].method_id);
+                if (continuation) {
+                    EXPECT_EQ(BCI_NATIVE_FRAME, trace->frames[count - 1].bci);
+                    EXPECT_STREQ("JVM Continuation",
+                                 reinterpret_cast<const char*>(trace->frames[count - 1].method_id));
+                } else {
+                    EXPECT_EQ(expected[start + count - 1].method, trace->frames[count - 1].method_id);
+                }
+            }
+        });
+        EXPECT_TRUE(found);
     }
 
     void assertCounts(long long checked, long long mismatches) {
@@ -218,5 +264,63 @@ TEST_F(AllocStackDiagnosticsTest, JvmtiTruncationRequiresAFrameBeyondTheLimit) {
             }
         });
         EXPECT_TRUE(found);
+    }
+}
+
+TEST_F(AllocStackDiagnosticsTest, TaskBlockTruncationRequiresAFrameBeyondTheLimit) {
+    for (int count : {8, 9}) {
+        expected.resize(count + 2);
+        for (int i = 0; i < count + 2; i++) {
+            expected[i] = {reinterpret_cast<jmethodID>(0x1000 + i), 7 + i};
+        }
+        u64 id = recordTaskTrace(2);
+        EXPECT_EQ(2, last_start);
+        EXPECT_EQ(9, last_limit);
+        assertTrace(id, 8, count > 8, 2);
+        EXPECT_FALSE(ProfiledThread::current()->isProtected());
+    }
+}
+
+TEST_F(AllocStackDiagnosticsTest, AllocationJvmtiErrorsAndZeroFramesRetainDroppedTraceSemantics) {
+    for (jvmtiError error : {JVMTI_ERROR_INTERNAL, JVMTI_ERROR_NONE}) {
+        stack_error = error;
+        expected.clear();
+        u64 id = recordAllocationTrace();
+        EXPECT_EQ(0, last_start);
+        EXPECT_EQ(9, last_limit);
+        EXPECT_EQ(CallTraceStorage::DROPPED_TRACE_ID, id);
+        EXPECT_FALSE(ProfiledThread::current()->isProtected());
+    }
+}
+
+TEST_F(AllocStackDiagnosticsTest, TaskBlockJvmtiErrorsAndZeroFramesFailBeforeRecording) {
+    for (jvmtiError error : {JVMTI_ERROR_INTERNAL, JVMTI_ERROR_NONE}) {
+        stack_error = error;
+        expected.clear();
+        TaskBlockEvent event{};
+        EXPECT_EQ(Profiler::TaskBlockRecordResult::STACK_CAPTURE_FAILED,
+                  Profiler::instance()->recordTaskBlock(
+                      1, reinterpret_cast<jthread>(1), 2, &event));
+        EXPECT_EQ(0u, event._callTraceId);
+        EXPECT_EQ(2, last_start);
+        EXPECT_FALSE(ProfiledThread::current()->isProtected());
+    }
+}
+
+TEST_F(AllocStackDiagnosticsTest, BothJvmtiCallersRespectContinuationAndDepthBoundaries) {
+    auto vm_state = VMTestAccessor::state();
+    vm_state.java_version = 27; vm_state.hotspot_version = 27;
+    VMTestAccessor::state(vm_state);
+    _cont_entry_offset = 0;
+    anchor_sp = 1;
+    for (int count : {7, 8, 9}) {
+        expected.resize(count);
+        for (int i = 0; i < count; i++) {
+            expected[i] = {reinterpret_cast<jmethodID>(0x2000 + i), 11 + i};
+        }
+        u64 allocation = recordAllocationTrace();
+        assertTrace(allocation, 8, count > 8, 0, count == 7);
+        u64 task = recordTaskTrace(0);
+        assertTrace(task, 8, count > 8, 0, count == 7);
     }
 }

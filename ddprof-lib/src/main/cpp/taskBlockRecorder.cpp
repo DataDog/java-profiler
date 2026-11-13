@@ -15,18 +15,61 @@
 static const u64 kMinTaskBlockNanos = 1000000;
 static std::atomic<u64> g_min_task_block_ticks{0};
 
+#ifdef UNIT_TEST
+static std::atomic<TaskBlockFrequencySource> g_test_frequency_source{nullptr};
+
+void resetTaskBlockDurationThresholdForTest() {
+  g_min_task_block_ticks.store(0, std::memory_order_release);
+}
+
+void setTaskBlockFrequencySourceForTest(TaskBlockFrequencySource source) {
+  g_test_frequency_source.store(source, std::memory_order_release);
+}
+#endif
+
+static u64 taskBlockTscFrequency() {
+#ifdef UNIT_TEST
+  TaskBlockFrequencySource source =
+      g_test_frequency_source.load(std::memory_order_acquire);
+  if (source != nullptr) return source();
+#endif
+  return TSC::frequency();
+}
+
 static u64 computeMinTaskBlockTicks() {
-  return (TSC::frequency() * kMinTaskBlockNanos) / NANOTIME_FREQ;
+  return (taskBlockTscFrequency() * kMinTaskBlockNanos) / NANOTIME_FREQ;
 }
 
 void initializeTaskBlockDurationThreshold() {
   g_min_task_block_ticks.store(computeMinTaskBlockTicks(), std::memory_order_release);
 }
 
-bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
+TaskBlockDurationCheck checkTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
   u64 min_ticks = g_min_task_block_ticks.load(std::memory_order_acquire);
   if (min_ticks == 0) min_ticks = computeMinTaskBlockTicks();
-  return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks;
+  // The threshold is 0 when TSC::frequency() is below 1 kHz, for example 0
+  // when uncalibrated. Comparing against 0 would accept every block, so
+  // reject instead. A separate result lets the caller count this as
+  // TASK_BLOCK_THRESHOLD_INVALID, not as TASK_BLOCK_SKIPPED_TOO_SHORT.
+  if (min_ticks == 0) return TaskBlockDurationCheck::THRESHOLD_INVALID;
+  return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks
+             ? TaskBlockDurationCheck::ELIGIBLE
+             : TaskBlockDurationCheck::TOO_SHORT;
+}
+
+bool recoverAbandonedTaskBlock(ProfiledThread* current,
+                               WallClockBlockTracker* tracker,
+                               ThreadFilter::SlotID current_slot) {
+  u64 abandoned = current->abandonTaskBlock();
+  if (abandoned == 0) return false;
+  Counters::increment(TASK_BLOCK_RECOVERED_ABANDONED);
+  ThreadFilter::SlotID slot_id = -1;
+  u64 generation = 0;
+  if (WallClockBlockTracker::decodeBlockRunToken(abandoned, slot_id, generation) &&
+      slot_id == current_slot) {
+    tracker->exitBlockedRun(slot_id, generation);
+  }
+  return true;
 }
 
 u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
@@ -49,12 +92,11 @@ u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
       return 0;
     }
     CriticalSection cs(current);
-    u64 call_trace_id = 0, weight = 0;
-    OSThreadState tail_state = OSThreadState::UNKNOWN;
-    if (slot->prepareUnownedBlockedTail(call_trace_id, weight, tail_state)) {
-      // Keep the trace published until recordUnownedBlockedTail() holds its
-      // writer stripe, preserving the core branch's JFR liveness protocol.
-      profiler->recordUnownedBlockedTail(current->tid(), slot, weight);
+    // The stripe-held writer retains the original context and epoch segments.
+    // Admission must not erase pending provenance when a write cannot commit.
+    if (!profiler->recordUnownedBlockedTail(current->tid(), slot_id)) {
+      slot->resumeUnownedBlockedFallback();
+      return 0;
     }
   }
 
@@ -86,18 +128,28 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            u64 unblocking_span_id, u64 end_ticks) {
   if (end_ticks == 0) end_ticks = TSC::ticks();
   Profiler* profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
   TaskBlockActivity activity;
+  bool recording_enabled = profiler->taskBlockEnabled();
 
   ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(block_token);
   u64 generation = WallClockBlockTracker::tokenGeneration(block_token);
-  // A block can span a recording restart, which invalidates the cached slot epoch.
-  // Re-resolve the exiting thread's slot before comparing it with the entry slot.
-  ThreadFilter::SlotID current_slot = thread_filter->ensureCurrentThreadSlot(current);
+  // A stopped registry still owns its native identities. End that cached run
+  // without allocating; active recordings instead revalidate owner projection.
+  ThreadFilter::SlotID current_slot = thread_filter->ensureOwnerSlot(*current);
+  if (current_slot < 0 && !thread_filter->registryActive()) {
+    auto* identity = thread_filter->slotForId(current->filterSlotId());
+    if (identity != nullptr && identity->nativeTid() == current->tid()) {
+      current_slot = current->filterSlotId();
+    }
+  }
   BlockRunSnapshot snapshot;
   bool exited = current_slot == slot_id &&
       tracker->snapshotAndExitBlockedRun(thread_filter, slot_id, generation,
                                          &snapshot);
+#ifdef UNIT_TEST
+  Profiler::runTaskBlockActivityHookForTest(
+      Profiler::TaskBlockActivityStage::AFTER_EXIT);
+#endif
 
   if (!activity.active()) {
     // TaskBlockActivity's constructor already incremented TASK_BLOCK_DROPPED_ROTATION.
@@ -157,7 +209,7 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
   }
 
   ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
+  ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (!tf->unfilteredWallTrackingActive() || slot_id < 0) return;
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
@@ -189,7 +241,7 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
   if (token == 0) {
     ThreadFilter::Slot *slot = tf->slotForId(slot_id);
     if (slot != nullptr && slot->inContextWindow()) {
-      Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+      Counters::increment(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW);
     }
     current->clearMonitorBlock();
     return;
@@ -218,7 +270,8 @@ static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   // Share end_ticks with taskBlockPassesBasicEligibility to avoid boundary drift.
   u64 end_ticks = monitorTicks();
   if (profiler->taskBlockEnabled() && profiler->nativeMonitorTaskBlockEnabled() &&
-      context.spanId == 0 && exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
+      context.spanId == 0 &&
+      checkTaskBlockDuration(start_ticks, end_ticks) == TaskBlockDurationCheck::ELIGIBLE) {
     blocker = monitorBlockerHash(jvmti, object);
   }
 

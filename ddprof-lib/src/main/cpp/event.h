@@ -60,10 +60,12 @@ public:
   OSThreadState _thread_state;
   ExecutionMode _execution_mode;
   u64 _weight;
+  // Deferred wall observations keep their sampling-epoch timestamp; zero means now.
+  u64 _sample_ticks;
 
   ExecutionEvent()
       : Event(), _thread_state(OSThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
-        _weight(1) {}
+        _weight(1), _sample_ticks(0) {}
 };
 
 class AllocEvent : public Event {

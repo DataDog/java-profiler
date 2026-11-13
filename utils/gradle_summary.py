@@ -60,6 +60,7 @@ def summarize(log, status, elapsed, command, launcher_pid, interrupted_by):
         "log": str(log),
         "command": [public_line(arg) for arg in command],
         "failedTasks": failed,
+        "failedTests": [line for line in lines if re.search(r"[A-Za-z0-9_.$]+ > [A-Za-z0-9_.$()]+ FAILED$", line)],
         "exceptionHeadlines": headlines[:20],
         "warnings": warnings[:30],
         "tests": {"total": None, "failed": None, "skipped": None, "modules": [], "observedSummaryLines": tests},
@@ -79,6 +80,7 @@ def summarize(log, status, elapsed, command, launcher_pid, interrupted_by):
                            ("Dependency/network", dependencies[:10])]:
         summary.extend(["", "## " + title] + ["- " + line for line in entries])
     (directory / "gradle-summary.md").write_text("\n".join(summary) + "\n")
+    return report
 
 
 def signal_process_group(group, sig):
@@ -181,12 +183,20 @@ def main(args):
     if interrupted is not None:
         status = 128 + interrupted
     try:
-        summarize(log, status, time.monotonic() - started, command,
-                  child.pid if child is not None else None, interrupted)
+        report = summarize(log, status, time.monotonic() - started, command,
+                           child.pid if child is not None else None, interrupted)
     except OSError as error:
         print("Summary failed: {}".format(error), file=sys.stderr)
         return status or 1
-    print("Gradle exit: {}\nbuild/reports/claude/gradle-summary.md\nbuild/reports/claude/gradle-summary.json".format(status))
+    print("Gradle exit: {}. Full log at: {}".format(status, log))
+    if status:
+        print("=== What went wrong ===")
+        print("\n".join(report["exceptionHeadlines"][:20]))
+        print("=== Failing tasks/tests ===")
+        print("\n".join(report["failedTasks"][:10] +
+                        report["tests"]["observedSummaryLines"][:5] +
+                        report["failedTests"][:20]))
+    print("build/reports/claude/gradle-summary.md\nbuild/reports/claude/gradle-summary.json")
     return status
 
 

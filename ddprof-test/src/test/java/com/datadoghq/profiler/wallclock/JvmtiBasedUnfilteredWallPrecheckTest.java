@@ -36,6 +36,11 @@ public class JvmtiBasedUnfilteredWallPrecheckTest extends UnfilteredWallPrecheck
   }
 
   @Override
+  protected boolean usesWeightedUnownedFallback() {
+    return false;
+  }
+
+  @Override
   protected String getProfilerCommand() {
     return super.getProfilerCommand() + ",jvmtistacks=true";
   }

@@ -24,12 +24,12 @@ def dispatch_init_block(source):
     start = source.index("Error Profiler::start(Arguments &args, bool reset)")
     end = source.index("Error Profiler::stop(", start)
     startup = source[start:end]
-    first = startup.index("  _cpu_engine = selectCpuEngine(args);")
+    first = startup.index("  if (!replaceCpuEngine(selectCpuEngine(args))) {")
     last = startup.index("  const char *filter =", first)
     block = startup[first:last]
     if block.count("VM::initializeRequestStackTrace()") != 1:
         raise AssertionError("expected one initializer call in the dispatch block")
-    if not last < startup.index("_cpu_engine->start(args)"):
+    if not last < startup.index("startCpuEngine(args))"):
         raise AssertionError("CPU engine launch must follow initialization")
     if not last < startup.index("_wall_engine->start(args)"):
         raise AssertionError("wall engine launch must follow initialization")
@@ -85,6 +85,10 @@ struct DispatchHarness {
   Engine* selectWallEngine(Arguments&) {
     trace += "select_wall,";
     return (_event_mask & EM_WALL) ? &wall_jvmti_engine : &noop_engine;
+  }
+  bool replaceCpuEngine(Engine* next) {
+    _cpu_engine = next;
+    return true;
   }
   Error start(Arguments& args) {
 /* PRODUCTION_DISPATCH_INIT_BLOCK */

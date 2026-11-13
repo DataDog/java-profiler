@@ -259,8 +259,10 @@ else:
                              "GTEST_OUTPUT=" in arg for arg in run))
 
     def test_legacy_cache_miss_and_rebuild_paths(self):
+        # A rebuilt base invalidates its dependent JDK image as well; the launcher's
+        # BASE_IMAGE_EXISTS guard must not reuse packages from the old base.
         for flag, missing, builds in ((None, "all", 2), ("--rebuild", "", 2),
-                                      ("--rebuild-base", "", 1)):
+                                      ("--rebuild-base", "", 2)):
             with self.subTest(flag=flag, missing=missing):
                 self.env["MISSING_IMAGE"] = missing
                 self.invoke(*([flag] if flag else []))

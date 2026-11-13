@@ -165,11 +165,11 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
-| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
+| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, reusable unowned wall-clock roots) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
-| TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, wall-clock, allocation, native memory, liveness; token-owned completed-at-exit TaskBlocks exclude virtual threads; filtered wall prechecks preserve reservoir selections in epoch accounting; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
+| TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
+| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; lazy wall-block backing survives recording resets; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers; native delivery custody retains failed output) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
@@ -178,7 +178,7 @@ before working on a subsystem.
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
 | Memory requirements & budgets | [doc/reference/ProfilerMemoryRequirements.md](doc/reference/ProfilerMemoryRequirements.md) |
 | Remote symbolication (+frame types) | [doc/reference/RemoteSymbolication.md](doc/reference/RemoteSymbolication.md), [doc/reference/RemoteSymbolicationFrameTypes.md](doc/reference/RemoteSymbolicationFrameTypes.md) |
-| Per-sampler perf counters (`-PenableSamplerPerf`) | [doc/reference/SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md) |
+| Per-sampler perf counters (`-PenableSamplerPerf`) and wall-timer diagnostics | [doc/reference/SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md) |
 | Test flakiness analysis | [doc/reference/TestFlakinessAnalysis.md](doc/reference/TestFlakinessAnalysis.md) |
 | Demo leak app (`demo-java-leak`: self-driven HTTP server with a strong-ref leak cache and post-GC watermark flush; no profiler dependency) | [doc/architecture/DemoJavaLeakApp.md](doc/architecture/DemoJavaLeakApp.md) |
 
@@ -331,6 +331,14 @@ invalidates every stored class id, so state that caches ids must be re-validated
 reset start. If the `RefCountGuard` drain times out, `clearAll()` leaves the dictionary
 unchanged. Events queued since the last `dump()` must be written before
 `stop()` discards them.
+
+**Reusable wall-clock roots.** Hold the recording stripe through capture, cached-ID publication and tail commit.
+Do not consume a deferred segment after a failed write or apply a later sampling epoch's scale.
+Retained units serialize at their original epoch-window start. See [CallTraceStorage](doc/architecture/CallTraceStorage.md#reusable-unowned-wall-clock-roots).
+
+**Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.
+Only owner-side entry/exit changes membership; signals and timers do not walk remote TLS.
+See [TLSContext](doc/architecture/TLSContext.md#context-window-membership).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

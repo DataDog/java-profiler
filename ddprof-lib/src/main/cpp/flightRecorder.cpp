@@ -2429,7 +2429,7 @@ void Recording::writeUnwindFailures(Buffer *buf) {
 #endif // DEBUG
 }
 
-void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
+void Recording::writeContextSnapshot(Buffer *buf, const Context &context) {
   buf->putVar64(context.spanId);
   buf->putVar64(context.rootSpanId);
 
@@ -2460,18 +2460,23 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
   buf->put8(start, size);
 }
 
-void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
-                                      u64 correlation_id,
-                                      ExecutionEvent *event) {
-  int start = buf->skip(1);
-  buf->putVar64(T_EXECUTION_SAMPLE);
-  buf->putVar64(TSC::ticks());
+void Recording::writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
+                                  u64 correlation_id, ExecutionEvent *event) {
+  buf->putVar64(type);
+  buf->putVar64(event->_sample_ticks != 0 ? event->_sample_ticks : TSC::ticks());
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
   buf->putVar64(correlation_id);
+}
+
+void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
+                                      u64 correlation_id,
+                                      ExecutionEvent *event) {
+  int start = buf->skip(1);
+  writeSampleHeader(buf, T_EXECUTION_SAMPLE, tid, call_trace_id, correlation_id, event);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -2479,17 +2484,14 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
 
 void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
                                    u64 correlation_id,
-                                   ExecutionEvent *event) {
+                                   ExecutionEvent *event, const Context *context) {
   int start = buf->skip(1);
-  buf->putVar64(T_METHOD_SAMPLE);
-  buf->putVar64(TSC::ticks());
-  buf->putVar64(tid);
-  buf->putVar64(call_trace_id);
-  buf->put8(static_cast<int>(event->_thread_state));
-  buf->put8(static_cast<int>(event->_execution_mode));
-  buf->putVar64(event->_weight);
-  buf->putVar64(correlation_id);
-  writeCurrentContext(buf);
+  writeSampleHeader(buf, T_METHOD_SAMPLE, tid, call_trace_id, correlation_id, event);
+  if (context != nullptr) {
+    writeContextSnapshot(buf, *context);
+  } else {
+    writeCurrentContext(buf);
+  }
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -2820,9 +2822,9 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 }
 
 // assumption is that we hold the lock (with lock_index)
-void Recording::addThread(int lock_index, int tid) {
+bool Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
+    return _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
@@ -2972,7 +2974,9 @@ bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
     Recording* rec = _rec;
     if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
-      rec->addThread(lock_index, tid);
+      // Reject before serialization if eventThread cannot enter this chunk's
+      // constant pool. The TaskBlock caller counts false as RECORD_FAILED.
+      if (!rec->addThread(lock_index, tid)) return false;
       rec->recordTaskBlock(buf, tid, event);
       return rec->outputGood();
     }
@@ -3078,6 +3082,22 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
   return false;
+}
+
+bool FlightRecorder::recordWallSample(int lock_index, int tid, u64 call_trace_id,
+                                      ExecutionEvent *event, const Context &context) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (!locker.ownsLock()) {
+    Counters::increment(SAMPLES_DROPPED_REC_LOCK);
+    return false;
+  }
+  Recording* rec = _rec;
+  if (rec == nullptr || !rec->outputGood()) return false;
+  RecordingBuffer* buf = rec->buffer(lock_index);
+  rec->recordMethodSample(buf, tid, call_trace_id, 0, event, &context);
+  rec->flushIfNeeded(buf);
+  rec->addThread(lock_index, tid);
+  return rec->outputGood();
 }
 
 bool FlightRecorder::recordEventDelegated(int lock_index, int tid,

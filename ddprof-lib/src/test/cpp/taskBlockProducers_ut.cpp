@@ -111,7 +111,7 @@ TEST_F(TaskBlockProducersTest, PairedApiRecoversAbandonedIntervalAfterRestart) {
     registry->deactivateRecording();
     registry->init("", true);
     // Another hook may refresh the registry first, independently of producer TLS.
-    ASSERT_EQ(slot_id, registry->ensureCurrentThreadSlot(current));
+    ASSERT_EQ(slot_id, registry->ensureOwnerSlot(*current));
     u64 new_token = begin();
     ASSERT_NE(0u, new_token);
     EXPECT_NE(old_token, new_token);
@@ -129,16 +129,23 @@ TEST_F(TaskBlockProducersTest, PairedApiRecoversAbandonedGenericHookAfterContext
     u64 old_token = Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
         &jni, nullptr, JNI_FALSE, static_cast<jint>(OSThreadState::SLEEPING));
     ASSERT_NE(0u, old_token);
-    ASSERT_TRUE(registry->add(current->tid(), current->filterSlotId()));
-    registry->remove(current->filterSlotId());
+    registry->onContextWindowEnter(*current);
+    registry->onContextWindowExit(*current);
     ASSERT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
 
     u64 token = begin();
-    ASSERT_NE(0u, token);
+    ASSERT_NE(0u, token) << "paired API must recover the abandoned generic-hook payload";
     EXPECT_NE(old_token, token);
-    EXPECT_EQ(0u, begin()) << "A nested begin must preserve the current owner";
+    end(old_token);
     EXPECT_EQ(token, current->taskBlockToken());
+    u64 replacement = begin();
+    ASSERT_NE(0u, replacement) << "a nested begin must supersede the current owner";
+    EXPECT_NE(token, replacement);
     end(token);
+    EXPECT_EQ(replacement, current->taskBlockToken());
+    EXPECT_EQ(BlockRunOwner::TASK_BLOCK, block()->activeBlockOwner());
+    end(replacement);
+    EXPECT_EQ(0u, current->taskBlockToken());
     EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
 }
 
@@ -179,6 +186,22 @@ TEST_F(TaskBlockProducersTest, MonitorRestartPreservesIdentityAndRejectsOldWaitE
     EXPECT_EQ(new_token, current->monitorBlockToken());
     MonitorContendedEntered(&jvmti, &jni, testThread(), nullptr);
     EXPECT_EQ(0u, current->monitorBlockToken());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+}
+
+TEST_F(TaskBlockProducersTest, MonitorContextWindowRejectionDoesNotCountAsTraceContext) {
+    registry->onContextWindowEnter(*current);
+    long long window_before = Counters::getCounter(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW);
+    long long trace_before = Counters::getCounter(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    MonitorContendedEnter(&jvmti, &jni, testThread(), nullptr);
+    EXPECT_EQ(0u, current->monitorBlockToken());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+    EXPECT_EQ(window_before + 1, Counters::getCounter(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW));
+    EXPECT_EQ(trace_before, Counters::getCounter(TASK_BLOCK_SKIPPED_TRACE_CONTEXT));
+    registry->onContextWindowExit(*current);
+    MonitorContendedEnter(&jvmti, &jni, testThread(), nullptr);
+    EXPECT_NE(0u, current->monitorBlockToken());
+    MonitorContendedEntered(&jvmti, &jni, testThread(), nullptr);
     EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
 }
 
@@ -309,7 +332,7 @@ TEST_F(TaskBlockProducersTest, ParkLifecycleDoesNotRequireRegistryAdmission) {
 }
 
 TEST_F(TaskBlockProducersTest, RotationDefersOwnershipWithoutDiscardingUnownedTail) {
-    int slot_id = registry->ensureCurrentThreadSlot(current);
+    int slot_id = registry->ensureOwnerSlot(*current);
     ASSERT_GE(slot_id, 0);
     block()->recordUnownedBlockedSample(0x1234, OSThreadState::SLEEPING);
     ASSERT_TRUE(block()->shouldRecordUnownedBlockedSample());
@@ -326,7 +349,7 @@ TEST_F(TaskBlockProducersTest, RotationDefersOwnershipWithoutDiscardingUnownedTa
 }
 
 TEST_F(TaskBlockProducersTest, RejectedContextAdmissionRestoresUnownedFallback) {
-    int slot_id = registry->ensureCurrentThreadSlot(current);
+    int slot_id = registry->ensureOwnerSlot(*current);
     ASSERT_GE(slot_id, 0);
     ASSERT_TRUE(registry->add(current->tid(), slot_id));
     EXPECT_EQ(0u, enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT));

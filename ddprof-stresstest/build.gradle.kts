@@ -76,8 +76,8 @@ tasks.named<Jar>("jmhJar") {
 sourceSets {
   create("chaos")
   create("chaosTest") {
-    compileClasspath += sourceSets["chaos"].output
-    runtimeClasspath += sourceSets["chaos"].output
+    compileClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
+    runtimeClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
   }
 }
 
@@ -113,6 +113,7 @@ tasks.register<Test>("testOwnedBlockPrecheck") {
   testClassesDirs = sourceSets["chaosTest"].output.classesDirs
   classpath = sourceSets["chaosTest"].runtimeClasspath
   setExecutable(PlatformUtils.testJavaExecutable())
+  systemProperty("ddprof_test.keep_jfrs", project.hasProperty("keepJFRs"))
   dependsOn("chaosJar")
   systemProperty("chaos.harness.jar", layout.buildDirectory.file("libs/chaos.jar").get().asFile.absolutePath)
   providers.gradleProperty("chaosAgentJar").orNull?.let {

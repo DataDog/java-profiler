@@ -533,10 +533,25 @@ public final class JavaProfiler {
    * Begins an explicitly instrumented {@link Thread#sleep(long) sleeping} interval on the current
    * platform thread. The resulting {@code TaskBlock} event is classified as {@code SLEEPING}. The
    * returned token is bound to the current thread and must be passed to {@link #endTaskBlock(long,
-   * long, long)}.
+   * long, long)}. Call {@code endTaskBlock} in a {@code finally} block so that the interval is
+   * closed on every exit path, including exceptions.
+   *
+   * <p>A thread has at most one active interval. If an interval is still open when this method is
+   * called again on the same thread (a nested call, or a previous interval whose {@code
+   * endTaskBlock} was never reached), the open interval is discarded without an event and this call
+   * proceeds as if no interval were open. A later {@code endTaskBlock} with the discarded token
+   * returns {@code false}. The open interval is kept only when this call returns {@code 0} because
+   * TaskBlock recording is inactive, the current thread is not classified as a platform thread, the
+   * profiler cannot track or verify the current thread, or a trace context is active on the current
+   * thread.
+   *
+   * <p>On JDK 19 or later, platform-thread classification uses JNI {@code IsVirtualThread} on every
+   * supported JVM. If that entry is unavailable, classification fails closed: this method returns
+   * {@code 0}, and the native profiler counts the failure and emits a one-time warning.
    *
    * @return an opaque token, or {@code 0} when the interval could not be armed or the current
-   *     thread is virtual; any non-zero value, including a negative value, is valid
+   *     thread is not classified as a platform thread; any non-zero value, including a negative
+   *     value, is valid
    */
   public long beginTaskBlock() {
     return beginTaskBlock0(Thread.currentThread());
@@ -1021,6 +1036,22 @@ public final class JavaProfiler {
    * candidate and not all found, the gate takes the candidate-chase backoff path.
    */
   static native void setReferenceChainCanaryStateForTest0(int candidateCount, long foundBits);
+
+  // ---- Wall-clock test seams ----------------------------------------------------------------
+  // Test seams (DEBUG native builds only; release: no-op/false). Reached only via a test-source
+  // bridge class in ddprof-test; non-public so they stay off the shipped API surface.
+
+  /** Test seam: forces the next wall-clock engine start() call to fail. No-op in release. */
+  static native void setForceWallStartFailureForTest0(boolean force);
+
+  /** Test seam: whether the forced wall-engine start-failure toggle is armed. False in release. */
+  static native boolean isForceWallStartFailureArmedForTest0();
+
+  /** Test seam: whether the thread registry currently admits registrations. False in release. */
+  static native boolean isThreadRegistryActiveForTest0();
+
+  static native boolean recordUnownedWallTailAcrossDumpForTest0(
+      Thread thread, String snapshot, boolean dumpAfterPrimary, boolean resetBeforeTail);
 
   // ---- Test-only reads of the current thread's OTEP record ----------------------------------
   // Each resolves the current carrier's record directly (like the write primitives above) with

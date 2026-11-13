@@ -41,6 +41,7 @@ public class PrecheckTest extends AbstractProfilerTest {
     Assumptions.assumeTrue(!Platform.isJ9());
     Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
     leaveClearedInitializedContext();
+    registerOutsideContextWindow();
 
     long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
     assertTrue(token != 0, "Expected native blockEnter to arm SLEEPING state");
@@ -103,7 +104,14 @@ public class PrecheckTest extends AbstractProfilerTest {
     }
   }
 
-  /** The epoch pool counts candidates before owned-block suppression rejects signals. */
+  /**
+   * Verifies that {@code samplePoolSize} in {@code datadog.WallClockSamplingEpoch} still counts
+   * threads whose owned blocked run is already suppressed. Both filtered and unfiltered timers
+   * select their reservoir before precheck; a suppressed selection consumes capacity and counts as
+   * successful for epoch upscaling, while samplePoolSize counts every collected candidate.
+   *
+   * @throws InterruptedException if a worker is interrupted
+   */
   @Test
   public void samplePoolSizeCountsSuppressedThreads() throws InterruptedException {
     Assumptions.assumeTrue(!Platform.isJ9());

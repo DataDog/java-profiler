@@ -121,6 +121,13 @@ private:
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
+  // Native-owner lifetime, not recording lifetime. Only the owner's normal
+  // context hooks transition this packed (version << 1) | membership word.
+  // Keep it outside the contiguous OTEL record/sidecar region.
+  std::atomic<u64> _logical_context_window_state;
+  static_assert(std::atomic<u64>::is_always_lock_free,
+                "Logical membership publication must be lock-free");
+
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
@@ -129,7 +136,8 @@ private:
         _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
-        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
+        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0),
+        _logical_context_window_state(0) {
 #ifdef __FAULT_INJECTION__
     _fi_rng = xorshift::seed((u64)(uintptr_t)this, (u64)tid);
 #endif
@@ -216,12 +224,18 @@ public:
     Context task_block_context;
     u64 block_recording_epoch;
     int filter_slot_id;
+    u64 logical_context_window_state;
     uint8_t init_window;
     int signal_depth;
     bool in_critical_section;
     bool otel_ctx_initialized;
     u64 otel_local_root_span_id;
   };
+
+  // Normal-thread-only seed for version-wrap tests; no concurrent handlers.
+  void setLogicalContextWindowStateForTest(u64 raw) {
+    _logical_context_window_state.store(raw, std::memory_order_release);
+  }
 
   ResetStateForTest snapshotForTest() const {
     return ResetStateForTest{
@@ -230,7 +244,7 @@ public:
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
       _park_slot.block_token, _task_block_slot.start_ticks, _task_block_slot.block_token,
-      _task_block_slot.context, _block_recording_epoch, _filter_slot_id, _init_window,
+      _task_block_slot.context, _block_recording_epoch, _filter_slot_id, logicalContextWindowState(), _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
     };
@@ -256,6 +270,27 @@ public:
 
   static int currentTid();
   inline int tid() { return _tid; }
+
+  inline u64 logicalContextWindowState() const {
+    return _logical_context_window_state.load(std::memory_order_acquire);
+  }
+
+  // Owner-only. Handlers never write this source, so an interrupted transition
+  // cannot lose a competing update. Registry slots carry published snapshots.
+  inline bool enterLogicalContextWindow() {
+    u64 current = _logical_context_window_state.load(std::memory_order_relaxed);
+    if ((current & 1) != 0) return false;
+    _logical_context_window_state.store(current + 3, std::memory_order_release);
+    return true;
+  }
+
+  inline bool exitLogicalContextWindow() {
+    u64 current = _logical_context_window_state.load(std::memory_order_relaxed);
+    if ((current & 1) == 0) return false;
+    _logical_context_window_state.store(current + 1, std::memory_order_release);
+    return true;
+  }
+
   inline u64 noteCPUSample(u32 recording_epoch) {
     _recording_epoch = recording_epoch;
     return ++_cpu_epoch;
@@ -467,6 +502,16 @@ public:
     }
     _task_block_slot.block_token = token;
     return true;
+  }
+
+  // Drops the pending TASK_BLOCK interval and returns its token, or 0 when
+  // none is pending. Lets beginTaskBlock0 recover an interval whose
+  // endTaskBlock0 was never reached; without this, taskBlockEnter() keeps
+  // failing for the rest of the thread's life.
+  inline u64 abandonTaskBlock() {
+    u64 token = _task_block_slot.block_token;
+    clearTaskBlock();
+    return token;
   }
 
   inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {

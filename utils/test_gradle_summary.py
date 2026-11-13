@@ -67,8 +67,30 @@ class GradleSummaryTest(unittest.TestCase):
         self.assertIsNone(report["tests"]["total"])
         self.assertEqual(2, len(list((self.root / "build/logs").glob("*.log"))))
 
+    def test_log_collision_never_overwrites_retained_evidence(self):
+        class FixedDateTime:
+            @staticmethod
+            def now():
+                return FixedDateTime()
+
+            def strftime(self, pattern):
+                return "20261113-200000-000001"
+
+        log = self.root / "build/logs/20261113-200000-000001-build-{}.log".format(os.getpid())
+        log.parent.mkdir(parents=True)
+        log.write_text("retained evidence\n")
+        previous = os.getcwd()
+        try:
+            os.chdir(self.root)
+            with unittest.mock.patch.object(SUMMARY.datetime, "datetime", FixedDateTime), \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(1, SUMMARY.main([]))
+            self.assertEqual("retained evidence\n", log.read_text())
+        finally:
+            os.chdir(previous)
+
     def test_failure_status_preserved_with_reports(self):
-        lines = ["> Task :test FAILED", "3 tests completed, 1 failed, 1 skipped",
+        lines = ["> Task :test FAILED", "Fixture > fails() FAILED", "3 tests completed, 1 failed, 1 skipped",
                  "* What went wrong:", "Execution failed for task ':test'.",
                  "> A controlled failure", "", "* Try:", "Not an exception headline",
                  "Deprecated feature", "configuration cache miss", "Could not resolve artifact",
@@ -78,6 +100,9 @@ class GradleSummaryTest(unittest.TestCase):
         self.assertEqual(7, result.returncode)
         self.assertEqual(7, report["exitCode"])
         self.assertEqual(["> Task :test FAILED"], report["failedTasks"])
+        for expected in ("=== What went wrong ===", "> A controlled failure",
+                         "=== Failing tasks/tests ===", "Fixture > fails() FAILED"):
+            self.assertIn(expected, result.stdout)
         self.assertEqual(["Execution failed for task ':test'.", "> A controlled failure"], report["exceptionHeadlines"])
         self.assertEqual(["Deprecated feature", "configuration cache miss"], report["warnings"])
         self.assertEqual(["Could not resolve artifact"], report["depIssues"])

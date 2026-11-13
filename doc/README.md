@@ -20,19 +20,19 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ## Quick Navigation
 
 ### Architecture
-- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces
+- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots and exact-copy failure handling
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
-- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
+- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: stripe-owned deferred wall tails, recordings, buffers, metadata, constant pools and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
 - [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception and allocation sampling
-- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; [TaskBlock producer contract](architecture/ProfilingEngines.md#taskblock-producer-contract); filtered wall reservoir and epoch accounting; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
+- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir and retained-weight epoch provenance; lazy wall-block backing; [TaskBlock producer contract](architecture/ProfilingEngines.md#taskblock-producer-contract); allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
 - [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
-- [TLSContext](architecture/TLSContext.md) - Thread-local context for distributed tracing
+- [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership and retained filtered/unfiltered unowned wall context
 
 ### Build System
 - [BuildSystemGuide](building/BuildSystemGuide.md) - Build conventions, Java formatting, TestKit verification and independent JDK 21 build-logic CI
@@ -49,7 +49,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [EventTypeSystem](reference/EventTypeSystem.md) - Profiler event types
 - [RemoteSymbolication](reference/RemoteSymbolication.md) - Symbol resolution
 - [RemoteSymbolicationFrameTypes](reference/RemoteSymbolicationFrameTypes.md) - Frame type design for symbolication
-- [SamplerPerfCounters](reference/SamplerPerfCounters.md) - Opt-in per-sampler timing counters and the stop-time report
+- [SamplerPerfCounters](reference/SamplerPerfCounters.md) - Wall-timer cadence/phase diagnostics and opt-in per-sampler timing counters and the stop-time report
 - [TestFlakinessAnalysis](reference/TestFlakinessAnalysis.md) - Test flakiness investigation results
 
 ### Design
