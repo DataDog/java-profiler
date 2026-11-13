@@ -249,6 +249,27 @@ integration-test-arm64-musl:
     LIBC_VARIANT: musl
     ARCH: arm64
 
+# Fails when the dd-trace-integration quarantine list is malformed, ticketless,
+# or past its review_by date - the same discipline as the Java/gtest list.
+validate-dd-trace-quarantine:
+  stage: integration-test
+  tags: [ "arch:amd64" ]
+  image: ${PREPARE_IMAGE}
+  needs: []
+  rules:
+    - !reference [.skip-on-release, rules]
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - when: on_success
+  interruptible: true
+  timeout: 5m
+  script:
+    - bash -n .gitlab/dd-trace-integration/quarantine-lib.sh
+    - bash -n .gitlab/dd-trace-integration/validate-quarantine.sh
+    - .gitlab/dd-trace-integration/validate-quarantine.sh
+
 report-dd-trace-results:
   extends: .retry-config
   stage: integration-test
