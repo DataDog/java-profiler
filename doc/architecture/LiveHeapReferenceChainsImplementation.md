@@ -16,7 +16,9 @@ Related documents:
 
 ## Main components
 
-`LivenessTracker` detects sustained growth in sampled live-object populations. It assigns leak tags to selected instances.
+`LivenessTracker` detects growth in the number of distinct GC ages among surviving tracked
+samples of a class. Candidate selection also requires qualifying allocating-thread evidence.
+It assigns leak tags to instances in those class/thread groups.
 
 `ReferenceChainTracker` maintains a root-based frontier and searches for those instances. It runs on one agent-owned background thread. `_engine_lock` serializes engine state across lifecycle and test paths.
 
@@ -30,18 +32,20 @@ Related documents:
 | `referrer_field_index` | Field index of the admitting edge (-1 when the edge is not a field or static-field edge). Used to label each hop in the emitted chain. |
 | `edge_kind` | JVMTI reference kind of the admitting edge for an interior hop (`parent_tag != 0`). |
 | `depth` | Records the number of edges from the root. |
-| `state` | Records `FRONTIER`, `EXPANDED`, `EDGE`, or `ABANDONED`. |
+| `state` | Records `FRONTIER`, `EXPANDED`, or `ABANDONED` in the production walk. `EDGE` is used only by fixtures and `markEdge()`. |
 | `root_kind` | Records the JVMTI root or edge kind for a root-attached entry. |
 | `class_tag` | The entry's own object class tag. It provides class identity across class-dictionary regeneration. |
 | `leak_tag` and incarnation | Correlate the entry with the current owner of a sampled leak tag. |
 
 ## Search lifecycle
 
-A search starts only after the scheduler accepts the leak signal and the cost gate.
+A search starts only when the safepoint-cost gate and root-enumeration interval permit it,
+and the enabled leak signal supplies a candidate. Urgency does not replace that candidate.
 
 The first pass starts the search timestamp and enumerates roots. Later passes resume the same frontier. A running search does not restart itself.
 
-A terminal search releases its search-owned tags. A later search can start only after release succeeds, the current leak signal permits it, and the safepoint cost budget permits it.
+A terminal search releases its search-owned tags. A later search must wait for release,
+cleared safepoint-cost debt, the root-enumeration interval, and a current leak candidate.
 
 `restartSearch()` resets the frontier state and the frontier-tag sequence. Stable class tags and valid resolved-chain entries have separate lifecycles.
 
@@ -61,7 +65,33 @@ candidate-thread deadline when that phase runs. Otherwise, it uses the deadline 
 enumeration. Earlier work can therefore reduce or consume the time available for static-field
 scanning.
 
-The tracker measures total pass time and in-safepoint time separately. It charges the remainder to the CPU cost budget.
+The tracker times `runPassManualWalk()` and the heap-walk calls within it. Their elapsed-time
+difference supplies the CPU-cost budget; it is not measured CPU consumption. Class resolution,
+candidate polling, and search-tag release are outside that timed region.
+
+For a running search, the phase order and root-enumeration early exit are:
+
+```mermaid
+flowchart TB
+    saved["Existing frontier and queued work"] --> classes["Resolve class identities"]
+    classes --> due{"Root enumeration due?"}
+    due -->|"Yes"| roots["Enumerate root and stack references"]
+    due -->|"No"| threads["Candidate-thread walks, if any"]
+    roots --> complete{"Completed without<br/>truncation or error?"}
+    complete -->|"Yes"| threads
+    complete -->|"No: end traversal phases"| finish["Finish pass<br/>Cost accounting and terminal checks"]
+    threads --> statics["Static-field sweep, if pending"]
+    statics --> expand["Expand frontier batches<br/>Ordinary and priority queues"]
+    expand --> rotate["Revisit mutable holders<br/>Reserved rotation budget"]
+    rotate --> finish
+    finish --> state{"Search state?"}
+    state -->|"RUNNING"| retain["Keep frontier and queues<br/>for the next pass"]
+    state -->|"TERMINAL"| release["Release search tags;<br/>evaluate restart gates in a later iteration"]
+```
+
+Frontier-cap failures in earlier phases can also skip later work. Ordinary expansion
+truncation does not by itself skip reserved rotation work. A finished pass need not mean
+a completed search.
 
 ## Root discovery
 
@@ -69,14 +99,18 @@ The tracker measures total pass time and in-safepoint time separately. It charge
 
 `IterateOverReachableObjects()` calls `heapRootCallback()` and `stackRefCallback()`. These callbacks admit root-attached objects. They do not traverse all children of each root.
 
-The first pass always performs root enumeration. A later pass performs it after an interval of at least two seconds since the last attempt, extended by the last attempt's measured in-safepoint cost (20 milliseconds of interval per millisecond of cost, capped at 30 seconds). Each enumeration deoptimizes, on every thread, every compiled frame whose scope holds a scalar-replaced (escape-analysis-eliminated) object (one `VM_DeoptimizeFrame` operation per frame), and the JIT re-creates those frames continuously on a busy service, so the interval grows with the cost that recurs per attempt. A truncated attempt retries after the same interval as a completed one: with a first-pass budget too small for the live heap, every attempt truncates, and a next-pass retry would turn every pass into a deopt-all enumeration. A truncated pass ends after the enumeration - the next pass's expansion phases proceed on the roots already admitted.
+The first pass always enumerates roots. Later attempts wait after the previous attempt ends:
+`max(2 s, min(last attempt duration in ms × 20 ms, 30 s))`. This interval applies to
+truncated and errored attempts and also gates restarted searches.
 
-Root enumeration uses `firstpassbudget`. The name is historical: the implementation can use this budget again during later root-enumeration attempts.
+A truncated or errored enumeration ends the traversal phases of that pass. Later passes
+can expand already-admitted roots while waiting for the next enumeration attempt.
 
-This phase does not use the callback deadline. JVMTI does not expose a cursor for
-resuming `IterateOverReachableObjects()`. An aborted attempt starts again from the first
-root and can repeatedly omit roots later in the enumeration order. The edge budget does
-not bound elapsed time when callbacks examine roots that the frontier already contains.
+Root enumeration uses `firstpassbudget`, including attempts after the first pass.
+
+This phase does not use the callback deadline or keep an enumeration cursor. Repeated
+attempts can examine already-admitted roots without charging admission budget. Direct-root
+leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
 
 For this release, a root-enumeration pause is acceptable if it is shorter than three
 seconds. This threshold is not the desired latency and is not a hard real-time
@@ -96,7 +130,8 @@ The scan:
 - Admits at most 32 other class edges per class.
 - Starts a new completed sweep when the loaded-class count changes.
 
-The loaded-class API does not guarantee stable ordering. The code repartitions each returned array before it uses the saved cursor.
+Before applying the cursor, the code sorts each application/bootstrap partition by stable
+class tag. The cursor therefore does not depend on the API returning classes in the same order.
 
 ### Candidate thread objects
 
@@ -108,23 +143,36 @@ The descend walk admits at most 16 hops below an anchor and still obeys the glob
 
 `expandFrontier()` takes a batch of pending frontier tags and calls `GetObjectsWithTags()`. Dead objects do not resolve and leave no object to expand.
 
-The tracker places the resolved objects in one JNI object array. It calls `FollowReferences()` with that array as the initial object. Callback filtering limits normal expansion to the selected boundary objects.
+The tracker places resolved objects in one JNI object array and calls `FollowReferences()`
+with that array as its initial object. Callback filtering normally admits one hop from
+selected boundary objects. Priority and ordinary queues alternate batches when both have work.
+
+The adaptive resolution-batch target is between 8 and 512, using proportional feedback
+from measured call time. Queue length and remaining budget can make an actual batch smaller.
 
 If JNI setup fails or leaves an exception, the tracker marks the operation as truncated. It does not mark the affected entries as expanded. A later pass can retry them.
 
-The callback stops admission when it reaches the edge budget, deadline check, hop cap, frontier cap, or abort request. These checks bound admitted work. They do not provide a strict bound on JVMTI operation duration.
+Ordinary admission gates count new objects, not every callback. Reference callbacks check
+the deadline every 4,096 invocations, and expansion also checks its outer loop. The hop cap
+prunes deeper branches; budget, deadline, capacity, and abort checks do not bound call duration.
 
 ## Candidate tags and correlation
 
-`pollWatchedTargets()` asks `LivenessTracker` for at most five candidate classes. It then calls `tagLeakInstances()` for the current candidates.
+The engine polls targets after every loop iteration, including iterations without a pass.
+`pollWatchedTargets()` selects at most five candidate classes and calls `tagLeakInstances()`
+for tracked instances from their qualifying allocating threads.
 
-Leak tags are positive tags from a fixed pool. Each reuse has an incarnation value. The incarnation prevents emission of an old owner's cached chain for a new owner of the same numeric tag.
+The pool holds 256 positive leak tags. Each reuse has an incarnation value, so a chain
+bound to an earlier owner can be rejected after the tag is released or reused.
 
-Candidate representatives are not pre-tagged with negative marker tags. The walk discovers a candidate when it reaches a leak-tagged instance or correlates a leak tag with an object that the frontier already admitted.
+Candidate representatives are weak references, not artificial traversal seeds. Tagging
+correlates an existing frontier entry instead of overwriting its tag. A retained path must
+already be discovered before it can be reconstructed.
 
 For each watched class, the tracker keeps at most eight discovered frontier entries. A leak-correlated entry can replace an uncorrelated entry when those slots are full.
 
-The tracker can complete a candidate search after each occupied candidate slot has produced a valid chain.
+Candidate completion requires a cached leak-correlated chain for each occupied candidate
+slot and a completed root enumeration. See the termination order below.
 
 ## Mutable references and rotation
 
@@ -149,15 +197,20 @@ The implementation evaluates terminal conditions after each pass, in this priori
 (`runPass()`, `referenceChainTraversal.cpp`). A search can:
 
 1. Abandon with `FRONTIER_CAP` when the frontier cannot admit another entry.
-2. Complete when the pass has no pending truncated work and no class remains under watch.
-3. Abandon with `TTL` when the configured search lifetime expires.
-4. Abandon with `TTL` when the frontier makes no progress for 30 passes and the urgent latch is not active.
-5. Complete when all current candidates have been found.
-6. Abandon with `CANARY_STUCK` when both frontier progress and candidate progress remain stalled for their limits.
+2. Complete when no truncation or incomplete root enumeration is pending and no class is watched.
+3. Abandon with `TTL` when lifetime expires, unless root enumeration is incomplete.
+4. Abandon with `ROOT_ENUM_ERROR` after three consecutive root-enumeration JVMTI errors.
+5. Abandon with `TTL` after 30 prior no-frontier-progress passes, unless urgency is latched
+   or root enumeration is incomplete.
+6. Complete when all current candidates have been found and root enumeration is complete.
+7. Abandon with `CANARY_STUCK` when both frontier and candidate progress meet their stall limits.
 
-The no-progress `TTL` check runs before the `CANARY_STUCK` check, and `CANARY_STUCK` also
-requires 30 passes without frontier progress. `CANARY_STUCK` can therefore fire only while
-the urgent latch is active.
+While enumeration is incomplete, expansion-only passes hold the frontier no-progress
+counter; enumeration attempts can still advance it. The TTL clock continues, but its
+abandonment check is deferred. TTL is therefore not a hard search-lifetime bound.
+
+`CANARY_STUCK` is not restricted to urgent searches. Incomplete enumeration can also
+suppress the earlier no-progress exit without suppressing this check.
 
 `ReferenceChainTracker::stop()` forces a running search into a terminal state with the internal
 reason `RECORDING_END`, so the next recording starts a fresh search. No abandonment event is
@@ -165,21 +218,26 @@ emitted for this reason.
 
 The base candidate-stall limit is 30 passes. Consecutive `CANARY_STUCK` restarts can double this limit, up to eight doublings. Other terminal outcomes reset that escalation.
 
-`datadog.ReferenceChainAbandoned` records an abandonment. The event queue is separate from the resolved-chain cache.
+Abandonments use a separate queue of at most 16 events. Dump drains it once per occurrence;
+queue overflow increments `REFERENCE_CHAIN_EVENTS_DROPPED`. The current JFR writer maps
+`ROOT_ENUM_ERROR` to `unknown`, rather than a distinct reason string.
 
 ## Cost control
 
 The implementation controls different costs separately:
 
-- The minimum pass spacing (the effective cadence) applies to every pass authorization - GC epoch, canary back-to-back, and fallback cadence alike.
-- The root-enumeration interval floor extends with the last attempt's measured in-safepoint cost.
-- `_effective_budget` limits edge admission for ordinary work.
-- `_pause_pid` adjusts that budget from measured in-safepoint time.
-- `_effective_cadence_ns` changes when the budget controller reaches a limit and while the OOM urgency ramp is active. When an urgency episode ends, the ramp restores the one-second fallback in the same iteration.
-- `_safepoint_pain_budget` gates a later search.
-- `_cpu_pain_budget` gates passes in the current search.
-- `_configured_frontier_cap` limits native metadata.
-- `_ttl_ms` limits search lifetime.
+- Running-search spacing is normally `max(effective cadence, 100 ms)` after the prior pass ends.
+  During the OOM ramp it uses the effective cadence without the 100-millisecond floor.
+- A GC epoch does not independently authorize a pass.
+- The root-enumeration interval uses the last attempt's measured call duration.
+- `_effective_budget` controls ordinary admission, not total callbacks or elapsed time.
+- `_pause_pid` uses elapsed time around heap-walk calls, not directly measured application pauses.
+  Only passes without root enumeration update the controller.
+- `_effective_cadence_ns` changes with PID limits and the OOM ramp; ramp exit restores one second.
+- `_safepoint_pain_budget` delays a later search, not a running search's cumulative-cost cutoff.
+- `_cpu_pain_budget` gates running-search passes using the timed manual-walk remainder.
+- The frontier cap restricts metadata. The hop cap restricts admission depth.
+- `_ttl_ms` supplies a lifetime check, subject to incomplete-enumeration deferral.
 
 For resumable traversal phases, the pause target controls when a callback asks JVMTI to
 stop. Callback granularity and JVM work can cause overshoot. Root enumeration does not
@@ -195,8 +253,12 @@ use this deadline. See [Reference-chain scheduling and cost control](ReferenceCh
   `min(50 × budget, 200000)` instead.
 - The TTL scales with heap size, up to 30 minutes.
 - The frontier cap scales with the edge-budget ratio.
-- The code caps the pause target at 50 milliseconds.
-- The code caps the cost-budget refill percentage at 5 percent.
+- The auto-tuned pause target is capped at 50 milliseconds.
+- The auto-tuned cost-budget refill percentage is capped at 5 percent.
+
+Base defaults are 200 hops, 1,000 ordinary admissions, a 60,000-millisecond TTL, 65,536
+frontier entries, a 50-millisecond pause target, and a 1% cost refill. Explicit overrides
+remain subject to parser clamps, not the auto-tuned defaults' ceilings.
 
 These values are tuning inputs. They do not state guaranteed overhead.
 
@@ -212,8 +274,11 @@ leak-signal gate can never pass and the collector stays idle. Enable one of them
 command:
 
 ```text
-generations=true,referencechains=true:hops=N:budget=N:ttl=N:framecap=N:pausetarget=N:painbudget=N:firstpassbudget=N
+generations=true,referencechains=true
 ```
+
+An alternative with liveheap tracking is `memory=4m:l,referencechains=true`. Optional
+reference-chain sub-options follow the boolean, for example `referencechains=true:hops=64`.
 
 - `generations=true` activates the allocation engine and supplies leak candidates. Liveheap
   tracking (`memory=<interval>b:l|L`) is an equivalent signal source when combined with
@@ -232,16 +297,33 @@ The parser clamps values to implementation limits. Consult `arguments.h` for cur
 
 `buildChainEvent()` reconstructs a chain by following `parent_tag` values in the frontier table. Static-field-rooted chains can add the declaring class as the root-side type.
 
-`cacheResolvedChain()` stores resolved chains per source frontier tag, not per class. The cache
-holds at most 128 entries. It rejects a chain whose leak-tag owner has already died. When the
-cache is full, it first evicts entries cached by an earlier search. If that frees no slot, it
-drops the new chain and increments `REFERENCE_CHAIN_EVENTS_DROPPED`.
+`cacheResolvedChain()` stores at most 128 chains, keyed by source frontier tag rather than
+class. It rejects a leak-tagged chain when its recorded incarnation no longer matches the
+current ownership stamp.
 
-`drainPendingChainEvents()` is a snapshot operation despite its name. It copies valid cached chains and keeps them for later dumps. Before emission, it checks the leak-tag incarnation and removes entries whose tag now belongs to another object.
+At capacity, the cache first evicts entries from earlier searches. If no slot becomes
+available, it drops the new chain and increments `REFERENCE_CHAIN_EVENTS_DROPPED`.
 
 Deferred invalidations reach the cache as encoded EVICT or REBUILD requests in a bounded pending buffer. EVICT (noise eviction, event filter) erases the cached chain. REBUILD (improved path, root-kind change, a just-correlated leak tag) keeps the chain: the BFS-thread poll rebuilds it from the intact frontier entry and replaces the cache entry on success, at most 8 rebuilds per poll; entries over that budget stay pending for later polls. When the buffer is full, the new request is dropped and the cached chain is kept.
 
-The dump thread writes `datadog.ReferenceChain` events. The traversal thread does not write JFR events.
+Callbacks enqueue these requests onto a pending queue guarded by a spin lock, not a
+lock-free protocol. Candidate polling and dump snapshots drain it; a dump can drain
+while traversal is active. Callbacks do not acquire the resolved-cache lock.
+
+`drainPendingChainEvents()` snapshots eligible cached chains, keeps them for later dumps,
+and re-stamps each copy. Leak-tag incarnation mismatches remove chains for former owners.
+This does not guarantee a chain for every live sample in every chunk.
+
+Chains and retention-edge labels are leaf-to-root. Shallow chains with depth below two
+and a stack-local or JNI-local root are suppressed. Correlate leak-tagged targets with
+live-object events using both tag and incarnation.
+
+The serializer applies a separate buffer-safe hop cap. `totalHops` records the untruncated
+length. Edge labels are emitted only when all emitted hops have labels.
+
+Dump and stop write `datadog.ReferenceChain` events; the traversal thread does not write
+JFR events directly. Stop joins that thread and emits pending output before clearing
+recording caches. The cache and invalidation locks still couple traversal and dumping.
 
 ## Result semantics
 
