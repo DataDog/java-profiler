@@ -102,6 +102,28 @@ assert_eq "the trending reason lands in memory_trend_warnings" \
 assert_eq "memory_trend_warnings tracks all 36 rows" "36" \
   "$(summary_field "${JSON}" "len(s['memory_trend_warnings'])")"
 
+# Every config failed but one row is inconclusive: the failed status is
+# reserved for runs with no inconclusive row, so this stays partial — a
+# config that never completed must not be reported as a failure.
+CASE="${WORK}/failplusinconclusive"
+mkdir -p "${CASE}"
+{
+  i=1
+  while [ "${i}" -le 36 ]; do
+    printf 'REASON_profiler%d_gmalloc_amd64Xmemory=Memory usage is trending up\n' "${i}"
+    i=$((i + 1))
+  done
+  echo 'INCONCLUSIVE_profiler_jemalloc_aarch64Xmemory=few samples'
+} > "${CASE}/build.env"
+case_run "${CASE}"
+assert_eq "an all-failed run with an inconclusive row is partial" "partial" \
+  "$(field "${JSON}" "r['status']")"
+assert_not_passed_with_inconclusive "${JSON}" "fail-plus-inconclusive"
+assert_eq "the all-failed mixed run counts 36 failures" "36" \
+  "$(summary_field "${JSON}" "s['failed']")"
+assert_eq "the all-failed mixed run counts the inconclusive row" "1" \
+  "$(summary_field "${JSON}" "s['inconclusive']")"
+
 # --- inconclusive-only run: nothing failed, nothing counted as failure ---------
 
 CASE="${WORK}/inconclusive"
