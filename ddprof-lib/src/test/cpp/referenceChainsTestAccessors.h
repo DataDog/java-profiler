@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "classTagAllocator.h"
+#include "livenessTracker.h"
 #include "referenceChains.h"
 #include "vmEntry.h"
 
