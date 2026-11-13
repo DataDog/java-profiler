@@ -194,6 +194,12 @@ TEST_F(ReferenceChainsBfsTest, BatchLargerThanDescriptorCapacityTruncatesAndReta
     ReferenceChainsTestAccessor::setGotwBatchSize(
         ReferenceChainsTestAccessor::gotwMaxBatch() + 88);
     FrontierTable *frontier = tracker->frontierTable();
+    int edges = 0;
+    bool truncated = false;
+    // Empty-queue drive before seeding: caches java/lang/Object so the measured call's
+    // DeleteLocalRef delta excludes the one-time FindClass() local ref.
+    ReferenceChainsTestAccessor::expandFrontierWithBudgetForTest(
+        &mock_jvmti, &mock_jni, 1000, &edges, &truncated);
     std::vector<jlong> expected;
     for (int i = 0; i < 600; i++) {
         int node = addNode();
@@ -201,8 +207,6 @@ TEST_F(ReferenceChainsBfsTest, BatchLargerThanDescriptorCapacityTruncatesAndReta
     }
     int local0 = local_refs_deleted_, dealloc0 = deallocate_calls_;
     int follow0 = follow_references_calls_;
-    int edges = 0;
-    bool truncated = false;
     ReferenceChainsTestAccessor::expandFrontierWithBudgetForTest(
         &mock_jvmti, &mock_jni, 1000, &edges, &truncated);
     // A batch larger than the batch descriptor's capacity must truncate before the holder walk:
