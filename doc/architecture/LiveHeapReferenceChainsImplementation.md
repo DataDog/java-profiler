@@ -166,14 +166,16 @@ The pool holds 256 positive leak tags. Each reuse has an incarnation value, so a
 bound to an earlier owner can be rejected after the tag is released or reused.
 
 Leak tags are recording-scoped, like the rest of the `LivenessTracker` state. When a
-recording stops, `LivenessTracker::release()` frees the tracking table and the per-klass
-population. If a pool tag is out or an earlier clear failed, it also clears the pool tags on
-objects with one `GetObjectsWithTags` call. `releaseSearchTags()` clears only frontier tags. The pool is then
-rebuilt as all free, and each slot that had an owner gets a new incarnation. Leak-candidate
-selection starts over in the next recording.
+recording stops, `LivenessTracker::release()` first clears the pool tags on objects with one
+`GetObjectsWithTags` call. It skips this step when no pool tag is out and no earlier clear
+failed. Then it frees the tracking table and the per-klass population. It also resets the
+pool to all free. Each slot that had an owner gets a new incarnation. Leak-candidate
+selection starts over in the next recording. `ReferenceChainTracker::releaseSearchTags()`
+clears only frontier tags, not pool tags.
 
-If the clear fails, the next `start()` tries it again. If that try also fails, the pool hands
-out no tags, and that recording has no leak reference chains.
+If the clear fails, the next `start()` tries it again before it rebuilds the pool. If that
+try also fails, the pool hands out no tags for that recording. No chain then names a tracked
+leak instance. The traversal still runs and emits chains keyed by frontier tags.
 
 Candidate representatives are weak references, not artificial traversal seeds. Tagging
 correlates an existing frontier entry instead of overwriting its tag. A retained path must
