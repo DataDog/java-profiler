@@ -22,22 +22,24 @@ cp "$(dirname "$0")/../../.claude/hooks/babysit-pr.py" "$HOOK"
 git -C "$TEMP_DIR/repo" init -q
 git -C "$TEMP_DIR/repo" -c user.email=t -c user.name=t commit -q --allow-empty -m init
 
-# run_hook <command> <response-stdout> [<cwd>] -> exit status; stderr in OUT_ERR.
-# Command and response travel base64-encoded through argv: a heredoc would collapse
-# the backslash-newline of a continued command before the payload is built.
+# run_hook <command> <response-stdout> [<payload-cwd>] [<process-cwd>] -> exit status;
+# stderr in OUT_ERR. Command and response travel base64-encoded through argv: a heredoc
+# would collapse the backslash-newline of a continued command before the payload is
+# built. The payload cwd and the hook process's cwd are passed separately so tests can
+# pin which one the hook's checkout guard follows.
 run_hook() {
-  local cmd_b64 resp_b64 cwd="${3:-$TEMP_DIR/repo}"
+  local cmd_b64 resp_b64 cwd="${3:-$TEMP_DIR/repo}" proc_cwd="${4:-${3:-$TEMP_DIR/repo}}"
   cmd_b64=$(printf '%s' "$1" | base64)
   resp_b64=$(printf '%s' "$2" | base64)
-  OUT_ERR=$(python3 - "$TEMP_DIR/repo" "$cmd_b64" "$resp_b64" "$cwd" <<'PYEOF'
+  OUT_ERR=$(python3 - "$TEMP_DIR/repo" "$cmd_b64" "$resp_b64" "$cwd" "$proc_cwd" <<'PYEOF'
 import base64, json, os, subprocess, sys
-repo, cmd_b64, resp_b64, cwd = sys.argv[1:5]
+repo, cmd_b64, resp_b64, cwd, proc_cwd = sys.argv[1:6]
 payload = {"cwd": cwd, "tool_name": "Bash",
            "tool_input": {"command": base64.b64decode(cmd_b64).decode()},
            "tool_response": {"stdout": base64.b64decode(resp_b64).decode(),
                              "stderr": "", "interrupted": False}}
 res = subprocess.run([sys.executable, os.path.join(repo, ".claude/hooks/babysit-pr.py")],
-                     input=json.dumps(payload).encode(), cwd=cwd,
+                     input=json.dumps(payload).encode(), cwd=proc_cwd,
                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                      env={**os.environ, "CLAUDE_PROJECT_DIR": repo})
 print(res.stderr.decode(errors="replace"))
@@ -127,6 +129,31 @@ if [ "$HOOK_RC" -eq 0 ] && ! grep -q "Traceback" <<<"$OUT_ERR"; then
 else
   fail "null tool_input should fail open with exit 0 and no traceback (rc=$HOOK_RC, got: $OUT_ERR)"
 fi
+
+# 14. A valid-JSON non-object payload also fails open: no traceback, exit 0.
+OUT_ERR=$(cd "$TEMP_DIR/repo" && printf '[]' | CLAUDE_PROJECT_DIR="$TEMP_DIR/repo" python3 "$HOOK" 2>&1 >/dev/null)
+HOOK_RC=$?
+if [ "$HOOK_RC" -eq 0 ] && ! grep -q "Traceback" <<<"$OUT_ERR"; then
+  pass
+else
+  fail "non-object payload should fail open with exit 0 and no traceback (rc=$HOOK_RC, got: $OUT_ERR)"
+fi
+
+# 15. The checkout guard follows the payload's cwd, not the hook process's cwd: a
+#     payload naming the other repository but a process running inside the project's
+#     checkout must not trigger. Removing the payload-cwd fallback (always using
+#     os.getcwd()) makes this case trigger and kills this test.
+run_hook "gh pr create --draft" "https://github.com/datadog/java-profiler/pull/1234" \
+  "$TEMP_DIR/other" "$TEMP_DIR/repo"
+if [ $? -eq 0 ]; then pass; else fail "payload cwd in another checkout should exit 0 (got: $OUT_ERR)"; fi
+
+# 16. A payload cwd that is not a git checkout at all fails closed without a crash:
+#     `top` is None, and dropping the `top and` guard would resolve the common dir
+#     against the process cwd (the project checkout) and trigger.
+mkdir -p "$TEMP_DIR/plain"
+run_hook "gh pr create --draft" "https://github.com/datadog/java-profiler/pull/1234" \
+  "$TEMP_DIR/plain" "$TEMP_DIR/repo"
+if [ $? -eq 0 ]; then pass; else fail "non-git payload cwd should exit 0 (got: $OUT_ERR)"; fi
 
 # --- .pi/extensions/babysit-pr.ts (driven through a stub Pi API) ---
 if node --experimental-strip-types --no-warnings -e "" >/dev/null 2>&1; then

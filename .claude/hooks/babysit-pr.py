@@ -3,17 +3,15 @@
 """Claude Code PostToolUse hook: on a successful `gh pr create|new` in this repo's
 checkout, trigger the babysit-pr skill by naming the created PR. Exit 2 feeds the stderr
 message to Claude after the successful call (no block). Success is read from the tool
-response: a `gh pr create` success prints the created PR's URL, so a URL matching the
-protected repository in the response text counts, wherever it appears. Attribution does
-not come from the URL's shape (response formatting is not part of any contract) but from
-the command gate: only `gh pr create|new` invocations reach this check, so a URL printed
-by `gh pr view` or `gh pr ready` is never attributed to the create, and no URL at all
-means the create failed or never ran. Residual: a later segment of a compound command
-that mentions `gh pr create` and prints a URL itself can still be misattributed to the
-create — accepted, backstopped by the skill's trigger-context resolve. A PR in another
-repository is not this repo's policy; only datadog/java-profiler PRs trigger.
-Pushes and PR readiness stay gated by require-fresh-review.py and .githooks/pre-push;
-this hook only injects an instruction."""
+response: a `gh pr create` success prints the created PR's URL as the sole content of
+its line, so only a bare-line URL matching the protected repository counts; a URL
+embedded in JSON or prose (e.g. `gh pr view --json url` output in a compound command)
+never counts, so a failed create followed by a view cannot trigger. Residual: a later
+segment of a compound command that itself runs `gh pr create` and prints a bare URL can
+still be misattributed to the create — accepted, backstopped by the skill's
+trigger-context resolve. A PR in another repository is not this repo's policy; only
+datadog/java-profiler PRs trigger. Pushes and PR readiness stay gated by
+require-fresh-review.py and .githooks/pre-push; this hook only injects an instruction."""
 
 import json
 import os
