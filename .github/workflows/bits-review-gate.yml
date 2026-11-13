@@ -1,0 +1,82 @@
+name: Bits review gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, closed]
+  workflow_run:
+    workflows: ["Bits review event"]
+    types: [completed]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  resolve:
+    # pull_request_target sets github.ref to the base branch, so the guard
+    # is live for it too; the other triggers already run on refs/heads/main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      shas: ${{ steps.resolve.outputs.shas }}
+    steps:
+      - name: Checkout trusted resolver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Resolve the head SHAs to publish
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          GITHUB_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GITHUB_PULL_REQUEST_NUMBERS: ${{ toJSON(github.event.workflow_run.pull_requests[*].number) }}
+          GITHUB_PR_ACTION: ${{ github.event.action }}
+          GITHUB_CHANGES_BASE_REF: ${{ github.event.changes.base.ref.from }}
+          GITHUB_CHANGES_BASE_SHA: ${{ github.event.changes.base.sha.from }}
+        run: python3 .github/scripts/bits_review_gate.py resolve
+
+  publish:
+    needs: resolve
+    if: github.ref == 'refs/heads/main' && needs.resolve.outputs.shas != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        sha: ${{ fromJSON(needs.resolve.outputs.shas) }}
+    concurrency:
+      group: bits-review-gate-${{ matrix.sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Mint the status token
+        id: octo-sts
+        uses: DataDog/dd-octo-sts-action@c85802a58e202b7e764b5441e4378c76043c8108 # v1.0.5
+        with:
+          scope: DataDog/java-profiler
+          policy: self.bits-review-gate.publish-status
+
+      - name: Publish the status for the resolved head
+        env:
+          SHA: ${{ matrix.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          STATUS_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: python3 .github/scripts/bits_review_gate.py publish --sha "$SHA"
