@@ -46,6 +46,17 @@ function log_info() {
   echo -e "${GREEN}[INFO]${NC} $*"
 }
 
+# newest_jfr <dir> — path of the most recently modified .jfr in <dir>, empty
+# when none exists. The debug dump_path holds one snapshot per upload period,
+# so the newest covers the whole run window; directory order (the previous
+# find -print -quit) can hand the validator a first-period snapshot holding
+# only a fraction of the events.
+newest_jfr() {
+  # || true: with an unexpanded glob ls exits 2 and pipefail would abort the
+  # caller's assignment under set -e; empty output drives the not-found branch.
+  ls -t "${1}"/*.jfr 2>/dev/null | head -1 || true
+}
+
 function log_warn() {
   echo -e "${YELLOW}[WARN]${NC} $*"
 }
@@ -419,10 +430,13 @@ log_info "✓ Profiler-only test completed"
 # Collect mid-test system metrics
 collect_system_metrics "mid"
 
-# Find the JFR recording (profiler writes continuously)
+# Find the JFR recording (profiler writes continuously). The debug dump_path
+# holds one snapshot per upload period, so pick the newest: it covers the whole
+# run window, while `find -print -quit` returns directory order and can hand
+# the validator a first-period snapshot holding only a fraction of the events.
 log_info "Locating JFR recording in ${SCENARIO1_JFR_DIR}..."
 
-SCENARIO1_JFR=$(find "${SCENARIO1_JFR_DIR}" -name "*.jfr" -print -quit)
+SCENARIO1_JFR=$(newest_jfr "${SCENARIO1_JFR_DIR}")
 
 if [ -z "${SCENARIO1_JFR}" ] || [ ! -f "${SCENARIO1_JFR}" ]; then
   log_error "JFR recording not found in: ${SCENARIO1_JFR_DIR}"
@@ -530,10 +544,11 @@ log_info "Log output: ${SCENARIO2_LOG}"
 
 log_info "✓ Tracer+profiler test completed"
 
-# Find the JFR recording (profiler writes continuously)
+# Find the JFR recording (profiler writes continuously) - newest snapshot, as
+# in scenario 1: the dump directory accumulates one file per upload period.
 log_info "Locating JFR recording in ${SCENARIO2_JFR_DIR}..."
 
-SCENARIO2_JFR=$(find "${SCENARIO2_JFR_DIR}" -name "*.jfr" -print -quit)
+SCENARIO2_JFR=$(newest_jfr "${SCENARIO2_JFR_DIR}")
 
 if [ -z "${SCENARIO2_JFR}" ] || [ ! -f "${SCENARIO2_JFR}" ]; then
   log_error "JFR recording not found in: ${SCENARIO2_JFR_DIR}"
