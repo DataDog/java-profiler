@@ -2689,7 +2689,7 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id,
                             u64 table_generation) {
   // Relaxed: these gates only skip work. What an insert writes is checked
-  // under _table_lock against table_generation, which start() and release() bump.
+  // under _table_lock against table_generation; see tableGeneration().
   if (!_enabled.load(std::memory_order_relaxed)) {
     // disabled
     return;

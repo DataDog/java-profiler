@@ -3585,13 +3585,15 @@ TEST_F(LivenessTrackerMockJvmTest, StopRejectsCallbackStraddlingTheFinalFlush) {
     tracker->stop();
     EXPECT_NE(generation, tracker->tableGeneration());
     const u32 tracked = tracker->tableSizeForTest();
-    ASSERT_GT(tracked, 0u);
+    EXPECT_GT(tracked, 0u);
 
     jobject late = jvm.newObject(&jvm.retained_class);
     AllocEvent event;
     event._size = 16;
+    const int deleted_before = jvm.weak_refs_deleted;
     tracker->track(&jvm.jni, event, /*tid=*/1, late, /*call_trace_id=*/1, generation);
     EXPECT_EQ(tracked, tracker->tableSizeForTest());
+    EXPECT_EQ(1, jvm.weak_refs_deleted - deleted_before) << "the rejected sample leaked its weak ref";
     restart();
 }
 

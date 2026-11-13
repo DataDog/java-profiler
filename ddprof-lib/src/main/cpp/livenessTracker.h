@@ -988,9 +988,9 @@ public:
   // per-klass population. Called by Profiler::stop() after the final chunk and
   // the BFS join: only an in-flight allocation callback can race, and drops.
   void release(JNIEnv *env);
-  // Bumped when release() frees the table or initialize() publishes one. Read
-  // before the stack capture and passed to track(), which drops the sample if
-  // it moved: the call_trace_id and table belong to another recording.
+  // Bumped by stop() before its final flush, by release() and when initialize()
+  // publishes a table. Read before the stack capture and passed to track(),
+  // which drops the sample if it moved: it belongs to an ended recording.
   u64 tableGeneration() const { return _table_generation.load(std::memory_order_acquire); }
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id,
              u64 table_generation);
