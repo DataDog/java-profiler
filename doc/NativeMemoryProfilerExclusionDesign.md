@@ -128,7 +128,10 @@ Current imports and saved pointers are different state:
 Recognize Java's own hook by its known function address, not by an image-name
 match. Follow its saved forwarding pointer for admission. An own-hook target
 without valid saved forwarding state is indeterminate; do not follow it into a
-cycle or treat it as a clean allocator.
+cycle or treat it as a clean allocator. The own-hook rules are platform-
+neutral and also run on non-Linux; there only foreign-written inconsistent
+own-slot states can newly reject, since the owner classifier always returns
+`NOT_RECOGNIZED`.
 
 Do not inspect every application's allocator import. The proposed check covers
 Java's own current and effective forwarding targets. It is not a consistency
