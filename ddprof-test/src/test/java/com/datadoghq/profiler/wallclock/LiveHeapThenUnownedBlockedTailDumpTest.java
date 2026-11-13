@@ -20,7 +20,8 @@ public class LiveHeapThenUnownedBlockedTailDumpTest extends UnownedBlockedTailDu
 
   /**
    * Starts and stops a live-heap recording before each wall recording. Its liveness checker remains
-   * registered and must preserve IDs contributed by the wall-tail checker even with no live objects.
+   * registered and must preserve IDs contributed by the wall-tail checker even with no live
+   * objects.
    */
   @Override
   protected void beforeProfilerStart() throws Exception {

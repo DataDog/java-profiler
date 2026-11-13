@@ -166,9 +166,15 @@ public:
   /**
    * Copies a trace into a scratch/standby table, deduplicating by exact trace ID.
    * Must not mix with put(): clear the table before reusing it for active sampling.
-   * The caller must exclude concurrent writers.
+   * The caller must exclude concurrent writers. Returns true only for a
+   * confirmed existing exact ID or a successful copy; allocation/capacity
+   * failure returns false without confirming preservation.
    */
-  void putWithExistingId(CallTrace* trace, u64 weight);
+  bool putWithExistingId(CallTrace* trace, u64 weight);
+#ifdef UNIT_TEST
+  // Fail only the exact-ID arena copy, without changing active sampling.
+  static u64 failedPreservationIdForTest;
+#endif
   void setInstanceId(u64 instance_id) {
     // Use atomic store with RELEASE ordering to ensure visibility across threads
     _instance_id.store(instance_id, std::memory_order_release);

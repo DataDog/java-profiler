@@ -89,22 +89,28 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            const Context& context, u64 blocker,
                            u64 unblocking_span_id) {
   Profiler* profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
   TaskBlockActivity activity;
+  bool recording_enabled = profiler->taskBlockEnabled();
 
   ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(block_token);
   u64 generation = WallClockBlockTracker::tokenGeneration(block_token);
-  // beginTaskBlock0 resolves its slot through ThreadFilter::ensureCurrentThreadSlot(),
-  // which self-heals a cached-but-stale slot_id (e.g. after a recording restart
-  // reset the registry) back to this tid's real slot. The block duration between
-  // enter and exit can span such a reset, so re-validate here too instead of
-  // trusting the cached value directly - otherwise a stale cache makes the slot
-  // comparison below meaningless and silently drops the event uncounted.
-  ThreadFilter::SlotID current_slot = thread_filter->ensureCurrentThreadSlot(current);
+  // A stopped registry still owns its native identities. End that cached run
+  // without allocating; active recordings instead revalidate owner projection.
+  ThreadFilter::SlotID current_slot = thread_filter->ensureOwnerSlot(*current);
+  if (current_slot < 0 && !thread_filter->registryActive()) {
+    auto* identity = thread_filter->slotForId(current->filterSlotId());
+    if (identity != nullptr && identity->nativeTid() == current->tid()) {
+      current_slot = current->filterSlotId();
+    }
+  }
   BlockRunSnapshot snapshot;
   bool exited = current_slot == slot_id &&
       tracker->snapshotAndExitBlockedRun(thread_filter, slot_id, generation,
                                          &snapshot);
+#ifdef UNIT_TEST
+  Profiler::runTaskBlockActivityHookForTest(
+      Profiler::TaskBlockActivityStage::AFTER_EXIT);
+#endif
 
   if (!activity.active()) {
     // TaskBlockActivity's constructor already incremented TASK_BLOCK_DROPPED_ROTATION.

@@ -17,7 +17,8 @@ public class J9WallClockPrecheckCapabilityTest extends AbstractProfilerTest {
   /** Ensures owned-block hooks stay inactive when the selected wall engine cannot consume them. */
   @Test
   public void unsupportedEngineDoesNotActivateRegistry() {
-    long token = ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
+    long token =
+        ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
 
     assertEquals(0L, token, "J9WallClock must not activate unfiltered precheck tracking");
   }

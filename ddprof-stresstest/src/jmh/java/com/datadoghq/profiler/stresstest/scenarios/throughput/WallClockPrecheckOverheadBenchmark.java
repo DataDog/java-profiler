@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -42,10 +43,10 @@ import org.openjdk.jmh.annotations.Warmup;
  * Measures steady-state wall-clock timer overhead as an owned-block thread population grows.
  *
  * <p>The implementation separately records registry lookup work in the {@code
- * wc_precheck_registry_lookups} debug counter and bounds candidate visits to four times {@code
- * walltpt} per tick. This benchmark does not report that counter; it compares {@code
- * precheck=false} and {@code precheck=true} at each population to detect timer-loop throughput
- * regressions independently of one-time startup registration.
+ * wc_precheck_registry_lookups} debug counter and bounds candidate visits to {@code walltpt} per
+ * tick. This benchmark does not report that counter; it compares {@code precheck=false} and {@code
+ * precheck=true} at each population to detect timer-loop throughput regressions independently of
+ * one-time startup registration.
  */
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
@@ -61,6 +62,8 @@ public class WallClockPrecheckOverheadBenchmark {
   public int threadCount;
 
   private final List<Thread> workers = new ArrayList<>();
+  private final AtomicReference<Throwable> workerFailure = new AtomicReference<>();
+  private final CountDownLatch profilerStarted = new CountDownLatch(1);
   private volatile boolean running;
   private JavaProfiler profiler;
   private Path recording;
@@ -70,51 +73,78 @@ public class WallClockPrecheckOverheadBenchmark {
   public void setup() throws Exception {
     running = true;
     CountDownLatch ready = new CountDownLatch(threadCount);
-    CountDownLatch profilerStarted = new CountDownLatch(1);
     CountDownLatch armed = new CountDownLatch(threadCount);
-    for (int i = 0; i < threadCount; ++i) {
-      Thread worker =
-          new Thread(
-              () -> {
-                ready.countDown();
-                long token = 0;
-                boolean armedReported = false;
-                try {
-                  profilerStarted.await();
-                  token = WallClockPrecheckBenchmarkHooks.enterSleeping(profiler);
-                  armed.countDown();
-                  armedReported = true;
-                  while (running) {
-                    LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(1));
-                  }
-                } catch (InterruptedException interrupted) {
-                  Thread.currentThread().interrupt();
-                } finally {
-                  if (!armedReported) {
+    try {
+      for (int i = 0; i < threadCount; ++i) {
+        Thread worker =
+            new Thread(
+                () -> {
+                  ready.countDown();
+                  long token = 0;
+                  boolean armedReported = false;
+                  try {
+                    profilerStarted.await();
+                    if (!running) return;
+                    token = WallClockPrecheckBenchmarkHooks.enterSleeping(profiler);
+                    if (precheck && token == 0) {
+                      throw new IllegalStateException("Owned sleeping hook returned no token");
+                    }
                     armed.countDown();
+                    armedReported = true;
+                    while (running) {
+                      LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(1));
+                    }
+                  } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                  } finally {
+                    if (!armedReported) {
+                      armed.countDown();
+                    }
+                    if (token != 0) WallClockPrecheckBenchmarkHooks.exit(profiler, token);
                   }
-                  WallClockPrecheckBenchmarkHooks.exit(profiler, token);
-                }
-              },
-              "wall-precheck-benchmark-" + i);
-      worker.setDaemon(true);
-      worker.start();
-      workers.add(worker);
-    }
-    if (!ready.await(30, TimeUnit.SECONDS)) {
-      throw new IllegalStateException("Timed out creating benchmark workers");
-    }
+                },
+                "wall-precheck-benchmark-" + i);
+        worker.setDaemon(true);
+        worker.start();
+        workers.add(worker);
+      }
+      if (!ready.await(30, TimeUnit.SECONDS)) {
+        throw new IllegalStateException("Timed out creating benchmark workers");
+      }
 
-    profiler = JavaProfiler.getInstance();
-    recording = Files.createTempFile("wall-precheck-overhead-", ".jfr");
-    profiler.execute(
-        "start,wall=1ms,walltpt=16,filter=,wallprecheck="
-            + precheck
-            + ",jfr,file="
-            + recording.toAbsolutePath());
-    profilerStarted.countDown();
-    if (!armed.await(30, TimeUnit.SECONDS)) {
-      throw new IllegalStateException("Timed out arming benchmark workers");
+      profiler = JavaProfiler.getInstance();
+      recording = Files.createTempFile("wall-precheck-overhead-", ".jfr");
+      profiler.execute(
+          "start,wall=1ms,walltpt=16,filter=,wallprecheck="
+              + precheck
+              + ",jfr,file="
+              + recording.toAbsolutePath());
+      long suppressedBefore = profiler.getDebugCounters().get("wc_signals_suppressed_owned_block");
+      profilerStarted.countDown();
+      if (!armed.await(30, TimeUnit.SECONDS)) {
+        throw new IllegalStateException("Timed out arming benchmark workers");
+      }
+      if (workerFailure.get() != null) {
+        throw new IllegalStateException("Benchmark worker setup failed", workerFailure.get());
+      }
+      if (precheck) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (profiler.getDebugCounters().get("wc_signals_suppressed_owned_block")
+            <= suppressedBefore) {
+          if (System.nanoTime() >= deadline) {
+            throw new IllegalStateException(
+                "No owned-block suppression observed before measurement");
+          }
+          Thread.sleep(1);
+        }
+      }
+    } catch (Exception | Error failure) {
+      try {
+        tearDown();
+      } catch (Exception cleanupFailure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+      throw failure;
     }
   }
 
@@ -122,18 +152,24 @@ public class WallClockPrecheckOverheadBenchmark {
   @TearDown(Level.Trial)
   public void tearDown() throws Exception {
     running = false;
+    profilerStarted.countDown();
     for (Thread worker : workers) {
       LockSupport.unpark(worker);
     }
     for (Thread worker : workers) {
       worker.join(TimeUnit.SECONDS.toMillis(5));
+      if (worker.isAlive()) throw new IllegalStateException("Benchmark worker did not exit");
     }
     workers.clear();
     if (profiler != null) {
       profiler.stop();
     }
     if (recording != null) {
-      Files.deleteIfExists(recording);
+      if (Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+        System.out.println("===> benchmark recording: " + recording.toAbsolutePath());
+      } else {
+        Files.deleteIfExists(recording);
+      }
     }
   }
 

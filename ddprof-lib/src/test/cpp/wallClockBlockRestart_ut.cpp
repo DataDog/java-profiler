@@ -16,6 +16,8 @@
 #include "wallClockBlockTracker.h"
 
 extern "C" {
+void JNICALL JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
+void JNICALL JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0();
 jlong JNICALL Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(JNIEnv*, jclass, jint);
 void JNICALL Java_com_datadoghq_profiler_JavaProfiler_blockExit0(JNIEnv*, jclass, jlong);
 void JNICALL Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv*, jclass);
@@ -405,3 +407,47 @@ TEST_P(PairedTaskBlockRestartTest, PausedEndCannotRecordOrMutateReplacementAcros
 
 INSTANTIATE_TEST_SUITE_P(PairedJniHooks, PairedTaskBlockRestartTest,
                         ::testing::Values(RestartHook::TASK_BLOCK));
+TEST_P(WallClockBlockRestartTest, OpenContextSurvivesRecordingRefresh) {
+    JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
+    int slot_id = current->filterSlotId();
+    auto* identity = registry->slotForId(slot_id);
+    ASSERT_NE(nullptr, identity);
+    u64 context = identity->rawContextWindowState();
+    ASSERT_TRUE(identity->inContextWindow());
+    registry->deactivateRecording();
+    registry->init("", true);
+    u64 token = enterHook();
+    EXPECT_EQ(0u, token) << "An open context must not admit outside-context suppression";
+    EXPECT_EQ(context, identity->rawContextWindowState());
+    exitHook(token);
+    JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0();
+    token = enterHook();
+    EXPECT_NE(0u, token);
+    exitHook(token);
+}
+
+TEST_P(WallClockBlockRestartTest, MatchingContextRemovalWorksWhileStopped) {
+    JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
+    auto* identity = registry->slotForId(current->filterSlotId());
+    ASSERT_NE(nullptr, identity);
+    registry->deactivateRecording();
+    JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0();
+    EXPECT_FALSE(identity->inContextWindow());
+    registry->init("", true);
+    u64 token = enterHook();
+    EXPECT_NE(0u, token);
+    exitHook(token);
+}
+
+TEST_P(WallClockBlockRestartTest, MatchingContextRemovalWorksBeforeEpochRefresh) {
+    JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
+    auto* identity = registry->slotForId(current->filterSlotId());
+    ASSERT_NE(nullptr, identity);
+    registry->deactivateRecording();
+    registry->init("", true);
+    JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0();
+    EXPECT_FALSE(identity->inContextWindow());
+    u64 token = enterHook();
+    EXPECT_NE(0u, token);
+    exitHook(token);
+}

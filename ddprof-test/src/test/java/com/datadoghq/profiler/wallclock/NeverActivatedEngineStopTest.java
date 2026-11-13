@@ -6,34 +6,41 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfilerTestSupport;
 import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
- * Regression test for {@code Profiler::stop()} gating engine teardown on the
- * activated-engine mask rather than the requested-engine mask. Before this fix,
- * a mixed-success {@code start()} (one engine requested but never activated,
- * another requested and activated) still invoked {@code stop()} on the engine
- * that was never activated.
+ * Regression test for {@code Profiler::stop()} gating engine teardown on the activated-engine mask
+ * rather than the requested-engine mask. Before this fix, a mixed-success {@code start()} (one
+ * engine requested but never activated, another requested and activated) still invoked {@code
+ * stop()} on the engine that was never activated.
  *
- * <p>Detection uses the existing {@code wall_stop_while_not_activated} debug
- * counter (read via the already-public {@code JavaProfiler.getDebugCounters()})
- * rather than a dedicated JNI hook: {@code Profiler::start()} calls
- * {@code Counters::reset()} unconditionally, so the counter is implicitly
+ * <p>Detection uses the existing {@code wall_stop_while_not_activated} debug counter (read via the
+ * already-public {@code JavaProfiler.getDebugCounters()}) rather than a dedicated JNI hook: {@code
+ * Profiler::start()} calls {@code Counters::reset()} unconditionally, so the counter is implicitly
  * zeroed by this test's own {@code setupProfiler()} call before the assertion.
  */
 public class NeverActivatedEngineStopTest extends AbstractProfilerTest {
 
   private static final String COUNTER_NAME = "wall_stop_while_not_activated";
 
+  @AfterEach
+  void clearForceWallStartFailure() {
+    // Runs before AbstractProfilerTest.cleanup(); the toggle is process-wide.
+    JavaProfilerTestSupport.setForceWallStartFailureForTest(false);
+  }
+
   @Override
   protected void beforeProfilerStart() throws Exception {
     super.beforeProfilerStart();
-    // In effect only for this test's start() call; cleared at the top of the test method below.
+    // In effect only for this test's start() call; disarmed at the top of the test method
+    // below and, defensively, in @AfterEach so a skipped or failing test cannot leak it.
     JavaProfilerTestSupport.setForceWallStartFailureForTest(true);
     // The forced-start-failure toggle is a DEBUG-only native hook (no-op in
     // release builds). Self-skip when it isn't armed so the test doesn't fail
@@ -60,9 +67,10 @@ public class NeverActivatedEngineStopTest extends AbstractProfilerTest {
     JavaProfilerTestSupport.setForceWallStartFailureForTest(false);
     stopProfiler();
     Map<String, Long> counters = profiler.getDebugCounters();
+    assertTrue(counters.containsKey(COUNTER_NAME), "Missing required stop-counter key");
     assertEquals(
         0L,
-        counters.getOrDefault(COUNTER_NAME, 0L),
+        counters.get(COUNTER_NAME),
         "wall engine failed to activate in start(); Profiler::stop() must not call"
             + " BaseWallClock::stop() on an engine that never activated");
   }

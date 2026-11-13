@@ -17,7 +17,7 @@ import com.datadoghq.native.util.PlatformUtils
 
 plugins {
   java
-  id("me.champeau.jmh") version "0.7.3"
+  id("me.champeau.jmh") version "0.7.4"
   id("com.datadoghq.java-conventions")
 }
 
@@ -76,8 +76,8 @@ tasks.named<Jar>("jmhJar") {
 sourceSets {
   create("chaos")
   create("chaosTest") {
-    compileClasspath += sourceSets["chaos"].output
-    runtimeClasspath += sourceSets["chaos"].output
+    compileClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
+    runtimeClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
   }
 }
 
@@ -86,8 +86,8 @@ dependencies {
   // dd-trace-api: annotations only at compile time. The patched dd-java-agent
   // provides the (relocated) runtime classes and intercepts @Trace.
   "chaosCompileOnly"(libs.dd.trace.api)
-  // ddprof-lib public API: compile-only; the patched dd-java-agent provides the
-  // classes at runtime for antagonists that call JavaProfiler directly.
+  // ddprof-lib's API stays compile-only; the runner appends the selected jar to
+  // bootstrap so antagonists and the agent share one JavaProfiler singleton.
   "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
   "chaosTestImplementation"(libs.bundles.testing)
   "chaosTestImplementation"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
@@ -113,6 +113,7 @@ tasks.register<Test>("testOwnedBlockPrecheck") {
   testClassesDirs = sourceSets["chaosTest"].output.classesDirs
   classpath = sourceSets["chaosTest"].runtimeClasspath
   setExecutable(PlatformUtils.testJavaExecutable())
+  systemProperty("ddprof_test.keep_jfrs", project.hasProperty("keepJFRs"))
   useJUnitPlatform()
 }
 

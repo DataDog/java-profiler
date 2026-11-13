@@ -30,11 +30,15 @@ public class JvmtiBasedUnfilteredWallPrecheckTest extends UnfilteredWallPrecheck
     if (!jvmtiDelegationAvailable) {
       return;
     }
-    long requestedAfter =
-        profiler.getDebugCounters().getOrDefault("jvmti_stacks_requested", 0L);
+    long requestedAfter = profiler.getDebugCounters().getOrDefault("jvmti_stacks_requested", 0L);
     assertTrue(
         requestedAfter > requestedBefore,
         "Expected wallclock jvmtistacks path to request delegated stack traces");
+  }
+
+  @Override
+  protected boolean usesWeightedUnownedFallback() {
+    return false;
   }
 
   @Override

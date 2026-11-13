@@ -37,6 +37,7 @@
 
 class VMSymbol;  // hotspot/vmStructs.h
 class ProfiledThread;
+struct CallTrace;
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
@@ -104,15 +105,24 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
-  // The buffer jvmti->GetLineNumberTable() returned, held directly (not a
-  // copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
-  // so native-memory-tracking accounting stays correct. Per the JVMTI spec
-  // this array is a fresh, caller-owned allocation decoupled from the
-  // Method's lifetime, so holding onto it is safe across class unload.
+  // Either the buffer jvmti->GetLineNumberTable() returned, held directly (not
+  // a copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
+  // so native-memory-tracking accounting stays correct, or -- when
+  // _jvmti_allocated is false -- a malloc'd table decoded from VM metadata by
+  // HotspotSupport::resolve(), freed via free(). Either way the array is
+  // decoupled from the Method's lifetime, so holding onto it is safe across
+  // class unload.
   jvmtiLineNumberEntry* _table;
+  bool _jvmti_allocated;
 
-  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr) : _size(size), _table(ptr) {}
+  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr, bool jvmti_allocated = true) :
+    _size(size), _table(ptr), _jvmti_allocated(jvmti_allocated) {}
   ~SharedLineNumberTable();
+  // The destructor frees _table, so a copy would free it twice.
+  SharedLineNumberTable(const SharedLineNumberTable&) = delete;
+  SharedLineNumberTable& operator=(const SharedLineNumberTable&) = delete;
+  SharedLineNumberTable(SharedLineNumberTable&&) = delete;
+  SharedLineNumberTable& operator=(SharedLineNumberTable&&) = delete;
 };
 
 class MethodInfo {
@@ -137,14 +147,15 @@ public:
   inline bool isHidden();
 };
 
-// MethodMap's key can be derived from 3 sources:
+// MethodMap's key can be derived from 4 sources:
 // 1) jmethodID for Java methods
-// 2) void* address for native method names
-// 3) Encoded RemoteFrameInfo
+// 2) raw Method* and its frame tag, for HotSpot frames without a jmethodID
+// 3) void* address for native method names
+// 4) Encoded RemoteFrameInfo
 // The values of the keys are potentially overlapping, so we use 
 // the highest 2 bits to distinguish them.
 // Key encoding (top two bits):
-//   00 - jmethodID
+//   00 - jmethodID, or with bit 61 set a raw Method* (see makeRawKey())
 //   10 - void* address (native frame names)
 //   01 - RemoteFrameInfo (packed remote symbolication)
 //   11 - vtable_receiver class_id (BCI_VTABLE_RECEIVER frames)
@@ -157,6 +168,9 @@ public:
   static constexpr unsigned long REMOTE_FRAME_MARK = 0x4000000000000000ULL;
   static constexpr unsigned long VTABLE_RECEIVER_MARK = ADDRESS_MARK | REMOTE_FRAME_MARK;
   static constexpr unsigned long KEY_TYPE_MASK = ADDRESS_MARK | REMOTE_FRAME_MARK;
+  static constexpr unsigned long RAW_METHOD_MARK = 0x2000000000000000ULL;
+  static constexpr int RAW_METHOD_TAG_SHIFT = 48;
+  static constexpr uint32_t RAW_METHOD_TAG_MASK = 0x1fff;
 
   MethodMap() {}
 
@@ -176,6 +190,19 @@ public:
     unsigned long key = packed_remote_frame;
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | REMOTE_FRAME_MARK);}
+
+  // A raw frame's row: its untagged Method* (below 2^48, which
+  // HotspotSupport::fillJavaFrame() checks when it stores the frame), the low 13 bits of its tag, and
+  // RAW_METHOD_MARK, which keeps it apart from every jmethodID. The truncated
+  // tag only has to separate loads of a class at the same address that are
+  // both accepted in one dump; Lookup::fillRawMethod() keeps refused frames
+  // away from the rows, and refills every row at its first use in a chunk.
+  static unsigned long makeRawKey(const void* untagged_method, uint32_t tag) {
+    unsigned long key = (unsigned long)untagged_method;
+    assert((key >> RAW_METHOD_TAG_SHIFT) == 0);
+    return key | RAW_METHOD_MARK |
+           ((unsigned long)(tag & RAW_METHOD_TAG_MASK) << RAW_METHOD_TAG_SHIFT);
+  }
 
   // BCI_VTABLE_RECEIVER frames key by the resolved class_id (not by the
   // VMSymbol* captured at sample time), so two distinct Symbol addresses
@@ -234,10 +261,8 @@ class Recording {
   friend ObjectSampler;
   friend Profiler;
   friend Lookup;
-  // Grants gtest access to the private countSerializableChildren() helper below,
-  // since Recording itself can't be constructed in a plain gtest binary (its
-  // constructor needs a live JVMTI environment). Same pattern as
-  // VMTestAccessor/ProfilerTestAccessor in the test sources.
+  // Gtest access to private serializer invariants; the production constructor
+  // requires a live JVMTI environment.
   friend class RecordingTestAccessor;
 
 private:
@@ -253,6 +278,18 @@ private:
   // the encoded count can never diverge from what actually gets serialized.
   static size_t countSerializableChildren(
       const std::vector<const Element *> &children, int depth);
+#ifdef DEBUG
+  static void writeUnwindFailureEvent(Buffer *buf, u64 ticks, const char *kind,
+                                     const char *name, u64 count);
+#endif
+
+  // Encodes the stack-pool record header. A Java entry root can establish
+  // completeness only when the walker has not already reported missing frames.
+  static void writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
+                                u64 correlation_id, ExecutionEvent *event);
+
+  static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
+                                   const MethodInfo *root);
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention
@@ -420,13 +457,14 @@ public:
 
   void writeUnwindFailures(Buffer *buf);
 
-  void writeContextSnapshot(Buffer *buf, Context &context);
+  void writeContextSnapshot(Buffer *buf, const Context &context);
   void writeCurrentContext(Buffer *buf);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                              u64 correlation_id, ExecutionEvent *event);
   void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
-                          u64 correlation_id, ExecutionEvent *event);
+                          u64 correlation_id, ExecutionEvent *event,
+                          const Context *context = nullptr);
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
@@ -456,6 +494,7 @@ private:
 };
 
 class ResolveMethodState;
+class ResolvedMethod;
 class Lookup {
 public:
   Recording *_rec;
@@ -470,6 +509,33 @@ public:
   std::unordered_map<void*, u32, std::hash<void*>, std::equal_to<void*>,
                       CountingAllocator<std::pair<void* const, u32>, NM_JFR_BUFFERS>>
       _vtable_receiver_cache;
+
+  // Per-dump cache of raw Method* frame resolutions (HotSpot cstack=vm frames
+  // whose class had no jmethodID when sampled): the filled row, or nullptr if
+  // the frame was refused. The same raw method recurs in many traces, and
+  // each resolution sets up crash protection, checks the class against the
+  // dump's pinned classes and its redefinition mark, and reads names and line
+  // numbers. Keyed by the
+  // untagged Method* and the frame's full tag, so occurrences that differ
+  // only in bci or frame type share one entry. A cached result stays right
+  // for the whole dump: an accepted frame was sampled from that method, and a
+  // refused one stays refused. Recording::writeCpool() constructs a Lookup
+  // for each dump, so the cache never outlives one. MethodMap nodes are not
+  // erased while a Lookup exists, so the row pointers stay valid.
+  struct RawMethodKey {
+    const void* method;
+    uint32_t tag;
+    bool operator==(const RawMethodKey& o) const { return method == o.method && tag == o.tag; }
+  };
+  struct RawMethodKeyHash {
+    size_t operator()(const RawMethodKey& k) const {
+      return std::hash<const void*>()(k.method) ^ ((size_t)k.tag * KNUTH_MULTIPLICATIVE_CONSTANT);
+    }
+  };
+  std::unordered_map<RawMethodKey, MethodInfo*, RawMethodKeyHash, std::equal_to<RawMethodKey>,
+                     CountingAllocator<std::pair<const RawMethodKey, MethodInfo*>, NM_JFR_BUFFERS>>
+      _raw_method_cache;
+
   Dictionary _packages;
   Dictionary _symbols;
 
@@ -498,6 +564,14 @@ private:
   // case. Every other path (including the "<unloaded>" stale-jmethodID
   // sentinel) fully populates mi and returns true.
   bool fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
+  // Fills mi from a raw Method* already resolved by HotspotSupport::resolve(),
+  // taking ownership of its line number table. No JNI/JVMTI.
+  void fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod& resolved);
+  // Sets mi's class/name/signature ids, applying the synthetic-accessor and
+  // LambdaForm class name normalisation. class_name is an internal name
+  // ("java/lang/Object"), not necessarily NUL-terminated at class_name_len.
+  void fillJavaMethodNames(MethodInfo *mi, const char *class_name, size_t class_name_len,
+                           const char *method_name, const char *method_sig);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
@@ -542,6 +616,9 @@ private:
   // sigsetjmp/siglongjmp window.
   MethodInfo *fillMethod(ASGCT_CallFrame &frame, jmethodID method_id, jint bci,
                          ProfiledThread* const prof_thread);
+  // The row for a raw Method* frame, resolved and filled at most once per
+  // distinct method and tag per dump, or the unknown row if it is refused.
+  MethodInfo *fillRawMethod(const ASGCT_CallFrame &frame);
 
   // Materializes _unknown_method for this dump (filling it on first use) and
   // returns it.
@@ -586,6 +663,8 @@ public:
 
   bool recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
+  bool recordWallSample(int lock_index, int tid, u64 call_trace_id,
+                       ExecutionEvent *event, const Context &context);
 
   // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
   // recording. `correlation_id` is the same jlong passed to the HotSpot

@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 pluginManagement {
   includeBuild("build-logic")
   val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
@@ -33,3 +35,4 @@ include(":ddprof-test")
 include(":ddprof-test-native")
 include(":malloc-shim")
 include(":ddprof-stresstest")
+include(":demo-java-leak")

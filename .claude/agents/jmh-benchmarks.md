@@ -50,7 +50,9 @@ When the user asks you (directly or via a command) to run or analyze JMH:
 
 3. Plan the JMH command
   - For Gradle:
-    - Default: `./gradlew jmh --no-daemon`
+    - Default: `./.claude/commands/build-and-summarize jmh --no-daemon`. Never run
+      `gradlew` directly; a hook denies it. Read the output from the log path that
+      `build-and-summarize` prints.
     - Apply filters via `-PjmhIncludes=*pattern*` or the project’s conventions if
       they already exist.
   - For Maven:

@@ -9,21 +9,29 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfilerTestSupport;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
- * Regression test for the {@code Profiler::start()} fallback that closes thread-registry
- * admission when the wall engine fails to activate in unfiltered wall-precheck tracking mode, so
- * unrelated engines that did start successfully (e.g. {@code cpu=}) don't keep paying registry
- * overhead for the rest of the recording.
+ * Regression test for the {@code Profiler::start()} fallback that closes thread-registry admission
+ * when the wall engine fails to activate in unfiltered wall-precheck tracking mode, so unrelated
+ * engines that did start successfully (e.g. {@code cpu=}) don't keep paying registry overhead for
+ * the rest of the recording.
  */
 public class UnfilteredWallPrecheckFallbackTest extends AbstractProfilerTest {
+
+  @AfterEach
+  void clearForceWallStartFailure() {
+    // Runs before AbstractProfilerTest.cleanup(); the toggle is process-wide.
+    JavaProfilerTestSupport.setForceWallStartFailureForTest(false);
+  }
 
   @Override
   protected void beforeProfilerStart() throws Exception {
     super.beforeProfilerStart();
-    // In effect only for this test's start() call; cleared at the top of the test method below.
+    // In effect only for this test's start() call; disarmed at the top of the test method
+    // below and, defensively, in @AfterEach so a skipped or failing test cannot leak it.
     JavaProfilerTestSupport.setForceWallStartFailureForTest(true);
     // The forced-start-failure toggle is a DEBUG-only native hook (no-op in
     // release builds). Self-skip when it isn't armed so the test doesn't fail

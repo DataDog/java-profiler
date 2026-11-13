@@ -5,10 +5,18 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.lang.reflect.Method;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -18,14 +26,6 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import com.datadoghq.profiler.JfrEvents;
-import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** End-to-end coverage for the paired synchronous TaskBlock API. */
 public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
@@ -53,9 +53,10 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   @ValueSource(strings = {"start", "resume"})
   public void rejectedDuplicateStartOrResumePreservesActiveTaskBlockRecording(String action)
       throws Exception {
-    IllegalStateException rejected = assertThrows(
-        IllegalStateException.class,
-        () -> profiler.execute(action + "," + getProfilerCommand()));
+    IllegalStateException rejected =
+        assertThrows(
+            IllegalStateException.class,
+            () -> profiler.execute(action + "," + getProfilerCommand()));
     assertEquals("Profiler already started", rejected.getMessage());
 
     assertTrue(runEligibleBlock(BLOCKER));
@@ -68,18 +69,20 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   @Test
   public void invalidAndNestedTokensDoNotLoseCurrentOwner() throws Exception {
     AtomicBoolean recorded = new AtomicBoolean();
-    runWorker(() -> {
-      long first = profiler.beginTaskBlock();
-      assertTrue(first != 0);
-      long token = profiler.beginTaskBlock();
-      assertTrue(token != 0, "a nested begin must supersede the open interval");
-      assertNotEquals(first, token);
-      assertFalse(profiler.endTaskBlock(first, BLOCKER, UNBLOCKING_SPAN_ID),
-          "the superseded token must no longer close an interval");
-      assertFalse(profiler.endTaskBlock(token + 1, BLOCKER, UNBLOCKING_SPAN_ID));
-      Thread.sleep(200L);
-      recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-    });
+    runWorker(
+        () -> {
+          long first = profiler.beginTaskBlock();
+          assertTrue(first != 0);
+          long token = profiler.beginTaskBlock();
+          assertTrue(token != 0, "a nested begin must supersede the open interval");
+          assertNotEquals(first, token);
+          assertFalse(
+              profiler.endTaskBlock(first, BLOCKER, UNBLOCKING_SPAN_ID),
+              "the superseded token must no longer close an interval");
+          assertFalse(profiler.endTaskBlock(token + 1, BLOCKER, UNBLOCKING_SPAN_ID));
+          Thread.sleep(200L);
+          recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+        });
     assertTrue(recorded.get());
   }
 
@@ -88,19 +91,20 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     AtomicLong abandoned = new AtomicLong();
     AtomicBoolean recorded = new AtomicBoolean();
     AtomicBoolean abandonedEnd = new AtomicBoolean(true);
-    runWorker(() -> {
-      try {
-        abandoned.set(profiler.beginTaskBlock());
-        throw new IllegalStateException("exit without endTaskBlock");
-      } catch (IllegalStateException expected) {
-        // Simulates a caller that skips endTaskBlock on an exception path.
-      }
-      long token = profiler.beginTaskBlock();
-      assertTrue(token != 0, "an abandoned interval must not disable TaskBlock for the thread");
-      Thread.sleep(200L);
-      recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-      abandonedEnd.set(profiler.endTaskBlock(abandoned.get(), BLOCKER, UNBLOCKING_SPAN_ID));
-    });
+    runWorker(
+        () -> {
+          try {
+            abandoned.set(profiler.beginTaskBlock());
+            throw new IllegalStateException("exit without endTaskBlock");
+          } catch (IllegalStateException expected) {
+            // Simulates a caller that skips endTaskBlock on an exception path.
+          }
+          long token = profiler.beginTaskBlock();
+          assertTrue(token != 0, "an abandoned interval must not disable TaskBlock for the thread");
+          Thread.sleep(200L);
+          recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+          abandonedEnd.set(profiler.endTaskBlock(abandoned.get(), BLOCKER, UNBLOCKING_SPAN_ID));
+        });
     assertTrue(abandoned.get() != 0);
     assertTrue(recorded.get());
     assertFalse(abandonedEnd.get());
@@ -113,12 +117,13 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   public void tooShortIntervalStillClearsLifecycle() throws Exception {
     AtomicBoolean recorded = new AtomicBoolean(true);
     AtomicLong secondToken = new AtomicLong();
-    runWorker(() -> {
-      long token = profiler.beginTaskBlock();
-      recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-      secondToken.set(profiler.beginTaskBlock());
-      profiler.endTaskBlock(secondToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
-    });
+    runWorker(
+        () -> {
+          long token = profiler.beginTaskBlock();
+          recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+          secondToken.set(profiler.beginTaskBlock());
+          profiler.endTaskBlock(secondToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+        });
 
     assertFalse(recorded.get());
     assertTrue(secondToken.get() != 0);
@@ -129,69 +134,73 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   @Test
   public void contextWindowAdmissionAndCrossingAreEnforced() throws Exception {
     AtomicLong tokenAfterWindow = new AtomicLong();
-    runWorker(() -> {
-      profiler.addThread();
-      try {
-        assertEquals(0L, profiler.beginTaskBlock());
-      } finally {
-        profiler.removeThread();
-      }
+    runWorker(
+        () -> {
+          profiler.addThread();
+          try {
+            assertEquals(0L, profiler.beginTaskBlock());
+          } finally {
+            profiler.removeThread();
+          }
 
-      long crossedToken = profiler.beginTaskBlock();
-      assertTrue(crossedToken != 0);
-      profiler.addThread();
-      profiler.removeThread();
-      Thread.sleep(20L);
-      assertFalse(profiler.endTaskBlock(
-          crossedToken, BLOCKER, UNBLOCKING_SPAN_ID));
+          long crossedToken = profiler.beginTaskBlock();
+          assertTrue(crossedToken != 0);
+          profiler.addThread();
+          profiler.removeThread();
+          Thread.sleep(20L);
+          assertFalse(profiler.endTaskBlock(crossedToken, BLOCKER, UNBLOCKING_SPAN_ID));
 
-      tokenAfterWindow.set(profiler.beginTaskBlock());
-      profiler.endTaskBlock(tokenAfterWindow.get(), BLOCKER, UNBLOCKING_SPAN_ID);
-    });
-    assertTrue(tokenAfterWindow.get() != 0,
-        "context rejection must still clear the prior lifecycle");
+          tokenAfterWindow.set(profiler.beginTaskBlock());
+          profiler.endTaskBlock(tokenAfterWindow.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+        });
+    assertTrue(
+        tokenAfterWindow.get() != 0, "context rejection must still clear the prior lifecycle");
 
     stopProfiler();
-    assertTrue(getRecordedCounterValue("task_block_skipped_context_window") > 0,
+    assertTrue(
+        getRecordedCounterValue("task_block_skipped_context_window") > 0,
         "context-window crossing must be counted separately from trace-context rejection");
-    assertEquals(0L, getRecordedCounterValue("task_block_skipped_trace_context"),
+    assertEquals(
+        0L,
+        getRecordedCounterValue("task_block_skipped_trace_context"),
         "context-window crossing must not be attributed to the trace-context counter");
   }
 
   @Test
   public void traceContextRejectsAtEntry() throws Exception {
     AtomicLong token = new AtomicLong(-1L);
-    runWorker(() -> {
-      profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
-      try {
-        token.set(profiler.beginTaskBlock());
-      } finally {
-        profiler.clearTraceContext();
-      }
-    });
-    assertEquals(0L, token.get(),
-        "a traced interval must not arm timer-side suppression");
+    runWorker(
+        () -> {
+          profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
+          try {
+            token.set(profiler.beginTaskBlock());
+          } finally {
+            profiler.clearTraceContext();
+          }
+        });
+    assertEquals(0L, token.get(), "a traced interval must not arm timer-side suppression");
   }
 
   @Test
   public void traceContextRejectionKeepsOpenInterval() throws Exception {
     AtomicLong nested = new AtomicLong(-1L);
     AtomicBoolean recorded = new AtomicBoolean();
-    runWorker(() -> {
-      long token = profiler.beginTaskBlock();
-      assertTrue(token != 0);
-      profiler.setTraceContext(0x5200L, 0x5201L, 0L, 0x5201L, -1, null, -1, null);
-      try {
-        nested.set(profiler.beginTaskBlock());
-      } finally {
-        profiler.clearTraceContext();
-      }
-      Thread.sleep(200L);
-      recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-    });
+    runWorker(
+        () -> {
+          long token = profiler.beginTaskBlock();
+          assertTrue(token != 0);
+          profiler.setTraceContext(0x5200L, 0x5201L, 0L, 0x5201L, -1, null, -1, null);
+          try {
+            nested.set(profiler.beginTaskBlock());
+          } finally {
+            profiler.clearTraceContext();
+          }
+          Thread.sleep(200L);
+          recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+        });
     assertEquals(0L, nested.get());
-    assertTrue(recorded.get(),
-        "a begin rejected for an active trace context must keep the open interval");
+    assertTrue(
+        recorded.get(), "a begin rejected for an active trace context must keep the open interval");
 
     stopProfiler();
     assertTrue(getRecordedCounterValue("task_block_skipped_trace_context") > 0);
@@ -203,21 +212,26 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     AtomicLong beginToken = new AtomicLong(-1L);
     AtomicBoolean endResult = new AtomicBoolean(true);
     AtomicLong ownToken = new AtomicLong();
-    Thread other = new Thread(() -> { }, "taskblock-mismatch-other");
+    Thread other = new Thread(() -> {}, "taskblock-mismatch-other");
 
-    runWorker(() -> {
-      beginToken.set(ProfilerOwnedBlockHooks.beginTaskBlockForThread(profiler, other));
+    runWorker(
+        () -> {
+          beginToken.set(ProfilerOwnedBlockHooks.beginTaskBlockForThread(profiler, other));
 
-      ownToken.set(profiler.beginTaskBlock());
-      assertTrue(ownToken.get() != 0);
-      endResult.set(ProfilerOwnedBlockHooks.endTaskBlockForThread(
-          profiler, other, ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID));
-      profiler.endTaskBlock(ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
-    });
+          ownToken.set(profiler.beginTaskBlock());
+          assertTrue(ownToken.get() != 0);
+          endResult.set(
+              ProfilerOwnedBlockHooks.endTaskBlockForThread(
+                  profiler, other, ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID));
+          profiler.endTaskBlock(ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+        });
 
-    assertEquals(0L, beginToken.get(),
+    assertEquals(
+        0L,
+        beginToken.get(),
         "beginTaskBlock0 must reject a jthread that does not identify the calling thread");
-    assertFalse(endResult.get(),
+    assertFalse(
+        endResult.get(),
         "endTaskBlock0 must reject a jthread that does not identify the calling thread");
 
     stopProfiler();
@@ -228,27 +242,28 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   public void virtualThreadCannotMutateCarrierTaskBlockState() throws Exception {
     Method startVirtualThread;
     try {
-      startVirtualThread =
-          Thread.class.getMethod("startVirtualThread", Runnable.class);
+      startVirtualThread = Thread.class.getMethod("startVirtualThread", Runnable.class);
     } catch (NoSuchMethodException unavailableBeforeJdk21) {
       Assumptions.assumeTrue(false, "virtual threads require JDK 21");
       return;
     }
 
     AtomicLong token = new AtomicLong(-1L);
-    Thread virtual = (Thread) startVirtualThread.invoke(null, (Runnable) () ->
-        token.set(profiler.beginTaskBlock()));
+    Thread virtual =
+        (Thread)
+            startVirtualThread.invoke(null, (Runnable) () -> token.set(profiler.beginTaskBlock()));
     virtual.join(5_000L);
     assertFalse(virtual.isAlive());
     assertEquals(0L, token.get());
 
     AtomicLong platformToken = new AtomicLong();
-    runWorker(() -> {
-      platformToken.set(profiler.beginTaskBlock());
-      profiler.endTaskBlock(platformToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
-    });
-    assertTrue(platformToken.get() != 0,
-        "virtual-thread rejection must not strand carrier ownership");
+    runWorker(
+        () -> {
+          platformToken.set(profiler.beginTaskBlock());
+          profiler.endTaskBlock(platformToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+        });
+    assertTrue(
+        platformToken.get() != 0, "virtual-thread rejection must not strand carrier ownership");
   }
 
   @Test
@@ -257,19 +272,21 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
     AtomicReference<Throwable> error = new AtomicReference<>();
-    long before = profiler.getDebugCounters()
-        .getOrDefault("wc_signals_suppressed_owned_block", 0L);
-    Thread worker = new Thread(() -> {
-      try {
-        long token = profiler.beginTaskBlock();
-        assertTrue(token != 0);
-        armed.countDown();
-        assertTrue(release.await(5, TimeUnit.SECONDS));
-        recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-      } catch (Throwable t) {
-        error.set(t);
-      }
-    }, "taskblock-live-dump");
+    long before = profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                long token = profiler.beginTaskBlock();
+                assertTrue(token != 0);
+                armed.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+              } catch (Throwable t) {
+                error.set(t);
+              }
+            },
+            "taskblock-live-dump");
 
     worker.start();
     assertTrue(armed.await(5, TimeUnit.SECONDS));
@@ -302,24 +319,28 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   private boolean runEligibleBlock(long blocker) throws Exception {
     AtomicBoolean result = new AtomicBoolean();
-    runWorker(() -> {
-      long token = profiler.beginTaskBlock();
-      if (token == 0) throw new AssertionError("interval was not armed");
-      Thread.sleep(200L);
-      result.set(profiler.endTaskBlock(token, blocker, UNBLOCKING_SPAN_ID));
-    });
+    runWorker(
+        () -> {
+          long token = profiler.beginTaskBlock();
+          if (token == 0) throw new AssertionError("interval was not armed");
+          Thread.sleep(200L);
+          result.set(profiler.endTaskBlock(token, blocker, UNBLOCKING_SPAN_ID));
+        });
     return result.get();
   }
 
   private void runWorker(ThrowingRunnable action) throws Exception {
     AtomicReference<Throwable> error = new AtomicReference<>();
-    Thread worker = new Thread(() -> {
-      try {
-        action.run();
-      } catch (Throwable t) {
-        error.set(t);
-      }
-    }, "taskblock-paired-api");
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                action.run();
+              } catch (Throwable t) {
+                error.set(t);
+              }
+            },
+            "taskblock-paired-api");
     worker.start();
     worker.join(5_000L);
     assertFalse(worker.isAlive());

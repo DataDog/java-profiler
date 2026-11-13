@@ -108,7 +108,6 @@ class ProfilerTestAccessor {
 public:
   static void setOmit(Profiler* profiler, bool omit) { profiler->_omit_stacktraces = omit; }
   static FlightRecorder* recorder(Profiler* profiler) { return &profiler->_jfr; }
-  static int stripe(Profiler* profiler, int tid) { return profiler->getLockIndex(tid); }
 };
 
 TEST(FlightRecorderResultTest, LightweightShortBurstsSerializeEveryUnitOfWeight) {
@@ -134,26 +133,31 @@ TEST(FlightRecorderResultTest, LightweightShortBurstsSerializeEveryUnitOfWeight)
       u64 weight;
       if (!BaseWallClock::wallPrecheckForTest(current.get(), true, event._thread_state, weight, true)) {
         event._weight = weight;
-        EXPECT_TRUE(profiler->recordWallSample(nullptr, 1, tid, 0, &event, slot));
+        WallSampleRequest request;
+        request.tid = tid;
+        request.trace_epoch = profiler->recordingEpoch();
+        EXPECT_TRUE(profiler->recordWallSample(nullptr, 1, 0, &event, request).ordinary_recorded);
       }
     }
   }
-  Buffer* buffer = recording->buffer(ProfilerTestAccessor::stripe(profiler, tid));
   u64 serialized_weight = 0;
   int events = 0;
-  for (int start = 0; start < buffer->offset();) {
-    int cursor = start;
-    u64 size = readVar64(buffer, cursor);
-    readVar64(buffer, cursor); // type
-    readVar64(buffer, cursor); // time
-    EXPECT_EQ(tid, readVar64(buffer, cursor));
-    EXPECT_EQ(0ULL, readVar64(buffer, cursor)) << "lightweight samples must remain stackless";
-    cursor += 2; // thread state and execution mode
-    serialized_weight += readVar64(buffer, cursor);
-    EXPECT_GT(size, 0u);
-    if (size == 0) break;
-    start += size;
-    ++events;
+  for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
+    Buffer* buffer = recording->buffer(stripe);
+    for (int start = 0; start < buffer->offset();) {
+      int cursor = start;
+      u64 size = readVar64(buffer, cursor);
+      readVar64(buffer, cursor); // type
+      readVar64(buffer, cursor); // time
+      EXPECT_EQ(tid, readVar64(buffer, cursor));
+      EXPECT_EQ(0ULL, readVar64(buffer, cursor)) << "lightweight samples must remain stackless";
+      cursor += 2; // thread state and execution mode
+      serialized_weight += readVar64(buffer, cursor);
+      EXPECT_GT(size, 0u);
+      if (size == 0) break;
+      start += size;
+      ++events;
+    }
   }
   EXPECT_EQ(21, events);
   EXPECT_EQ(21ULL, serialized_weight);

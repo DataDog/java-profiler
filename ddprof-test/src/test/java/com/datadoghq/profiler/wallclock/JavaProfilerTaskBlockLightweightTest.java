@@ -5,17 +5,17 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvents;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
-import com.datadoghq.profiler.JfrEvents;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** End-to-end coverage for stackless TaskBlock events in lightweight mode. */
 public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
@@ -28,24 +28,26 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
     CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
     AtomicReference<Throwable> error = new AtomicReference<>();
-    long suppressedBefore = profiler.getDebugCounters()
-        .getOrDefault("wc_signals_suppressed_owned_block", 0L);
-    Thread worker = new Thread(() -> {
-      try {
-        long token = profiler.beginTaskBlock();
-        assertTrue(token != 0, "Expected TaskBlock interval to be armed");
-        armed.countDown();
-        assertTrue(release.await(5, TimeUnit.SECONDS));
-        recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-      } catch (Throwable t) {
-        error.set(t);
-      }
-    }, "taskblock-lightweight");
+    long suppressedBefore =
+        profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
+    Thread worker =
+        new Thread(
+            () -> {
+              try {
+                long token = profiler.beginTaskBlock();
+                assertTrue(token != 0, "Expected TaskBlock interval to be armed");
+                armed.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+              } catch (Throwable t) {
+                error.set(t);
+              }
+            },
+            "taskblock-lightweight");
 
     worker.start();
     assertTrue(armed.await(5, TimeUnit.SECONDS));
-    waitForCounterAbove(
-        "wc_signals_suppressed_owned_block", suppressedBefore, 5_000L);
+    waitForCounterAbove("wc_signals_suppressed_owned_block", suppressedBefore, 5_000L);
     // The periodic signal may arrive less than 1 ms after beginTaskBlock().
     Thread.sleep(10L);
     release.countDown();
@@ -65,8 +67,7 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
     // The interval spans at least the 10 ms sleep before release; the upper
     // bound covers the 5 s waits and rejects a start/end mix-up in encoding.
     TaskBlockAssertions.assertContainsDuration(events, 10L, 15_000L);
-    assertTrue(getRecordedCounterValue("wc_signals_suppressed_owned_block")
-        > suppressedBefore);
+    assertTrue(getRecordedCounterValue("wc_signals_suppressed_owned_block") > suppressedBefore);
     assertEquals(1L, getRecordedCounterValue("task_block_emitted"));
     assertEquals(0L, getRecordedCounterValue("task_block_stack_capture_failed"));
   }

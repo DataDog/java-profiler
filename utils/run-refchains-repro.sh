@@ -42,6 +42,14 @@
 #                      bare name ("Serial", "G1", "Parallel", "Shenandoah",
 #                      "Z", "Epsilon") or the full flag name ("SerialGC").
 #                      e.g. REFCHAINS_GC=Serial or REFCHAINS_GC=ZGC
+#   REFCHAINS_EASPIN   number of escape-analysis spin worker threads the demo
+#                      app starts (default: 0 - passed through to the app via
+#                      the env var of the same name; see ReferenceChainLeakDemo.
+#                      startEaSpinWorkers). With workers running, root enumerations
+#                      deoptimize their compiled frames, making VM_DeoptimizeFrame
+#                      safepoints observable in the recording. Each worker
+#                      busy-spins one core; workers stop at the run's deadline
+#                      (run-forever: at JVM exit).
 
 set -euo pipefail
 

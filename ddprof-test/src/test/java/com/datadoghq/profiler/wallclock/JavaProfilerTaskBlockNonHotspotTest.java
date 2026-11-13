@@ -5,12 +5,12 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Verifies that TaskBlock hooks fail closed on JVMs whose platform-thread classification is not
@@ -24,8 +24,10 @@ public class JavaProfilerTaskBlockNonHotspotTest extends AbstractProfilerTest {
     // empty filter, it arms a run only when unfiltered wall tracking is active (which also enables
     // TaskBlock recording) and this thread has a registry slot. A non-zero token therefore shows
     // that beginTaskBlock() can return 0 below only because classification is not trusted.
-    long control = ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
-    Assumptions.assumeTrue(control != 0,
+    long control =
+        ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
+    Assumptions.assumeTrue(
+        control != 0,
         "the wall engine on this JVM does not enable TaskBlock tracking for this thread");
     ProfilerOwnedBlockHooks.blockExit(profiler, control);
 

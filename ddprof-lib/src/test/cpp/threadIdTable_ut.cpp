@@ -269,6 +269,7 @@ TEST_F(ThreadIdTableTest, PerformanceRegression) {
     EXPECT_LT(duration.count() * 1000.0 / num_operations, 50.0);  // 50ns per op max
 }
 #endif // NDEBUG
+
 TEST_F(ThreadIdTableTest, InsertionReportsWhetherTheThreadCanBeResolved) {
     EXPECT_FALSE(table->insert(0));
     for (int tid = 1; tid <= 256; ++tid) {
