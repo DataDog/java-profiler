@@ -76,12 +76,19 @@ static void JNICALL onCompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method, jint
     // bounded drain wait and get its batch discarded.
     ProfiledThread::initCurrentThreadSignalSafe();
 
-    // The count precedes the claim so a reset that observes no live poster
-    // can never race one that is about to claim a slot it would reuse; a
-    // poster entering during a reset (live < 0) backs off instead.
-    if (__atomic_fetch_add(&ctx->live, 1, __ATOMIC_ACQ_REL) < 0) {
-        return;
-    }
+    // The live claim precedes the slot claim so the reader's live == 0 drain
+    // also waits out slot writes. The claim is a CAS, not an increment: an
+    // increment landing on the reset sentinel would heal it to a transient 0
+    // and let the next poster register into a window the reader still owns,
+    // which the reader's live = 0 release would then clobber. A poster that
+    // sees live < 0 backs off without modifying live.
+    int live = __atomic_load_n(&ctx->live, __ATOMIC_ACQUIRE);
+    do {
+        if (live < 0) {
+            return;
+        }
+    } while (!__atomic_compare_exchange_n(&ctx->live, &live, live + 1, true,
+                                            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
 
     // While the event is enabled, the ServiceThread can also post to this env
     // for a compile on another thread; the atomic claim with rollback keeps
@@ -172,8 +179,9 @@ jlongArray NMethodMethodCheck::readsForTest(JNIEnv* jni, jobject method) {
     __atomic_store_n(&readContext.target, target, __ATOMIC_RELEASE);
     // Slots are reused only once no poster can still reach them: the CAS
     // claims the reset exclusively, a poster racing in backs off on the
-    // negative live, and a call that finds survivors keeps claiming fresh
-    // slots past the undrained ones instead of reusing theirs.
+    // negative live without modifying it, and a call that finds survivors
+    // keeps claiming fresh slots past the undrained ones instead of reusing
+    // theirs. The release store below therefore cannot clobber a registration.
     int live = __atomic_load_n(&readContext.live, __ATOMIC_ACQUIRE);
     if (live == 0 && __atomic_compare_exchange_n(&readContext.live, &live, -1, false,
                                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
