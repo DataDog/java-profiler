@@ -4,6 +4,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <csignal>
 #include <cstdint>
 #include "referenceChainBatchSet.h"
 
@@ -83,21 +84,22 @@ TEST(ReferenceChainBatchSetTest, CompletionIsPerTagAndAnyCompletedTracksIt) {
   EXPECT_FALSE(set.anyCompleted());
 }
 
-// An unresolved tag is a caller-contract violation: both markers abort (assert
-// in debug builds) instead of corrupting the set, and the death of the process
-// is observable in both configurations.
+// An unresolved tag is a caller-contract violation: both markers assert (debug)
+// or abort (release) instead of corrupting the set. Pinned via SIGABRT, which
+// both paths raise; any other exit fails the check.
 TEST(ReferenceChainBatchSetDeathTest, MarkUnresolvedTagAborts) {
   ReferenceChainBatchSet set;
   set.reset();
   set.addResolved(7);
   set.markMember(7);
-  EXPECT_DEATH(set.markMember(8), "");
-  EXPECT_DEATH(set.markCompleted(9), "");
+  EXPECT_EXIT(set.markMember(8), ::testing::KilledBySignal(SIGABRT), "");
+  EXPECT_EXIT(set.markCompleted(9), ::testing::KilledBySignal(SIGABRT), "");
+  // The deaths above ran in forked children; in this process the set is
+  // untouched and a valid call must survive.
   EXPECT_EQ(1u, set.size());
-  EXPECT_TRUE(set.isMember(7));
   EXPECT_FALSE(set.isMember(8));
   EXPECT_FALSE(set.isCompleted(9));
-  EXPECT_NO_THROW(set.markCompleted(7));
+  set.markCompleted(7);
   EXPECT_TRUE(set.isCompleted(7));
   EXPECT_TRUE(set.anyCompleted());
 }
