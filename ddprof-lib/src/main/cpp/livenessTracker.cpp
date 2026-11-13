@@ -2235,6 +2235,13 @@ void LivenessTracker::stop() {
     // disabled
     return;
   }
+  // Close admission before the final flush: a callback that passed the
+  // sampler's _active check would otherwise insert after it, and release()
+  // would free that entry unemitted.
+  {
+    ExclusiveLockGuard guard(&_table_lock);
+    _table_generation.fetch_add(1, std::memory_order_release);
+  }
   cleanup_table();
   flush_table(nullptr);
 

@@ -3574,6 +3574,27 @@ TEST_F(LivenessTrackerMockJvmTest, ReleaseTearsDownAndInvalidatesTheGeneration) 
     EXPECT_EQ(1u, tracker->tableSizeForTest());
 }
 
+// stop() bumps the generation before its final flush, so an allocation
+// callback that captured the generation before stop() inserts nothing that
+// release() would then free unemitted.
+TEST_F(LivenessTrackerMockJvmTest, StopRejectsCallbackStraddlingTheFinalFlush) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    const u64 generation = tracker->tableGeneration();
+
+    tracker->stop();
+    EXPECT_NE(generation, tracker->tableGeneration());
+    const u32 tracked = tracker->tableSizeForTest();
+    ASSERT_GT(tracked, 0u);
+
+    jobject late = jvm.newObject(&jvm.retained_class);
+    AllocEvent event;
+    event._size = 16;
+    tracker->track(&jvm.jni, event, /*tid=*/1, late, /*call_trace_id=*/1, generation);
+    EXPECT_EQ(tracked, tracker->tableSizeForTest());
+    restart();
+}
+
 // Without a JNIEnv release() cannot delete weak refs, but it must still free
 // the table and not crash.
 TEST_F(LivenessTrackerMockJvmTest, ReleaseWithoutAJniEnvDoesNotCrash) {
