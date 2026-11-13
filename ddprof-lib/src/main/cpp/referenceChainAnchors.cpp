@@ -143,36 +143,47 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   std::unordered_set<jlong> fresh_kept_tags;
   const size_t fresh_queue_len = _static_anchor_fresh_queue.size();
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
-    // Index scan: partition every eligible anchor into the leak tier or one of the two fair tiers
-    // (the fresh lane is decided by the queue drain below - a fresh-kept anchor also lands in a
-    // fair pick vector here and is skipped at consumption time via fresh_kept_tags).
-    for (size_t i = 0; i < idx_size; i++) {
+    // Fused prune-and-partition pass: an indexed holder whose frontier entry died is dropped from
+    // the index here - dead entries would otherwise accumulate for the tracker's lifetime (the
+    // only other removals are the stop/reset clears), and released tags get re-minted, so the
+    // same holder re-indexes under its fresh tag. Survivors compact down, keeping admission
+    // order; the tier positions below are the compacted ones the cursors consume.
+    size_t kept = 0;
+    for (size_t i = 0; i < _static_anchor_index.size(); i++) {
       jlong tag = _static_anchor_index[i];
-      jlong own_class_tag = i < _static_anchor_own_class_tags.size()
-                               ? _static_anchor_own_class_tags[i] : 0;
       FrontierEntry entry{};
-      if (!frontier->lookupLocked(tag, &entry) ||
-          !isSelectableAnchor(entry, own_class_tag) ||
+      if (!frontier->lookupLocked(tag, &entry)) {
+        _static_anchor_index_class_tags.erase(tag);
+        continue;
+      }
+      _static_anchor_index[kept] = tag;
+      size_t pos = kept;
+      kept++;
+      jlong own_class_tag = 0;
+      auto class_it = _static_anchor_index_class_tags.find(tag);
+      if (class_it != _static_anchor_index_class_tags.end()) {
+        own_class_tag = class_it->second;
+      }
+      if (!isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag)) {
         continue;
       }
       if (entry.leak_tag != 0) {
-        leak_picks.push_back(TierPick{i, tag});
-      } else if (i < _static_anchor_own_class_tags.size()) {
-        auto shape_it =
-            _class_shape_cache.find(_static_anchor_own_class_tags[i]);
+        leak_picks.push_back(TierPick{pos, tag});
+      } else {
+        auto shape_it = _class_shape_cache.find(own_class_tag);
         if (shape_it != _class_shape_cache.end() &&
             shape_it->second == (u8)AnchorClassShape::CONTAINER) {
-          container_picks.push_back(TierPick{i, tag});
+          container_picks.push_back(TierPick{pos, tag});
         } else {
-          other_picks.push_back(TierPick{i, tag});
+          other_picks.push_back(TierPick{pos, tag});
         }
-      } else {
-        other_picks.push_back(TierPick{i, tag});
       }
     }
+    _static_anchor_index.resize(kept);
+    idx_size = kept;
     // Fresh-lane drain. Every queue entry is popped (its ONE first look is spent either way): kept
     // if eligible AND (container-shaped OR not-yet-classified) AND room remains in the budget;
     // dropped otherwise.
@@ -201,8 +212,11 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         }
         pos = (size_t)(it - _static_anchor_index.begin());
       }
-      jlong own_class_tag = pos < _static_anchor_own_class_tags.size()
-                               ? _static_anchor_own_class_tags[pos] : 0;
+      jlong own_class_tag = 0;
+      auto class_it = _static_anchor_index_class_tags.find(tag);
+      if (class_it != _static_anchor_index_class_tags.end()) {
+        own_class_tag = class_it->second;
+      }
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
           !isSelectableAnchor(entry, own_class_tag) ||
@@ -215,14 +229,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
       bool keep = false; // container or not-yet-classified rides the
                          // lane; the wrapper admits one pass before reconcile can classify its
                          // class
-      if (pos < _static_anchor_own_class_tags.size()) {
-        auto shape_it =
-            _class_shape_cache.find(_static_anchor_own_class_tags[pos]);
-        keep = shape_it == _class_shape_cache.end() ||
-               shape_it->second == (u8)AnchorClassShape::CONTAINER;
-      } else {
-        keep = true; // no own-class tag recorded - treat as unknown
-      }
+      auto shape_it = _class_shape_cache.find(own_class_tag);
+      keep = shape_it == _class_shape_cache.end() ||
+             shape_it->second == (u8)AnchorClassShape::CONTAINER;
       if (!keep) {
         continue; // classified non-container: the other tier owns it
       }
@@ -351,11 +360,19 @@ bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
 void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
                                                    jlong own_class_tag) {
   // Dedup: a push at first admission and another at upgrade would double-add.
-  if (!_static_anchor_index_tags.insert(tag).second) {
+  auto inserted =
+      _static_anchor_index_class_tags.try_emplace(tag, own_class_tag);
+  if (!inserted.second) {
+    // First sight may have seen the holder before its class was tagged
+    // (JVMTI reports class_tag == 0 for such roots); the callback that
+    // delivers the resolved tag must upgrade the stored value, or the
+    // container-shape fallback in isSelectableAnchor() stays dead forever.
+    if (own_class_tag != 0 && inserted.first->second == 0) {
+      inserted.first->second = own_class_tag;
+    }
     return;
   }
   _static_anchor_index.push_back(tag);
-  _static_anchor_own_class_tags.push_back(own_class_tag);
   // Walk newly admitted anchors before the fair cursors.
   _static_anchor_fresh_queue.push_back(tag);
   if (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
@@ -491,7 +508,7 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
   if (jni == nullptr) {
     return;
   }
-  if (_static_anchor_own_class_tags.empty()) {
+  if (_static_anchor_index_class_tags.empty()) {
     return;
   }
   // Collect up to ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags that appear in the anchor index
@@ -499,7 +516,8 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
   std::vector<jlong> unknown;
   unknown.reserve(8);
   std::unordered_set<jlong> seen;
-  for (jlong class_tag : _static_anchor_own_class_tags) {
+  for (const auto &index_entry : _static_anchor_index_class_tags) {
+    jlong class_tag = index_entry.second;
     if (class_tag == 0 || seen.count(class_tag) > 0 ||
         _class_shape_cache.count(class_tag) > 0) {
       continue;

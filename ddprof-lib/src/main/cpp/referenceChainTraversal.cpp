@@ -166,6 +166,19 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::stackRefCallback(
   return heapRootCallback(root_kind, class_tag, size, tag_ptr, user_data);
 }
 
+void ReferenceChainTracker::mergeAtRiskAnchors(
+    std::vector<jlong> &selection,
+    const std::vector<AtRiskAnchor> &drained) {
+  for (const AtRiskAnchor &at_risk : drained) {
+    // A reparented collection can also have been selected by the persistent
+    // container tier. The combined selection is bounded by 48 + 16 entries.
+    if (std::find(selection.begin(), selection.end(), at_risk.tag) ==
+        selection.end()) {
+      selection.push_back(at_risk.tag);
+    }
+  }
+}
+
 void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                                                bool run_root_enum,
                                                int root_enum_budget,
@@ -397,14 +410,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
   drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
-  for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
-    // A reparented collection can also have been selected by the persistent
-    // container tier. The combined selection is bounded by 48 + 16 entries.
-    if (std::find(static_anchor_tags.begin(), static_anchor_tags.end(),
-                  at_risk.tag) == static_anchor_tags.end()) {
-      static_anchor_tags.push_back(at_risk.tag);
-    }
-  }
+  mergeAtRiskAnchors(static_anchor_tags, static_anchor_fifo_drained);
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
       stale_expanded_tags.empty() && static_anchor_tags.empty()) {
     return;

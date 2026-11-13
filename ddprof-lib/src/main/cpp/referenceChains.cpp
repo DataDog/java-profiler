@@ -1091,8 +1091,7 @@ void ReferenceChainTracker::restartSearch() {
   _static_anchor_fifo_set.clear();
   _static_anchor_fifo_klass_counts.clear();
   _static_anchor_index.clear();
-  _static_anchor_own_class_tags.clear();
-  _static_anchor_index_tags.clear();
+  _static_anchor_index_class_tags.clear();
   _anchor_container_cursor = 0;
   _anchor_other_cursor = 0;
   // Fresh lane: nothing admits before the search does, so nothing can have a pending first look
@@ -1177,8 +1176,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _static_anchor_fifo_set.clear();
   _static_anchor_fifo_klass_counts.clear();
   _static_anchor_index.clear();
-  _static_anchor_own_class_tags.clear();
-  _static_anchor_index_tags.clear();
+  _static_anchor_index_class_tags.clear();
   _anchor_container_cursor = 0;
   _anchor_other_cursor = 0;
   _static_anchor_fresh_queue.clear();

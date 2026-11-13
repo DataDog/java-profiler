@@ -529,6 +529,8 @@ TEST_F(ReferenceChainsBfsTest, FirstPassWatchesQualifiedLeakBeforeCompleting) {
     ASSERT_FALSE(args.parse("referencechains=true:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard(
+        /*reset_liveness=*/true);
     LivenessTracker *liveness = LivenessTracker::instance();
     liveness->klassPopulationResetForTest();
     liveness->setGcGenerationsForTest(true);
@@ -553,9 +555,12 @@ TEST_F(ReferenceChainsBfsTest, FirstPassWatchesQualifiedLeakBeforeCompleting) {
     EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateCountForTest());
     EXPECT_NE(0, node_tags[root]);
 
-    liveness->klassPopulationResetForTest();
-    liveness->setGcGenerationsForTest(false);
-    tracker->stop();
+    // The production loop polls again after the pass (finishLoopIterationSerialized). The second
+    // poll of the same qualifying klass must not double-register the candidate - the pre-walk
+    // poll and the post-pass poll are idempotent for candidate admission.
+    tracker->finishLoopIterationSerialized(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateCountForTest());
 }
 
 TEST_F(ReferenceChainsBfsTest, RootContainerRemainsWalkableAfterReparentingAndMutation) {
@@ -563,6 +568,7 @@ TEST_F(ReferenceChainsBfsTest, RootContainerRemainsWalkableAfterReparentingAndMu
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
     int holder = addNode();
     int parent = addNode();
     int table = addNode();
@@ -618,7 +624,6 @@ TEST_F(ReferenceChainsBfsTest, RootContainerRemainsWalkableAfterReparentingAndMu
     EXPECT_GT(tags_ever_assigned[table], 0);
     EXPECT_GT(tags_ever_assigned[payload], 0);
     EXPECT_NE(leak_tag, node_tags[payload]);
-    tracker->stop();
 }
 
 // Regression test for the resolveLoadedClasses() scan-skip guard: it must compare `class_count !=
