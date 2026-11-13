@@ -298,6 +298,8 @@ public:
     WallSampleRequest prepareWallSampleRequestForTest(ProfiledThread* current, bool& suppressed);
 #endif
 #if defined(UNIT_TEST) || defined(DEBUG)
+    // Normal-thread drivers wait for the timer's real epoch without publishing one.
+    static bool awaitInitialSamplingEpochForTest(u64 timeout_nanos);
     static void setForceStartFailureForTest(bool force) {
         _force_start_failure_for_test.store(force, std::memory_order_release);
     }

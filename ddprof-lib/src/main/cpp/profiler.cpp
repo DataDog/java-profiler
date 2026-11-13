@@ -416,7 +416,7 @@ const char *Profiler::asgctError(int code) {
   }
 }
 
-inline u32 Profiler::getLockIndex(int tid) {
+u32 Profiler::getLockIndex(int tid) {
   u32 lock_index = tid;
   lock_index ^= lock_index >> 8;
   lock_index ^= lock_index >> 4;
