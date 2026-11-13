@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-13 12:19:05 EST
+**Date:** 2026-11-13 12:24:45 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 113 |
-| Sample Rate | 1.88/sec |
-| Health Score | 117% |
+| CPU Samples | 117 |
+| Sample Rate | 1.95/sec |
+| Health Score | 122% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 106 |
-| Sample Rate | 1.77/sec |
-| Health Score | 111% |
-| Threads | 11 |
+| CPU Samples | 121 |
+| Sample Rate | 2.02/sec |
+| Health Score | 126% |
+| Threads | 14 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1794590068 51
-1794590073 51
-1794590078 51
-1794590083 51
-1794590088 51
-1794590093 51
-1794590098 51
-1794590103 51
-1794590108 51
-1794590113 51
-1794590118 51
-1794590123 51
-1794590128 51
-1794590133 51
-1794590138 51
-1794590143 51
-1794590148 51
-1794590153 51
-1794590158 51
-1794590163 51
+1794590360 51
+1794590365 51
+1794590370 51
+1794590375 51
+1794590380 51
+1794590385 51
+1794590390 51
+1794590395 51
+1794590400 51
+1794590405 51
+1794590410 51
+1794590415 51
+1794590420 51
+1794590425 51
+1794590430 51
+1794590435 51
+1794590440 51
+1794590445 51
+1794590450 51
+1794590455 51
 ```
 </details>
 
