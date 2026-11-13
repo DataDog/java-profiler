@@ -232,9 +232,31 @@ if [ -x /bin/dash ]; then
   POSIX_SH=/bin/dash
 fi
 
+# A cgroup root that exists but holds no cpu.stat at any known mount: the
+# sampler must emit NA for the throttle token, not read its stdin through
+# an empty sed filename.
+case_no_stat() {
+  CASE_DIR="$WORK/nostat"; PROC="$WORK/nostat/proc"; CG="$WORK/nostat/cgroup"
+  OUT="$CASE_DIR/out.log"
+  mkdir -p "$PROC" "$CG"
+  printf '0.25 0.35 0.45 3/400 555\n' > "$PROC/loadavg"
+  start_fake_java
+  write_stat "$PROC" "$JPID" javawatch R 1
+  write_stat "$PROC" 610 cotenant R 1
+  write_smaps "$PROC" "$JPID" 34567
+  start_sampler "$POSIX_SH"
+  wait_markers 1 || { no_markers nostat; return; }
+  stop_sampler
+  assert_eq "no-stat markers yield NA for the throttle token" \
+    "markers: psi_cpu_some_avg10=NA psi_memory_some_avg10=NA loadavg_1m=0.25 cpu_nr_throttled=NA cotenant_runnable=1" \
+    "$(line_n 2)"
+  assert_eq "no-stat mem line format" "mem: 34567" "$(line_n 1)"
+}
+
 case_v2
 case_v1
 case_missing
+case_no_stat
 
 # MEMWATCH_TARGET_PID selects the launched JVM even when a sibling matches
 # the ps text discovery; unset, the discovery loop runs unchanged (the
