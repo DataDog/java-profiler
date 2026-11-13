@@ -34,7 +34,7 @@ SHA = "1" * 40
 PR985_HEAD = "1dcc3fa57582f2b595403f2b6a54e4464f352223"
 PR968_HEAD = "1115eb583f475b62544d634bb12bf750ae913e04"
 PULLS_URL = "%s/repos/%s/pulls?state=open&base=main&per_page=100" % (API, REPO)
-STATUSES_URL = "%s/repos/%s/commits/%s/statuses" % (API, REPO, SHA)
+STATUSES_URL = "%s/repos/%s/commits/%s/statuses?per_page=100" % (API, REPO, SHA)
 
 
 PR_URL = "%s/repos/%s/pulls/985" % (API, REPO)
@@ -139,7 +139,7 @@ class RestPaginationTest(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1)
 
     def test_statuses_are_paginated_fully(self):
-        page2_url = STATUSES_URL + "?page=2"
+        page2_url = STATUSES_URL + "&page=2"
         transport = testlib.FakeTransport([
             FakeResponse(200, [{"id": 1}], link='<%s>; rel="next"' % page2_url),
             FakeResponse(200, [{"id": 2}]),
@@ -653,6 +653,32 @@ class MatchesDecisionTest(unittest.TestCase):
         self.assertFalse(gate._matches_decision(
             self._status(context="bits-review/head-evil"), self._decision()))
 
+    def test_differing_state_never_matches(self):
+        self.assertFalse(gate._matches_decision(
+            self._status(state="failure"), self._decision()))
+
+    def test_differing_target_url_never_matches(self):
+        self.assertFalse(gate._matches_decision(
+            self._status(target_url="https://example.test/other"), self._decision()))
+
+
+class DefaultTransportTest(unittest.TestCase):
+    """The default transport must refuse redirects: urllib's redirect
+    handler would forward the Authorization header — the status token on
+    the POST — to whatever target answers, including another host."""
+
+    def test_no_redirect_handler_is_installed(self):
+        handlers = [type(handler) for handler in gate._NO_REDIRECT_OPENER.handlers]
+        self.assertIn(gate._NoRedirect, handlers)
+
+    def test_redirect_request_refuses_every_redirect(self):
+        request = urllib.request.Request("https://api.example.test/repos/x")
+        for code in (301, 302, 303, 307, 308):
+            with self.subTest(code=code):
+                handler = gate._NoRedirect()
+                self.assertIsNone(handler.redirect_request(
+                    request, None, code, "Moved", {}, "https://evil.example.test/x"))
+
 
 class GraphqlFailClosedTest(unittest.TestCase):
     """GraphQL errors and missing structure never yield a partial list."""
@@ -1113,12 +1139,14 @@ class ResolveCommandTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD]))
 
-    def test_workflow_run_non_matching_selector_publishes_the_run_head_only(self):
+    def test_workflow_run_non_matching_numbers_scan_all_open_main_heads(self):
+        # The contract's fallback: when nothing matches, the run head plus
+        # every open-main head is resolved — never the run head alone.
         prs = [open_main_pr(968, PR968_HEAD), open_main_pr(985, PR985_HEAD)]
         code, out = self._run(self._schedule(prs), "workflow_run",
                                GITHUB_PULL_REQUEST_NUMBERS="[7]")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), sorted([SHA]))
+        self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD, PR985_HEAD]))
 
     def test_workflow_run_number_list_with_null_padding_still_matches(self):
         prs = [open_main_pr(968, PR968_HEAD), open_main_pr(985, PR985_HEAD)]
@@ -1139,7 +1167,7 @@ class ResolveCommandTest(unittest.TestCase):
                                    GITHUB_PULL_REQUEST_NUMBERS="[7]",
                                    GITHUB_STEP_SUMMARY=summary)
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), sorted([SHA]))
+        self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD, PR985_HEAD]))
 
     def test_output_write_failure_exits_one(self):
         # The shas output is load-bearing: an I/O failure there fails the
@@ -1158,6 +1186,26 @@ class ResolveCommandTest(unittest.TestCase):
         code, out = self._run(transport, "pull_request_target",
                               GITHUB_PR_ACTION="edited",
                               GITHUB_CHANGES_BASE_REF="main",
+                              GITHUB_CHANGES_BASE_SHA="b" * 40)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [PR985_HEAD])
+        self.assertEqual([call.full_url for call in transport.calls], [PR_URL])
+
+    def test_edited_with_only_a_base_ref_change_resolves_normally(self):
+        pr = testlib.build_pr_record(number=985, sha=PR985_HEAD, base_ref="develop")
+        transport = testlib.FakeTransport([FakeResponse(200, pr)])
+        code, out = self._run(transport, "pull_request_target",
+                              GITHUB_PR_ACTION="edited",
+                              GITHUB_CHANGES_BASE_REF="main")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [PR985_HEAD])
+        self.assertEqual([call.full_url for call in transport.calls], [PR_URL])
+
+    def test_edited_with_only_a_base_sha_change_resolves_normally(self):
+        pr = testlib.build_pr_record(number=985, sha=PR985_HEAD, base_ref="develop")
+        transport = testlib.FakeTransport([FakeResponse(200, pr)])
+        code, out = self._run(transport, "pull_request_target",
+                              GITHUB_PR_ACTION="edited",
                               GITHUB_CHANGES_BASE_SHA="b" * 40)
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out), [PR985_HEAD])

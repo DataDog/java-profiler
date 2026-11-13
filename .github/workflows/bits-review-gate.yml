@@ -18,6 +18,10 @@ jobs:
     # is live for it too; the other triggers already run on refs/heads/main.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Without this the job inherits the 360-minute default; _fetch can
+    # sleep up to 300 s per retry, so a stalled run would hold the
+    # workflow for hours.
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
@@ -48,6 +52,10 @@ jobs:
     needs: resolve
     if: github.ref == 'refs/heads/main' && needs.resolve.outputs.shas != '[]'
     runs-on: ubuntu-latest
+    # The per-SHA concurrency group does not cancel stalled runs
+    # (cancel-in-progress: false), so a hung publish would delay every
+    # later update for this SHA until the timeout fires.
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read

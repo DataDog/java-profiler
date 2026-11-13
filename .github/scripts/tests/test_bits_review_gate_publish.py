@@ -171,7 +171,7 @@ def rate_limited_response(status=429, headers=None):
 
 
 def statuses_read_url(sha=HEAD):
-    return "%s/repos/%s/commits/%s/statuses" % (API, REPO, sha)
+    return "%s/repos/%s/commits/%s/statuses?per_page=100" % (API, REPO, sha)
 
 
 def publish_script(decision_snapshot, status_pages=(), post_response=None):
@@ -732,6 +732,21 @@ class SuppressionTest(PublishTestCase):
                 self.assertNotIn("?page=2", " ".join(
                     call.full_url for call in transport.calls))
                 self.assert_write_tokens(transport)
+
+    def test_foreign_context_status_is_never_selected_for_comparison(self):
+        # The newest app-creator status matches the decision in every
+        # compared field but its context is foreign: it is not this gate's
+        # output and must never suppress the write.
+        statuses = FakeResponse(200, [
+            status_record(context="some-other-context", status_id=900,
+                          created_at="2026-11-12T13:00:00Z"),
+        ])
+        code, transport = self.run_publish(publish_script(
+            pass_snapshot(), [statuses], FakeResponse(201, {})))
+        self.assertEqual(code, 0)
+        posts = self.post_calls(transport)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(json.loads(posts[0].data)["description"], PASS_DESCRIPTION)
 
     def test_malformed_app_status_is_never_selected_for_comparison(self):
         # A malformed app-creator entry that matches the decision in every

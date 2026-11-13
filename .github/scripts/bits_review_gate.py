@@ -110,8 +110,21 @@ class ResolveError(Exception):
 
 
 def _urllib_transport(request):
-    """The default transport: one stdlib urllib call per request."""
-    return urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS)
+    """The default transport: one stdlib urllib call per request, with
+    redirects refused — the redirect handler would forward the
+    Authorization header (the status token on the POST) to any target."""
+    return _NO_REDIRECT_OPENER.open(request, timeout=_TIMEOUT_SECONDS)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect: ``redirect_request`` returning None makes
+    urllib surface the 3xx as an HTTPError, which _fetch fails closed on."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _next_link(link_header, base_url):
@@ -243,7 +256,8 @@ class GitHubClient:
 
     def read_statuses(self, sha):
         """Every commit status recorded for ``sha``, all pages."""
-        url = "%s/repos/%s/commits/%s/statuses" % (self._api_url, self._repo, sha)
+        url = "%s/repos/%s/commits/%s/statuses?per_page=%d" % (
+            self._api_url, self._repo, sha, REST_PER_PAGE)
         return self._fetch_json_pages(url)
 
     def create_status(self, sha, status, token):
@@ -781,7 +795,7 @@ def _note_unmatched_summary(env, selector, numbers):
     try:
         with open(path, "a", encoding="utf-8") as handle:
             handle.write("bits gate: workflow_run selectors matched no open-main PR; "
-                         "publishing the run head only (numbers=%r)\n" % (numbers,))
+                         "scanning all open-main heads (numbers=%r)\n" % (numbers,))
     except OSError:
         # Best effort by the contract above: a failed summary write must
         # not change the exit code or stdout.
@@ -822,14 +836,11 @@ def resolve_shas(client, env):
                     if pr["number"] in numbers or _pr_selector(pr) == selector]
         if matched:
             selected = matched
-        elif numbers:
-            # Selectors that match nothing publish the run head alone; the
-            # 30-minute schedule sweep recovers any missed head.
-            _note_unmatched_summary(env, selector, numbers)
-            selected = []
         else:
-            # Fork runs carry no PR-number list; the full open-main
-            # fallback keeps every head monitored.
+            # Nothing matched — fork runs and stale number lists alike —
+            # so the full open-main fallback keeps every head monitored.
+            if numbers:
+                _note_unmatched_summary(env, selector, numbers)
             selected = open_prs
         shas = {head_sha} | {pr["head"]["sha"] for pr in selected}
     elif event in ("schedule", "workflow_dispatch"):

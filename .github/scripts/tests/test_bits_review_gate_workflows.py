@@ -239,6 +239,15 @@ class PublisherWorkflowTest(unittest.TestCase):
             re.search(r"^name: Bits review gate$", self.text, re.M)
         )
 
+    def test_both_jobs_carry_a_timeout(self):
+        # Without a timeout the jobs inherit the 360-minute default, and
+        # _fetch can sleep up to 300 s per retry — a stalled publish also
+        # holds its per-SHA concurrency group (cancel-in-progress false).
+        for block, name in ((self.resolve, "resolve"), (self.publish, "publish")):
+            with self.subTest(job=name):
+                self.assertIsNotNone(
+                    re.search(r"^[ \t]+timeout-minutes: \d+$", block, re.M))
+
     def test_triggers_are_exactly_the_four_events(self):
         on_keys = set(re.findall(r"^  ([^\s:]+):", self.on, re.M))
         self.assertEqual(
@@ -535,7 +544,9 @@ class CiScriptTestsWiringTest(unittest.TestCase):
 
 
 class RunnerDiscoveryTest(unittest.TestCase):
-    """AC-12: the gate runner discovers only this gate's test family."""
+    """The gate runner discovers only this gate's test family (INV-22);
+    the design doc's AC12 is the Octo-STS claim-denial test drive, not
+    this local runner contract."""
 
     @classmethod
     def setUpClass(cls):
