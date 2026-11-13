@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include "gtest/gtest.h"
 #include "linearAllocator.h"
 #include "nativeMem.h"
@@ -98,4 +103,17 @@ TEST_F(LinearAllocatorNativeMemTest, FreeChunksReturnsLiveToZero) {
   LinearAllocator::freeChunks(detached);
   EXPECT_EQ(0, NativeMem::live(NM_CALLTRACE))
       << "freeing the detached chunks un-records exactly what alloc() recorded";
+}
+
+TEST_F(LinearAllocatorNativeMemTest, OversizedAllocIsRejected) {
+  LinearAllocator allocator(CHUNK_SIZE);
+  // A size above the chunk capacity must be rejected outright: the fast-path
+  // check adds size to offs, and for a huge size the sum wraps past SIZE_MAX,
+  // passes the capacity test, and hands out a pointer past the chunk's end.
+  // SIZE_MAX - 1024 survives every smaller bound (including the ASan rounding
+  // guard) and would wrap in offs + size without the capacity rejection.
+  EXPECT_EQ(nullptr, allocator.alloc(SIZE_MAX - 1024));
+  EXPECT_EQ(nullptr, allocator.alloc((size_t)CHUNK_SIZE + 1));
+  // The rejection must not poison the allocator: a normal allocation still works.
+  EXPECT_NE(nullptr, allocator.alloc(128));
 }
