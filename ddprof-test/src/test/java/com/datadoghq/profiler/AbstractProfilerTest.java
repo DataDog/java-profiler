@@ -5,6 +5,8 @@
 
 package com.datadoghq.profiler;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
@@ -23,14 +25,10 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 public abstract class AbstractProfilerTest {
   private static final boolean ALLOW_NATIVE_CSTACKS = true;
@@ -45,12 +43,14 @@ public abstract class AbstractProfilerTest {
   private static final List<Path> CREATED_RECORDINGS = new ArrayList<>();
   private Map<Path, Long> sanitizerLogSizesBefore = new HashMap<>();
 
-  public static final String LAMBDA_QUALIFIER = Platform.isJavaVersionAtLeast(21) ? "$$Lambda." : "$$Lambda$";
+  public static final String LAMBDA_QUALIFIER =
+      Platform.isJavaVersionAtLeast(21) ? "$$Lambda." : "$$Lambda$";
 
   // Field-name constants for the JFR fields tests commonly read via JfrEvent.getXxx(...).
   // These replace the old JMC-typed IAttribute constants of the same names one-for-one, so
   // subclasses keep referencing AbstractProfilerTest.SPAN_ID etc. unchanged - only the call
-  // pattern around them (JfrEvent.getLong(SPAN_ID) instead of SPAN_ID.getAccessor(type).getMember(item))
+  // pattern around them (JfrEvent.getLong(SPAN_ID) instead of
+  // SPAN_ID.getAccessor(type).getMember(item))
   // changes at each site.
   public static final String SIZE = "size";
   public static final String WEIGHT = "weight";
@@ -70,10 +70,10 @@ public abstract class AbstractProfilerTest {
   public static final String COUNT = "count";
 
   /**
-   * {@code size * weight}: an estimated true byte contribution of a subsampled allocation/
-   * liveness event, replacing JMC's computed {@code SCALED_SIZE} attribute. {@code weight} is
-   * stored as either an integer or float field depending on event type (see jfrMetadata.cpp),
-   * hence the {@code double} read.
+   * {@code size * weight}: an estimated true byte contribution of a subsampled allocation/ liveness
+   * event, replacing JMC's computed {@code SCALED_SIZE} attribute. {@code weight} is stored as
+   * either an integer or float field depending on event type (see jfrMetadata.cpp), hence the
+   * {@code double} read.
    */
   public static double scaledSize(JfrEvent item) {
     return item.getLong(SIZE, 0) * item.getDouble(WEIGHT, 1.0);
@@ -96,7 +96,7 @@ public abstract class AbstractProfilerTest {
 
   private Map<String, Object> testParams;
 
-  protected static Map<String, Object> mapOf(Object ... vals) {
+  protected static Map<String, Object> mapOf(Object... vals) {
     Map<String, Object> map = new HashMap<>();
     for (int i = 0; i < vals.length; i += 2) {
       map.put(vals[i].toString(), vals[i + 1]);
@@ -171,7 +171,7 @@ public abstract class AbstractProfilerTest {
   private static List<Path> getSanitizerLogPaths() {
     List<Path> paths = new ArrayList<>();
     String pid = String.valueOf(getPid());
-    for (String envVar : new String[]{"ASAN_OPTIONS", "UBSAN_OPTIONS"}) {
+    for (String envVar : new String[] {"ASAN_OPTIONS", "UBSAN_OPTIONS"}) {
       String options = System.getenv(envVar);
       if (options == null) continue;
       for (String opt : options.split(":")) {
@@ -227,18 +227,30 @@ public abstract class AbstractProfilerTest {
     Path rootDir = Paths.get("/tmp/recordings");
     Files.createDirectories(rootDir);
 
-    String cstack = (String)testParams.get("cstack");
+    String cstack = (String) testParams.get("cstack");
 
     if (cstack != null) {
       rootDir = rootDir.resolve(cstack);
       Files.createDirectories(rootDir);
     }
 
-    jfrDump = Files.createTempFile(rootDir, testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown") + (testConfig.isEmpty() ? "" : "-" + testConfig.replace('/', '_')), ".jfr");
+    jfrDump =
+        Files.createTempFile(
+            rootDir,
+            testInfo
+                    .getTestMethod()
+                    .map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName())
+                    .orElse("unknown")
+                + (testConfig.isEmpty() ? "" : "-" + testConfig.replace('/', '_')),
+            ".jfr");
     CREATED_RECORDINGS.add(jfrDump);
     profiler = JavaProfiler.getInstance();
-    String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
-    cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
+    String command =
+        "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
+    cpuInterval =
+        command.contains("cpu")
+            ? parseInterval(command, "cpu")
+            : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
     wallInterval = parseInterval(command, "wall");
     // Record sanitizer log sizes before test so we can dump new errors after
     sanitizerLogSizesBefore.clear();
@@ -335,11 +347,9 @@ public abstract class AbstractProfilerTest {
     }
   }
 
-  protected void before() throws Exception {
-  }
+  protected void before() throws Exception {}
 
-  protected void after() throws Exception {
-  }
+  protected void after() throws Exception {}
 
   public static final boolean isInCI() {
     return Boolean.getBoolean("ddprof_test.ci");
@@ -365,7 +375,10 @@ public abstract class AbstractProfilerTest {
     }
   }
 
-  /** Matches allocation/liveness events whose sampled object's class full name equals {@code className}. */
+  /**
+   * Matches allocation/liveness events whose sampled object's class full name equals {@code
+   * className}.
+   */
   protected static Predicate<JfrEvent> allocatedTypeFilter(String className) {
     return item -> className.equals(item.getClassName("objectClass"));
   }
@@ -384,7 +397,6 @@ public abstract class AbstractProfilerTest {
     stopProfiler();
   }
 
-
   public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
@@ -400,10 +412,10 @@ public abstract class AbstractProfilerTest {
   }
 
   /**
-   * Stops the profiler, retrying the documented-retryable "signal handlers did not
-   * drain" outcome of {@code Profiler::stop()} (state stays RUNNING, teardown skipped,
-   * retry is idempotent). Bounded: 10 attempts x 10ms covers observed drain times;
-   * exceeding it rethrows the last drain failure instead of masking it.
+   * Stops the profiler, retrying the documented-retryable "signal handlers did not drain" outcome
+   * of {@code Profiler::stop()} (state stays RUNNING, teardown skipped, retry is idempotent).
+   * Bounded: 10 attempts x 10ms covers observed drain times; exceeding it rethrows the last drain
+   * failure instead of masking it.
    */
   public static void stopRetryingOnDrainTimeout(JavaProfiler profiler) {
     for (int attempt = 0; attempt < 10; attempt++) {
@@ -427,9 +439,8 @@ public abstract class AbstractProfilerTest {
   }
 
   /**
-   * Waits for the profiler to reach RUNNING state by polling getStatus().
-   * This ensures all engines are initialized and ready to collect samples
-   * before test workload begins.
+   * Waits for the profiler to reach RUNNING state by polling getStatus(). This ensures all engines
+   * are initialized and ready to collect samples before test workload begins.
    *
    * @param timeoutMs Maximum time to wait in milliseconds
    * @throws IllegalStateException if profiler doesn't reach RUNNING state within timeout
@@ -452,8 +463,11 @@ public abstract class AbstractProfilerTest {
     // Timeout reached - throw with diagnostic info
     String finalStatus = profiler.getStatus();
     throw new IllegalStateException(
-            "Profiler failed to reach RUNNING state within " + timeoutMs + "ms\n" +
-            "Final status:\n" + finalStatus);
+        "Profiler failed to reach RUNNING state within "
+            + timeoutMs
+            + "ms\n"
+            + "Final status:\n"
+            + finalStatus);
   }
 
   public final void registerCurrentThreadForWallClockProfiling() {
@@ -462,10 +476,10 @@ public abstract class AbstractProfilerTest {
 
   private String getAmendedProfilerCommand() {
     String profilerCommand = getProfilerCommand();
-    String testCstack = (String)testParams.get("cstack");
+    String testCstack = (String) testParams.get("cstack");
     if (testCstack != null) {
       profilerCommand += ",cstack=" + testCstack;
-    } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
+    } else if (!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
       profilerCommand += ",cstack=fp";
     }
     // FIXME - test framework doesn't seem to be forking each test, so need to sync
@@ -479,18 +493,19 @@ public abstract class AbstractProfilerTest {
 
   protected abstract String getProfilerCommand();
 
-
   protected void verifyEventsPresent(String... expectedEventTypes) {
     verifyEventsPresent(jfrDump, expectedEventTypes);
   }
 
   protected void verifyEventsPresent(Path recording, String... expectedEventTypes) {
     try {
-      JfrEvents events = JfrEvents.load(recording, new HashSet<>(Arrays.asList(expectedEventTypes))::contains);
+      JfrEvents events =
+          JfrEvents.load(recording, new HashSet<>(Arrays.asList(expectedEventTypes))::contains);
       for (String expectedEventType : expectedEventTypes) {
         JfrEvents filtered = events.byType(expectedEventType);
-        assertTrue(filtered.hasItems(),
-                expectedEventType + " was empty for " + getAmendedProfilerCommand());
+        assertTrue(
+            filtered.hasItems(),
+            expectedEventType + " was empty for " + getAmendedProfilerCommand());
         System.out.println(expectedEventType + " count: " + filtered.count());
       }
     } catch (Throwable t) {
@@ -500,9 +515,9 @@ public abstract class AbstractProfilerTest {
 
   /**
    * Like {@link #verifyEventsPresent}, but for a single event type where the caller doesn't need
-   * the materialized collection back — stops parsing as soon as one matching event is found
-   * (see {@link JfrEvents#load(Path, Predicate, Predicate)}), instead of resolving every event of
-   * a possibly high-volume type just to confirm it's non-empty.
+   * the materialized collection back — stops parsing as soon as one matching event is found (see
+   * {@link JfrEvents#load(Path, Predicate, Predicate)}), instead of resolving every event of a
+   * possibly high-volume type just to confirm it's non-empty.
    */
   protected void verifyEventPresent(String eventType) {
     verifyEventPresent(jfrDump, eventType);
@@ -518,10 +533,10 @@ public abstract class AbstractProfilerTest {
   }
 
   /**
-   * Materializes every matching event, deep-resolved (including its stack trace, if the event
-   * type has one), into memory. For high-volume event types, prefer {@link #verifyEventPresent}
-   * (presence only), {@link #streamEvents} (per-event checks) or {@link #reduceEvents} (folding into an
-   * accumulator) to avoid exhausting the test heap.
+   * Materializes every matching event, deep-resolved (including its stack trace, if the event type
+   * has one), into memory. For high-volume event types, prefer {@link #verifyEventPresent}
+   * (presence only), {@link #streamEvents} (per-event checks) or {@link #reduceEvents} (folding
+   * into an accumulator) to avoid exhausting the test heap.
    */
   public final JfrEvents verifyEvents(String eventType) {
     return verifyEvents(eventType, true);
@@ -536,8 +551,8 @@ public abstract class AbstractProfilerTest {
       JfrEvents collection = JfrEvents.load(recording, eventType);
       System.out.println(eventType + " count: " + collection.count());
       if (failOnEmpty) {
-        assertTrue(collection.hasItems(),
-                eventType + " was empty for " + getAmendedProfilerCommand());
+        assertTrue(
+            collection.hasItems(), eventType + " was empty for " + getAmendedProfilerCommand());
       }
       return collection;
     } catch (Throwable t) {
@@ -548,9 +563,9 @@ public abstract class AbstractProfilerTest {
 
   /**
    * Like {@link #verifyEvents(String)}, but for callers that only need per-event checks and/or a
-   * count (e.g. {@code NativememSampledProfilerTest}'s per-sample field validation) rather than
-   * the materialized {@link JfrEvents} collection — never holds more than one event in memory at
-   * a time. See {@link JfrEvents#forEach} for the idempotency requirement on {@code consumer}.
+   * count (e.g. {@code NativememSampledProfilerTest}'s per-sample field validation) rather than the
+   * materialized {@link JfrEvents} collection — never holds more than one event in memory at a
+   * time. See {@link JfrEvents#forEach} for the idempotency requirement on {@code consumer}.
    */
   protected long streamEvents(String eventType, Consumer<JfrEvent> consumer) {
     return streamEvents(jfrDump, eventType, consumer);
@@ -566,15 +581,17 @@ public abstract class AbstractProfilerTest {
   }
 
   /**
-   * Like {@link #streamEvents}, but for callers that fold matching events into an accumulator
-   * (e.g. {@code NativeLibrariesTest}'s per-mode/per-library sample counts) instead of running
+   * Like {@link #streamEvents}, but for callers that fold matching events into an accumulator (e.g.
+   * {@code NativeLibrariesTest}'s per-mode/per-library sample counts) instead of running
    * independent per-event checks. See {@link JfrEvents#reduce} for the per-attempt reset contract.
    */
-  protected <T> T reduceEvents(String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
+  protected <T> T reduceEvents(
+      String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
     return reduceEvents(jfrDump, eventType, initial, accumulator);
   }
 
-  protected <T> T reduceEvents(Path recording, String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
+  protected <T> T reduceEvents(
+      Path recording, String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
     try {
       return JfrEvents.reduce(recording, eventType::equals, initial, accumulator);
     } catch (Throwable t) {
@@ -584,7 +601,7 @@ public abstract class AbstractProfilerTest {
   }
 
   protected final void verifyCStackSettings() {
-    String cstack = (String)testParams.get("cstack");
+    String cstack = (String) testParams.get("cstack");
     if (cstack == null) {
       // not a forced cstack mode
       return;
@@ -608,12 +625,15 @@ public abstract class AbstractProfilerTest {
     try {
       // Stops parsing once every pattern has matched, instead of materializing every event of
       // eventType up front — see JfrEvents.load(Path, Predicate, Predicate).
-      JfrEvents.load(recording, eventType::equals, item -> {
-        cumulatedEvents[0]++;
-        String stackTrace = item.getStackTraceString();
-        unmatched.removeIf(stackTrace::contains);
-        return unmatched.isEmpty();
-      });
+      JfrEvents.load(
+          recording,
+          eventType::equals,
+          item -> {
+            cumulatedEvents[0]++;
+            String stackTrace = item.getStackTraceString();
+            unmatched.removeIf(stackTrace::contains);
+            return unmatched.isEmpty();
+          });
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t, t);
     }

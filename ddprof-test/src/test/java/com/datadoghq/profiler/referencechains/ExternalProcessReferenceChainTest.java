@@ -5,38 +5,36 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+
 import com.datadoghq.profiler.AbstractProcessProfilerTest;
 import com.datadoghq.profiler.Platform;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 /**
  * Separate-process end-to-end coverage for the reference-chains target-selection mechanism,
- * complementing {@link ReferenceChainTrackingTest}'s in-process coverage: runs a "leaking Java
- * app" (see {@link LeakingCacheScenario}) in a child JVM and asserts on the child's reported
- * result.
+ * complementing {@link ReferenceChainTrackingTest}'s in-process coverage: runs a "leaking Java app"
+ * (see {@link LeakingCacheScenario}) in a child JVM and asserts on the child's reported result.
  *
- * <p><b>Why a separate process, not another {@code @Test} in {@code ReferenceChainTrackingTest}:</b>
- * {@code runPass()} (referenceChains.cpp) performs exactly one root-seeded {@code FollowReferences}
- * walk per search's *entire lifetime* ({@code _search_started}); every later pass only expands
- * frontier entries that walk already discovered ({@code expandFrontier()}) - it never
- * re-examines GC roots or revisits an already-{@code EXPANDED} entry for newly-added children.
- * Since {@code ReferenceChainTracker} is a process-wide singleton, only the *first* test to call
- * {@code runPass()} in a given JVM gets a root-seeded walk; later tests' independently-rooted
- * locals are invisible to it. A child JVM per scenario gets its own fresh singleton and
- * therefore its own first root walk.
+ * <p><b>Why a separate process, not another {@code @Test} in {@code
+ * ReferenceChainTrackingTest}:</b> {@code runPass()} (referenceChains.cpp) performs exactly one
+ * root-seeded {@code FollowReferences} walk per search's *entire lifetime* ({@code
+ * _search_started}); every later pass only expands frontier entries that walk already discovered
+ * ({@code expandFrontier()}) - it never re-examines GC roots or revisits an already-{@code
+ * EXPANDED} entry for newly-added children. Since {@code ReferenceChainTracker} is a process-wide
+ * singleton, only the *first* test to call {@code runPass()} in a given JVM gets a root-seeded
+ * walk; later tests' independently-rooted locals are invisible to it. A child JVM per scenario gets
+ * its own fresh singleton and therefore its own first root walk.
  */
 @Tag("slow")
 public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTest {
@@ -55,7 +53,8 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
     Files.deleteIfExists(scratchDumpPath);
     // "start" requires a "jfr,file=..." clause (JavaProfiler.execute() throws "Flight Recorder
     // output file is not specified" without one) even though its content is never read.
-    Path continuousJfrPath = Files.createTempFile("referencechains-external-process-continuous", ".jfr");
+    Path continuousJfrPath =
+        Files.createTempFile("referencechains-external-process-continuous", ".jfr");
     try {
       // budget=200000 (up from the in-process test's 4000): a cold external JVM's
       // reachable-from-roots graph (full JUnit/JMC/Gradle-worker classpath) is far larger than
@@ -66,9 +65,11 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       // memory=64:l:1.0 - the 100% live-sample ratio removes the default 10% subsampling
       // lottery from the tracked-instance pool; total volume stays capped by the 256KiB
       // interval floor, so the tracking table remains tiny.
-      String startCommand = "start,memory=64:l:1.0,generations=true,"
-          + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
-          + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
+      String startCommand =
+          "start,memory=64:l:1.0,generations=true,"
+              + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
+              + ",jfr,file="
+              + continuousJfrPath.toAbsolutePath();
       // Packed into one args[1] string to avoid extending AbstractProcessProfilerTest.launch()'s
       // generic (target, commands) contract with a 3rd argument.
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
@@ -77,35 +78,41 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       // by a ProcessBuilder-launched child; the scenario needs it for its debug-only seeding.
       // requiredTestConfig() also fails loud when the property is unset instead of forwarding
       // the literal "null", which the child would classify as a release build.
-      List<String> jvmArgs = Collections.singletonList(
-          "-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
+      List<String> jvmArgs =
+          Collections.singletonList(
+              "-Dddprof_test.config=" + ReferenceChainAssertions.requiredTestConfig());
 
       AtomicReference<String> resultLine = new AtomicReference<>();
-      LaunchResult result = launch("leak-cache", jvmArgs, packedCommand,
-          Collections.emptyMap(),
-          // Generous: a separate JVM's startup/classloading cost on top of the up-to-25-round
-          // growth loop plus grace period (~20s in-process).
-          childTimeoutSeconds(90),
-          line -> {
-            if (line.startsWith(LeakingCacheScenario.FOUND_MARKER)
-                || line.equals(LeakingCacheScenario.NOT_FOUND_MARKER)
-                || line.startsWith(LeakingCacheScenario.NO_HASHMAP_INTERNALS_MARKER)
-                || line.startsWith(LeakingCacheScenario.CHAIN_NOT_PERSISTED_MARKER)) {
-              resultLine.set(line);
-            }
-            return LineConsumerResult.CONTINUE;
-          },
-          null);
+      LaunchResult result =
+          launch(
+              "leak-cache",
+              jvmArgs,
+              packedCommand,
+              Collections.emptyMap(),
+              // Generous: a separate JVM's startup/classloading cost on top of the up-to-25-round
+              // growth loop plus grace period (~20s in-process).
+              childTimeoutSeconds(90),
+              line -> {
+                if (line.startsWith(LeakingCacheScenario.FOUND_MARKER)
+                    || line.equals(LeakingCacheScenario.NOT_FOUND_MARKER)
+                    || line.startsWith(LeakingCacheScenario.NO_HASHMAP_INTERNALS_MARKER)
+                    || line.startsWith(LeakingCacheScenario.CHAIN_NOT_PERSISTED_MARKER)) {
+                  resultLine.set(line);
+                }
+                return LineConsumerResult.CONTINUE;
+              },
+              null);
 
       assertTrue(result.inTime, "Child process did not exit within the wait timeout");
       assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
-      assertNotNull(resultLine.get(),
-          "Child process never printed a recognizable result marker on stdout");
+      assertNotNull(
+          resultLine.get(), "Child process never printed a recognizable result marker on stdout");
       assertEquals(
           LeakingCacheScenario.FOUND_MARKER + LeakingCacheScenario.CachedPayload.class.getName(),
           resultLine.get(),
           "Expected a successfully reconstructed chain whose leaf is CachedPayload, threading "
-              + "through java.util.HashMap's own internal storage - got: " + resultLine.get());
+              + "through java.util.HashMap's own internal storage - got: "
+              + resultLine.get());
     } finally {
       Files.deleteIfExists(scratchDumpPath);
       Files.deleteIfExists(continuousJfrPath);
@@ -114,11 +121,11 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
 
   /**
    * Mirrors {@link #shouldReconstructReferrerChainInSeparateProcess()}, but against {@link
-   * StaticFieldGrowingCollectionScenario} instead of {@link LeakingCacheScenario}: a {@code
-   * static final List<byte[]>} field appended to (never reassigned) after its owning class has
-   * already been swept once by {@code admitStaticFieldRoots()} (referenceChains.cpp), as opposed
-   * to {@code LeakingCacheScenario}'s local-variable (stack-root) cache. Checks that
-   * {@code collectStaleExpandedEntriesForRotation()} re-expands an already-{@code EXPANDED}
+   * StaticFieldGrowingCollectionScenario} instead of {@link LeakingCacheScenario}: a {@code static
+   * final List<byte[]>} field appended to (never reassigned) after its owning class has already
+   * been swept once by {@code admitStaticFieldRoots()} (referenceChains.cpp), as opposed to {@code
+   * LeakingCacheScenario}'s local-variable (stack-root) cache. Checks that {@code
+   * collectStaleExpandedEntriesForRotation()} re-expands an already-{@code EXPANDED}
    * static-field-rooted collection to pick up elements added after its one-time sweep.
    */
   @Test
@@ -127,9 +134,11 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
     assumeFalse(Platform.isJ9());
     assumeFalse(Platform.isZing());
 
-    Path scratchDumpPath = Files.createTempFile("referencechains-static-field-external-process", ".jfr");
+    Path scratchDumpPath =
+        Files.createTempFile("referencechains-static-field-external-process", ".jfr");
     Files.deleteIfExists(scratchDumpPath);
-    Path continuousJfrPath = Files.createTempFile("referencechains-static-field-external-process-continuous", ".jfr");
+    Path continuousJfrPath =
+        Files.createTempFile("referencechains-static-field-external-process-continuous", ".jfr");
     try {
       // budget/pausetarget/memory: see shouldReconstructReferrerChainInSeparateProcess().
       // painbudget=100 - the safepoint pain budget exists to protect a production
@@ -142,10 +151,12 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       // tag=0 at every poll - the pass/fail line between otherwise identical
       // runs). 100% only lets debt clear as fast as it accrues; cadence stays
       // bounded by each search's own ~seconds of work, so this cannot spin.
-      String startCommand = "start,memory=64:l:1.0,generations=true,"
-          + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
-          + ":painbudget=100"
-          + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
+      String startCommand =
+          "start,memory=64:l:1.0,generations=true,"
+              + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
+              + ":painbudget=100"
+              + ",jfr,file="
+              + continuousJfrPath.toAbsolutePath();
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
 
       List<String> jvmArgs = new ArrayList<>();
@@ -159,23 +170,28 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
 
       AtomicReference<String> resultLine = new AtomicReference<>();
       AtomicReference<String> seamPathLine = new AtomicReference<>();
-      LaunchResult result = launch("leak-static-field", jvmArgs, packedCommand,
-          Collections.emptyMap(),
-          // Wider than shouldReconstructReferrerChainInSeparateProcess()'s 90s: this scenario's
-          // own tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s on top of
-          // the round loop for a cold JVM's first full pass to actually complete - see that
-          // method's own comment.
-          childTimeoutSeconds(150),
-          line -> {
-            if (line.startsWith(StaticFieldGrowingCollectionScenario.FOUND_MARKER)
-                || line.equals(StaticFieldGrowingCollectionScenario.NOT_FOUND_MARKER)) {
-              resultLine.set(line);
-            } else if (line.startsWith(StaticFieldGrowingCollectionScenario.SEAM_PATH_MARKER)) {
-              seamPathLine.set(line);
-            }
-            return LineConsumerResult.CONTINUE;
-          },
-          null);
+      LaunchResult result =
+          launch(
+              "leak-static-field",
+              jvmArgs,
+              packedCommand,
+              Collections.emptyMap(),
+              // Wider than shouldReconstructReferrerChainInSeparateProcess()'s 90s: this scenario's
+              // own tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s on top
+              // of
+              // the round loop for a cold JVM's first full pass to actually complete - see that
+              // method's own comment.
+              childTimeoutSeconds(150),
+              line -> {
+                if (line.startsWith(StaticFieldGrowingCollectionScenario.FOUND_MARKER)
+                    || line.equals(StaticFieldGrowingCollectionScenario.NOT_FOUND_MARKER)) {
+                  resultLine.set(line);
+                } else if (line.startsWith(StaticFieldGrowingCollectionScenario.SEAM_PATH_MARKER)) {
+                  seamPathLine.set(line);
+                }
+                return LineConsumerResult.CONTINUE;
+              },
+              null);
 
       assertTrue(result.inTime, "Child process did not exit within the wait timeout");
       assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
@@ -183,17 +199,19 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       // so the strong seam path must be taken on exactly those configs - the same single
       // encoding the child itself uses, not an independent string match here.
       boolean expectSeams = ReferenceChainAssertions.isDebugInstrumentedBuild();
-      assertEquals(StaticFieldGrowingCollectionScenario.SEAM_PATH_MARKER + expectSeams,
+      assertEquals(
+          StaticFieldGrowingCollectionScenario.SEAM_PATH_MARKER + expectSeams,
           seamPathLine.get(),
           "scenario's seam-path predicate must match the native -DDEBUG build set");
-      assertNotNull(resultLine.get(),
-          "Child process never printed a recognizable result marker on stdout");
+      assertNotNull(
+          resultLine.get(), "Child process never printed a recognizable result marker on stdout");
       assertEquals(
           // "byte[]", not "[B": JMC's IMCType renders array types in Java source notation.
           StaticFieldGrowingCollectionScenario.FOUND_MARKER + "byte[]",
           resultLine.get(),
           "Expected a successfully reconstructed chain to a byte[] chunk appended to the static "
-              + "field's list after its one-time admitStaticFieldRoots() sweep - got: " + resultLine.get());
+              + "field's list after its one-time admitStaticFieldRoots() sweep - got: "
+              + resultLine.get());
     } finally {
       Files.deleteIfExists(scratchDumpPath);
       Files.deleteIfExists(continuousJfrPath);

@@ -363,12 +363,15 @@ if [ "$n" -lt 2 ]; then fail "T4 RefCountGuard.md mentions REFCOUNT_NESTED_OVERF
 rc=0; out=$(python3 "$ROOT/utils/check-claude-md.py" 2>&1) || rc=$?
 expect "T4 tracked CLAUDE.md is canonical" 0 "$rc" "$out" "CLAUDE.md: OK"
 
-for s in check-copyright.py check-claude-md.py check-knowledgebase.py; do
+for s in check-copyright.py check-claude-md.py check-knowledgebase.py check-skills.py; do
   if grep -q "\"$s\"" "$GRADLE"; then pass; else fail "T4 qualityChecks does not run $s"; fi
 done
 
 rc=0; out=$(python3 "$ROOT/utils/check-knowledgebase.py" 2>&1) || rc=$?
 expect "T4 tracked memories carry cairn frontmatter" 0 "$rc" "$out" "knowledgebase: OK"
+
+rc=0; out=$(python3 "$ROOT/utils/check-skills.py" 2>&1) || rc=$?
+expect "T4 tracked skills load and AGENTS.md names only existing skills" 0 "$rc" "$out" "skills: OK"
 
 # --- T5: check-copyright.py over a branch's added and modified files ---------
 
@@ -606,6 +609,145 @@ for opener in '---garbage' '----'; do
   git -C "$KB_ROOT" add -f .knowledgebase
   kb; expect "T7o delimiter '$opener' is not a frontmatter line" 1 "$rc" "$out" "no \`---\` frontmatter block"
 done
+
+# --- T8: check-skills.py --------------------------------------------------------
+
+SK="$ROOT/utils/check-skills.py"
+SK_ROOT="$TEMP_DIR/skills"
+skill() {  # skill <dir> <frontmatter lines...>: writes and tracks one SKILL.md
+  mkdir -p "$SK_ROOT/.agents/skills/$1"
+  local f="$SK_ROOT/.agents/skills/$1/SKILL.md"; shift
+  { echo ---; printf '%s\n' "$@"; echo ---; echo; echo body; } > "$f"
+  git -C "$SK_ROOT" add -f "$f"
+}
+sk() { rc=0; out=$(python3 "$SK" --root "$SK_ROOT" 2>&1) || rc=$?; }
+sk_reset() {  # a valid tree: one skill, the .claude/skills symlink, an AGENTS.md pointer
+  rm -rf "$SK_ROOT" && mkdir -p "$SK_ROOT/.agents/skills" "$SK_ROOT/.claude"
+  git -C "$SK_ROOT" init -q
+  ln -s ../.agents/skills "$SK_ROOT/.claude/skills"
+  echo 'Run the `good-one` skill.' > "$SK_ROOT/AGENTS.md"
+  git -C "$SK_ROOT" add -f .claude/skills AGENTS.md
+  skill good-one "name: good-one" "description: Does a thing. Use when a thing is needed."
+}
+unlink_skills() { git -C "$SK_ROOT" rm -q --cached .claude/skills && rm "$SK_ROOT/.claude/skills"; }
+sk_reset
+sk; expect "T8a valid skill, symlink and pointer" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill quoted "name: 'quoted'" 'description: "Quoted values load too."'
+sk; expect "T8b quoted values" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk_reset; printf 'no frontmatter\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8c SKILL.md without frontmatter" 1 "$rc" "$out" "good-one/SKILL.md: no \`---\` frontmatter block"
+sk_reset; printf -- '---\nname: good-one\ndescription: x\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8d unclosed frontmatter" 1 "$rc" "$out" "no \`---\` frontmatter block"
+sk_reset; skill good-one "name: good-one"
+sk; expect "T8e missing description" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "name: good-one" 'description: ""'
+sk; expect "T8f empty quoted description" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "description: x"
+sk; expect "T8g missing name" 1 "$rc" "$out" "frontmatter 'name' is required"
+sk_reset; skill good-one "name: other-one" "description: x"
+sk; expect "T8h name differs from directory" 1 "$rc" "$out" "name 'other-one' differs from its directory 'good-one'"
+for bad in Bad_Name bad--name -bad bad-; do
+  sk_reset; skill "$bad" "name: \"$bad\"" "description: x"  # quoted, so only the name rule applies
+  sk; expect "T8i invalid name '$bad'" 1 "$rc" "$out" "name '$bad' must be lowercase letters"
+done
+long=$(printf 'a%.0s' $(seq 65))
+sk_reset; skill "$long" "name: $long" "description: x"
+sk; expect "T8j name of 65 characters" 1 "$rc" "$out" "at most 64 characters"
+sk_reset; skill "${long:1}" "name: ${long:1}" "description: x"
+sk; expect "T8j name of 64 characters" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk_reset; skill good-one "name: good-one" "description: $(printf 'd%.0s' $(seq 1025))"
+sk; expect "T8k description of 1025 characters" 1 "$rc" "$out" "description has 1025 characters, at most 1024"
+sk_reset; skill good-one "name: good-one" "description: $(printf 'd%.0s' $(seq 1024))"
+sk; expect "T8k description of 1024 characters" 0 "$rc" "$out" "skills: OK (1 skills)"
+for scalar in '>' '|-'; do
+  sk_reset; skill good-one "name: good-one" "description: $scalar" "  Folded text."
+  sk; expect "T8l block-scalar description '$scalar'" 1 "$rc" "$out" "block scalars are not supported"
+done
+sk_reset; mkdir -p "$SK_ROOT/.agents/skills/no-skill" && echo x > "$SK_ROOT/.agents/skills/no-skill/notes.md"
+git -C "$SK_ROOT" add -f .agents/skills/no-skill/notes.md
+sk; expect "T8m skill directory without SKILL.md" 1 "$rc" "$out" "no-skill/SKILL.md: missing"
+sk_reset; mkdir -p "$SK_ROOT/.agents/skills/draft" && echo x > "$SK_ROOT/.agents/skills/draft/SKILL.md"
+sk; expect "T8n untracked skill directories are ignored" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; rm "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8o tracked SKILL.md missing from the working tree" 1 "$rc" "$out" "good-one/SKILL.md: cannot read"
+sk_reset; echo 'Run the `good-one` skill, then the `gone-one` skill.' > "$SK_ROOT/AGENTS.md"
+sk; expect "T8p AGENTS.md names a missing skill" 1 "$rc" "$out" "names the \`gone-one\` skill, but .agents/skills/gone-one/ does not exist"
+sk_reset; echo 'The cairn-memory skill and `code` spans are not pointers.' > "$SK_ROOT/AGENTS.md"
+sk; expect "T8q mentions without a backticked skill name" 0 "$rc" "$out" "skills: OK"
+sk_reset; unlink_skills
+sk; expect "T8r .claude/skills symlink missing" 1 "$rc" "$out" ".claude/skills: must be a tracked symlink"
+sk_reset; unlink_skills; ln -s ../skills "$SK_ROOT/.claude/skills" && git -C "$SK_ROOT" add -f .claude/skills
+sk; expect "T8s .claude/skills symlink points elsewhere" 1 "$rc" "$out" "points to '../skills', expected ../.agents/skills"
+sk_reset; unlink_skills; mkdir "$SK_ROOT/.claude/skills" && echo x > "$SK_ROOT/.claude/skills/f"
+git -C "$SK_ROOT" add -f .claude/skills
+sk; expect "T8t .claude/skills is a directory, not a symlink" 1 "$rc" "$out" ".claude/skills: must be a tracked symlink"
+sk_reset; rm "$SK_ROOT/AGENTS.md"
+sk; expect "T8u AGENTS.md missing" 2 "$rc" "$out" "error: cannot read AGENTS.md"
+rc=0; out=$(python3 "$SK" --root "$TEMP_DIR/nonexistent" 2>&1) || rc=$?
+expect "T8v environment error outside a checkout" 2 "$rc" "$out" "error: git ls-files failed"
+sk_reset; skill good-one "name: good-one" "description: \"$(printf 'd%.0s' $(seq 1024))\""
+sk; expect "T8w double quotes do not count toward the description limit" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; printf 'intro\n---\nname: good-one\ndescription: x\n---\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8x frontmatter must start on the first line" 1 "$rc" "$out" "no \`---\` frontmatter block"
+sk_reset; printf -- '---\nname: good-one\n---\ndescription: in the body\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8y body lines are not frontmatter" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "name: good-one" "description: x" "metadata:" "  nested: value"
+sk; expect "T8z nested mapping" 1 "$rc" "$out" "line 5: expected \`key: value\` at column 0"
+sk_reset; echo x > "$SK_ROOT/.agents/skills/README.md" && git -C "$SK_ROOT" add -f .agents/skills/README.md
+sk; expect "T8aa files directly under .agents/skills/ are not skills" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill skill2 "name: skill2" "description: x"
+sk; expect "T8ab digits in a name" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk_reset; skill good-one "name: >" "  good-one" "description: x"
+sk; expect "T8ac block-scalar name" 1 "$rc" "$out" "'name' must be a one-line string: block scalars are not supported"
+sk_reset; skill good-one "name: good-one: x" "description: x"
+sk; expect "T8ad name outside the string subset" 1 "$rc" "$out" "'name' must be a one-line string"
+sk_reset; skill good-one "name: good-one" "description: '''$(printf 'd%.0s' $(seq 1023))'"
+sk; expect "T8ae a doubled single quote counts as one character" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" "description: \"\\\"$(printf 'd%.0s' $(seq 1023))\""
+sk; expect "T8af an escaped double quote counts as one character" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" "description: short" "  more text"
+sk; expect "T8ag value continued on an indented line" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: short" "more text"
+sk; expect "T8ah stray unindented line" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "- item"
+sk; expect "T8ai list item" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name:good-one" "description: x"
+sk; expect "T8aj key without a space after the colon" 1 "$rc" "$out" "line 2: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "  # indented comment"
+sk; expect "T8ak indented comment" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "allowed-tools: [Read"
+sk; expect "T8al other keys are checked too" 1 "$rc" "$out" "line 4: 'allowed-tools' must be a one-line string"
+sk_reset; skill good-one "name: wrong" "name: good-one" "description: x"
+sk; expect "T8am duplicate key" 1 "$rc" "$out" "line 3: duplicate key 'name'"
+sk_reset; skill good-one "# a comment" "name: good-one" "" "description: x" "metadata:"
+sk; expect "T8an comments, blank lines and empty values of other keys" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" 'description: "bad \p escape"'
+sk; expect "T8ao malformed quoted value names the quoting problem" 1 "$rc" "$out" "the quoted string is unterminated"
+sk_reset; skill good-one "name: good-one" "description: Café notes"
+sk; expect "T8ap non-ASCII text in a plain value" 0 "$rc" "$out" "skills: OK (1 skills)"
+# Values YAML rejects or reads as non-strings, and values outside the accepted subset.
+for bad in 'Use when: a colon' 'x # comment' 'ends with:' '[list]' '{map}' '*alias' '&anchor' '!tag' \
+           '%pct' '@at' '`tick' '|pipe' '- dash' '-' '? q' ': x' '0x1F' '123' '.Inf' '1:30' 'back\slash' \
+           "$(printf 'a\tb')" "$(printf '\xef\xbb\xbfbom')" '"unterminated' '"inner " quote"' \
+           "'unterminated" "'it's'" true No null '~' y OFF \
+           "$(printf 'c1\xc2\x85char')" "$(printf 'non\xef\xbf\xbechar')" "$(printf 'line\xe2\x80\xa8sep')" \
+           "$(printf '"ctrl\x01char"')" "$(printf '"c1\xc2\x85char"')"; do
+  sk_reset; skill good-one "name: good-one" "description: $bad"
+  sk; expect "T8aq rejected description <$bad>" 1 "$rc" "$out" "'description' must be a one-line string"
+done
+for good in '"Use when: quoted"' '"escaped \" quote"' '"escaped \\ backslash"' "'doubled '' quote'" \
+            'a#hash without a space before it' 'time 10:30 is fine' '"true"' 'trueish' 'v1.2 notes' \
+            '"quoted" # trailing comment' "'single' # trailing comment" 'Plain words, with (parens) and a comma.' \
+            'Use when — writing' 'Über alles' "$(printf 'nbsp\xc2\xa0ok')" "$(printf '"tab\tin quotes"')"; do
+  sk_reset; skill good-one "name: good-one" "description: $good"
+  sk; expect "T8ar accepted description <$good>" 0 "$rc" "$out" "skills: OK (1 skills)"
+done
+sk_reset; skill good-one "name: good-one" "$(printf 'description:\tx')"
+sk; expect "T8as tab after the colon" 1 "$rc" "$out" "line 3: use a space, not a tab, after the colon"
+sk_reset; skill good-one "name: good-one" "$(printf 'description: caf\xe9')"
+sk; expect "T8at SKILL.md that is not valid UTF-8" 1 "$rc" "$out" "good-one/SKILL.md: not valid UTF-8 at byte"
+sk_reset; skill good-one "name: good-one" "$(printf '"description": x')"
+sk; expect "T8au quoted key" 1 "$rc" "$out" "line 3: expected \`key: value\` at column 0"
 
 # --- Summary -----------------------------------------------------------------
 

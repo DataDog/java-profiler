@@ -8,15 +8,14 @@ package com.datadoghq.profiler.alloc;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.JfrStackTrace;
-
 import java.lang.reflect.Method;
 import java.util.List;
 
 /**
- * Allocation workload for the allocation-stack tests: allocates {@link Blob} arrays at a
- * known recursion depth, so a correct sample stack has the {@code allocate} frame on top of
- * {@code DEPTH + 1} {@code recurse} frames. The loop runs long enough for the methods to be
- * sampled both interpreted and JIT-compiled, including frames C2 inlined.
+ * Allocation workload for the allocation-stack tests: allocates {@link Blob} arrays at a known
+ * recursion depth, so a correct sample stack has the {@code allocate} frame on top of {@code DEPTH
+ * + 1} {@code recurse} frames. The loop runs long enough for the methods to be sampled both
+ * interpreted and JIT-compiled, including frames C2 inlined.
  */
 final class AllocStackWorkload implements Runnable {
   static final int DEPTH = 48;
@@ -67,11 +66,10 @@ final class AllocStackWorkload implements Runnable {
 
   /**
    * Whether a sample's stack has {@code DEPTH + 1} consecutive {@code recurse} frames on top,
-   * optionally below one {@code allocate} frame, i.e. the walk neither lost nor invented a
-   * frame. {@code allocate} is optional because a JIT may inline it so that the JVM's own
-   * stack at the allocation site no longer contains it (Graal does); JVMTI GetStackTrace
-   * reports the same, so the VM walker matching GetStackTrace is checked separately, by
-   * allocstack=verify.
+   * optionally below one {@code allocate} frame, i.e. the walk neither lost nor invented a frame.
+   * {@code allocate} is optional because a JIT may inline it so that the JVM's own stack at the
+   * allocation site no longer contains it (Graal does); JVMTI GetStackTrace reports the same, so
+   * the VM walker matching GetStackTrace is checked separately, by allocstack=verify.
    */
   static boolean hasExpectedStack(JfrEvent event) {
     JfrStackTrace stackTrace = event.getStackTrace();

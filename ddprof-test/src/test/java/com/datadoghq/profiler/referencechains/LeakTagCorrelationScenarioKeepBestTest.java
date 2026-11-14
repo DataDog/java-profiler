@@ -5,17 +5,16 @@
 
 package com.datadoghq.profiler.referencechains;
 
-import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.IMCType;
-
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.openjdk.jmc.common.IMCType;
 
 /**
  * Plain-JUnit checks (no profiler, no dump) for {@link LeakTagCorrelationScenario#keepBest} and
@@ -65,7 +64,9 @@ public class LeakTagCorrelationScenarioKeepBestTest {
     LeakTagCorrelationScenario.ScanResult later = scan(3, 2);
     LeakTagCorrelationScenario.ScanResult kept = LeakTagCorrelationScenario.keepBest(best, later);
     assertEquals(2, kept.payloadChain.targetTag, "the better later scan's payload must win");
-    assertEquals(Collections.singletonList("T:a"), kept.transientViolations,
+    assertEquals(
+        Collections.singletonList("T:a"),
+        kept.transientViolations,
         "the earlier dump's transient violation must not be hidden by a better later scan");
   }
 
@@ -119,24 +120,31 @@ public class LeakTagCorrelationScenarioKeepBestTest {
 
   @Test
   public void resultLineRanksGateViolationsAboveEveryPayloadOutcome() {
-    assertEquals(LeakTagCorrelationScenario.NOT_FOUND_MARKER,
-        LeakTagCorrelationScenario.resultLine(null));
-    assertTrue(LeakTagCorrelationScenario.resultLine(scan(0, 0, "T:a"))
+    assertEquals(
+        LeakTagCorrelationScenario.NOT_FOUND_MARKER, LeakTagCorrelationScenario.resultLine(null));
+    assertTrue(
+        LeakTagCorrelationScenario.resultLine(scan(0, 0, "T:a"))
             .startsWith(LeakTagCorrelationScenario.TRANSIENT_CHAIN_MARKER),
         "a transient violation without any payload chain must not be reported as NOT_FOUND");
-    assertTrue(LeakTagCorrelationScenario.resultLine(scan(0, 0, "N:x"))
+    assertTrue(
+        LeakTagCorrelationScenario.resultLine(scan(0, 0, "N:x"))
             .startsWith(LeakTagCorrelationScenario.NOISE_CHAIN_MARKER),
         "a noise chain without any payload chain must not be reported as NOT_FOUND");
-    assertTrue(LeakTagCorrelationScenario.resultLine(scan(3, 5, "T:a", "N:x"))
+    assertTrue(
+        LeakTagCorrelationScenario.resultLine(scan(3, 5, "T:a", "N:x"))
             .startsWith(LeakTagCorrelationScenario.TRANSIENT_CHAIN_MARKER),
         "transient outranks noise, and both outrank FOUND");
-    assertEquals(LeakTagCorrelationScenario.NOT_FOUND_MARKER,
+    assertEquals(
+        LeakTagCorrelationScenario.NOT_FOUND_MARKER,
         LeakTagCorrelationScenario.resultLine(scan(0, 0)));
-    assertTrue(LeakTagCorrelationScenario.resultLine(scan(1, 5))
-        .startsWith(LeakTagCorrelationScenario.TAG_OUT_OF_POOL_MARKER));
-    assertTrue(LeakTagCorrelationScenario.resultLine(scan(2, 5))
-        .startsWith(LeakTagCorrelationScenario.NO_LIVE_OBJECT_MARKER));
-    assertEquals(LeakTagCorrelationScenario.FOUND_MARKER + 7,
+    assertTrue(
+        LeakTagCorrelationScenario.resultLine(scan(1, 5))
+            .startsWith(LeakTagCorrelationScenario.TAG_OUT_OF_POOL_MARKER));
+    assertTrue(
+        LeakTagCorrelationScenario.resultLine(scan(2, 5))
+            .startsWith(LeakTagCorrelationScenario.NO_LIVE_OBJECT_MARKER));
+    assertEquals(
+        LeakTagCorrelationScenario.FOUND_MARKER + 7,
         LeakTagCorrelationScenario.resultLine(scan(3, 7)));
   }
 }

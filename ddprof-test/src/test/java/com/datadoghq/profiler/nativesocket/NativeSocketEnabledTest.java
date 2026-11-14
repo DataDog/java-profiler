@@ -5,29 +5,29 @@
 
 package com.datadoghq.profiler.nativesocket;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junitpioneer.jupiter.RetryingTest;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Assumptions;
+import org.junitpioneer.jupiter.RetryingTest;
 
 /**
- * Verifies that the 'nativesocket' profiler argument enables socket I/O tracking
- * and that NativeSocketEvent JFR events are produced.
+ * Verifies that the 'nativesocket' profiler argument enables socket I/O tracking and that
+ * NativeSocketEvent JFR events are produced.
  */
 public class NativeSocketEnabledTest extends NativeSocketTestBase {
 
-    @RetryingTest(3)
-    public void socketEventsProducedWhenFeatureEnabled() throws Exception {
-        Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
+  @RetryingTest(3)
+  public void socketEventsProducedWhenFeatureEnabled() throws Exception {
+    Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
 
-        doTcpTransfer(4096, 128);
+    doTcpTransfer(4096, 128);
 
-        stopProfiler();
+    stopProfiler();
 
-        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
-        assertTrue(events.hasItems(), "Expected NativeSocketEvent events to be present in JFR recording");
-    }
+    JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
+    assertTrue(
+        events.hasItems(), "Expected NativeSocketEvent events to be present in JFR recording");
+  }
 }

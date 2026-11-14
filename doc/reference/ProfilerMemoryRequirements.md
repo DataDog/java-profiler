@@ -576,6 +576,28 @@ jcmd <pid> VM.native_memory summary.diff
 - Profiler data structures (CallTraceStorage, StringDictionary, etc.) are not visible
   to NMT (libc `malloc`/raw `mmap`); the `native_mem_*` counters break these down by category
 
+### Malloc Arena Counters
+
+The `malloc_*` JFR counters report the process-wide allocator state, not profiler
+memory: `malloc_arena_bytes` (system memory held by the allocator's arenas),
+`malloc_in_use_bytes` (bytes currently handed out to callers),
+`malloc_free_held_bytes` (bytes free but retained in the arenas),
+`malloc_trimmable_bytes` (the main arena's top chunk, i.e. what `malloc_trim`
+could return), and `malloc_mmap_bytes` (bytes in mmap'd chunks, returned to the
+OS on free).
+
+On glibc these come from `mallinfo2()`, resolved at runtime rather than at
+compile time: a build made against old glibc headers (the el8 image has glibc
+2.28) still populates the counters when the runtime glibc provides `mallinfo2`
+(glibc >= 2.33). The counters stay unset — not published as zero — when the
+runtime allocator does not provide `mallinfo2` (glibc < 2.33, musl, macOS), or
+when a replacement allocator (tcmalloc, jemalloc) is loaded, because its
+accounting model differs and the values would not be comparable. High
+`malloc_free_held_bytes` with flat `malloc_in_use_bytes` indicates arena
+fragmentation from interleaved allocation; `malloc_trimmable_bytes` separates
+trim-threshold policy from genuine fragmentation, which trimming cannot
+reclaim.
+
 ### Class Count Metrics
 
 ```bash

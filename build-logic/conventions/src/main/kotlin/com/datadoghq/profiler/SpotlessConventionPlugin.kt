@@ -1,3 +1,4 @@
+// Copyright 2026, Datadog, Inc.
 
 package com.datadoghq.profiler
 
@@ -16,13 +17,13 @@ class SpotlessConventionPlugin : Plugin<Project> {
     val configPath = project.rootProject.file("gradle").absolutePath
     val spotless = project.extensions.getByType(SpotlessExtension::class.java)
 
-    // Java formatting (Google Java Format 1.7 - last version supporting Java 8)
-    if (project.plugins.hasPlugin("java")) {
+    // The root project can apply this convention before a subproject applies Java.
+    project.pluginManager.withPlugin("java") {
       spotless.java {
         toggleOffOn()
         target("src/**/*.java")
         targetExclude("src/test/resources/**")
-        googleJavaFormat("1.7")
+        googleJavaFormat("1.30.0")
       }
     }
 
