@@ -23,7 +23,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <unordered_set>
 
 // Manual walk driver - IterateOverReachableObjects root/stack-ref enumeration
 
@@ -502,14 +501,9 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
 
   // ARRAY-HOLDER BATCHING: expand a whole batch of boundary objects with ONE
   // FollowReferences(initial_object=holder_array) call per BFS level, instead of one
-  // FollowReferences PER frontier entry.
-  std::unordered_set<jlong> batch_tags;
-  ctx.batch_tags = &batch_tags;
-  // Completed-batch-entry tracking for the order-independent truncated-batch resume (see
-  // ReferenceChainPassContext::_completed_batch_tags) - reset per batch along with the rolling
-  // cursor.
-  std::unordered_set<jlong> completed_batch_tags;
-  ctx._completed_batch_tags = &completed_batch_tags;
+  // FollowReferences PER frontier entry. The per-batch descriptor is the tracker's _batch_set;
+  // each batch resets it below, before that batch's JNI holder setup.
+  ctx.batch = &_batch_set;
 
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
@@ -610,16 +604,24 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       break;
     }
 
-    std::unordered_map<jlong, jobject> live;
+    // PER-BATCH RESET, before this batch's JNI holder setup: clears the preceding batch's
+    // completion marks so a failure below cannot consume them, and first-initializes _batch_set
+    // (it deliberately has no constructor).
+    _batch_set.reset();
     for (jint i = 0; i < resolved_count; i++) {
-      live[resolved_tags[i]] = resolved_objects[i];
+      if (!_batch_set.addResolved(resolved_tags[i])) {
+        // Unreachable in production: distinct tags <= batch size <= GOTW_MAX_BATCH, which is
+        // static_assert'd equal to this set's CAPACITY; only the test-only setGotwBatchSize
+        // override can exceed it. Truncate and retain the batch like any other failure.
+        ctx.truncated = true;
+        break;
+      }
     }
 
     // Build the frontier-holder array from the live boundary objects and record their tags so
     // heapReferenceCallback() descends into exactly these (one hop).
-    batch_tags.clear();
     jobjectArray holder = nullptr;
-    if (resolved_count > 0) {
+    if (resolved_count > 0 && !ctx.truncated) {
       jint capacity_err = jni->EnsureLocalCapacity(resolved_count + 16);
       if (capacity_err < 0 || jniExceptionCheck(jni)) {
         // Could not guarantee local-ref headroom for this batch - treat like any other batch-level
@@ -646,7 +648,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
               ctx.truncated = true;
               break;
             }
-            batch_tags.insert(resolved_tags[i]);
+            _batch_set.markMember(resolved_tags[i]);
           }
         }
         if (holder == nullptr) {
@@ -656,8 +658,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         } else if (!ctx.truncated) {
           // A single FollowReferences over the holder array expands this whole BFS level in one
           // stop-the-world HeapWalkOperation (instead of one per frontier entry).
-          ctx._last_visited_batch_tag = 0; // reset rolling cursor
-          completed_batch_tags.clear();
+          ctx._last_visited_batch_tag = 0; // reset rolling cursor; the reset above cleared completion
           u64 follow_start_ns = OS::nanotime();
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
@@ -673,7 +674,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       // The whole batch had all its direct children admitted this level: dead entries are pruned,
       // live ones are marked EXPANDED, and all are popped off the front.
       for (jlong tag : candidate_tags) {
-        if (live.find(tag) == live.end()) {
+        if (!_batch_set.isResolved(tag)) {
           _frontier->clear(tag);
         } else {
           _frontier->markExpanded(tag);
@@ -681,19 +682,18 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         source.pop_front();
       }
       progress = true;
-    } else if (!completed_batch_tags.empty()) {
+    } else if (_batch_set.anyCompleted()) {
       // ROLLING RESUME (order-independent): FollowReferences truncated mid-batch, but the callback
       // recorded exactly which batch entries it finished visiting (see
-      // ReferenceChainPassContext::_completed_batch_tags).
+      // ReferenceChainPassContext::batch).
       std::vector<jlong> keep;
       keep.reserve(candidate_tags.size());
       for (jlong tag : candidate_tags) {
-        if (completed_batch_tags.count(tag) != 0) {
-          if (live.find(tag) == live.end()) {
-            _frontier->clear(tag);
-          } else {
-            _frontier->markExpanded(tag);
-          }
+        if (_batch_set.isCompleted(tag)) {
+          // A completed entry was a batch member, hence addResolved'd first (markMember follows
+          // addResolved), so it is live-by-resolution and gets expanded, never pruned here.
+          assert(_batch_set.isResolved(tag));
+          _frontier->markExpanded(tag);
         } else {
           keep.push_back(tag);
         }
@@ -902,11 +902,11 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   ctx.frontier_cap_hit = false;
   ctx.resolved_chain_tags = resolved_chain_tags;
   ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
-  // Empty (not null) batch_tags forces heapReferenceCallback() to stop at exactly one hop past each
+  // Empty (not null) batch set forces heapReferenceCallback() to stop at exactly one hop past each
   // class - see this method's own header comment for why a deeper descent here would reintroduce
   // the whole-graph FollowReferences cost the array-holder batching design otherwise avoids.
-  std::unordered_set<jlong> empty_batch_tags;
-  ctx.batch_tags = &empty_batch_tags;
+  _batch_set.reset();
+  ctx.batch = &_batch_set;
   // Lets heapReferenceCallback() walk past the holder->class seed edge (see
   // ReferenceChainPassContext::static_field_seed's own comment) so this sweep actually reaches each
   // class's static fields instead of stopping at the negative-tagged class object itself.
