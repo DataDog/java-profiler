@@ -718,7 +718,6 @@ void LibraryPatcher::patch_libraries() {
 
    TEST_LOG("Patching libraries");
    patch_pthread_create();
-   TEST_LOG("%d libraries patched", _size);
 }
 
 bool LibraryPatcher::excluded_from_pthread_create_patch(CodeCache* lib) {
@@ -798,6 +797,8 @@ void LibraryPatcher::patch_pthread_create() {
       },
       (void*)&Libraries::instance()->native_libs(),
       [](CodeCache* lib, int) { patch_library_unlocked(lib); });
+  // The walk still holds _lock; unpatch_libraries() resets _size under that lock.
+  TEST_LOG("%d libraries patched", _size);
 }
 
 // Patch sigaction in all libraries to prevent any library from overwriting

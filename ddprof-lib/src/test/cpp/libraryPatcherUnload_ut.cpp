@@ -678,6 +678,7 @@ TEST_F(LibraryPatcherLockOrderTest, PatchInsideForeignWalkDoesNotDeadlockWithSto
     dl_iterate_phdr(patchInsideForeignWalk, &stopper);
     pthread_join(stopper, nullptr);
     alarm(0);
+    if (*lib.slot != lib.orig) _exit(CHILD_NOT_RESTORED);
   });
 }
 
