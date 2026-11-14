@@ -205,6 +205,21 @@ preserves truncation established earlier in the walk. The blocking virtual-threa
 wall-clock regression checks truthful truncation when carrier ancestry is missing;
 carrier recovery itself remains a separate correctness requirement.
 
+### HotSpot vtable receiver frames
+
+VM walking and ASGCT stub recovery can emit `<vtable_receiver>` immediately before the leaf vtable stub.
+This requires `vtable_target` and class-name VMStructs; `cstack=no` omits both frames.
+The `cpu` option enables the feature; `event=cpu` and implicit CPU defaults do not.
+
+Capture runs inside the walker's crash-protection scope, before unwinding.
+PC/SP/FP must match the interrupted leaf to prevent redirected callers from using stale arguments.
+
+Capture reserves space for the stub and, with ASGCT, a retry or error frame.
+If an ASGCT recovery prefix fills the frame budget, the trace is marked truncated.
+
+Receiver frames store a raw `VMSymbol*`, not a `jmethodID`.
+Dump-time resolution reads the symbol with `SafeAccess` to assign the declaring class.
+
 ### `j9/`
 
 | File | Role |

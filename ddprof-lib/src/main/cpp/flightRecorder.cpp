@@ -866,12 +866,9 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
         fillNativeMethodInfo(mi, "unknown_library", nullptr, state);
       }
     } else if (bci == BCI_VTABLE_RECEIVER) {
-      // Synthetic vtable-receiver frame: method_id holds a VMSymbol*
-      // captured in walkVM. The Symbol -> class_id resolution (with
-      // synthetic-accessor/LambdaForm normalisation) was already done
-      // above via resolveVTableReceiverCached, which also handles
-      // resolution failures by mapping them to "<unresolved_vtable_receiver>"
-      // and incrementing VTABLE_RECEIVER_RESOLVE_FAILED.
+      // HotSpot walkers store a raw VMSymbol* in method_id for this frame.
+      // resolveVTableReceiverCached supplies the class id or the unresolved
+      // fallback and counts VTABLE_RECEIVER_RESOLVE_FAILED on resolution failure.
       mi->_class = vtable_class_id;
       mi->_name = _symbols.lookup("<vtable_receiver>");
       mi->_sig = _symbols.lookup("()V");

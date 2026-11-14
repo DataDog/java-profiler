@@ -5,12 +5,15 @@
 
 package com.datadoghq.profiler.cpu;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.Platform;
+import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
@@ -19,6 +22,13 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
+    String method = testInfo.getTestMethod().get().getName();
+    if (method.endsWith("Dwarf")) {
+      return "cpu=1ms,cstack=dwarf";
+    }
+    if (method.endsWith("Vm")) {
+      return "cpu=1ms,cstack=vm";
+    }
     return "cpu=1ms";
   }
 
@@ -59,13 +69,23 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
     return result;
   }
 
-  // The vtable_target feature inserts a synthetic <vtable_receiver> frame immediately
-  // below a vtable stub frame in the call stack. The receiver class (Circle/Square/Triangle)
-  // is captured as a VMSymbol* in the signal handler and resolved to a class name at
-  // dump time via SafeAccess-protected reads. If resolution fails or the synthetic frame
-  // is dropped, the receiver class name will not appear next to a vtable stub in JFR.
   @RetryingTest(5)
   public void testVtableReceiverFrameInCpuSamples() throws Exception {
+    assertVtableReceiverFrame();
+  }
+
+  @RetryingTest(5)
+  public void testVtableReceiverFrameInCpuSamplesDwarf() throws Exception {
+    assertVtableReceiverFrame();
+  }
+
+  @RetryingTest(5)
+  public void testVtableReceiverFrameInCpuSamplesVm() throws Exception {
+    assertVtableReceiverFrame();
+  }
+
+  /** Verifies the synthetic method's declaring class, not unrelated Java callers in the trace. */
+  private void assertVtableReceiverFrame() throws Exception {
     Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal());
     waitForProfilerReady(2000);
     int result = profiledWork(new Circle(), new Square(), new Triangle());
@@ -73,28 +93,46 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
     stopProfiler();
 
     JfrEvents events = verifyEvents("datadog.ExecutionSample");
+    int stubs = 0;
+    int receivers = 0;
     boolean foundVtableWithReceiver = false;
     for (JfrEvent sample : events) {
-      String stackTrace = sample.getStackTraceString();
-      if (stackTrace != null && stackTrace.contains(".vtable stub()")) {
-        System.err.println("=VTABLE STUB TRACE=\n" + stackTrace + "\n=END=");
-      }
-      // Match on the bare token so the test is robust regardless of how the
-      // synthetic method name is escaped/rendered.
-      if (stackTrace != null
-          && stackTrace.contains(".vtable stub()")
-          && stackTrace.contains("vtable_receiver")
-          && (stackTrace.contains("Circle")
-              || stackTrace.contains("Square")
-              || stackTrace.contains("Triangle"))) {
-        foundVtableWithReceiver = true;
-        break;
+      assertNotNull(sample.get("stackTrace"), "CPU sample is missing its stackTrace field");
+      List<JfrFrame> frames = sample.getStackTrace().frames();
+      for (int i = 0; i < frames.size(); i++) {
+        JfrFrame frame = frames.get(i);
+        assertNotNull(frame.methodName(), "CPU stack frame is missing its method name");
+        if ("vtable stub".equals(frame.methodName())) {
+          stubs++;
+        }
+        if ("<vtable_receiver>".equals(frame.methodName())) {
+          receivers++;
+          String receiver = frame.className();
+          assertNotNull(receiver, "Vtable receiver frame is missing its declaring class");
+          if ((Circle.class.getName().equals(receiver)
+                  || Square.class.getName().equals(receiver)
+                  || Triangle.class.getName().equals(receiver))
+              && i + 1 < frames.size()
+              && "vtable stub".equals(frames.get(i + 1).methodName())) {
+            if (!foundVtableWithReceiver) {
+              System.out.println(
+                  "Vtable receiver: "
+                      + receiver
+                      + "."
+                      + frame.methodName()
+                      + " -> "
+                      + frames.get(i + 1).methodName());
+            }
+            foundVtableWithReceiver = true;
+          }
+        }
       }
     }
+    System.out.println("Vtable stubs=" + stubs + ", receivers=" + receivers);
     assertTrue(
         foundVtableWithReceiver,
-        "No CPU sample contained a vtable stub frame, a vtable_receiver synthetic frame, "
-            + "and a receiver class (Circle/Square/Triangle); signal-handler VMSymbol* capture or "
-            + "dump-time SafeAccess resolution in Lookup::resolveVTableReceiver is broken");
+        "No CPU sample contained a <vtable_receiver> method declared by a workload receiver "
+            + "class (Circle/Square/Triangle) immediately before its vtable stub; "
+            + "signal-handler capture or dump-time resolution is broken");
   }
 }

@@ -251,6 +251,20 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
     }
 }
 
+VMSymbol* HotspotSupport::captureVtableReceiver(HotspotStackFrame& frame, uintptr_t pc,
+                                              uintptr_t sp, uintptr_t fp, StackWalkFeatures features) {
+    if (!features.vtable_target || !VMStructs::hasClassNames()
+            || frame.pc() != pc || frame.sp() != sp || frame.fp() != fp) {
+        return nullptr;
+    }
+    uintptr_t receiver = frame.jarg0();
+    if (receiver == 0) {
+        return nullptr;
+    }
+    VMKlass* klass = VMKlass::fromOop(receiver);
+    return klass != nullptr ? klass->name() : nullptr;
+}
+
 static ucontext_t empty_ucontext{};
 
 #ifdef NDEBUG
@@ -768,22 +782,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 }
                 continue;
             } else {
-                if (features.vtable_target && nm->isVTableStub() && depth == 0) {
-                    uintptr_t receiver = frame.jarg0();
-                    if (receiver != 0) {
-                        VMKlass* klass = VMKlass::fromOop(receiver);
-                        VMSymbol* symbol = klass != nullptr ? klass->name() : nullptr;
-                        // Store the raw VMSymbol* in the frame's method_id
-                        // slot. BCI_VTABLE_RECEIVER (vmEntry.h) repurposes
-                        // method_id for this pointer — same precedent as
-                        // BCI_NATIVE_FRAME storing const char* and
-                        // BCI_NATIVE_FRAME_REMOTE storing a packed blob.
-                        // Resolution happens at dump time via SafeAccess so
-                        // a concurrent class-unload + Symbol free cannot
-                        // crash the dump thread (see Lookup::resolveVTableReceiver).
-                        if (symbol != nullptr) {
-                            fillFrame(frames[depth++], BCI_VTABLE_RECEIVER, (void*)symbol);
-                        }
+                if (nm->isVTableStub() && depth == 0 && !walk_pc.isReturnAddress()
+                        && depth + 1 < actual_max_depth) {
+                    VMSymbol* symbol = captureVtableReceiver(frame, reinterpret_cast<uintptr_t>(walk_pc.raw()), sp, fp, features);
+                    if (symbol != nullptr) {
+                        // BCI_VTABLE_RECEIVER stores a raw VMSymbol*, not a jmethodID.
+                        // Lookup::resolveVTableReceiver uses SafeAccess at dump time.
+                        fillFrame(frames[depth++], BCI_VTABLE_RECEIVER, symbol);
                     }
                 }
 
@@ -807,6 +812,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 if (details) {
                     fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+                }
+                if (depth >= actual_max_depth) {
+                    break;
                 }
 
                 const void* stub_pc = walk_pc.raw();
@@ -1102,6 +1110,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                 int max_depth, StackContext *java_ctx,
                                 bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot) {
+  if (max_depth <= 0) {
+    return 0;
+  }
   // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
@@ -1194,6 +1205,17 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   if ((trace.num_frames == ticks_unknown_Java ||
        trace.num_frames == ticks_not_walkable_Java) &&
       !(safe_mode & UNKNOWN_JAVA) && ucontext != NULL) {
+    VMSymbol* receiver_symbol = nullptr;
+    StackWalkFeatures features = Profiler::instance()->stackWalkFeatures();
+    if (cstack != CSTACK_NO && max_depth >= 3 && features.vtable_target && VMStructs::hasClassNames()) {
+      VMNMethod* leaf = CodeHeap::findNMethod(reinterpret_cast<const void*>(frame.pc()));
+      if (leaf != nullptr && leaf->isVTableStub()) {
+        // A java_ctx redirect leaves the interrupted argument registers behind.
+        // Only matching pc/sp/fp can use them as the leaf stub's receiver;
+        // unwindStub changes that context for the ASGCT retry.
+        receiver_symbol = captureVtableReceiver(frame, ctx_snapshot.pc(), ctx_snapshot.sp(), ctx_snapshot.fp(), features);
+      }
+    }
     const void* stub_start;
     const char* stub_name;
     const StubUnwindInfo* stub_info = nullptr;
@@ -1203,7 +1225,15 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     if (JitCodeCache::findRuntimeStub((const void *)frame.pc(), &stub_start, &stub_name)) {
 #endif
       if (cstack != CSTACK_NO) {
+        if (receiver_symbol != nullptr) {
+          max_depth -= makeFrame(trace.frames++, BCI_VTABLE_RECEIVER, reinterpret_cast<jmethodID>(receiver_symbol));
+        }
         max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, stub_name);
+        if (max_depth == 0) {
+          // ASGCT failed and the prefix leaves no room for recovery or its error.
+          if (truncated != nullptr) *truncated = true;
+          return trace.frames - frames;
+        }
       }
       if (!(safe_mode & POP_STUB) &&
           frame.unwindStub((instruction_t *)stub_start, stub_name, stub_info) &&
@@ -1218,6 +1248,10 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           jmethodID method_id = method->id();
           if (isValidJMethodID(method_id)) {
             max_depth -= makeFrame(trace.frames++, 0, method_id);
+            if (max_depth == 0) {
+              if (truncated != nullptr) *truncated = true;
+              return trace.frames - frames;
+            }
           }
           if (!(safe_mode & POP_METHOD) && frame.unwindCompiled(nmethod) &&
               isAddressInCode((const void *)frame.pc())) {
@@ -1235,8 +1269,15 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         }
       } else if (nmethod != NULL) {
         if (cstack != CSTACK_NO) {
+          if (receiver_symbol != nullptr) {
+            max_depth -= makeFrame(trace.frames++, BCI_VTABLE_RECEIVER, reinterpret_cast<jmethodID>(receiver_symbol));
+          }
           max_depth -=
               makeFrame(trace.frames++, BCI_NATIVE_FRAME, nmethod->name());
+          if (max_depth == 0) {
+            if (truncated != nullptr) *truncated = true;
+            return trace.frames - frames;
+          }
         }
         if (!(safe_mode & POP_STUB) &&
             frame.unwindStub(NULL, nmethod->name()) &&
