@@ -93,11 +93,11 @@ class FileMapping {
   int _error = 0;
 };
 
-// A fresh copy of a file in TMPDIR, removed on scope exit.
+// A fresh copy of a file in TMPDIR, or /tmp when unset, removed on scope exit.
 class TempCopy {
  public:
   explicit TempCopy(const char* from)
-      : _error(copyToTempFile(from, "libunloadprot", _path, sizeof(_path))) {}
+      : _error(copyToTempFile(from, nullptr, "libunloadprot", _path, sizeof(_path))) {}
   ~TempCopy() { if (_error == 0) unlink(_path); }
   TempCopy(const TempCopy&) = delete;
   TempCopy& operator=(const TempCopy&) = delete;

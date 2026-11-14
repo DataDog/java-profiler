@@ -353,10 +353,15 @@ INSTANTIATE_TEST_SUITE_P(PatchKinds, LibraryPatcherUnloadTest,
   _exit(code);
 }
 
-// Copies the test DSO to a fresh temporary file and returns its path in
-// path_out. Exits the child on failure.
+// Copies the test DSO to a fresh file in /tmp and returns its path in path_out.
+// /tmp, not TMPDIR: the copy is dlopen()ed, and a noexec TMPDIR would make that
+// fail. Exits the child on failure.
 static void copyLibToTemp(char* path_out, size_t size) {
-  if (copyToTempFile(g_lib_path, "libpatchtarget", path_out, size) != 0) _exit(CHILD_DLOPEN_FAILED);
+  int err = copyToTempFile(g_lib_path, "/tmp", "libpatchtarget", path_out, size);
+  if (err != 0) {
+    fprintf(stderr, "copying %s to /tmp: %s\n", g_lib_path, strerror(err));
+    _exit(CHILD_DLOPEN_FAILED);
+  }
 }
 
 // The name a library is loaded by.
@@ -372,10 +377,7 @@ static LoadedLib loadUnlinkedLib(bool unlink_before_parse, LoadName load_name) {
   char name[PATH_MAX + 16];
   if (load_name == BY_RELATIVE_PATH) {
     snprintf(name, sizeof(name), "./%s", strrchr(path, '/') + 1);
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s", path);
-    *strrchr(dir, '/') = '\0';
-    if (chdir(dir) != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    if (chdir("/tmp") != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);
   } else if (load_name == BY_SYMLINK) {
     snprintf(name, sizeof(name), "%s.link.so", path);
     if (symlink(path, name) != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);

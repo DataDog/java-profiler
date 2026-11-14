@@ -27,12 +27,15 @@ class FdOwner {
   int _fd;
 };
 
-// Copies `from` to a fresh "<TMPDIR or /tmp>/<prefix>-XXXXXX.so" and writes its path
-// to path_out. Returns 0, or the errno of the failing step (EIO for a short write)
-// after removing the partial copy.
-static inline int copyToTempFile(const char* from, const char* prefix, char* path_out, size_t size) {
-  const char* dir = getenv("TMPDIR");
-  snprintf(path_out, size, "%s/%s-XXXXXX.so", dir != nullptr && dir[0] != '\0' ? dir : "/tmp", prefix);
+// Copies `from` to a fresh "<dir>/<prefix>-XXXXXX.so" and writes its path to path_out;
+// a null dir means TMPDIR, or /tmp when unset. Returns 0, or the errno of the failing
+// step (EIO for a short write) after removing the partial copy.
+static inline int copyToTempFile(const char* from, const char* dir, const char* prefix,
+                                 char* path_out, size_t size) {
+  if (dir == nullptr) dir = getenv("TMPDIR");
+  if (dir == nullptr || dir[0] == '\0') dir = "/tmp";
+  int len = snprintf(path_out, size, "%s/%s-XXXXXX.so", dir, prefix);
+  if (len < 0 || static_cast<size_t>(len) >= size) return ENAMETOOLONG;
   FdOwner out(mkstemps(path_out, 3));
   if (out.get() < 0) return errno;
   int err = 0;
