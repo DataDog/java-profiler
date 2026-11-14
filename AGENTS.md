@@ -142,7 +142,7 @@ debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 Custom Kotlin-based native build plugin (`build-logic/`) instead of Gradle's
 `cpp-library`/`cpp-application` plugins; it invokes `clang++`/`g++` directly. Build
 configurations are discovered dynamically from `ConfigurationPresets.kt`, never hardcoded.
-Two-JDK pattern: `JAVA_HOME` (build, JDK 17+, Gradle runs on 21 LTS) runs Gradle;
+Two-JDK pattern: `JAVA_HOME` (build, JDK 21+; CI uses 21 LTS) runs Gradle;
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
 `--release 8`.
 
