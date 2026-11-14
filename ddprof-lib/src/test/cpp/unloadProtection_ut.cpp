@@ -3,10 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Symbols::parseLibraries() reads a library's in-memory dynamic section only
-// when UnloadProtection is valid. A file mapping that /proc/self/maps shows
-// but the loader has not finished, as during a concurrent dlopen() on musl,
-// must not pass: its later segments are not mapped yet.
+// Symbols::parseLibraries() reads a library's dynamic section in memory only when
+// UnloadProtection is valid, so it must reject a file mapping the loader has not
+// finished, as /proc/self/maps shows during a concurrent dlopen() on musl.
 
 #ifdef __linux__
 
@@ -45,15 +44,17 @@ class UnloadProtectionTest : public ::testing::Test {
     ASSERT_EQ(access(_lib_path, R_OK), 0) << "Missing test resource " << _lib_path;
   }
 
-  // Loads the test DSO and returns the start of its lowest mapping.
+  // Loads the test DSO, left loaded for the rest of the binary, and returns the
+  // start of its lowest mapping, or nullptr on failure.
   const char* loadImageBase() {
     void* handle = dlopen(_lib_path, RTLD_NOW);
     EXPECT_NE(handle, nullptr) << dlerror();
-    if (handle == nullptr) return nullptr;
     struct link_map* map;
     Dl_info info;
-    EXPECT_EQ(dlinfo(handle, RTLD_DI_LINKMAP, &map), 0);
-    EXPECT_NE(dladdr(map->l_ld, &info), 0);
+    if (handle == nullptr || dlinfo(handle, RTLD_DI_LINKMAP, &map) != 0 ||
+        dladdr(map->l_ld, &info) == 0) {
+      return nullptr;
+    }
     return static_cast<const char*>(info.dli_fbase);
   }
 };
