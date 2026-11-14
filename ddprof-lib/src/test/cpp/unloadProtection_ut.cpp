@@ -20,6 +20,7 @@
 #include <limits.h>
 #include <link.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -96,7 +97,10 @@ TEST_F(UnloadProtectionTest, RejectsImageNotLoadedByTheLoader) {
   }
   int map_errno = errno;
   if (fd >= 0) close(fd);
-  bool loaded = map != MAP_FAILED && dlopen(path, RTLD_LAZY | RTLD_NOLOAD) != nullptr;
+  // Cleanup runs before the ASSERTs below, so a failing check leaves no temp file.
+  void* handle = map != MAP_FAILED ? dlopen(path, RTLD_LAZY | RTLD_NOLOAD) : nullptr;
+  bool loaded = handle != nullptr;
+  if (loaded) dlclose(handle);
   bool valid = false;
   if (map != MAP_FAILED && !loaded) {
     const char* base = static_cast<const char*>(map);
