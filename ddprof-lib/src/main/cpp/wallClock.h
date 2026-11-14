@@ -7,6 +7,7 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <algorithm>
 #include <cassert>
 #include "engine.h"
 #include "nativeMem.h"
@@ -20,6 +21,12 @@
 #include "wallClockCounters.h"
 #include "xorshift.h"
 
+enum class WallClockCandidateOutcome {
+    SIGNAL_SENT,
+    SIGNAL_FAILED,
+    PRECHECK_REJECTED,
+};
+
 class BaseWallClock : public Engine {
   private:
     static std::atomic<bool> _enabled;
@@ -32,7 +39,6 @@ class BaseWallClock : public Engine {
     // limit low enough helps to avoid contention on a spin lock inside
     // Profiler::recordSample().
     int _reservoir_size;
-
     pthread_t _thread;
     virtual void timerLoop() = 0;
     virtual void initialize(Arguments& args) {};
@@ -45,8 +51,26 @@ class BaseWallClock : public Engine {
     bool isEnabled() const;
     static bool inSyscall(void* ucontext);
 
+    // Shared by WallClockASGCT::timerLoop() and WallClockJvmti::timerLoop(): both
+    // engines resolve a registry slot, check precheck suppression, and send the
+    // sampling signal identically; only collectThreads() differs between them.
+    WallClockCandidateOutcome sampleThreadCommon(
+        ThreadEntry entry, int& num_failures, int& threads_already_exited,
+        int& permission_denied, int& registry_lookups, bool lookup_registry_slot,
+        bool precheck, ThreadFilter* thread_filter,
+        ThreadFilter::RecordingEpoch recording_epoch);
+    // Timer-thread precheck: true when an explicit lifecycle hook still owns an
+    // already-sampled blocked run for this thread, so no signal is needed.
+    static bool suppressAlreadySampled(const ThreadEntry& entry);
+
+#ifdef UNIT_TEST
+    virtual void observeEpochForTest(const WallClockEpochEvent& epoch) {}
+#endif
+
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
-    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, CleanThreadFunc cleanThreads, int reservoirSize, u64 interval) {
+    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads,
+                         CleanThreadFunc cleanThreads, int reservoirSize, u64 interval,
+                         bool lookupRegistrySlot = false) {
       if (!_enabled.load(std::memory_order_acquire)) {
         return;
       }
@@ -59,6 +83,9 @@ class BaseWallClock : public Engine {
 
       std::vector<ThreadType> threads;
       threads.reserve(reservoirSize);
+      size_t accounted_capacity = threads.capacity();
+      NativeMem::record(NM_WALLCLOCK,
+                        static_cast<long long>(accounted_capacity * sizeof(ThreadType)));
       int self = OS::threadId();
       ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
       
@@ -80,25 +107,48 @@ class BaseWallClock : public Engine {
 
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
-        NativeMem::setLive(NM_WALLCLOCK, (long long)threads.capacity() * sizeof(ThreadType));
+        size_t capacity = threads.capacity();
+        if (capacity != accounted_capacity) {
+          NativeMem::record(NM_WALLCLOCK,
+                            (static_cast<long long>(capacity) -
+                             static_cast<long long>(accounted_capacity)) *
+                            static_cast<long long>(sizeof(ThreadType)));
+          accounted_capacity = capacity;
+        }
+        const u32 num_samplable_threads = static_cast<u32>(threads.size());
 
         int num_failures = 0;
         int threads_already_exited = 0;
         int permission_denied = 0;
+        int registry_lookups = 0;
         u32 num_successful_samples = 0;
         std::vector<ThreadType> sample = reservoir.sample(threads);
         for (ThreadType thread : sample) {
-          if (sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
+          WallClockCandidateOutcome outcome = sampleThreads(
+              thread, num_failures, threads_already_exited,
+              permission_denied, registry_lookups, lookupRegistrySlot);
+          // Suppression replaces a selected signal, not a reservoir candidate.
+          // Count it for epoch upscaling just as a handler-suppressed signal.
+          if (outcome != WallClockCandidateOutcome::SIGNAL_FAILED) {
             num_successful_samples++;
           }
+          if (outcome == WallClockCandidateOutcome::PRECHECK_REJECTED) {
+            Counters::increment(WC_PRECHECK_CANDIDATES_REJECTED);
+          }
+        }
+        if (registry_lookups > 0) {
+          Counters::increment(WC_PRECHECK_REGISTRY_LOOKUPS, registry_lookups);
         }
 
-        epoch.updateNumSamplableThreads(threads.size());
+        epoch.updateNumSamplableThreads(num_samplable_threads);
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
         epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
+#ifdef UNIT_TEST
+        observeEpochForTest(epoch);
+#endif
         u64 endTime = TSC::ticks();
         u64 duration = TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {
@@ -121,10 +171,10 @@ class BaseWallClock : public Engine {
                            ((_interval * 2) - 1)));
       }
 
-      // `threads` goes out of scope (and frees its buffer) when this function
-      // returns; reset the gauge here so a final JFR flush after stop()
-      // doesn't keep reporting the last observed capacity as live.
-      NativeMem::setLive(NM_WALLCLOCK, 0);
+      // Retract only this timer's backing allocation. The tracker and any other
+      // timers account for their own storage in the same category.
+      NativeMem::record(NM_WALLCLOCK,
+                        -static_cast<long long>(accounted_capacity * sizeof(ThreadType)));
     }
 
 public:
@@ -150,6 +200,18 @@ public:
 
     Error start(Arguments& args);
     void stop();
+
+#if defined(UNIT_TEST) || defined(DEBUG)
+    static void setForceStartFailureForTest(bool force) {
+        _force_start_failure_for_test.store(force, std::memory_order_release);
+    }
+    static bool isForceStartFailureForTest() {
+        return _force_start_failure_for_test.load(std::memory_order_acquire);
+    }
+  private:
+    static std::atomic<bool> _force_start_failure_for_test;
+  public:
+#endif
 };
 
 class WallClockASGCT : public BaseWallClock {
@@ -168,6 +230,7 @@ class WallClockASGCT : public BaseWallClock {
     const char* name() override {
         return "WallClock (ASGCT)";
     }
+    bool supportsUnfilteredThreadRegistryTracking() const override { return true; }
 };
 
 // Wall-clock engine that uses BaseWallClock's pthread reservoir sampling loop
@@ -189,6 +252,7 @@ class WallClockJvmti : public BaseWallClock {
     const char* name() override {
         return "WallClock (JVMTI)";
     }
+    bool supportsUnfilteredThreadRegistryTracking() const override { return true; }
 };
 
 #endif // _WALLCLOCK_H

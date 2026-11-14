@@ -201,7 +201,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         "  RUNNABLE / other:                 %4d samples (%5.1f%%)%n",
         runnableSamples, pctRunnable);
     System.out.printf(
-        "Once-per-run filter (SLEEPING + CONDVAR_WAIT + OBJECT_WAIT): %.1f%% of signals suppressed (upper bound)%n",
+        "Once-per-run filter (SLEEPING + CONDVAR_WAIT + OBJECT_WAIT): %.1f%% of signals suppressed"
+            + " (upper bound)%n",
         oncePerRunSuppression);
 
     assertTrue(sleepSamples > 0, "Expected samples from sleeping thread");
@@ -325,7 +326,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
     double oncePerRunSuppression = pctSleep + pctPark;
 
     System.out.printf(
-        "%nRealistic service workload report (%d pool threads, 1 scheduler, 1 hot thread, 500ms):%n",
+        "%nRealistic service workload report (%d pool threads, 1 scheduler, 1 hot thread,"
+            + " 500ms):%n",
         POOL_SIZE);
     System.out.printf(
         "  Scheduler sleep (Thread.sleep):           %4d samples (%5.1f%%)%n",
@@ -336,7 +338,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         "  RUNNABLE / other (active work):          %4d samples (%5.1f%%)%n",
         otherSamples, pctOther);
     System.out.printf(
-        "Once-per-run filter (SLEEPING + CONDVAR_WAIT): %.1f%% of signals suppressed (upper bound)%n",
+        "Once-per-run filter (SLEEPING + CONDVAR_WAIT): %.1f%% of signals suppressed (upper"
+            + " bound)%n",
         oncePerRunSuppression);
 
     assertTrue(
@@ -349,6 +352,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms";
+    // No span is active; workers still register explicitly for filtered sampling.
+    return "wall=1ms,filter=0";
   }
 }

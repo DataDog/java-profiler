@@ -29,6 +29,7 @@
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include "wallClockBlockTracker.h"
 #include <atomic>
 #include <iostream>
 #include <map>
@@ -175,6 +176,7 @@ private:
   // JavaProfiler.execute / ContextValueCache.
   std::atomic<bool> _context_value_dict_reset{false};
   ThreadFilter _thread_filter;
+  WallClockBlockTracker _block_tracker;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
   // CPU engine is only replaced by start(), while thread unregistration is open, so the
@@ -186,6 +188,11 @@ private:
   Engine *_wall_engine = NULL;
   Engine *_alloc_engine;
   int _event_mask;
+  // Subset of _event_mask whose engine actually activated on the last
+  // start() (mixed-success starts leave some requested engines never
+  // started). stop() must gate teardown on this, not on _event_mask,
+  // or it calls stop() on an engine whose start() never ran.
+  int _activated_mask;
 
   time_t _start_time;
   time_t _stop_time;
@@ -375,7 +382,7 @@ public:
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
-        _alloc_engine(NULL), _event_mask(0),
+        _alloc_engine(NULL), _event_mask(0), _activated_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
         _total_samples(0), _sample_seq(0), _failures(),
         _max_stack_depth(0), _calltrace_buffer_capacity(), _features(), _safe_mode(0), _cstack(CSTACK_NO),
@@ -388,6 +395,7 @@ public:
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
     }
+    _thread_filter.setBlockTracker(&_block_tracker);
   }
 
   static inline Profiler *instance() {
@@ -407,7 +415,6 @@ public:
   // (ThreadInfo::updateThreadName is first-writer-wins). A later scan, or the
   // dump-time pass (which passes false), records the final name instead.
   void updateNativeThreadNames(bool defer_initializing = false);
-
 
   inline void incFailure(int type) {
     if (type < ASGCT_FAILURE_TYPES) {
@@ -462,6 +469,7 @@ public:
   }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
+  WallClockBlockTracker *blockTracker() { return &_block_tracker; }
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);

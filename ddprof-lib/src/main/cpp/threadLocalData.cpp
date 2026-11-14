@@ -10,6 +10,7 @@
 #include "guards.h"
 #include "otel_context.h"
 #include "os.h"
+#include "profiler.h"
 #include <cassert>
 #include <cstring>
 #include <time.h>
@@ -101,6 +102,10 @@ void ProfiledThread::freeValue(void* value) {
   // for every teardown route (including deleteForTest()) and not just this
   // call site.
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
+  // ThreadEnd notifications are disabled between recordings. Retire the
+  // identity before pool reuse also when this pthread-key destructor is the
+  // only cleanup callback; an already retired TID is a lock-free no-op.
+  Profiler::instance()->threadFilter()->unregisterThreadByTid(pt->tid());
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
     // destructor callback), so the THREAD_LOCAL decrement belongs here. Record

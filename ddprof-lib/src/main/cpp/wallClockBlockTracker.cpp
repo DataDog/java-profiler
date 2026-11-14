@@ -1,0 +1,167 @@
+/*
+ * Copyright 2026, Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "wallClockBlockTracker.h"
+#include "nativeMem.h"
+#include "signalSafety.h"
+#include <memory>
+#include <new>
+
+WallClockBlockTracker::~WallClockBlockTracker() {
+    SlotStorage* storage = _storage.exchange(nullptr, std::memory_order_acq_rel);
+    if (storage != nullptr) {
+        delete storage;
+        NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(SlotStorage)));
+    }
+}
+
+bool WallClockBlockTracker::ensureAllocated() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    if (_storage.load(std::memory_order_acquire) != nullptr) {
+        return true;
+    }
+    std::unique_ptr<SlotStorage> fresh;
+#ifdef UNIT_TEST
+    if (!_allocation_failure.load(std::memory_order_acquire))
+#endif
+    {
+        fresh.reset(new (std::nothrow) SlotStorage());
+    }
+    if (fresh == nullptr) {
+        return false;
+    }
+#ifdef UNIT_TEST
+    if (_allocation_hook != nullptr) {
+        _allocation_hook(_allocation_hook_arg);
+    }
+#endif
+    SlotStorage* expected = nullptr;
+    if (_storage.compare_exchange_strong(expected, fresh.get(), std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) {
+        fresh.release();
+        NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(SlotStorage)));
+    }
+    return true;
+}
+
+u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
+                                           OSThreadState state, BlockRunOwner owner) {
+#ifdef UNIT_TEST
+    if (_block_admission_hook != nullptr) {
+        _block_admission_hook(_block_admission_hook_arg);
+    }
+#endif
+    ThreadFilter::Slot* identity_slot = registry->slotForId(slot_id);
+    BlockState* block_slot = slotForId(slot_id);
+    if (identity_slot == nullptr || block_slot == nullptr) {
+        return 0;
+    }
+    u32 generation = 0;
+    if (!block_slot->trySetActiveBlockRun(identity_slot, state, owner, &generation,
+                                          registry->unfilteredWallTrackingActive())) {
+        return 0;
+    }
+    return WallClockBlockTracker::encodeBlockRunToken(slot_id, generation);
+}
+
+bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation) {
+    BlockState* s = slotForId(slot_id);
+    if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
+        return false;
+    }
+    s->resetSlot(OSThreadState::RUNNABLE);
+    return true;
+}
+
+void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state) {
+    BlockState* s = slotForId(slot_id);
+    if (s != nullptr) {
+        s->resetSlot(state);
+    }
+}
+
+void WallClockBlockTracker::resetAtContextBoundary(ThreadFilter::SlotID slot_id) {
+    BlockState* s = slotForId(slot_id);
+    if (s != nullptr && s->needsContextBoundaryReset()) {
+        s->resetSlot(OSThreadState::UNKNOWN);
+    }
+}
+
+void WallClockBlockTracker::resetAll() {
+    SlotStorage* storage = _storage.load(std::memory_order_acquire);
+    if (storage != nullptr) {
+        for (auto& s : storage->slots) {
+            s.resetSlot(OSThreadState::UNKNOWN);
+        }
+    }
+}
+
+bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
+                                                     const ThreadEntry& entry) const {
+    ThreadFilter::Slot* identity_slot = entry.slot;
+    if (identity_slot == nullptr || identity_slot->nativeTid() != entry.tid ||
+        identity_slot->lifecycleGeneration() != entry.lifecycle_generation) {
+        return false;
+    }
+    BlockState* slot = slotForId(entry.slot_id);
+    if (slot == nullptr) {
+        return false;
+    }
+
+    const bool unfiltered_tracking = registry->unfilteredWallTrackingActive();
+    ThreadFilter::RecordingEpoch epoch = 0;
+    if (unfiltered_tracking) {
+        epoch = registry->recordingEpoch();
+        if (epoch == 0 || entry.recording_epoch != epoch ||
+            identity_slot->recordingEpoch() != epoch) {
+            return false;
+        }
+    }
+
+    u32 block_generation = slot->blockGeneration();
+    BlockRunOwner owner = slot->activeBlockOwner();
+    OSThreadState state = slot->activeBlockState();
+    bool context_eligible =
+        !unfiltered_tracking || slot->activeBlockRemainedOutsideContextWindow(identity_slot);
+    bool sampled = slot->sampledThisRun();
+    OSThreadState last_sampled_state =
+        sampled ? slot->lastSampledState() : OSThreadState::UNKNOWN;
+    bool suppressible_state = isPrecheckSuppressionState(state);
+    if (owner == BlockRunOwner::NONE || !context_eligible ||
+        !suppressible_state || !sampled || state != last_sampled_state) {
+        return false;
+    }
+
+#ifdef UNIT_TEST
+    if (_suppression_snapshot_hook != nullptr) {
+        _suppression_snapshot_hook(_suppression_snapshot_hook_arg);
+    }
+#endif
+
+    // Independent atomics can describe different runs during an exit/re-entry.
+    // Reject a payload unless both the identity and block generation still match.
+    if (slot->activeBlockOwner() != owner ||
+        slot->blockGeneration() != block_generation ||
+        identity_slot->nativeTid() != entry.tid ||
+        identity_slot->lifecycleGeneration() != entry.lifecycle_generation) {
+        return false;
+    }
+    if (unfiltered_tracking &&
+        (registry->recordingEpoch() != epoch || identity_slot->recordingEpoch() != epoch ||
+         !slot->activeBlockRemainedOutsideContextWindow(identity_slot))) {
+        return false;
+    }
+    return true;
+}
