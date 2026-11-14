@@ -19,6 +19,7 @@
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "nativeSocketSampler.h"
+#include "nativeTestResources_linux.h"
 #include "os.h"
 #include "symbols.h"
 
@@ -226,19 +227,8 @@ void runInChild(Scenario scenario) {
   ASSERT_EQ(code, CHILD_OK) << "child precondition failed with exit code " << code;
 }
 
-// The binary lives in build/bin/gtest/<config>_<test>/; resolve the DSO
-// relative to it so the result does not depend on the working directory.
-// A missing DSO is a build problem, so fail instead of skipping.
 void resolveLibPath() {
-  char exe[PATH_MAX - 128];
-  ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-  ASSERT_GT(len, 0) << strerror(errno);
-  exe[len] = '\0';
-  *strrchr(exe, '/') = '\0';
-  snprintf(g_lib_path, sizeof(g_lib_path),
-           "%s/../../../test/resources/native-libs/patch-target-lib/libpatchtarget.so", exe);
-  ASSERT_EQ(access(g_lib_path, R_OK), 0) << "Missing test resource " << g_lib_path
-                                         << " (built by :ddprof-lib:buildNativeLibs)";
+  ASSERT_TRUE(nativeTestResourcePath("patch-target-lib/libpatchtarget.so", g_lib_path, sizeof(g_lib_path)));
 }
 
 class LibraryPatcherUnloadTest : public ::testing::TestWithParam<const PatchKind*> {

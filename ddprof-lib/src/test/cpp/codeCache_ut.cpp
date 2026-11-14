@@ -7,6 +7,7 @@
 #include "codeCache.h"
 #ifdef __linux__
 #include "libraries.h"
+#include "nativeTestResources_linux.h"
 #include <dlfcn.h>
 #endif
 
@@ -217,15 +218,9 @@ TEST(CodeCacheTest, PublishedImportsPreserveLookupAndDeduplication) {
 
 #ifdef __linux__
 TEST(CodeCacheTest, ConcurrentImportLookupAndReprotectionUseIndependentWriterDomains) {
-    const char* paths[] = {
-        "build/test/resources/native-libs/patch-target-lib/libpatchtarget.so",
-        "../build/test/resources/native-libs/patch-target-lib/libpatchtarget.so",
-    };
-    void* handle = nullptr;
-    for (const char* path : paths) {
-        handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-        if (handle != nullptr) break;
-    }
+    char path[PATH_MAX];
+    ASSERT_TRUE(nativeTestResourcePath("patch-target-lib/libpatchtarget.so", path, sizeof(path)));
+    void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     ASSERT_NE(nullptr, handle) << dlerror();
     void* symbol = dlsym(handle, "patch_target_write");
     ASSERT_NE(nullptr, symbol);

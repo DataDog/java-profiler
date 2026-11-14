@@ -24,6 +24,7 @@
 #include "nativeFdClassifier.h"
 #include "nativeSocketInterposer.h"
 #include "nativeSocketSampler.h"
+#include "nativeTestResources_linux.h"
 #include "os.h"
 #include "profiler.h"
 #include "vmEntry.h"
@@ -1380,16 +1381,8 @@ protected:
                                                saved_sampler_write, saved_sampler_read);
     originals_saved = true;
 
-    // Same root/module working-directory alternatives as the unload fixture.
-    const char* roots[] = {"build/test/resources/native-libs/socket-patch-transaction-lib",
-                           "../build/test/resources/native-libs/socket-patch-transaction-lib"};
-    for (const char* root : roots) {
-      snprintf(directory, sizeof(directory), "%s", root);
-      handles[0] = openLibrary("libjava.so");
-      if (handles[0] != nullptr) {
-        break;
-      }
-    }
+    ASSERT_TRUE(nativeTestResourcePath("socket-patch-transaction-lib", directory, sizeof(directory)));
+    handles[0] = openLibrary("libjava.so");
     ASSERT_NE(nullptr, handles[0]) << dlerror();
     loadNetworkLibrary(0, "libnet.so");
   }
@@ -1914,22 +1907,9 @@ TEST_F(LibraryPatcherSocketTransactionTest,
 }
 
 TEST(LibraryPatcherDsoLifetimeTest, RetainsPatchedLibraryUntilImportsAreRestored) {
-  // Gradle starts gtests from ddprof-lib, while GitLab runs the binaries from
-  // the repository root. The support library is under the root build directory
-  // in both cases.
-  const char* paths[] = {
-      "build/test/resources/native-libs/unloadable-io-lib/"
-      "libunloadable-io.so",
-      "../build/test/resources/native-libs/unloadable-io-lib/"
-      "libunloadable-io.so",
-  };
-  void* handle = nullptr;
-  for (const char* path : paths) {
-    handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (handle != nullptr) {
-      break;
-    }
-  }
+  char path[PATH_MAX];
+  ASSERT_TRUE(nativeTestResourcePath("unloadable-io-lib/libunloadable-io.so", path, sizeof(path)));
+  void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   ASSERT_NE(nullptr, handle) << dlerror();
   void* symbol = dlsym(handle, "unloadable_read");
   ASSERT_NE(nullptr, symbol) << dlerror();

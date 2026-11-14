@@ -13,6 +13,7 @@
 #include "nativeFdClassifier.h"
 #include "nativeSocketInterposer.h"
 #include "nativeSocketSampler.h"
+#include "nativeTestResources_linux.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -475,13 +476,8 @@ protected:
     saved_sampler = NativeSocketSampler::setActiveForTest(false);
     saved_owner = NativeSocketInterposer::setHookOwnerPidForTest(getpid());
     saved = true;
-    const char* roots[] = {"build/test/resources/native-libs/socket-patch-transaction-lib",
-                          "../build/test/resources/native-libs/socket-patch-transaction-lib"};
-    for (const char* root : roots) {
-      snprintf(directory, sizeof(directory), "%s", root);
-      anchor = openLibrary("libjava.so");
-      if (anchor != nullptr) break;
-    }
+    ASSERT_TRUE(nativeTestResourcePath("socket-patch-transaction-lib", directory, sizeof(directory)));
+    anchor = openLibrary("libjava.so");
     ASSERT_NE(nullptr, anchor) << dlerror();
     network = openLibrary("libnet.so");
     ASSERT_NE(nullptr, network) << dlerror();

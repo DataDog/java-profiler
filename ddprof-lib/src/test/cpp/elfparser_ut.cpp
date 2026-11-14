@@ -14,6 +14,7 @@
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "log.h"
+#include "nativeTestResources_linux.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 #include <unistd.h>
@@ -59,16 +60,8 @@ public:
 static ElfParserGlobalSetup global_setup;
 
 TEST(Elf, readSymTable) {
-    char cwd[PATH_MAX - 64];
-    if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-        exit(1);    
-    }
     char path[PATH_MAX];
-    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/unresolved-functions/main", cwd);
-    if (access(path, R_OK) != 0) {
-        fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-        exit(0);
-    }
+    ASSERT_TRUE(nativeTestResourcePath("unresolved-functions/main", path, sizeof(path)));
     CodeCache cc("test");
     ElfParser::parseFile(&cc, nullptr, path, false);
 }
@@ -80,16 +73,8 @@ class ElfReladyn : public ::testing::Test {
 
     // This method is called before each test.
     void SetUp() override {
-        char cwd[PATH_MAX - 64];
-        if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-            exit(1);
-        }
         char path[PATH_MAX];
-        snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/reladyn-lib/libreladyn.so", cwd);
-        if (access(path, R_OK) != 0) {
-            fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-            exit(0);
-        }
+        ASSERT_TRUE(nativeTestResourcePath("reladyn-lib/libreladyn.so", path, sizeof(path)));
         void* handle = dlopen(path, RTLD_NOW);
         ASSERT_THAT(handle, ::testing::NotNull());
 
@@ -140,15 +125,30 @@ TEST_F(ElfReladyn, resolvesEveryLocationForTheSameImport) {
     EXPECT_THAT(libreladyn()->findImport(im_read, 3), ::testing::IsNull());
 }
 
+// The parser allocates caches, but CodeCacheArray does not own its entries.
+// These arrays are test-local and outlive the parser and any unmapper thread.
+class OwnedElfCodeCaches {
+public:
+    OwnedElfCodeCaches() = default;
+    ~OwnedElfCodeCaches() {
+        for (int i = 0; i < _caches.count(); i++) {
+            delete _caches[i];
+        }
+    }
+    OwnedElfCodeCaches(const OwnedElfCodeCaches&) = delete;
+    OwnedElfCodeCaches& operator=(const OwnedElfCodeCaches&) = delete;
+
+    CodeCacheArray* array() { return &_caches; }
+
+private:
+    CodeCacheArray _caches;
+};
+
 class ElfTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Reset global or static state
         Symbols::clearParsingCaches();
-    }
-
-    void TearDown() override {
-        // probably some free of the array cache to be done
     }
 };
 
@@ -187,13 +187,14 @@ TEST_F(ElfTest, invalidElf) {
     close(fd);
 
     // Set up the CodeCacheArray and other required structures
-    CodeCacheArray cc_array;
+    OwnedElfCodeCaches cc_array;
 
     // Call the parsing function with the invalid ELF mapping
-    Symbols::parseLibraries(&cc_array, false);
+    Symbols::parseLibraries(cc_array.array(), false);
 
     munmap(addr, 4096);
     unlink("/tmp/invalid_elf");
+    ASSERT_GT(cc_array.array()->count(), 0);
 }
 
 // Additional test cases for other invalid ELF scenarios
@@ -215,15 +216,16 @@ TEST_F(ElfTest, nonElfFile) {
     close(fd);
 
     // Set up the CodeCacheArray and other required structures
-    CodeCacheArray cc_array;
+    OwnedElfCodeCaches cc_array;
 
     // Call the parsing function with the non-ELF mapping
-    Symbols::parseLibraries(&cc_array, false);
+    Symbols::parseLibraries(cc_array.array(), false);
 
     // we could add checks here, though I am mainly relying on asan to crash
     // if something is wrong
     munmap(addr, contentSize);
     unlink("/tmp/non_elf");
+    ASSERT_GT(cc_array.array()->count(), 0);
 }
 
 TEST_F(ElfTest, invalidElfSmallMapping) {
@@ -243,13 +245,14 @@ TEST_F(ElfTest, invalidElfSmallMapping) {
     close(fd);
 
     // Set up the CodeCacheArray and other required structures
-    CodeCacheArray cc_array;
+    OwnedElfCodeCaches cc_array;
 
     // Call the parsing function with the small invalid ELF mapping
-    Symbols::parseLibraries(&cc_array, false);
+    Symbols::parseLibraries(cc_array.array(), false);
 
     munmap(addr, 16);
     unlink("/tmp/invalid_elf_small");
+    ASSERT_GT(cc_array.array()->count(), 0);
 }
 
 TEST_F(ElfTest, nonElfFileSmallMapping) {
@@ -270,12 +273,13 @@ TEST_F(ElfTest, nonElfFileSmallMapping) {
     close(fd);
 
     // Set up the CodeCacheArray and other required structures
-    CodeCacheArray cc_array;
+    OwnedElfCodeCaches cc_array;
 
     // Call the parsing function with the small non-ELF mapping
-    Symbols::parseLibraries(&cc_array, false);
+    Symbols::parseLibraries(cc_array.array(), false);
     munmap(addr, contentSize);
     unlink("/tmp/non_elf_small");
+    ASSERT_GT(cc_array.array()->count(), 0);
 }
 
 class ElfTestParam : public ::testing::TestWithParam<int> {
@@ -283,10 +287,6 @@ protected:
     void SetUp() override {
         // Reset global or static state
         Symbols::clearParsingCaches();
-    }
-
-    void TearDown() override {
-        // probably some free of the array cache to be done
     }
 };
 
@@ -313,7 +313,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     const char* end = base + 16;
 
     // Set up the CodeCacheArray and other required structures
-    CodeCacheArray cc_array;
+    OwnedElfCodeCaches cc_array;
     int delay = GetParam();
     fprintf(stderr, "-- Test Delay = %d ms\n", delay);
     // Create a thread that will unmap the memory after X milliseconds
@@ -327,10 +327,11 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     });
 
     // Call the parsing function in the main thread
-    Symbols::parseLibraries(&cc_array, false);
+    Symbols::parseLibraries(cc_array.array(), false);
 
     // Join the unmapper thread to ensure it has finished
     unmapper.join();
+    ASSERT_GT(cc_array.array()->count(), 0);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -347,28 +348,17 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     // TSan must report it even when the mapping remains valid for the read.
     GTEST_SKIP() << "concurrent dlclose stress is incompatible with TSan";
 #endif
-    char cwd[PATH_MAX - 64];
-    if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-        exit(1);
-    }
-
-    // Configure logging (assuming Log is defined elsewhere)
     Log::open("stderr", "WARN");
 
-    // Construct the path to the test resource
     char path[PATH_MAX];
-    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/small-lib/libsmall-lib.so", cwd);
-    if (access(path, R_OK) != 0) {
-        fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
-        exit(1);
-    }
+    ASSERT_TRUE(nativeTestResourcePath("small-lib/libsmall-lib.so", path, sizeof(path)));
     void* handle = dlopen(path, RTLD_NOW);
     if (!handle) {
         fprintf(stderr, "dlopen failed: %s\n", dlerror());
         exit(1);
     }
 
-    CodeCacheArray cc_array;
+    OwnedElfCodeCaches cc_array;
     int delay = GetParam();
     fprintf(stderr, "-- Test Delay = %d ms\n", delay);
 
@@ -380,8 +370,9 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     });
 
     // Call the parsing function in the main thread, this is where we can crash
-    Symbols::parseLibraries(&cc_array, false);
+    Symbols::parseLibraries(cc_array.array(), false);
     unmapper.join();
+    ASSERT_GT(cc_array.array()->count(), 0);
 }
 
 INSTANTIATE_TEST_SUITE_P(
