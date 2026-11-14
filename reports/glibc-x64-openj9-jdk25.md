@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-14 05:57:11 EST
+**Date:** 2026-11-14 06:23:04 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 401 |
-| Sample Rate | 6.68/sec |
-| Health Score | 418% |
+| CPU Samples | 569 |
+| Sample Rate | 9.48/sec |
+| Health Score | 592% |
 | Threads | 9 |
-| Allocations | 417 |
+| Allocations | 393 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 441 |
-| Sample Rate | 7.35/sec |
-| Health Score | 459% |
-| Threads | 10 |
-| Allocations | 499 |
+| CPU Samples | 704 |
+| Sample Rate | 11.73/sec |
+| Health Score | 733% |
+| Threads | 11 |
+| Allocations | 458 |
 
 <details>
-<summary>CPU Timeline (3 unique values: 77-81 cores)</summary>
+<summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1794653580 81
-1794653585 81
-1794653590 81
-1794653595 81
-1794653600 81
-1794653605 81
-1794653610 81
-1794653615 81
-1794653620 79
-1794653625 79
-1794653630 77
-1794653635 77
-1794653640 77
-1794653645 79
-1794653650 79
-1794653655 81
-1794653660 81
-1794653665 81
-1794653670 81
-1794653675 81
+1794655157 81
+1794655162 81
+1794655167 81
+1794655172 81
+1794655177 81
+1794655182 81
+1794655187 81
+1794655192 81
+1794655197 81
+1794655202 81
+1794655207 81
+1794655212 81
+1794655217 81
+1794655222 81
+1794655227 81
+1794655232 81
+1794655237 81
+1794655242 81
+1794655247 81
+1794655252 81
 ```
 </details>
 
