@@ -88,3 +88,42 @@ TEST_F(WallTailRecordingTest, InactiveRecordingRetainsTailAndReleasesWriterStrip
   expectOriginRetained();
   auto held = profiler->recordingLocksForTest();
 }
+
+TEST_F(WallTailRecordingTest, TailCarriesWeightAccumulatedWhileBlocked) {
+  constexpr u64 suppressed = 4;
+  for (u64 observation = 1; observation < suppressed; ++observation) {
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+        request.slot_id, request.sampling_epoch_start));
+  }
+  struct TailObservation {
+    u64 trace_id;
+    u64 weight = 0;
+    u64 epoch = 0;
+    int writes = 0;
+  } observation{origin};
+  profiler->sampleWriteHookArgForTest = &observation;
+  profiler->sampleWriteHookForTest = +[](u32, u64 id, Event* event,
+                                        const Context* context, void* arg) {
+    auto* observed = static_cast<TailObservation*>(arg);
+    if (id == observed->trace_id) {
+      auto* sample = static_cast<ExecutionEvent*>(event);
+      observed->weight = sample->_weight;
+      observed->epoch = sample->_sample_ticks;
+      ++observed->writes;
+      EXPECT_EQ(OSThreadState::SLEEPING, sample->_thread_state);
+      EXPECT_NE(nullptr, context);
+      if (context != nullptr) EXPECT_EQ(11U, context->getTag(0));
+    }
+    return true;
+  };
+  auto result = record();
+  profiler->sampleWriteHookForTest = nullptr;
+  profiler->sampleWriteHookArgForTest = nullptr;
+  EXPECT_TRUE(result.ordinary_recorded);
+  EXPECT_TRUE(result.tail_recorded);
+  EXPECT_EQ(1, observation.writes);
+  EXPECT_EQ(suppressed, observation.weight);
+  EXPECT_EQ(request.sampling_epoch_start, observation.epoch);
+  EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(request.slot_id)
+                      ->unowned_blocked_pending_weight.load(std::memory_order_acquire));
+}

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <future>
 #include <string>
 #include <thread>
 #include <vector>
@@ -18,6 +19,43 @@
 #include "wallClock.h"
 
 #include <memory>
+
+class WallClockInitialEpochTest : public ::testing::Test {
+protected:
+    void SetUp() override { WallClockCounters::reset(); }
+    void TearDown() override { WallClockCounters::reset(); }
+};
+
+TEST_F(WallClockInitialEpochTest, ReadyEpochDoesNotNeedATimeoutBudget) {
+    const u64 epoch = TSC::ticks();
+    WallClockCounters::beginSamplingEpoch(epoch);
+    EXPECT_TRUE(BaseWallClock::awaitInitialSamplingEpochForTest(0));
+    EXPECT_EQ(epoch, WallClockCounters::samplingEpochStart());
+}
+
+TEST_F(WallClockInitialEpochTest, DelayedPublicationReleasesTheWaiter) {
+    std::promise<void> started;
+    auto result = std::async(std::launch::async, [&] {
+        started.set_value();
+        return BaseWallClock::awaitInitialSamplingEpochForTest(5 * NANOTIME_FREQ);
+    });
+    started.get_future().wait();
+    EXPECT_EQ(std::future_status::timeout, result.wait_for(std::chrono::milliseconds(10)));
+    EXPECT_EQ(0ULL, WallClockCounters::samplingEpochStart());
+    const u64 epoch = TSC::ticks();
+    WallClockCounters::beginSamplingEpoch(epoch);
+    EXPECT_TRUE(result.get());
+    EXPECT_EQ(epoch, WallClockCounters::samplingEpochStart());
+}
+
+TEST_F(WallClockInitialEpochTest, TimeoutLeavesZeroEpochUnchanged) {
+    const u64 timeout_nanos = 1000000;
+    const u64 start = OS::nanotime();
+    EXPECT_FALSE(BaseWallClock::awaitInitialSamplingEpochForTest(timeout_nanos));
+    EXPECT_GE(OS::nanotime() - start, timeout_nanos);
+    EXPECT_EQ(0ULL, WallClockCounters::samplingEpochStart());
+}
+
 TEST(WallClockTimerTest, WorkAndWakeLatenessDoNotAccumulate) {
     WallClockTimer timer(1000000);
     EXPECT_EQ(900000ULL, timer.nextSleep(1100000, 1000000));

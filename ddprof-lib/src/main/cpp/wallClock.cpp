@@ -17,6 +17,7 @@
 #include "profiler.h"
 #include "signalCookie.h"
 #include "signalInflight.h"
+#include "signalSafety.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include "wallClockCounters.h"
@@ -248,6 +249,18 @@ bool BaseWallClock::wallPrecheckForTest(
 }
 #endif
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+bool BaseWallClock::awaitInitialSamplingEpochForTest(u64 timeout_nanos) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  u64 start = OS::nanotime();
+  while (WallClockCounters::samplingEpochStart() == 0) {
+    if (OS::nanotime() - start >= timeout_nanos) return false;
+    OS::sleep(1000000);
+  }
+  return true;
+}
+#endif
+
 #ifdef DEBUG
 // Only the synchronous JNI test driver supplies this argument. It inserts a
 // real dump at a boundary outside the profiler stripe locks, without waiting
@@ -290,6 +303,8 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   auto* tracker = profiler->blockTracker();
   WallClockBlockTracker::BlockState* slot = tracker->slotForId(slot_id);
   if (slot == nullptr || slot->activeBlockOwner() != BlockRunOwner::NONE) return false;
+  // Epoch zero deliberately cannot defer weight; wait for timer initialization.
+  if (!awaitInitialSamplingEpochForTest(5 * NANOTIME_FREQ)) return false;
   tracker->resetSlot(slot_id);
 
   WallPrecheckDumpTest dump_test{thread, path, path_length, dump_after_primary};

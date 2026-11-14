@@ -10,6 +10,8 @@
 #include <thread>
 #include "guards.h"
 #include "profiler.h"
+#include "taskBlockRecorder.h"
+#include "vmEntry.h"
 #include "threadLocalData.inline.h"
 #include "wallClockBlockTracker.h"
 
@@ -20,9 +22,31 @@ jlong JNICALL Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(JNIEnv*, jcla
 void JNICALL Java_com_datadoghq_profiler_JavaProfiler_blockExit0(JNIEnv*, jclass, jlong);
 void JNICALL Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv*, jclass);
 void JNICALL Java_com_datadoghq_profiler_JavaProfiler_parkExit0(JNIEnv*, jclass, jlong, jlong);
+jlong JNICALL Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(JNIEnv*, jclass, jthread);
+jboolean JNICALL Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
+    JNIEnv*, jclass, jthread, jlong, jlong, jlong);
 }
 
-enum class RestartHook { BLOCK, PARK };
+enum class RestartHook { BLOCK, PARK, TASK_BLOCK };
+
+class ProfilerTestAccessor {
+public:
+    static State exchangeState(State state) {
+        return Profiler::instance()->_state.exchange(state, std::memory_order_acq_rel);
+    }
+    static bool exchangeTaskBlockEnabled(bool enabled) {
+        return Profiler::instance()->_task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
+    }
+};
+
+class VMTestAccessor {
+public:
+    static jvmtiEnv* exchangeJvmti(jvmtiEnv* env) {
+        jvmtiEnv* previous = VM::_jvmti;
+        VM::_jvmti = env;
+        return previous;
+    }
+};
 
 // The real JNI bodies do not use JNIEnv. Exercise their TLS, slot validation,
 // admission, and exit paths on real native threads without bootstrapping a JVM.
@@ -35,16 +59,43 @@ protected:
         current = ProfiledThread::initCurrentThreadSignalSafe();
         ASSERT_NE(nullptr, current);
         current->setFilterSlotId(-1);
+        if (GetParam() == RestartHook::TASK_BLOCK) {
+            // Mock only JVM identity/classification. Admission, paired TLS
+            // lifecycle and stop/start registry transitions remain production.
+            functions.GetVersion = [](JNIEnv*) -> jint { return JNI_VERSION_1_8; };
+            functions.IsSameObject = [](JNIEnv*, jobject a, jobject b) -> jboolean { return a == b; };
+            functions.DeleteLocalRef = [](JNIEnv*, jobject) {};
+            env.functions = &functions;
+            jvmti_functions.GetCurrentThread = [](jvmtiEnv*, jthread* thread) -> jvmtiError {
+                *thread = reinterpret_cast<jthread>(1);
+                return JVMTI_ERROR_NONE;
+            };
+            jvmti.functions = &jvmti_functions;
+            previous_jvmti = VMTestAccessor::exchangeJvmti(&jvmti);
+            previous_state = ProfilerTestAccessor::exchangeState(RUNNING);
+            previous_enabled = ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+            initializeTaskBlockDurationThreshold();
+        }
     }
 
     void TearDown() override {
         tracker->setBlockAdmissionHookForTest(nullptr, nullptr);
+        Profiler::setTaskBlockActivityHookForTest(nullptr);
         registry->deactivateRecording();
         // release() also retires the identity while registry admission is closed.
         ProfiledThread::release();
+        if (GetParam() == RestartHook::TASK_BLOCK) {
+            ProfilerTestAccessor::exchangeTaskBlockEnabled(previous_enabled);
+            ProfilerTestAccessor::exchangeState(previous_state);
+            VMTestAccessor::exchangeJvmti(previous_jvmti);
+        }
     }
 
     u64 enterHook() {
+        if (GetParam() == RestartHook::TASK_BLOCK) {
+            return Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
+                &env, nullptr, reinterpret_cast<jthread>(1));
+        }
         if (GetParam() == RestartHook::BLOCK) {
             return static_cast<u64>(Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
                 nullptr, nullptr, static_cast<jint>(OSThreadState::SLEEPING)));
@@ -54,7 +105,10 @@ protected:
     }
 
     void exitHook(u64 token) {
-        if (GetParam() == RestartHook::BLOCK) {
+        if (GetParam() == RestartHook::TASK_BLOCK) {
+            Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
+                &env, nullptr, reinterpret_cast<jthread>(1), token, 0, 0);
+        } else if (GetParam() == RestartHook::BLOCK) {
             Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
                 nullptr, nullptr, static_cast<jlong>(token));
         } else {
@@ -63,8 +117,12 @@ protected:
     }
 
     OSThreadState hookState() const {
-        return GetParam() == RestartHook::BLOCK
-            ? OSThreadState::SLEEPING : OSThreadState::CONDVAR_WAIT;
+        return GetParam() == RestartHook::PARK
+            ? OSThreadState::CONDVAR_WAIT : OSThreadState::SLEEPING;
+    }
+
+    BlockRunOwner hookOwner() const {
+        return GetParam() == RestartHook::TASK_BLOCK ? BlockRunOwner::TASK_BLOCK : BlockRunOwner::JAVA;
     }
 
     struct AdmissionPause {
@@ -84,6 +142,13 @@ protected:
 
     // release() blocks profiling signals; restore the test thread's mask after
     // cleanup so this fixture does not change later tests' signal environment.
+    JNINativeInterface_ functions{};
+    JNIEnv env{};
+    jvmtiInterface_1_ jvmti_functions{};
+    jvmtiEnv jvmti{};
+    jvmtiEnv* previous_jvmti = nullptr;
+    State previous_state = NEW;
+    bool previous_enabled = false;
     SignalBlocker signal_blocker;
     ThreadFilter* registry = nullptr;
     WallClockBlockTracker* tracker = nullptr;
@@ -95,7 +160,7 @@ TEST_P(WallClockBlockRestartTest, HookWithoutRestartHasNormalLifecycle) {
     ASSERT_NE(0u, token);
     auto* block = tracker->slotForId(current->filterSlotId());
     ASSERT_NE(nullptr, block);
-    EXPECT_EQ(BlockRunOwner::JAVA, block->activeBlockOwner());
+    EXPECT_EQ(hookOwner(), block->activeBlockOwner());
     EXPECT_EQ(hookState(), block->activeBlockState());
     exitHook(token);
     EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
@@ -113,6 +178,10 @@ TEST_P(WallClockBlockRestartTest, PausedHookDoesNotMutateReplacementAcrossRestar
         self->setFilterSlotId(old_slot);
         u64 token = enterHook();
         exitHook(token);
+        if (GetParam() == RestartHook::TASK_BLOCK) {
+            EXPECT_EQ(0ULL, self->snapshotForTest().task_block_token)
+                << "paired exit must consume a token even across restart";
+        }
         registry->unregisterThread(self->filterSlotId(), self->tid());
         ProfiledThread::release();
     });
@@ -172,9 +241,14 @@ TEST_P(WallClockBlockRestartTest, PausedHookDoesNotMutateReplacementAcrossRestar
 }
 
 INSTANTIATE_TEST_SUITE_P(JniHooks, WallClockBlockRestartTest,
-                        ::testing::Values(RestartHook::BLOCK, RestartHook::PARK),
+                        ::testing::Values(RestartHook::BLOCK, RestartHook::PARK, RestartHook::TASK_BLOCK),
                         [](const ::testing::TestParamInfo<RestartHook>& info) {
-                            return info.param == RestartHook::BLOCK ? "Block" : "Park";
+                            switch (info.param) {
+                                case RestartHook::BLOCK: return "Block";
+                                case RestartHook::PARK: return "Park";
+                                case RestartHook::TASK_BLOCK: return "TaskBlock";
+                            }
+                            return "Invalid";
                         });
 
 TEST_P(WallClockBlockRestartTest, SurvivingOwnerRefreshesOnlyRecordingState) {
@@ -265,11 +339,74 @@ TEST_P(WallClockBlockRestartTest, ThreadExitWhileStoppedRetiresIdentity) {
     }
     auto* new_block = tracker->slotForId(current->filterSlotId());
     ASSERT_NE(nullptr, new_block);
-    EXPECT_EQ(BlockRunOwner::JAVA, new_block->activeBlockOwner());
+    EXPECT_EQ(hookOwner(), new_block->activeBlockOwner());
     EXPECT_EQ(hookState(), new_block->activeBlockState());
     exitHook(new_token);
 }
 
+// The paired exit also has an admission boundary after its TLS token was
+// consumed. Pause there while the stop/start registry transitions run.
+class PairedTaskBlockRestartTest : public WallClockBlockRestartTest {
+protected:
+    inline static AdmissionPause* exit_pause = nullptr;
+    static void pauseExit(Profiler::TaskBlockActivityStage stage) {
+        if (stage == Profiler::TaskBlockActivityStage::BEFORE_RESERVATION) AdmissionPause::pause(exit_pause);
+    }
+};
+
+TEST_P(PairedTaskBlockRestartTest, PausedEndCannotRecordOrMutateReplacementAcrossRestart) {
+    AdmissionPause pause;
+    exit_pause = &pause;
+    Profiler* profiler = Profiler::instance();
+    Profiler::setTaskBlockActivityHookForTest(pauseExit);
+    long long dropped_before = Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION);
+    bool recorded = true;
+    std::thread worker([&] {
+        auto* self = ProfiledThread::initCurrentThreadSignalSafe();
+        ASSERT_NE(nullptr, self);
+        u64 token = enterHook();
+        EXPECT_NE(0ULL, token);
+        recorded = Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
+            &env, nullptr, reinterpret_cast<jthread>(1), token, 0, 0);
+        EXPECT_EQ(0ULL, self->snapshotForTest().task_block_token);
+        ProfiledThread::release();
+    });
+    bool reached;
+    {
+        std::unique_lock<std::mutex> lock(pause.mutex);
+        reached = pause.changed.wait_for(lock, std::chrono::seconds(5), [&] { return pause.reached; });
+    }
+    EXPECT_TRUE(reached);
+    bool drained = profiler->beginTaskBlockRotationForTest();
+    EXPECT_TRUE(drained);
+    registry->deactivateRecording();
+    registry->init("", true);
+    u64 replacement_token = enterHook();
+    EXPECT_NE(0ULL, replacement_token);
+    auto* replacement = tracker->slotForId(current->filterSlotId());
+    {
+        std::lock_guard<std::mutex> lock(pause.mutex);
+        pause.resume = true;
+        pause.changed.notify_all();
+    }
+    worker.join();
+    Profiler::setTaskBlockActivityHookForTest(nullptr);
+    exit_pause = nullptr;
+    EXPECT_FALSE(recorded);
+    EXPECT_EQ(dropped_before + 1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+    EXPECT_EQ(0, profiler->taskBlockInflightForTest());
+    if (replacement != nullptr) {
+        EXPECT_EQ(BlockRunOwner::TASK_BLOCK, replacement->activeBlockOwner());
+        EXPECT_EQ(WallClockBlockTracker::tokenGeneration(replacement_token), replacement->blockGeneration());
+    } else {
+        ADD_FAILURE() << "replacement has no block slot";
+    }
+    profiler->endTaskBlockRotationForTest();
+    exitHook(replacement_token);
+}
+
+INSTANTIATE_TEST_SUITE_P(PairedJniHooks, PairedTaskBlockRestartTest,
+                        ::testing::Values(RestartHook::TASK_BLOCK));
 TEST_P(WallClockBlockRestartTest, OpenContextSurvivesRecordingRefresh) {
     JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
     int slot_id = current->filterSlotId();
