@@ -1297,7 +1297,8 @@ UnloadProtection::UnloadProtection(const CodeCache *cc) {
         return;
     }
 
-    // musl never unloads libraries, so there is nothing to pin.
+    // musl never unloads libraries, so there is nothing to pin; only check that
+    // the load has finished, which the dlopen() below guarantees on glibc.
     if (OS::isMusl()) {
         _lib_handle = NULL;
         _valid = isFullyMappedOnMusl(cc);

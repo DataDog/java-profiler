@@ -60,44 +60,55 @@ class UnloadProtectionTest : public ::testing::Test {
 };
 
 // Copies the test DSO to a fresh file, so no test in this binary has loaded it.
+// Removes the copy on failure.
 static bool copyFile(const char* from, char* to, size_t size) {
-  snprintf(to, size, "/tmp/libunloadprot-XXXXXX.so");
+  const char* dir = getenv("TMPDIR");
+  snprintf(to, size, "%s/libunloadprot-XXXXXX.so", dir != nullptr && dir[0] != '\0' ? dir : "/tmp");
   int out = mkstemps(to, 3);
   if (out < 0) return false;
   int in = open(from, O_RDONLY);
   bool ok = in >= 0;
   char buf[8192];
-  ssize_t n;
+  ssize_t n = 0;
   while (ok && (n = read(in, buf, sizeof(buf))) > 0) {
     ok = write(out, buf, n) == n;
   }
+  ok = ok && n == 0;
   if (in >= 0) close(in);
   close(out);
+  if (!ok) unlink(to);
   return ok;
 }
 
 }  // namespace
 
-// The loader's first mapping of a library it is still loading: executable, at
-// file offset 0, not yet known to the loader.
+// The loader's first mapping of a library it is still loading: at file offset 0,
+// not yet known to the loader. UnloadProtection ignores the mapping's protection,
+// so PROT_READ keeps the test working on a noexec TMPDIR.
 TEST_F(UnloadProtectionTest, RejectsImageNotLoadedByTheLoader) {
-  char path[64];
+  char path[PATH_MAX];
   ASSERT_TRUE(copyFile(_lib_path, path, sizeof(path))) << strerror(errno);
   int fd = open(path, O_RDONLY);
-  ASSERT_GE(fd, 0) << strerror(errno);
   struct stat st;
-  ASSERT_EQ(fstat(fd, &st), 0);
-  void* map = mmap(NULL, st.st_size, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0);
-  close(fd);
-  ASSERT_NE(map, MAP_FAILED) << strerror(errno);
-  ASSERT_EQ(dlopen(path, RTLD_LAZY | RTLD_NOLOAD), nullptr) << "the copy must not be loaded";
-
-  const char* base = static_cast<const char*>(map);
-  CodeCache cc(path, 0, base, base + st.st_size, base);
-  EXPECT_FALSE(UnloadProtection(&cc).isValid());
-
-  munmap(map, st.st_size);
+  void* map = MAP_FAILED;
+  if (fd >= 0 && fstat(fd, &st) == 0) {
+    map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  }
+  int map_errno = errno;
+  if (fd >= 0) close(fd);
+  bool loaded = map != MAP_FAILED && dlopen(path, RTLD_LAZY | RTLD_NOLOAD) != nullptr;
+  bool valid = false;
+  if (map != MAP_FAILED && !loaded) {
+    const char* base = static_cast<const char*>(map);
+    CodeCache cc(path, 0, base, base + st.st_size, base);
+    valid = UnloadProtection(&cc).isValid();
+  }
+  if (map != MAP_FAILED) munmap(map, st.st_size);
   unlink(path);
+
+  ASSERT_NE(map, MAP_FAILED) << strerror(map_errno);
+  ASSERT_FALSE(loaded) << "the copy must not be loaded";
+  EXPECT_FALSE(valid);
 }
 
 TEST_F(UnloadProtectionTest, AcceptsLoadedImage) {
