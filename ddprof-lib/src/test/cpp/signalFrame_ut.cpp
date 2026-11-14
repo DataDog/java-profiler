@@ -29,6 +29,7 @@ alignas(16) uint32_t ordinary_code[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd5
 alignas(16) uint32_t other_syscall_code[] = {0xd503201f, 0xd2801588, 0xd4000001, 0xd503201f}; // getpid
 alignas(16) uint32_t unregistered_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 alignas(16) uint32_t leaf_code[] = {0xd503201f, 0xd65f03c0};
+alignas(16) uint32_t cfi_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 const void* const caller_pc = (const void*)0x5a5f00000108ULL;
 
 void registerLibraries() {
@@ -41,12 +42,17 @@ void registerLibraries() {
                               (const char*)(leaf_code + 2));
         static CodeCache other_syscall("other-syscall", -1, (const char*)other_syscall_code,
                                        (const char*)(other_syscall_code + 4));
+        static CodeCache cfi("[vdso]", -1, reinterpret_cast<const char*>(cfi_restorer),
+                             reinterpret_cast<const char*>(cfi_restorer + 4));
+        static const FrameDesc cfi_row{0, (16 << 8) | DW_REG_SP, DW_SAME_FP, -8, FrameDesc::FLAG_SIGNAL_FRAME};
+        cfi.setDwarfTable(nullptr, 0, cfi_row);
         static const FrameDesc leaf_row{0, DW_REG_SP, DW_SAME_FP, DW_LINK_REGISTER};
         leaf.setDwarfTable(nullptr, 0, leaf_row);
         other_syscall.setDwarfTable(nullptr, 0, leaf_row);
         bool ok = Libraries::instance()->addLibraryForTest(&vdso);
         ok = Libraries::instance()->addLibraryForTest(&ordinary) && ok;
         ok = Libraries::instance()->addLibraryForTest(&other_syscall) && ok;
+        ok = Libraries::instance()->addLibraryForTest(&cfi) && ok;
         return Libraries::instance()->addLibraryForTest(&leaf) && ok;
     }();
     ASSERT_TRUE(registered);
@@ -101,7 +107,42 @@ TEST_F(SignalFrameTest, RestoresExactPcAndRegistersThenUsesInterruptedLr) {
         EXPECT_TRUE(pc.isReturnAddress());
         EXPECT_EQ((uintptr_t)(trampoline_code + instruction), sampled.uc_mcontext.pc);
         EXPECT_EQ(0x5a5f00000908ULL, sampled.uc_mcontext.regs[30]);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(leaf_code), saved->uc_mcontext.pc);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(stack.data() + context_size), saved->uc_mcontext.sp);
+        EXPECT_EQ(1u, saved->uc_mcontext.regs[29]);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(caller_pc), saved->uc_mcontext.regs[30]);
     }
+}
+
+TEST_F(SignalFrameTest, ExplicitSignalCfiTakesPrecedenceOverAbiFallback) {
+    alignas(16) uintptr_t stack[4]{};
+    stack[1] = reinterpret_cast<uintptr_t>(caller_pc);
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(cfi_restorer + 1);
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setExactAddress(cfi_restorer + 1);
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stack), fp = 0;
+    bool truncated = false;
+    ASSERT_TRUE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack + 4), 2, frame, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(caller_pc, pc.raw());
+    EXPECT_FALSE(pc.isReturnAddress());
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(stack + 2), sp);
+    EXPECT_TRUE(frame.isInterruptedPC(cfi_restorer + 1));
+}
+
+TEST_F(SignalFrameTest, DecoderLeavesOutputUnchangedWhenRestorerIsInvalid) {
+    alignas(16) SignalStack stack{};
+    savedContext(stack);
+    SignalFrame result{stack.data(), caller_pc, 16, 32};
+    EXPECT_EQ(SignalFrame::Result::INVALID,
+              SignalFrame::decode(ordinary_code + 1, reinterpret_cast<uintptr_t>(stack.data()),
+                                  reinterpret_cast<uintptr_t>(stack.data() + stack.size()), nullptr, result));
+    EXPECT_EQ(stack.data(), result.context);
+    EXPECT_EQ(caller_pc, result.pc);
+    EXPECT_EQ(16u, result.sp);
+    EXPECT_EQ(32u, result.fp);
 }
 
 TEST_F(SignalFrameTest, RejectsIncompleteOrMisalignedSignalFrame) {
@@ -251,6 +292,17 @@ TEST_F(SignalFrameTest, NonRecoveringVmsDoNotProbeUnmappedCode) {
 }
 } // namespace
 #else
+TEST(SignalFrameTest, UnsupportedAbiDoesNotProbeOrChangeOutput) {
+    void* sentinel = reinterpret_cast<void*>(uintptr_t(1));
+    SignalFrame result{sentinel, sentinel, 16, 32};
+    EXPECT_EQ(SignalFrame::Result::NOT_SIGNAL,
+              SignalFrame::decode(sentinel, 1, 0, nullptr, result));
+    EXPECT_EQ(sentinel, result.context);
+    EXPECT_EQ(sentinel, result.pc);
+    EXPECT_EQ(16u, result.sp);
+    EXPECT_EQ(32u, result.fp);
+}
+
 TEST(SignalFrameTest, RequiresLinuxAarch64SignalAbi) {
     GTEST_SKIP() << "Linux arm64 signal trampoline ABI";
 }
