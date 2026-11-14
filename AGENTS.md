@@ -14,6 +14,8 @@ nothing else in this file depends on it.
 came from, in its PR or a stacked one. Reviews skip their content: no threads, findings
 or suggested edits on memory files.
 
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # AGENTS.md
 
 This file provides guidance to AI coding assistants when working with code in this
@@ -130,7 +132,9 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   — defaults to podman; on macOS use either podman or Docker through colima
   (`--container=docker` after `colima start` — check availability with
   `podman info` / `docker info` and pick the runtime whose daemon answers).
-  Full flags in
+  Glibc selects matched Clang 17/compiler-rt/llvm-cov defaults with
+  `-clang17-cov1` cache tags on both architectures.
+  Full flags and toolchain checks in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
 
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:
