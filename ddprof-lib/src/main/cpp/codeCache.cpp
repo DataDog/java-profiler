@@ -150,21 +150,6 @@ CodeCache::CodeCache(const CodeCache &other) {
   copyFrom(other);
 }
 
-CodeCache &CodeCache::operator=(const CodeCache &other) {
-  if (&other == this) {
-    return *this;
-  }
-
-  NativeFunc::destroy(_name);
-  free(_dwarf_table);
-  delete[] _blobs;
-  free(_build_id);
-
-  copyFrom(other);
-
-  return *this;
-}
-
 CodeCache::~CodeCache() {
   for (int i = 0; i < _count; i++) {
     NativeFunc::destroy(_blobs[i]._name);

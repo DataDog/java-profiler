@@ -4,169 +4,242 @@
 
 ## Scope
 
-This document explains when `ReferenceChainTracker` runs a pass, delays a pass, starts a search, or restarts a search. See [LiveHeapReferenceChainsImplementation.md](LiveHeapReferenceChainsImplementation.md) for the heap-walk operations.
+This document explains when `ReferenceChainTracker` starts, delays, or restarts a search.
+See [LiveHeapReferenceChainsImplementation.md](LiveHeapReferenceChainsImplementation.md)
+for traversal, termination, and output.
 
-The source uses the name *pain budget* for a leaky-bucket cost limiter. This document uses *cost budget* except where it names a source field.
+The source calls its leaky-bucket cost limiter a *pain budget*. This document uses
+*cost budget* except when naming a source field. Neither budget is a hard overhead quota.
 
 ## GC callbacks
 
-`GarbageCollectionStart()` and `GarbageCollectionFinish()` increment atomic epoch counters. They do not call JVMTI heap functions.
+`ReferenceChainTracker`'s GC callbacks increment atomic epoch counters. The liveness
+callback also records usage samples. The callbacks do not execute reference-chain heap walks.
 
-JVMTI callback restrictions require this separation. It also keeps the callback work small. The background thread reads the epoch and decides whether to run a pass.
-
-The GC callback does not wake the thread. The normal idle loop checks the state at approximately the current fallback cadence. Shutdown uses a signal to wake a sleeping thread.
+GC does not wake the traversal thread or independently authorize a pass. The background
+loop checks state at its effective cadence. Shutdown signals it to wake a sleeping thread.
 
 ## Starting a search
 
-Before the first search, `shouldRunPass()` calls `canAffordNewSearch()`. The gate always requires a leak indication: `selectLeakCandidates()` finds a class with sustained population growth. The safepoint cost budget must also permit the search.
+`shouldRunPass()` calls `canAffordNewSearch()` before the first search. The gate checks:
 
-Urgency does not authorize a search. A candidate-less search can never emit a chain, and while urgent the 30-pass no-progress abandonment is suppressed, so it would run to the full TTL doing whole-heap BFS. Urgency instead acts before the gate: on every iteration, `threadLoop()` computes the OOM ramp from the OOM projection and calls `publishUrgencyState()`, which publishes the ramp state and the tracking-admission decision, before `shouldRunPass()` evaluates the search gate.
+1. The safepoint-cost debt has drained.
+2. The root-enumeration interval permits another attempt, if one has already run.
+3. The leak signal is enabled and `selectLeakCandidates()` returns a qualifying class.
 
-In the emergency band, where the projection is under `OOM_URGENT_THRESHOLD_S` (5 minutes), `updateUrgentAdmission()` turns on the global 100% tracking admission with zero candidates and no running search. `admitForTracking()` falls back to the normal admission rules while the tracking table is at `_table_max_cap`; that case increments `LIVENESS_URGENT_BOOST_BACKED_OFF`, and each admitted allocation increments `LIVENESS_URGENT_BOOST_ADMITS`.
+The signal requires generations tracking or liveheap tracking with reference chains
+active. A plain liveheap session keeps it disarmed. Reference-chain activation also
+requires the allocation engine to have started successfully.
 
-The tradeoff of this candidate-only gate: a heap-wide leak spread across many classes, none of which individually clears `selectLeakCandidates()`'s per-klass ring-fill/hysteresis gate, never opens the gate, even in the emergency band (projected OOM under 5 minutes). No chains are produced in that case. Each such refused evaluation increments the `reference_chain_urgent_no_candidate` counter. The evaluation runs only after the safepoint cost budget permits it: `canAffordNewSearch()` checks the budget before it calls `hasLeakSignal()`. The evaluation rate therefore follows the ramped cadence, not a fixed rate. The gap is visible in the diagnostics rather than silent, and it can be told apart from an idle healthy process.
-
-The population-trend signal is constructed by the liveness tracker, which fills the per-klass population table and the heap-floor ring when generations tracking OR liveheap tracking with reference chains enabled is active (the two options drive the same tracking mechanisms; liveheap additionally preserves stack traces for its samples). The reference-chain collector is the signal's only consumer, so a plain liveheap session without `referencechains` keeps the signal disarmed. When no source is active, no signal can ever be produced: `hasLeakSignal()` returns false, and the collector stays idle - it never runs a pass, restart, or search.
+A rising aggregate heap floor does not replace a class/thread candidate. Without a
+qualifying candidate, the collector does not start a search.
 
 ## Scheduling a running search
 
-A running search uses the following order:
+The scheduler uses this order:
 
-1. Enforce the minimum pass spacing: no pass starts sooner than the effective cadence after the previous pass ended, on every authorization lane below.
-2. Check the non-safepoint CPU cost budget.
-3. If unresolved candidates exist, apply candidate-search backoff.
-4. Otherwise, run after a new GC epoch or after the adaptive fallback cadence expires.
+1. Set the CPU-cost refill rate for the current candidate state.
+2. Require minimum spacing since the previous pass ended.
+3. Check the CPU-cost debt.
+4. Apply candidate-search backoff when unresolved candidates remain.
+5. Run the pass when those gates permit it.
+
+A completed GC is not a separate authorization lane. Terminal tag-release retries and
+the initial/restart gate use their own paths, not this running-search sequence.
 
 ### Minimum pass spacing
 
-A completed GC authorizes a pass, and a productive canary chase (backoff multiplier one) may run its next pass as soon as scheduling allows - but neither may start sooner than one effective cadence interval after the previous pass ended. Without this floor, a high young-GC rate re-triggers passes at the GC rate even after the pacing controller has widened the cadence to shed in-safepoint load, and the canary lane runs passes with no gap at all. Each pass costs several JVM VM operations (root enumeration, static-field sweep chunks, expansion batches), so unbounded pass rate multiplies into a safepoint storm.
+Ordinary running-search spacing is `max(effective cadence, 100 ms)`. Thus, reducing the
+controller's cadence below 100 milliseconds does not remove the fixed scheduling floor.
+CPU debt and candidate backoff can delay a pass further.
 
-The OOM ramp needs no exemption: while urgent it owns the effective cadence outright, driving this floor down with urgency.
+The OOM ramp described below is the exception: it uses its effective cadence without
+the 100-millisecond floor and disables candidate backoff. The CPU-cost gate still applies.
 
 ### Candidate-search backoff
 
-The source calls the focused candidate search the *canary* path. A new candidate or a resolved candidate resets its spacing multiplier to one. With this value, the next pass can start after the previous pass finishes, but never sooner than the minimum pass spacing above.
+The source calls the focused candidate search the *canary* path. A new or resolved
+candidate resets its spacing multiplier to one. Minimum pass spacing still applies.
 
-If a pass makes no candidate progress, the multiplier doubles up to its cap. The required spacing is:
+Without candidate progress, the multiplier doubles up to its cap. Above one, it adds
+this work-scaled spacing requirement unless the OOM ramp is active:
 
 ```text
 spacing = multiplier × candidate-pass-duration EMA
 ```
 
-The OOM ramp disables this backoff. The non-safepoint CPU cost budget still applies.
+### Effective cadence
 
-### GC epoch and fallback cadence
+The cadence starts at one second. The PID controller can adjust it between 10 milliseconds
+and four seconds when the edge budget reaches a limit. Ordinary scheduling still applies
+the separate 100-millisecond floor.
 
-When no unresolved candidate controls scheduling, a completed GC authorizes a pass. The tracker compares the current GC-finish epoch with the epoch recorded by the previous pass. The authorization remains subject to the minimum pass spacing: when young GCs are more frequent than the effective cadence, the pass rate follows the cadence, not the GC rate.
-
-The fallback cadence also authorizes a pass. It starts at one second. Two writers adjust it between 10 milliseconds and four seconds: the pause controller (`updatePacing()`) and the OOM urgency ramp. When an urgency episode ends, the ramp restores the one-second fallback in the same iteration. The minimum pass spacing uses the same value, so the two authorizations share one rate bound.
+The OOM ramp also writes the cadence while a search runs. When its episode ends, it
+restores one second. With no search running, ramp-band idle evaluation stays at one second.
 
 ## Leak signal
 
-`LivenessTracker` bases the normal signal on sampled live-object populations by class.
+`LivenessTracker` counts distinct GC ages among a class's surviving tracked instances,
+not raw live-instance population. The class table holds at most 256 entries with
+30-value history rings. Several GCs can be coalesced into one processed-epoch fold.
 
-- It stores 30 GC-epoch values per class.
-- It requires at least 10 values before trend evaluation.
-- It requires five consecutive qualifying epochs by default.
-- It requires three when a rising post-GC heap floor corroborates the signal.
+A class needs at least 10 values. Full-window linear regression must show fitted endpoint
+growth of at least the larger of 15% of the fitted start and one distinct age. Five
+consecutive qualifying folds are required, or three when the aggregate heap floor rises.
 
-The aggregate heap-floor signal changes the hysteresis threshold. It does not identify a class.
+The rise need not be monotonic. Heap-floor corroboration changes the hysteresis threshold
+uniformly; it does not attribute growth to a class or reorder candidates.
 
-Candidate selection also returns qualifying thread identifiers. During an active candidate search, allocations by those threads bypass the normal liveness subsampling ratio. This change increases the chance that the tracker can correlate a leak tag with the walk. It does not change the admission of other threads.
+At least one allocating thread must qualify for the class. Its surviving-age trend or
+at least eight retained tracked instances can qualify a fold. Consecutive qualification
+must meet the same hysteresis threshold. At most five candidate classes are selected.
+
+Polling publishes qualifying thread identifiers as the watched admission set. Those
+threads bypass liveness subsampling for already-sampled allocation callbacks, not every
+Java allocation. The separate global OOM admission boost is described below.
 
 ## Cost budgets
 
-The tracker has two `PainBudget` instances with different scopes.
-
 ### Safepoint cost budget
 
-`_safepoint_pain_budget` gates a new search or a restart. Each pass adds its measured in-safepoint time to `_search_pain_ms`. When a search reaches a terminal state, the scheduler charges that accumulated value to the budget before it considers a restart.
+Each pass adds elapsed time around its heap-walk calls to `_search_pain_ms`. Once a
+terminal search has released its tags, the scheduler charges this accumulated value to
+`_safepoint_pain_budget` before considering a successor, then clears the accumulator.
 
-This budget does not stop a running search after a fixed cumulative duration. It controls when a later search can start.
+This budget delays a later search. It does not stop a running search after a fixed
+cumulative duration. The timed calls are not a direct measurement of application pauses.
 
 ### CPU cost budget
 
-`_cpu_pain_budget` gates individual passes in a running search. Each pass charges the measured non-safepoint part of the pass.
+`_cpu_pain_budget` uses `runPassManualWalk()` elapsed time minus the time around its
+heap-walk calls. This is a wall-time proxy, not CPU consumption. Class resolution,
+candidate polling, and tag release are outside the timed region.
 
-While unresolved candidates exist, the scheduler increases the refill rate by a factor of 100, capped at full wall-clock rate. Candidate backoff remains the main rate control for that path.
+While unresolved candidates exist, the refill rate rises by a factor of 100, capped at
+full wall-clock rate. The minimum spacing floor and candidate backoff remain separate
+controls; the OOM ramp disables only the latter.
 
 ### Meaning of a cost budget
 
-A cost budget delays work until its leaky bucket drains prior cost. It is not a hard CPU or pause-time quota. The current operation can finish after it exceeds a target.
+A cost budget records prior cost and delays later work until that debt drains. Its
+refill percentage is a pacing input, not a measured or guaranteed CPU/pause-time quota.
 
 ## Pause controller
 
-The tracker measures time spent inside safepointing JVMTI calls. It supplies that value to a PID controller after ordinary expansion passes.
+Only passes without root enumeration feed `_pause_pid` with their measured heap-walk-call
+time. It adjusts the effective edge budget and, at budget limits, the effective cadence.
+Root-enumeration passes still contribute to search cost and can revoke borrowed headroom.
 
-The controller adjusts:
+The effective-budget floor is `min(2000, current ceiling)`, not an unconditional 2,000
+admissions. These counts do not count every callback or bound call duration.
 
-- The effective edge-admission budget.
-- The fallback cadence when the budget reaches its floor or ceiling.
+Five consecutive ordinary passes at no more than half the target can earn borrowing.
+Headroom grows by 25% of the base ceiling per qualifying pass, up to a total ceiling of
+four times that base. A pass outside the comfort band removes the grant.
 
-Five consecutive passes at no more than half the pause target can start budget borrowing. A later pass that is not comfortably below the target removes the borrowed budget. A root-enumeration pass can also remove it.
+### Callback deadlines
 
-Root-enumeration passes do not update the PID controller because they use a separate edge budget. Their safepoint time still contributes to search cost and can revoke borrowed budget.
+Reference callbacks check time every 4,096 invocations; expansion also checks its outer
+loop. Candidate-thread traversal, ordinary expansion, and rotation receive separate
+deadlines. Static scanning shares an earlier deadline, so earlier work can consume it.
 
-The pause target controls resumable traversal phases. A callback asks JVMTI to stop when
-it observes the deadline, but callback granularity and JVM work can cause overshoot.
+The target is therefore not a hard whole-pass pause ceiling. JVM work and callback
+granularity can cause overshoot. Root callbacks do not check this deadline.
 
-Root enumeration does not use the deadline. JVMTI provides no cursor that lets the next
-attempt resume after an abort, and the admission budget does not count every examined
-root. For this release, a root-enumeration pause is acceptable if it is shorter than
-three seconds. [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284)
-tracks measurement and improvement. Neither the pause target nor this acceptance
-threshold is a hard real-time guarantee.
+### Root-enumeration interval
+
+The first attempt is mandatory. Later attempts wait after the previous attempt ends:
+`max(2 s, min(last attempt duration in ms × 20 ms, 30 s))`. Truncated and errored attempts
+use the same interval. The new-search gate also enforces it before restarting.
+
+The phase has no saved enumeration cursor. Already-admitted roots do not consume ordinary
+admission budget, and direct-root leak-tag conversion bypasses that budget check. Neither
+the deadline mechanism nor the admission count bounds root-enumeration elapsed time.
+
+For this release, a root-enumeration pause is acceptable if it is shorter than three
+seconds. This acceptance threshold and the controller target are not hard real-time
+guarantees. See [root discovery](LiveHeapReferenceChainsImplementation.md#root-discovery).
 
 ## OOM response
 
-`secondsToOOM()` independently projects exhaustion from confirmed rising JVM heap-floor and
-container-memory trends. It returns the shorter valid estimate. A negative result means that
-neither source provides a valid estimate, or that the projection is still in its burn-in period.
+`secondsToOOM()` requires an enabled leak signal, a known maximum heap, and at least
+10 usage-history values. It projects heap and available container-memory boundaries
+separately and chooses the shorter valid estimate.
 
-Two ranges have different purposes:
+Each boundary needs rising full-window and recent-half regressions. A negative result
+means no usable projection, including during burn-in; it does not prove OOM impossible.
 
-- At less than 30 minutes, the OOM ramp increases the pause target, shortens the cadence toward its 10 millisecond floor, and increases the edge-budget ceiling. The 100% liveness-sampling admission follows the same band, but outside the emergency band it additionally requires fresh growth evidence: the newest heap-floor sample must exceed the episode's running high-water mark (the entry value, raised by every admitted sample). The growth check is evaluated once per new heap-floor sample (one per GC), and its result is held until the next sample arrives, so an admitted growth sample keeps the boost on until the next GC. The projection is a smoothed regression over a 30-sample window, so a single spike sample keeps the projection inside the band for several recovery GCs after the heap has physically stopped growing. Growth evidence is what keeps the admission boost off for such a recovered spike. Inside the emergency band (less than 5 minutes), admission is immediate.
-- At less than 5 minutes, `isUrgent()` latches an urgent episode. The latch does not start searches, and the ramp calculation does not consult it. It is refreshed once per iteration from the same OOM projection the ramp uses, so it tracks heap recovery even while the search cooldown gates restarts. Its only behavioral consumer is the no-progress abandonment of a running search, which it suppresses while the latch is held; the leak-signal gate also reads it to refuse a candidate-less search.
+For five minutes after the signal's first activation in the process, the projection
+returns -1. The burn-in clock is not restarted for each recording and does not depend
+on how many seconds the usage ring spans.
 
-Both ranges apply only after the burn-in period.
+### Ramp below 30 minutes
 
-For `OOM_PROJECTION_BURN_IN_NS` (5 minutes) after the leak signal first activates in the process, `secondsToOOM()` returns -1, so neither the 30-minute ramp nor the urgent latch fires. A burn-in is needed because warmup growth projects an imminent OOM just as a real leak does. The burn-in depends on how long the leak signal has been active, not on the time span of the heap-floor samples. The sampler records one sample per GC, so near OOM back-to-back GCs compress the sample history to a few seconds. Once the burn-in has passed, that compressed history no longer blocks the latch.
+The raw projection below 30 minutes moves the pause target exponentially toward
+100 milliseconds and raises the base edge-budget ceiling fourfold, subject to its cap.
+For a running search, cadence moves from one second toward 10 milliseconds.
 
-The urgent latch clears after five consecutive checks at 10 minutes or more, or after five consecutive checks with no valid rising-trend estimate. This hysteresis keeps the urgent episode itself from flapping when the estimate moves around the threshold; the admission boost, which releases on the raw band comparison, does not follow this hysteresis.
+With no running search, cadence stays at one second. The ramp follows the raw projection,
+not the urgent latch. Leaving the band restores the configured budget and one-second cadence.
 
-The ramp and the latch use different thresholds. Entering the ramp does not by itself latch urgency.
+### Global tracking admission
 
-The cadence ramp applies only while a search is running. It shortens both the sleep between passes and the fallback cadence gate. It runs from one second (`PASS_CADENCE_NS`) at 30 minutes out to 10 milliseconds (`URGENT_CADENCE_NS`) at OOM, following `cadence = 1 s × 0.01^(1 − s/1800)` for a projection of s seconds. This allows up to about 100 loop evaluations per second, not counting evaluation time. With no search running (not started, or terminal and waiting for a restart), an urgent iteration keeps the cadence at `PASS_CADENCE_NS`. Such a wake runs no pass, only the restart gate's `selectLeakCandidates()` probe, so a ramped idle wake would cost up to about 100 probes per second for at most one second of faster candidate discovery. The budget boost and the pause-target ramp do not depend on the search state. At the 5-minute boundary the ramp gives about 21.5 milliseconds, about 46 evaluations per second. These values follow from the formula; execution time per evaluation is additional, and none of them is a guarantee.
+In the 5–30 minute band, global admission boost requires a new heap-floor sample above
+the episode's running high-water mark. Each admitted growth sample raises that mark;
+the decision is held until another sample arrives.
+
+Below five minutes, the boost needs no additional heap-growth evidence and can engage
+without candidates or a running search. At a full tracking table, admission falls back
+to watched-thread and configured-ratio rules.
+
+The boost bypasses liveness subsampling of already-sampled allocations, not the allocation
+sampler or storage limits. Backoff increments `LIVENESS_URGENT_BOOST_BACKED_OFF`;
+boosted admission increments `LIVENESS_URGENT_BOOST_ADMITS`.
+
+### Urgent latch below five minutes
+
+A raw projection below five minutes latches urgency. It clears after five consecutive
+checks with an estimate of at least ten minutes or no usable projection. This hysteresis
+is separate from the ramp and admission decisions.
+
+The loop refreshes the latch once per iteration, even while search gates block work.
+It suppresses ordinary no-progress abandonment, but never authorizes a candidate-less
+search. Refused urgent evaluations increment `reference_chain_urgent_no_candidate`.
+
+That counter advances only when cost and root-enumeration interval gates permit the
+candidate probe. A heap-wide problem with no qualifying class/thread candidate can
+therefore produce no chains even near exhaustion.
 
 ## Terminal state and restart
 
-A search can become `COMPLETED` or `ABANDONED`. Before a restart, the tracker must confirm that it released all search-owned tags.
+Incomplete root enumeration defers TTL and ordinary no-progress abandonment. Expansion-only
+passes hold the frontier no-progress counter while waiting for enumeration; its attempts
+can still advance the counter. Configured TTL is not a hard search-lifetime bound.
 
-The scheduler then:
+Three consecutive enumeration JVMTI errors can abandon the search. `CANARY_STUCK` can
+also fire without urgency when incomplete enumeration suppresses the earlier no-progress
+exit. See the implementation reference for the full priority ladder.
 
-1. Charges the completed search's safepoint cost.
-2. Clears that search-cost accumulator.
-3. Checks the current leak signal.
-4. Checks the safepoint cost budget.
-5. Calls `restartSearch()` only when both checks pass.
+For a terminal search, the scheduler:
 
-A running search does not restart itself.
+1. Confirms release of all search-owned tags, retrying release before proceeding.
+2. Charges the completed search's accumulated heap-walk-call cost and clears the accumulator.
+3. Checks safepoint-cost debt, then the root-enumeration interval, then the current leak signal.
+4. Calls `restartSearch()` only when those checks pass.
+
+A running search does not restart itself. Recording stop forces a terminal state without
+enqueueing a recording-end abandonment event and clears the recording's cached output.
 
 ## Stop request
 
-`stopThread()` stores an abort request, signals the background thread, and joins it. The signal wakes the thread when it sleeps.
+`stopThread()` stores an abort request, signals the background thread, and joins it.
+The signal wakes a sleeping thread; it does not cancel a JVM call in progress.
 
-If the thread is inside a JVMTI heap walk, the signal does not cancel the JVMTI call. `heapReferenceCallback()` checks the abort request on each callback and asks JVMTI to stop traversal. The stop latency therefore depends on callback progress.
+Root and reference callbacks check the abort request on each invocation. Stop latency
+therefore depends on callback progress, not immediate interruption of JVM work.
 
 ## Operational interpretation
 
-The scheduler aims to distribute work and react to measured cost. It cannot provide real-time guarantees.
-
-Use these signals when evaluating behavior:
-
-- In-safepoint time per pass.
-- Non-safepoint pass time.
-- Effective edge budget.
-- Effective cadence.
-- Candidate progress and backoff.
-- Search outcome and abandonment reason.
+Inspect heap-walk-call time, manual-walk remainder, effective budget and cadence, candidate
+progress/backoff, search outcome, and drop counters together. None alone establishes
+application pause time, CPU overhead, or complete reference-chain coverage.

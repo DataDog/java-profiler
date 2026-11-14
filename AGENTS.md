@@ -31,13 +31,14 @@ index).
 
 **What stays inline vs. what moves to `doc/`** — apply this test when updating this
 file. Inline (this file): rules that must shape behavior at unpredictable moments —
-invariants whose violation causes crashes/leaks/lockups, the obligations that trigger
-a procedure (review before PR, load a writing skill), rules for writing code and code
+invariants whose violation causes crashes/leaks/lockups, rules for writing code and code
 comments. Externalized (`doc/`): reference material read only when
 working on a specific subsystem — architecture pages, build/task references,
 analyses. Procedures run at a known moment go in skills (`.agents/skills/`, which
 load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
-advisory and cannot gate anything. Rules stay inline even when needed only once per
+advisory and cannot gate anything. A skill's `description` carries the obligation to
+run it; this file points to a skill only when a test drive shows that the description
+alone does not load it. Rules stay inline even when needed only once per
 task if that moment is end-of-task and no skill carries them.
 This layering and the work-tracking process follow the Datadog AI Native SDLC Playbook,
 a Datadog-internal Confluence page. Read it only when planning tracked work, changing
@@ -50,8 +51,9 @@ task summary with an explicit `SUBSYSTEM DOC NOT READ: <path>` line — the user
 not you, decides whether to compact and redo the work with the rules in context,
 or accept the risk. The same applies to any instruction in this file you could not
 follow: surface it, never absorb it.
-Hoist a section only when it grows with examples or scope; leave a one-line
-mandatory pointer behind.
+Hoist a section only when it grows with examples or scope. Leave a one-line mandatory
+pointer behind when it moves to `doc/`; a section that moves into a skill follows the
+skill-pointer rule above.
 Update this file from repeated failures: when an agent repeats a mistake or needs
 the same undocumented explanation twice, it proposes a concise correction here
 (or to the affected `doc/` page or skill); the responsible team reviews it, and
@@ -113,6 +115,10 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
 - Flaky native gtests: the Tier 1 GitLab jobs gate through `ddprof-test/quarantine.txt`
   with cell `glibc-<config>-<arch>` (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md),
   Tier 1) — a flaky gtest gets an entry with a PROF ticket, same as the Java cells.
+- Flaky dd-trace-integration cells: the Tier 3 GitLab jobs gate through
+  `post-pr-comment.sh`, and a flaky cell+scenario is quarantined in
+  `.gitlab/dd-trace-integration/quarantine.txt` with a PROF ticket and an expiry
+  (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md), Tier 3).
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
@@ -373,10 +379,7 @@ exception list.
 ## Development Guidelines
 
 - Never replace the code you work on with stubs. Never "fix" tests by testing constants
-  against constants. Never claim success until all affected tests pass; before claiming
-  it, load the `verify-profiler-change` skill
-  ([.agents/skills/verify-profiler-change/SKILL.md](.agents/skills/verify-profiler-change/SKILL.md)),
-  which says which builds and tests each kind of change needs.
+  against constants. Never claim success until all affected tests pass.
   `assert()` is compiled out of release builds (`-DNDEBUG`): never rely on it for safety
   and never put side effects in it.
 - Platform-specific code goes in per-OS implementation files (`os_linux.cpp`,
@@ -442,8 +445,8 @@ exception list.
   mechanism, invariant, or consequence) the reader could not get from the code. A
   longer comment needs a reason a reviewer would accept; prefer cutting — a verbose
   comment is review surface, not safety. The same cut applies to `doc/` paragraphs and
-  PR descriptions. No tool enforces this, because it takes judgment; the agentic review
-  checks it (see Agentic Code Review).
+  PR descriptions. No tool enforces this, because it takes judgment; the `pre-pr-review`
+  skill checks it.
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
@@ -480,14 +483,7 @@ Work runs in four phases — Intent → Design → Build and Test → Deploy —
 tracker ticket as the system of record: Jira (`PROF-<n>`) for Datadog engineers,
 GitHub issues for external contributors. **Read [doc/WorkTracking.md](doc/WorkTracking.md)
 before starting tracked work** — it is the phase-by-phase process reference; skipping
-it must be disclosed per the rule at the top of this file. Before creating, updating or
-moving a Jira ticket, load the `ticket-writing` skill
-([.agents/skills/ticket-writing/SKILL.md](.agents/skills/ticket-writing/SKILL.md)); before
-writing a design, acceptance criteria or a Build plan, load the `work-planning` skill
-([.agents/skills/work-planning/SKILL.md](.agents/skills/work-planning/SKILL.md)); before
-triaging an existing PROF Jira ticket, load the `ticket-triage` skill
-([.agents/skills/ticket-triage/SKILL.md](.agents/skills/ticket-triage/SKILL.md)). These
-rules always apply:
+it must be disclosed per the rule at the top of this file. These rules always apply:
 
 - **Verification first.** No transition happens on claims: acceptance criteria before
   code, tests and review before merge, production verification before closure. **Fix
@@ -511,37 +507,3 @@ rules always apply:
 Isolation, parallel sessions and the rest of the tracking contract are in
 [doc/WorkTracking.md](doc/WorkTracking.md) and enforced by review discipline. Existing
 production-change guidelines and review rules still apply in full.
-
-## Agentic Code Review (mandatory before opening a PR)
-
-No pull request is opened, marked ready, or updated with fixes until an agentic code
-review of the full change set has completed and its Critical/High findings are fixed
-or explicitly waived by the user. Run the `pre-pr-review` skill
-([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
-picks the reviewer and effort within a review budget, adds the self-checks (dead code,
-misspellings, comment budget, no plan/spec references), and records the result with
-`utils/review-marker.py`. If the
-harness has no review capability, say so and get explicit user sign-off — never
-silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
-a branch with an open PR (install with `utils/review-marker.py install-hook`, never
-via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
-`require-fresh-review` hook blocks `gh pr create`/`gh pr ready` for this repository.
-
-## Pull Request Descriptions, Comments and Commits
-
-Before writing or editing a PR title or description, a PR comment or review reply, a
-Jira comment or a commit message, load the `pr-writing` skill
-([.agents/skills/pr-writing/SKILL.md](.agents/skills/pr-writing/SKILL.md)).
-
-## CI / Automation Script Changes
-
-Before editing CI configuration (`.gitlab-ci.yml`, `.gitlab/**`, `.github/**`) or a
-script that CI, Gradle or a hook runs, and before deleting any tracked file or removing an
-entry from a default list or config, load the `ci-script-change` skill
-([.agents/skills/ci-script-change/SKILL.md](.agents/skills/ci-script-change/SKILL.md)).
-
-## Documentation Rules
-
-Before creating, editing, renaming or deleting a file under `doc/`, load the
-`doc-writing` skill ([.agents/skills/doc-writing/SKILL.md](.agents/skills/doc-writing/SKILL.md)).
-CI (`qualityChecks`) checks doc naming and the `doc/README.md` index.

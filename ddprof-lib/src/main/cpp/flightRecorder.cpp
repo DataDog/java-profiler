@@ -8,15 +8,6 @@
 #include <inttypes.h>
 #include <dlfcn.h>
 
-// mallinfo2() replaced the int-based mallinfo() in glibc 2.33; the older struct
-// silently truncates past 2 GiB, so it is not a usable fallback for byte
-// accounting. Absent on musl and macOS, where the arena counters stay zero.
-#if defined(__linux__) && defined(__GLIBC__) &&                                \
-    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
-  #include <malloc.h>
-  #define DD_HAVE_MALLINFO2 1
-#endif
-
 #include "buffers.h"
 #include "callTraceHashTable.h"
 #include "context.h"
@@ -29,6 +20,7 @@
 #include "jfrMetadata.h"
 #include "jniHelper.h"
 #include "jvmSupport.inline.h"
+#include "mallocInfo.h"
 #include "os.h"
 #include "profiler.h"
 #include "signalSafety.h"
@@ -2138,14 +2130,24 @@ void Recording::writeLogLevels(Buffer *buf) {
 // mallinfo2(), which then reports all zeros. Neither runtime exports
 // mallctl/tc_malloc_size, so the dlsym probe alone would miss them.
 //
-// Not cached: called once per JFR chunk flush, so two dlsym() lookups are
-// negligible.
+// Resolved once: the lookup result cannot change after process start, and the
+// loader lock is not worth taking on every chunk flush. The sentinel is zero-
+// initialized (no dynamic-init guard) and read/written with acquire/release,
+// so a racing first caller can only repeat the same lookup. Flush path only,
+// never signal context.
 bool Recording::glibcMallocActive() {
 #if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
   return false;
 #else
-  return dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
-         dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+  static int cached = 0; // 0 = unresolved, 1 = active, 2 = inactive
+  int state = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
+  if (state == 0) {
+    bool active = dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
+                  dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+    state = active ? 1 : 2;
+    __atomic_store_n(&cached, state, __ATOMIC_RELEASE);
+  }
+  return state == 1;
 #endif
 }
 
@@ -2163,17 +2165,26 @@ bool Recording::glibcMallocActive() {
 // from the sampling signal handler. Once per JFR chunk is negligible.
 //
 // Left unset (rather than published as zero) when a replacement allocator is
-// active: see glibcMallocActive() above.
+// active: see glibcMallocActive() above. Also left unset when the runtime
+// allocator does not provide mallinfo2() (glibc < 2.33, musl, macOS) -- the
+// symbol is resolved at runtime, so a build made against old headers still
+// picks it up from a newer runtime glibc (see mallocInfo.cpp).
 void Recording::updateMallocArenaStats() {
-#ifdef DD_HAVE_MALLINFO2
   if (!glibcMallocActive()) {
     return;
   }
-  struct mallinfo2 mi = mallinfo2();
-  // arena:    bytes obtained from the OS via brk, excluding mmap'd chunks
+  MallocArenaInfo mi;
+  if (!mallocArenaSnapshot(&mi)) {
+    return;
+  }
+  // arena:    system memory held by glibc's arenas, summed per arena
+  //           (glibc int_mallinfo: m->arena += av->system_mem) -- NOT just
+  //           the main sbrk heap; non-main arenas live on their own mmap'd
+  //           heaps, so arena growth tracks per-thread arenas too
   // uordblks: bytes currently handed out to callers
   // fordblks: bytes free but retained in the arenas -- the waste term
-  // keepcost: the trimmable top block, i.e. what malloc_trim could return;
+  // keepcost: the main arena's top chunk only (glibc sets it under
+  //           `if (av == &main_arena)`), i.e. what malloc_trim could return;
   //           separating it distinguishes trim-threshold policy from genuine
   //           fragmentation, which trimming cannot reclaim
   // hblkhd:   bytes in mmap'd chunks, which are returned to the OS on free
@@ -2182,7 +2193,6 @@ void Recording::updateMallocArenaStats() {
   Counters::set(MALLOC_FREE_HELD_BYTES, (long long)mi.fordblks);
   Counters::set(MALLOC_TRIMMABLE_BYTES, (long long)mi.keepcost);
   Counters::set(MALLOC_MMAP_BYTES, (long long)mi.hblkhd);
-#endif
 }
 
 void Recording::capturePostFlushNativeMem() {
