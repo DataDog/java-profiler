@@ -172,6 +172,9 @@ void ProfiledThread::unclaimAndReset() {
   _call_trace_id = 0;
   _recording_epoch = 0;
   _park_block_token = 0;
+  _task_block_start_ticks = 0;
+  _task_block_token = 0;
+  _task_block_context = {};
   _filter_slot_id = -1;
   _logical_context_window_state.store(0, std::memory_order_release);
   _init_window = 0;

@@ -41,6 +41,7 @@
 #include "stackWalker.h"
 #include "stackWalker.inline.h"
 #include "symbols.h"
+#include "taskBlockRecorder.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "utils.h"
@@ -56,7 +57,9 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
+#include <errno.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -328,12 +331,30 @@ u32 Profiler::exchangeNumContextAttributesForTest(u32 count) {
 }
 
 static std::atomic<int> g_test_last_unregistered_tid{-1};
+static std::atomic<Profiler::TaskBlockRecordOverride>
+    g_test_task_block_record_override{nullptr};
 
 int Profiler::lastUnregisteredTidForTest() {
     return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
 }
 void Profiler::resetUnregisterObservableForTest() {
     g_test_last_unregistered_tid.store(-1, std::memory_order_relaxed);
+}
+
+void Profiler::setTaskBlockRecordOverrideForTest(
+    TaskBlockRecordOverride override) {
+  g_test_task_block_record_override.store(override, std::memory_order_release);
+}
+
+static std::atomic<Profiler::TaskBlockActivityHook> g_test_task_block_activity_hook{nullptr};
+
+void Profiler::setTaskBlockActivityHookForTest(TaskBlockActivityHook hook) {
+  g_test_task_block_activity_hook.store(hook, std::memory_order_release);
+}
+
+void Profiler::runTaskBlockActivityHookForTest(TaskBlockActivityStage stage) {
+  TaskBlockActivityHook hook = g_test_task_block_activity_hook.load(std::memory_order_acquire);
+  if (hook != nullptr) hook(stage);
 }
 #endif
 
@@ -735,6 +756,36 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   return depth;
 }
 
+int Profiler::captureJVMTIFrames(jthread thread, int start_depth,
+                                 CallTraceBuffer* buffer, bool& truncated) {
+  truncated = false;
+  ASGCT_CallFrame *frames = buffer->_asgct_frames;
+  jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
+  jint num_frames = 0;
+  int limit = _max_stack_depth + (_max_stack_depth < INT_MAX);
+  if (VM::jvmti()->GetStackTrace(thread, start_depth, limit,
+                                 jvmti_frames, &num_frames) != JVMTI_ERROR_NONE ||
+      num_frames <= 0) {
+    return 0;
+  }
+  truncated = num_frames > _max_stack_depth;
+  if (truncated) num_frames = _max_stack_depth;
+  copyJvmtiFrames(frames, jvmti_frames, num_frames);
+  // A VT's logical stack omits carrier frames. Mark a detected continuation
+  // boundary when there is room, rather than reporting it as missing frames.
+  if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
+      num_frames < _max_stack_depth) {
+    VMThread* carrier = VMThread::current();
+    if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
+      frames[num_frames].bci = BCI_NATIVE_FRAME;
+      frames[num_frames].method_id = (jmethodID) "JVM Continuation";
+      LP64_ONLY(frames[num_frames].padding = 0;)
+      num_frames++;
+    }
+  }
+  return num_frames;
+}
+
 // allocstack=verify: checks a VM-walked allocation stack against JVMTI
 // GetStackTrace on the same thread, frame by frame (method and bci), counting
 // ALLOC_STACK_VERIFIED / ALLOC_STACK_MISMATCH. Diagnostics and tests only:
@@ -802,7 +853,6 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     u64 startTime = TSC::ticks();
 #endif // COUNTERS
     ASGCT_CallFrame *frames = buf->_asgct_frames;
-    jvmtiFrameInfo *jvmti_frames = buf->_jvmti_frames;
 
     int num_frames = 0;
     bool truncated = false;
@@ -837,32 +887,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
           verifyAllocStack(frames, num_frames, thread, _max_stack_depth, expected);
         }
       }
-    } else if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth + (_max_stack_depth < INT_MAX),
-                                            jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
-      truncated = num_frames > _max_stack_depth;
-      if (truncated) num_frames = _max_stack_depth;
-      // Convert to AsyncGetCallTrace format.
-      // Note: jvmti_frames and frames may overlap.
-      copyJvmtiFrames(frames, jvmti_frames, num_frames);
-      // On JDK 21+, GetStackTrace on a virtual thread returns only the VT's
-      // logical stack; it stops at the continuation boundary and never includes
-      // carrier-thread frames.  Without a synthetic root the trace appears
-      // truncated to the UI backend, which attributes it to "Missing Frames".
-      // Detect the VT case via JavaThread::_cont_entry being non-null on the
-      // carrier.  This field is in gHotSpotVMStructs on all JDK 21+ builds so
-      // isCarryingVirtualThread() works regardless of JDK version.  Append a
-      // synthetic "JVM Continuation" root frame to mark the boundary
-      // explicitly, matching the behaviour of walkVM without carrier_frames.
-      if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
-          num_frames < _max_stack_depth) {
-        VMThread* carrier = VMThread::current();
-        if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
-          frames[num_frames].bci = BCI_NATIVE_FRAME;
-          frames[num_frames].method_id = (jmethodID) "JVM Continuation";
-          LP64_ONLY(frames[num_frames].padding = 0;)
-          num_frames++;
-        }
-      }
+    } else {
+      num_frames = captureJVMTIFrames(thread, 0, buf, truncated);
     }
 
     call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
@@ -964,7 +990,7 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   if (result.ordinary_recorded && request.arm_state != OSThreadState::UNKNOWN &&
       block->blockGeneration() == request.block_generation &&
       block->activeBlockState() == request.arm_state) {
-    block->markSampledThisRun(request.arm_state);
+    block->markBlockGenerationSampled(request.block_generation);
   }
 
   u64 tail_id = 0, tail_weight = 0;
@@ -1018,8 +1044,7 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
 }
 
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
-                            jint event_type, u64 call_trace_id, Event *event,
-                            u64 *recorded_call_trace_id) {
+                            jint event_type, u64 call_trace_id, Event *event) {
   atomicIncRelaxed(_total_samples);
 
   RecordingStripe stripe(_locks, getLockIndex(tid));
@@ -1036,7 +1061,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
   }
 
   return recordSampleLocked(stripe.index(), ucontext, counter, tid, event_type,
-                            call_trace_id, event, recorded_call_trace_id);
+                            call_trace_id, event, nullptr);
 }
 
 bool Profiler::recordSampleLocked(u32 lock_index, void* ucontext, u64 counter, int tid,
@@ -1165,6 +1190,161 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   }
   _jfr.recordQueueTime(lock_index, tid, event);
   _locks[lock_index].unlock();
+}
+
+Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
+    int tid, jthread thread, int start_depth, TaskBlockEvent *event) {
+#ifdef UNIT_TEST
+  TaskBlockRecordOverride override =
+      g_test_task_block_record_override.load(std::memory_order_acquire);
+  if (override != nullptr) {
+    return override(tid, thread, start_depth, event);
+  }
+#endif
+  CriticalSection cs;
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return TaskBlockRecordResult::RECORD_FAILED;
+  }
+
+  // Lightweight recordings intentionally encode an absent stack trace as
+  // constant-pool ID 0, as the regular CPU and wall-clock sample paths do.
+  if (!_omit_stacktraces) {
+    if (_max_stack_depth <= 0 || _calltrace_buffer[lock_index] == nullptr) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+
+    CallTraceBuffer *buffer = _calltrace_buffer[lock_index];
+#ifdef COUNTERS
+    u64 stack_start = TSC::ticks();
+#endif
+    bool truncated = false;
+    int num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
+    if (num_frames <= 0) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+
+    u64 call_trace_id =
+        _call_trace_storage.put(num_frames, buffer->_asgct_frames, truncated, 1);
+#ifdef COUNTERS
+    u64 stack_duration = TSC::ticks() - stack_start;
+    if (stack_duration > 0) {
+      Counters::increment(UNWINDING_TIME_JVMTI, stack_duration);
+    }
+#endif
+    if (call_trace_id == 0) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+
+    event->_callTraceId = call_trace_id;
+  }
+  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
+  _locks[lock_index].unlock();
+  return recorded ? TaskBlockRecordResult::RECORDED
+                  : TaskBlockRecordResult::RECORD_FAILED;
+}
+
+bool Profiler::tryEnterTaskBlockActivity() {
+  u64 state = _task_block_activity_state.load(std::memory_order_acquire);
+  if (state & TASK_BLOCK_CLOSED) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return false;
+  }
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION);
+#endif
+  // Admission and closure share one atomic modification order. A successful
+  // CAS before closure contributes to the count rotation drains; a CAS after
+  // closure fails and cannot add a reservation while the closed bit is set.
+  // Match SpinLock's 256-attempt signal-handler shared-acquisition budget.
+  // Exhaustion drops only this observation: failed CAS attempts never reserve
+  // activity, so there is no count to release or for rotation to drain. This
+  // bounds retries, not wall-clock latency, without waiting or taking a lock.
+  bool admitted = false;
+  int failures = 0;
+  while (!(state & TASK_BLOCK_CLOSED) &&
+         failures < SpinLock::DEFAULT_SHARED_SPIN_BUDGET) {
+#ifdef UNIT_TEST
+    runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION_CAS);
+#endif
+    if (_task_block_activity_state.compare_exchange_weak(
+            state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      admitted = true;
+      break;
+    }
+    ++failures;
+  }
+  if (!admitted) {
+    Counters::increment((state & TASK_BLOCK_CLOSED) ? TASK_BLOCK_DROPPED_ROTATION
+                                                 : TASK_BLOCK_DROPPED_ADMISSION);
+  }
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);
+#endif
+  return admitted;
+}
+
+void Profiler::leaveTaskBlockActivity() {
+  _task_block_activity_state.fetch_sub(1, std::memory_order_release);
+}
+
+bool Profiler::beginTaskBlockRotation() {
+  static const long TASK_BLOCK_ROTATION_TIMEOUT_NS = 200000000L; // 200ms, matches SignalInflight::drain()
+  u64 state = _task_block_activity_state.fetch_or(TASK_BLOCK_CLOSED, std::memory_order_acq_rel);
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_CLOSURE);
+#endif
+  if ((state & ~TASK_BLOCK_CLOSED) == 0) {
+    return true; // fast path: nothing in flight
+  }
+
+  struct timespec deadline;
+  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+    Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
+               "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
+    _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
+    return false;
+  }
+  deadline.tv_nsec += TASK_BLOCK_ROTATION_TIMEOUT_NS;
+  if (deadline.tv_nsec >= 1000000000L) {
+    deadline.tv_sec += 1;
+    deadline.tv_nsec -= 1000000000L;
+  }
+
+  // The acquire load of the drained count observes the recorders' release
+  // decrements before teardown. Timeout reopens admission without losing count.
+  while ((_task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED) != 0) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
+                 "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
+      _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
+      return false;
+    }
+    if (now.tv_sec > deadline.tv_sec ||
+        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+      u64 remaining = _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
+      Log::error("Profiler::beginTaskBlockRotation: timed out after %ldms waiting for "
+                 "%llu in-flight TaskBlock recording(s). Skipping task-block rotation; "
+                 "this indicates a stuck TaskBlock record path.",
+                 TASK_BLOCK_ROTATION_TIMEOUT_NS / 1000000L,
+                 (unsigned long long)remaining);
+      Counters::increment(TASK_BLOCK_ROTATION_TIMEOUT);
+      _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
+      return false;
+    }
+    std::this_thread::yield();
+  }
+  return true;
+}
+
+void Profiler::endTaskBlockRotation() {
+  _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
@@ -1886,6 +2066,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
+  _task_block_enabled.store(false, std::memory_order_release);
   // A previous mixed-success or failed start must not leave a stale mask that a
   // later stop() would act on; success publishes `activated` below.
   _activated_mask = 0;
@@ -2038,7 +2219,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   const char *filter = args._filter != nullptr ? args._filter : "0";
   _block_tracker.setUnownedContextSnapshotsNeeded(
-      (_event_mask & EM_WALL) != 0 && args._wall_precheck && filter[0] != '\0' &&
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
       _wall_engine == &wall_asgct_engine && !_omit_stacktraces);
   const bool track_unfiltered_wall =
       (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
@@ -2143,6 +2324,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->stopRefresher();
     return error;
   }
+  initializeTaskBlockDurationThreshold();
 
   // Must precede every signal-based engine's start() below: SamplerPerfProbe
   // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
@@ -2282,6 +2464,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
+    _task_block_enabled.store(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
+        std::memory_order_release);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -2299,6 +2484,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
+  _task_block_enabled.store(false, std::memory_order_release);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
@@ -2314,6 +2500,13 @@ Error Profiler::stop() {
     // The operation is idempotent on retry: disableEngines() above is an atomic
     // store, and no other engine stop has run yet.
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
+  }
+
+  // Prevent existing paired intervals from recording during teardown. New
+  // intervals were disabled above; this also drains endTaskBlock calls that
+  // already entered their snapshot-and-record activity.
+  if (!beginTaskBlockRotation()) {
+    return Error("task-block rotation did not drain; teardown skipped, retry stop()");
   }
 
   // Close the registration gate and wait for the calls already past it, so no
@@ -2446,6 +2639,7 @@ Error Profiler::stop() {
   _thread_info.reportCounters();
 
   rotateDictsAndRun([&]{ _jfr.stop(); });
+  endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
@@ -2587,10 +2781,15 @@ Error Profiler::dump(const char *path, const int length) {
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
     // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
     // its own writer/reader coordination.
-    rotateDictsAndRun([&]{
-      err = _jfr.dump(path, length);
-      __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
-    });
+    if (beginTaskBlockRotation()) {
+      rotateDictsAndRun([&]{
+        err = _jfr.dump(path, length);
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+      });
+      endTaskBlockRotation();
+    } else {
+      err = Error("task-block rotation did not drain; dump skipped");
+    }
     if (err) {
       TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
     }

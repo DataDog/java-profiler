@@ -101,7 +101,7 @@ struct WallSampleRequest {
   ThreadFilter::RecordingEpoch registry_epoch = 0;
   u32 trace_epoch = 0;
   u64 sampling_epoch_start = 0;
-  u32 block_generation = 0;
+  u64 block_generation = 0;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   OSThreadState arm_state = OSThreadState::UNKNOWN;
   bool unowned_sample = false;
@@ -237,6 +237,9 @@ private:
   // AND referencechains=true - see Profiler::start()). Atomic: also read by
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
+  std::atomic<bool> _task_block_enabled{false};
+  static constexpr u64 TASK_BLOCK_CLOSED = 1ULL << 63;
+  std::atomic<u64> _task_block_activity_state{0};
 
   // The walkers' sigsetjmp scopes are inside recordSampleLocked(), so their
   // recovery returns through this owner rather than jumping past its destructor.
@@ -355,6 +358,8 @@ private:
   // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
   void reportDrainTimeout(const char *what);
   void unlockAll();
+  bool beginTaskBlockRotation();
+  void endTaskBlockRotation();
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
   //
@@ -685,8 +690,7 @@ public:
                                     ExecutionEvent* event, const WallSampleRequest& request);
 
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u64 call_trace_id, Event *event,
-                    u64 *recorded_call_trace_id = nullptr);
+                    u64 call_trace_id, Event *event);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no
@@ -694,6 +698,11 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
+  // Caller holds its stripe lock and supplies CallTraceBuffer::capacity() space,
+  // including the one-extra-frame truncation probe. Converts to ASGCT format and
+  // marks detected continuation roots; returns 0 on error/empty capture.
+  int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer,
+                         bool& truncated);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
@@ -702,6 +711,33 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  enum class TaskBlockRecordResult {
+    RECORDED,
+    STACK_CAPTURE_FAILED,
+    RECORD_FAILED,
+  };
+  TaskBlockRecordResult recordTaskBlock(int tid, jthread thread,
+                                        int start_depth,
+                                        TaskBlockEvent *event);
+#ifdef UNIT_TEST
+  using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
+      int tid, jthread thread, int start_depth, TaskBlockEvent *event);
+  static void setTaskBlockRecordOverrideForTest(
+      TaskBlockRecordOverride override);
+  enum class TaskBlockActivityStage {
+    BEFORE_RESERVATION, BEFORE_RESERVATION_CAS, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
+  };
+  using TaskBlockActivityHook = void (*)(TaskBlockActivityStage stage);
+  static void setTaskBlockActivityHookForTest(TaskBlockActivityHook hook);
+  static void runTaskBlockActivityHookForTest(TaskBlockActivityStage stage);
+#endif
+  bool tryEnterTaskBlockActivity();
+  void leaveTaskBlockActivity();
+  bool omitStacktraces() const { return _omit_stacktraces; }
+
+  bool taskBlockEnabled() const {
+    return _task_block_enabled.load(std::memory_order_acquire);
+  }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,
@@ -728,6 +764,15 @@ public:
   // Runs the reset steps of a fresh start() in isolation.  Compiled only into
   // gtest binaries.
   int resetRecordingStateForTest() { return resetRecordingState(); }
+
+  bool beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
+  void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
+  bool taskBlockRotationActiveForTest() const {
+    return (_task_block_activity_state.load(std::memory_order_acquire) & TASK_BLOCK_CLOSED) != 0;
+  }
+  int taskBlockInflightForTest() const {
+    return _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
+  }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).

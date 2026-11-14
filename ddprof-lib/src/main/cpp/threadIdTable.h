@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,8 +44,8 @@ public:
     }
     
     // Signal-safe insertion using atomic operations only
-    void insert(int tid) {
-        if (unlikely(tid == 0)) return; // Invalid thread ID, 0 is reserved for empty slots
+    bool insert(int tid) {
+        if (unlikely(tid == 0)) return false; // Invalid thread ID, 0 is reserved for empty slots
         
         int start_slot = hash(tid);
         for (int probe = 0; probe < TABLE_SIZE; probe++) {
@@ -54,16 +54,15 @@ public:
             
             // Try to claim empty slot
             if (table[slot].compare_exchange_strong(expected, tid, std::memory_order_relaxed)) {
-                return; // Successfully inserted
+                return true; // Successfully inserted
             }
             
             // Check if already present (common case - threads insert multiple times)
             if (likely(table[slot].load(std::memory_order_relaxed) == tid)) {
-                return; // Already exists
+                return true; // Already exists
             }
         }
-        // Table full - thread ID will be lost, but this is rare and non-critical
-        // Could increment a counter here for diagnostics if needed
+        return false; // Full: callers that require a resolvable ID must reject the event.
     }
     
     // Clear the table (not signal-safe, called during buffer switch)

@@ -29,6 +29,7 @@
 struct ThreadEntry;  // defined after ThreadFilter; carries a pointer to a ThreadFilter::Slot
 class ProfiledThread;
 class WallClockBlockTracker;  // wall-clock owned/unowned block-run suppression state, see wallClockBlockTracker.h
+class ProfiledThread;
 
 class ThreadFilter {
 public:
@@ -240,7 +241,11 @@ public:
     Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;
     Slot* lookupByTid(int tid, RecordingEpoch epoch, SlotID* out_slot_id = nullptr) const;
     Slot* activeSlotForId(SlotID slot_id, int tid) const;
+    // Populates lifecycle metadata from an existing mapping without registering
+    // the TID. Timer-side observation must remain read-only.
+    bool lookupThreadEntry(ThreadEntry& entry, RecordingEpoch epoch) const;
     void deactivateRecording();
+    SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
 
 private:
 

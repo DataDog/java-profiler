@@ -119,7 +119,7 @@ public class WallClockPrecheckOverheadBenchmark {
               + precheck
               + ",jfr,file="
               + recording.toAbsolutePath());
-      long suppressedBefore = profiler.getDebugCounters().get("wc_signals_suppressed_sampled_run");
+      long suppressedBefore = profiler.getDebugCounters().get("wc_signals_suppressed_owned_block");
       profilerStarted.countDown();
       if (!armed.await(30, TimeUnit.SECONDS)) {
         throw new IllegalStateException("Timed out arming benchmark workers");
@@ -129,7 +129,7 @@ public class WallClockPrecheckOverheadBenchmark {
       }
       if (precheck) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-        while (profiler.getDebugCounters().get("wc_signals_suppressed_sampled_run")
+        while (profiler.getDebugCounters().get("wc_signals_suppressed_owned_block")
             <= suppressedBefore) {
           if (System.nanoTime() >= deadline) {
             throw new IllegalStateException(

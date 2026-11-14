@@ -62,11 +62,10 @@ public:
   u64 _weight;
   // Deferred wall observations keep their sampling-epoch timestamp; zero means now.
   u64 _sample_ticks;
-  u32 _call_trace_id;
 
   ExecutionEvent()
       : Event(), _thread_state(OSThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
-        _weight(1), _sample_ticks(0), _call_trace_id(0) {}
+        _weight(1), _sample_ticks(0) {}
 };
 
 class AllocEvent : public Event {
@@ -212,13 +211,13 @@ public:
   u32 _num_failed_samples;
   u32 _num_exited_threads;
   u32 _num_permission_denied;
-  u64 _num_suppressed_sampled_run;
+  u64 _num_suppressed_owned_block;
 
   WallClockEpochEvent(u64 start_time)
       : _dirty(false), _start_time(start_time), _duration_millis(0),
         _num_samplable_threads(0), _num_successful_samples(0),
         _num_failed_samples(0), _num_exited_threads(0),
-        _num_permission_denied(0), _num_suppressed_sampled_run(0) {}
+        _num_permission_denied(0), _num_suppressed_owned_block(0) {}
 
   bool hasChanged() { return _dirty; }
 
@@ -257,10 +256,10 @@ public:
     }
   }
 
-  void addNumSuppressedSampledRun(u64 n) {
+  void addNumSuppressedOwnedBlock(u64 n) {
     if (n > 0) {
       _dirty = true;
-      _num_suppressed_sampled_run += n;
+      _num_suppressed_owned_block += n;
     }
   }
 
@@ -271,7 +270,7 @@ public:
   void newEpoch(u64 start_time) {
     _dirty = false;
     _start_time = start_time;
-    _num_suppressed_sampled_run = 0;
+    _num_suppressed_owned_block = 0;
   }
 };
 
@@ -295,5 +294,15 @@ typedef struct QueueTimeEvent {
   u32 _queueType;
   u32 _queueLength;
 } QueueTimeEvent;
+
+typedef struct TaskBlockEvent {
+  u64 _start;
+  u64 _end;
+  u64 _blocker;
+  u64 _unblockingSpanId;
+  Context _ctx;
+  u64 _callTraceId;
+  OSThreadState _observedBlockingState;
+} TaskBlockEvent;
 
 #endif // _EVENT_H

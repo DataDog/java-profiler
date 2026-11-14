@@ -23,10 +23,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Measures the theoretical upper bound on {@code SIGVTALRM} suppression by running with {@code
- * wallprecheck=false} and classifying sample states. The once-per-run filter ({@code
- * wallprecheck=true}) suppresses {@code SLEEPING}, {@code CONDVAR_WAIT}, and {@code OBJECT_WAIT}
- * after the entry sample; {@code RUNNABLE} is not skipped. Monitor contention ({@code
- * MONITOR_WAIT}) is also suppressible when monitor hooks identify the blocked interval.
+ * wallprecheck=false} and classifying sample states. Lifecycle ownership ({@code
+ * wallprecheck=true}) suppresses {@code SLEEPING}, {@code CONDVAR_WAIT}, and suppresses {@code
+ * OBJECT_WAIT}; {@code RUNNABLE} is not skipped. Monitor contention ({@code MONITOR_WAIT}) is also
+ * suppressible when monitor hooks identify the blocked interval.
  */
 public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
@@ -43,11 +43,10 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
     AtomicBoolean stop = new AtomicBoolean(false);
     Object monitor = new Object();
 
-    // SLEEPING / CONDVAR_WAIT — suppressed by once-per-run filter
+    // SLEEPING / CONDVAR_WAIT — suppressible with lifecycle ownership
     Thread sleeping =
         new Thread(
             () -> {
-              registerCurrentThreadForWallClockProfiling();
               ready.countDown();
               try {
                 Thread.sleep(10_000);
@@ -56,21 +55,19 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
             },
             EFFICIENCY_SLEEPING);
 
-    // CONDVAR_WAIT — suppressed by once-per-run filter
+    // CONDVAR_WAIT — suppressible with lifecycle ownership
     Thread parked =
         new Thread(
             () -> {
-              registerCurrentThreadForWallClockProfiling();
               ready.countDown();
               LockSupport.parkNanos(10_000_000_000L);
             },
             EFFICIENCY_PARKED);
 
-    // OBJECT_WAIT — suppressed by the once-per-run filter.
+    // OBJECT_WAIT — suppressible with lifecycle ownership.
     Thread waiting =
         new Thread(
             () -> {
-              registerCurrentThreadForWallClockProfiling();
               ready.countDown();
               synchronized (monitor) {
                 try {
@@ -85,7 +82,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
     Thread working =
         new Thread(
             () -> {
-              registerCurrentThreadForWallClockProfiling();
               ready.countDown();
               long x = 0;
               while (!stop.get()) {
@@ -230,12 +226,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         Executors.newFixedThreadPool(
             POOL_SIZE,
             r -> {
-              Thread t =
-                  new Thread(
-                      () -> {
-                        registerCurrentThreadForWallClockProfiling();
-                        r.run();
-                      });
+              Thread t = new Thread(r);
               t.setName("realistic-pool-" + threadIndex.incrementAndGet());
               t.setDaemon(true);
               return t;
@@ -251,7 +242,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
     Thread scheduler =
         new Thread(
             () -> {
-              registerCurrentThreadForWallClockProfiling();
               while (!stop.get()) {
                 try {
                   Thread.sleep(SCHEDULE_INTERVAL_MS);
@@ -276,7 +266,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
     Thread hotThread =
         new Thread(
             () -> {
-              registerCurrentThreadForWallClockProfiling();
               long x = 0;
               while (!stop.get()) {
                 x++;
@@ -301,6 +290,13 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
     long sleepSamples = 0, parkSamples = 0, otherSamples = 0;
 
     for (JfrEvent item : events) {
+      String threadName = item.getThreadName("eventThread");
+      if (threadName == null
+          || (!threadName.startsWith("realistic-pool-")
+              && !"realistic-scheduler".equals(threadName)
+              && !"realistic-hot".equals(threadName))) {
+        continue;
+      }
       String stack = item.getStackTraceString();
       if (stack == null) {
         otherSamples++;
@@ -352,7 +348,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    // No span is active; workers still register explicitly for filtered sampling.
-    return "wall=1ms,filter=0";
+    // No span is active; owned-block suppression requires unfiltered sampling.
+    return "wall=1ms,filter=";
   }
 }

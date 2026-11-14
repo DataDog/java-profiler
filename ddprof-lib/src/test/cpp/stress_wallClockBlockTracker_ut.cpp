@@ -25,7 +25,8 @@ static constexpr int kChurnIterations = 4000;
 
 static std::atomic<bool> g_run{false};
 
-static void block_run_churn_worker(ThreadFilter* filter, WallClockBlockTracker* tracker) {
+static void block_run_churn_worker(ThreadFilter* filter, WallClockBlockTracker* tracker,
+                                   std::atomic<int>* admitted_runs) {
   while (!g_run.load(std::memory_order_acquire)) { }
   for (int i = 0; i < kChurnIterations && g_run.load(std::memory_order_relaxed); i++) {
     ProfiledThread::initCurrentThread();
@@ -37,19 +38,21 @@ static void block_run_churn_worker(ThreadFilter* filter, WallClockBlockTracker* 
     if (slot >= 0) {
       self->setFilterSlotId(slot);
       filter->add(self->tid(), slot);
+      // Unfiltered owned admission requires an outside-context thread. Close
+      // the window before opening the run so the test churns actual owners.
+      filter->remove(slot);
 
       OSThreadState state = (i & 1) ? OSThreadState::SLEEPING : OSThreadState::CONDVAR_WAIT;
       u64 token = tracker->enterBlockedRun(filter, slot, state);
       std::this_thread::yield();
       if (token != 0) {
-        // Either exit path (generation-checked exit, or the unconditional
-        // resetSlot(RUNNABLE) clear) may lose the race against a concurrent
-        // registry reset (which is expected and fine); neither may crash or
-        // corrupt.
+        ++*admitted_runs;
+        // Either exit path may lose the race against a concurrent registry
+        // reset (which is expected and fine); neither may crash or corrupt.
         if (i & 1) {
           tracker->exitBlockedRun(slot, WallClockBlockTracker::tokenGeneration(token));
         } else {
-          tracker->resetSlot(slot, OSThreadState::RUNNABLE);
+          tracker->resetSlot(slot);
         }
       }
 
@@ -80,9 +83,10 @@ TEST(StressWallClockBlockTracker, ChurnOnly) {
   filter.init("", /*track_unfiltered_wall=*/true);
 
   g_run.store(true, std::memory_order_release);
+  std::atomic<int> admitted_runs{0};
   std::vector<std::thread> workers;
   for (int t = 0; t < kChurnWorkers; t++) {
-    workers.emplace_back(block_run_churn_worker, &filter, &tracker);
+    workers.emplace_back(block_run_churn_worker, &filter, &tracker, &admitted_runs);
   }
   for (auto& w : workers) {
     w.join();
@@ -90,7 +94,7 @@ TEST(StressWallClockBlockTracker, ChurnOnly) {
   g_run.store(false);
 
   restoreDefaultSignalHandlers();
-  SUCCEED();
+  EXPECT_GT(admitted_runs.load(), 0) << "Churn must exercise successfully admitted owned runs";
 }
 
 TEST(StressWallClockBlockTracker, ChurnDuringConcurrentRegistryRestart) {
@@ -102,10 +106,11 @@ TEST(StressWallClockBlockTracker, ChurnDuringConcurrentRegistryRestart) {
   filter.init("", /*track_unfiltered_wall=*/true);
 
   g_run.store(true, std::memory_order_release);
+  std::atomic<int> admitted_runs{0};
   std::thread restarter(registry_restart_thread, &filter);
   std::vector<std::thread> workers;
   for (int t = 0; t < kChurnWorkers; t++) {
-    workers.emplace_back(block_run_churn_worker, &filter, &tracker);
+    workers.emplace_back(block_run_churn_worker, &filter, &tracker, &admitted_runs);
   }
   for (auto& w : workers) {
     w.join();
@@ -114,7 +119,7 @@ TEST(StressWallClockBlockTracker, ChurnDuringConcurrentRegistryRestart) {
   restarter.join();
 
   restoreDefaultSignalHandlers();
-  SUCCEED();
+  EXPECT_GT(admitted_runs.load(), 0) << "Restart churn must exercise successfully admitted owned runs";
 }
 
 #endif // __linux__

@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -75,6 +76,25 @@ class ParkBlockChurnAntagonistTest {
   void explicitHooksExerciseUnfilteredPrechecks() throws Exception {
     ParkBlockChurnAntagonist workload = runWorkload("wall=1ms,filter=,wallprecheck=true");
     workload.verifyPrecheckCoverage();
+  }
+
+  /** A rejected nested park must not close the caller's existing owned interval. */
+  @Test
+  void nestedParkDoesNotCloseOuterOwnedRun() throws Exception {
+    ParkBlockChurnAntagonist workload = runWorkload("wall=1ms,filter=,wallprecheck=true");
+    Method enter = JavaProfiler.class.getDeclaredMethod("parkEnter");
+    Method exit = JavaProfiler.class.getDeclaredMethod("parkExit", long.class, long.class);
+    Method block = ParkBlockChurnAntagonist.class.getDeclaredMethod("block", int.class);
+    enter.setAccessible(true);
+    exit.setAccessible(true);
+    block.setAccessible(true);
+    assertTrue((boolean) enter.invoke(profiler), "The test must own the outer park");
+    try {
+      block.invoke(workload, 1);
+      assertFalse((boolean) enter.invoke(profiler), "The outer park must still be owned");
+    } finally {
+      exit.invoke(profiler, 0L, 0L);
+    }
   }
 
   /** The application loader cannot link profiler classes stored in the agent's private loader. */

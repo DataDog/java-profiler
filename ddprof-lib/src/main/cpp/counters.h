@@ -79,6 +79,8 @@
   X(THREAD_REGISTRY_CAPACITY_EXHAUSTED, "thread_registry_capacity_exhausted")  \
   X(THREAD_REGISTRY_INDEX_FAILURES, "thread_registry_index_failures")          \
   X(THREAD_REGISTRY_HOOK_REREGISTRATION, "thread_registry_hook_reregistration") \
+  X(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED, "thread_registry_block_generation_saturated") \
+  X(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN, "thread_registry_unregister_active_block_run") \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
   X(CODECACHE_NATIVE_COUNT, "native_codecache_count")                          \
@@ -88,15 +90,25 @@
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
-  X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
   X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
+  X(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK, "wc_signals_suppressed_owned_block")     \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
   X(WC_UNOWNED_BLOCKED_TRACE_PRESERVATION_FAILED, "wc_unowned_blocked_trace_preservation_failed") \
   X(WC_UNOWNED_BLOCKED_TAIL_RECORDED, "wc_unowned_blocked_tail_recorded") \
   X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
   X(WC_UNOWNED_CONTEXT_SNAPSHOT_UNAVAILABLE, "wc_unowned_context_snapshot_unavailable") \
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
+  X(TASK_BLOCK_EMITTED, "task_block_emitted")                                 \
+  X(TASK_BLOCK_SKIPPED_TRACE_CONTEXT, "task_block_skipped_trace_context")     \
+  X(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW, "task_block_skipped_context_window")   \
+  X(TASK_BLOCK_SKIPPED_TOO_SHORT, "task_block_skipped_too_short")             \
+  X(TASK_BLOCK_STACK_CAPTURE_FAILED, "task_block_stack_capture_failed")      \
+  X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                     \
+  X(TASK_BLOCK_DROPPED_ROTATION, "task_block_dropped_rotation")               \
+  X(TASK_BLOCK_DROPPED_ADMISSION, "task_block_dropped_admission")             \
+  X(TASK_BLOCK_SKIPPED_THREAD_MISMATCH, "task_block_skipped_thread_mismatch") \
+  X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(ALLOC_STACK_VM, "alloc_stack_vm")                                          \

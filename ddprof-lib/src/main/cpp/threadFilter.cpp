@@ -187,7 +187,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid, u64 logical_window_st
         slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
         slot->recording_epoch.store(0, std::memory_order_relaxed);
         if (_block_tracker != nullptr) {
-            _block_tracker->resetSlot(reused_slot, OSThreadState::UNKNOWN);
+            _block_tracker->resetSlotForReuse(reused_slot);
             _block_tracker->ensureUnownedContextAllocated(reused_slot);
         }
         // Filtered selection is explicitly re-entered, not restored from the
@@ -236,7 +236,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid, u64 logical_window_st
     slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
     slot->recording_epoch.store(0, std::memory_order_relaxed);
     if (_block_tracker != nullptr) {
-        _block_tracker->resetSlot(index, OSThreadState::UNKNOWN);
+        _block_tracker->resetSlot(index);
         _block_tracker->ensureUnownedContextAllocated(index);
     }
     slot->context_window_state.store(epoch != 0 ? logical_window_state : (logical_window_state & ~1ULL),
@@ -260,7 +260,7 @@ void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, Recording
     if (slot->recordingEpoch() == epoch) {
         if (slot->rawContextWindowState() != logical_window_state) {
             if (_block_tracker != nullptr) {
-                _block_tracker->clearActiveBlockRun(slot_id, OSThreadState::UNKNOWN);
+                _block_tracker->clearActiveBlockRun(slot_id);
             }
             slot->context_window_state.store(logical_window_state, std::memory_order_release);
         }
@@ -271,7 +271,7 @@ void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, Recording
     // Context membership belongs to the live thread, not the recording.
     // Only suppression payload is recording-local; an open context survives refresh.
     if (_block_tracker != nullptr) {
-        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+        _block_tracker->resetSlot(slot_id);
     }
     slot->context_window_state.store(logical_window_state, std::memory_order_release);
     // Eligibility is the final publication, after both payload and membership.
@@ -292,7 +292,7 @@ ThreadFilter::SlotID ThreadFilter::ensureOwnerSlot(ProfiledThread& owner) {
             // switch may just have cleared a filtered recording's membership.
             // Fail open; the next normal hook can revalidate under the cold lock.
             if (_block_tracker != nullptr) {
-                _block_tracker->clearActiveBlockRun(id, OSThreadState::UNKNOWN);
+                _block_tracker->clearActiveBlockRun(id);
             }
             owner.setFilterSlotId(-1);
             return -1;
@@ -330,7 +330,7 @@ void ThreadFilter::onContextWindowEnter(ProfiledThread& owner) {
     // End an old owned run before exposing an in-window source/mirror gap.
     // Repeated adds also retain the existing stuck-owned-run cleanup.
     if (slot != nullptr && _block_tracker != nullptr) {
-        _block_tracker->clearActiveBlockRun(id, OSThreadState::UNKNOWN);
+        _block_tracker->clearActiveBlockRun(id);
     }
     owner.enterLogicalContextWindow();
     if (!registryActive()) return;
@@ -365,7 +365,7 @@ void ThreadFilter::onContextWindowExit(ProfiledThread& owner) {
         const u64 snapshot = owner.logicalContextWindowState();
         if (changed || slot->rawContextWindowState() != snapshot) {
             if (_block_tracker != nullptr) {
-                _block_tracker->clearActiveBlockRun(id, OSThreadState::UNKNOWN);
+                _block_tracker->clearActiveBlockRun(id);
             }
             slot->context_window_state.store(snapshot, std::memory_order_release);
         }
@@ -536,6 +536,21 @@ ThreadFilter::Slot* ThreadFilter::activeSlotForId(SlotID slot_id,
     return slot;
 }
 
+bool ThreadFilter::lookupThreadEntry(ThreadEntry& entry,
+                                     RecordingEpoch epoch) const {
+    SlotID slot_id = -1;
+    Slot* slot = epoch != 0 ? lookupByTid(entry.tid, epoch, &slot_id)
+                            : lookupByTid(entry.tid, &slot_id);
+    if (slot == nullptr) {
+        return false;
+    }
+    entry.slot = slot;
+    entry.slot_id = slot_id;
+    entry.lifecycle_generation = slot->lifecycleGeneration();
+    entry.recording_epoch = slot->recordingEpoch();
+    return true;
+}
+
 void ThreadFilter::initFreeList() {
     // Initialize the free list storage
     for (int i = 0; i < kFreeListSize; ++i) {
@@ -588,7 +603,7 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
         }
         // Clear missed owned exits; retained unowned tails carry their original fields.
         if (_block_tracker != nullptr) {
-            _block_tracker->clearActiveBlockRun(slot_id, OSThreadState::UNKNOWN);
+            _block_tracker->clearActiveBlockRun(slot_id);
         }
         slot.enterContextWindow();
         return true;
@@ -615,7 +630,7 @@ void ThreadFilter::remove(SlotID slot_id) {
     }
 
     if (chunk->slots[slot_idx].exitContextWindow() && _block_tracker != nullptr) {
-        _block_tracker->clearActiveBlockRun(slot_id, OSThreadState::UNKNOWN);
+        _block_tracker->clearActiveBlockRun(slot_id);
     }
 }
 
@@ -650,10 +665,18 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
         return;  // retire (or another claim) won
     }
     unindexSlot(slot_id, tid);  // tid == the value we claimed
+    if (_block_tracker != nullptr && _block_tracker->hasActiveBlockRun(slot_id)) {
+        // A thread should never unregister while still holding an active block
+        // run (its own synchronous begin/end pair must complete on the same
+        // still-live thread first). If this ever fires, block_generation resets
+        // on the next reuse of this slot are relying on an invariant that just
+        // broke -- investigate immediately rather than trusting the reset is safe.
+        Counters::increment(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN);
+    }
     slot->recording_epoch.store(0, std::memory_order_release);
     slot->context_window_state.store(0, std::memory_order_release);
     if (_block_tracker != nullptr) {
-        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+        _block_tracker->resetSlot(slot_id);
     }
     pushToFreeList(slot_id);
 }
@@ -694,7 +717,7 @@ void ThreadFilter::retireThreadByTid(int tid) {
     if (_block_tracker != nullptr) {
         // Synchronous: keeps owner NONE/state UNKNOWN observable as soon as the
         // exiting thread is joined (lock-free; null-safe with lazy storage).
-        _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+        _block_tracker->resetSlot(slot_id);
     }
     // Count before the push (R-A3): over-reporting only sends registrations to
     // the locked (exact) path; see capacityExhausted().
@@ -724,7 +747,7 @@ void ThreadFilter::drainRetiredLocked() {
         if (_block_tracker != nullptr) {
             // Defensive second reset right before the slot becomes reusable:
             // clears anything a late signal wrote after the retire-time reset.
-            _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+            _block_tracker->resetSlot(slot_id);
         }
         pushToFreeList(slot_id);
         _retired_count.fetch_sub(1, std::memory_order_release);  // after the push (R-A3)

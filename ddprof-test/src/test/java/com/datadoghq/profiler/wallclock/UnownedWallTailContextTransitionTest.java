@@ -44,7 +44,22 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,filter=0,wallprecheck=true,jvmtistacks=false,attributes=tag1;tag2;tag3";
+    return "wall=1ms,filter="
+        + (unfiltered() ? "" : "0")
+        + ",wallprecheck=true,jvmtistacks=false,attributes=tag1;tag2;tag3";
+  }
+
+  /** Selects whether unowned observations require explicit context membership. */
+  protected boolean unfiltered() {
+    return false;
+  }
+
+  /** Registers the native owner, then leaves unfiltered workers outside context. */
+  private void registerUnownedWorker() {
+    profiler.addThread();
+    if (unfiltered()) {
+      profiler.removeThread();
+    }
   }
 
   /**
@@ -68,7 +83,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
             () -> {
               try {
                 setTags(tagsA);
-                registerCurrentThreadForWallClockProfiling();
+                registerUnownedWorker();
                 ready.countDown();
                 blockedOriginA(releaseA);
                 Instant now = Instant.now();
@@ -99,6 +114,10 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
         for (JfrEvent sample : samples) {
           if (isWorker(sample)) {
             assertResolved(sample);
+            // Unfiltered startup samples can precede tag initialization and the blocked origin.
+            if (unfiltered() && !sample.getStackTraceString().contains("blockedOriginA")) {
+              continue;
+            }
             assertTags(sample, tagsA);
             assertEquals(0L, sample.getLong(SPAN_ID, -1));
             assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
@@ -209,7 +228,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
                 profiler.setTraceContext(7101, 7102, 0, 7103, -1, null, -1, null);
                 profiler.clearTraceContext();
                 setTags(tagsA);
-                registerCurrentThreadForWallClockProfiling();
+                registerUnownedWorker();
                 readyA.countDown();
                 blockedOriginA(releaseA);
                 profiler.setTraceContext(7101, 7102, 0, 7103, -1, null, -1, null);
@@ -348,7 +367,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
             () -> {
               try {
                 setTags(tagsA);
-                registerCurrentThreadForWallClockProfiling();
+                registerUnownedWorker();
                 readyA.countDown();
                 blockedOriginA(releaseA);
                 readyInactive.countDown();
@@ -356,9 +375,9 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
                 if (!running.get()) {
                   return;
                 }
-                // filter=0 clears selection at recording start; select the surviving owner again.
+                // Rebind the surviving owner to the new recording before sampling.
                 setTags(tagsB);
-                registerCurrentThreadForWallClockProfiling();
+                registerUnownedWorker();
                 readyB.countDown();
                 runnableRestartedContextB(running);
               } catch (Throwable failure) {

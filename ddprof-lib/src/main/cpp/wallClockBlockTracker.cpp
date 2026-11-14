@@ -72,33 +72,66 @@ u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter:
         _block_admission_hook(_block_admission_hook_arg);
     }
 #endif
+    if (state == OSThreadState::UNKNOWN) return 0;
     ThreadFilter::Slot* identity_slot = registry->slotForId(slot_id);
     BlockState* block_slot = slotForId(slot_id);
     if (identity_slot == nullptr || block_slot == nullptr) {
         return 0;
     }
-    u32 generation = 0;
-    if (!block_slot->trySetActiveBlockRun(identity_slot, state, owner, &generation,
-                                          registry->unfilteredWallTrackingActive())) {
+    u64 generation = 0;
+    if (!block_slot->tryPrepareActiveBlockRun(identity_slot, owner, &generation,
+                                              registry->unfilteredWallTrackingActive())) {
         return 0;
     }
-    return WallClockBlockTracker::encodeBlockRunToken(slot_id, generation);
+    block_slot->publishActiveBlockRun(state);
+    return encodeBlockRunToken(slot_id, generation);
 }
 
-bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation) {
+static inline bool isActiveRun(const WallClockBlockTracker::BlockState* s, u64 generation) {
+    return s != nullptr && generation != 0 &&
+           s->activeBlockState() != OSThreadState::UNKNOWN &&
+           s->activeBlockOwner() != BlockRunOwner::NONE &&
+           s->blockGeneration() == generation;
+}
+
+bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u64 generation) {
     BlockState* s = slotForId(slot_id);
-    if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
+    if (!isActiveRun(s, generation)) {
         return false;
     }
     // Owned-run fields only; the unowned-blocked tail survives the exit (R-B1).
-    s->clearActiveBlockRun(OSThreadState::RUNNABLE);
+    s->clearActiveBlockRun();
     return true;
 }
 
-void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state) {
+bool WallClockBlockTracker::snapshotAndExitBlockedRun(ThreadFilter* registry,
+                                                      ThreadFilter::SlotID slot_id,
+                                                      u64 generation,
+                                                      BlockRunSnapshot* snapshot) {
+    ThreadFilter::Slot* identity_slot = registry->slotForId(slot_id);
+    BlockState* s = slotForId(slot_id);
+    if (identity_slot == nullptr || !isActiveRun(s, generation)) {
+        return false;
+    }
+    if (snapshot != nullptr) *snapshot = s->snapshotBlockRun(identity_slot);
+    s->clearActiveBlockRun();
+    return true;
+}
+
+void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
     if (s != nullptr) {
-        s->resetSlot(state);
+        s->resetSlot();
+    }
+}
+
+void WallClockBlockTracker::resetSlotForReuse(ThreadFilter::SlotID slot_id) {
+    BlockState* s = slotForId(slot_id);
+    if (s != nullptr) {
+        // Ordinary reuse must not make a closed predecessor token valid again.
+        // Saturation recovery relies on the previous native owner having exited.
+        if (s->blockGeneration() == kMaxBlockRunGeneration) s->resetBlockGeneration();
+        s->resetSlot();
     }
 }
 
@@ -108,21 +141,44 @@ void WallClockBlockTracker::resetAll() {
         return;
     }
     for (auto& s : storage->slots) {
-        s.resetSlot(OSThreadState::UNKNOWN);
+        s.resetSlot();
     }
 }
 
-void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state) {
+void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
-    if (s != nullptr && s->needsActiveBlockRunClear(state)) {
-        s->clearActiveBlockRun(state);
+    if (s != nullptr && s->needsActiveBlockRunClear()) {
+        s->clearActiveBlockRun();
     }
 }
 
-bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
-                                                     const ThreadEntry& entry) const {
+bool WallClockBlockTracker::hasActiveBlockRun(ThreadFilter::SlotID slot_id) const {
+    const BlockState* s = slotForId(slot_id);
+    return s != nullptr && s->activeBlockOwner() != BlockRunOwner::NONE;
+}
+
+bool WallClockBlockTracker::activeOwnedBlockGeneration(ThreadFilter* registry,
+                                                       const ThreadEntry& entry,
+                                                       u64& generation) const {
+    bool already_sampled = false;
+    return ownedBlockGeneration(registry, entry, generation, already_sampled);
+}
+
+bool WallClockBlockTracker::isOwnedBlockSuppressionCandidate(ThreadFilter* registry,
+                                                             const ThreadEntry& entry) const {
+    u64 generation = 0;
+    bool already_sampled = false;
+    return ownedBlockGeneration(registry, entry, generation, already_sampled) &&
+           already_sampled;
+}
+
+bool WallClockBlockTracker::ownedBlockGeneration(ThreadFilter* registry,
+                                                 const ThreadEntry& entry,
+                                                 u64& generation,
+                                                 bool& already_sampled) const {
     ThreadFilter::Slot* identity_slot = entry.slot;
-    if (identity_slot == nullptr || identity_slot->nativeTid() != entry.tid ||
+    if (!registry->unfilteredWallTrackingActive() || identity_slot == nullptr ||
+        identity_slot->nativeTid() != entry.tid ||
         identity_slot->lifecycleGeneration() != entry.lifecycle_generation) {
         return false;
     }
@@ -131,29 +187,23 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
         return false;
     }
 
-    const bool unfiltered_tracking = registry->unfilteredWallTrackingActive();
-    ThreadFilter::RecordingEpoch epoch = 0;
-    if (unfiltered_tracking) {
-        epoch = registry->recordingEpoch();
-        if (epoch == 0 || entry.recording_epoch != epoch ||
-            identity_slot->recordingEpoch() != epoch) {
-            return false;
-        }
-    }
-
-    u32 block_generation = slot->blockGeneration();
-    BlockRunOwner owner = slot->activeBlockOwner();
+    // active_block_state publishes the rest of the block-run payload. Acquire
+    // it before reading the context epoch, owner, or generation so those reads
+    // observe the stores that preceded publishActiveBlockRun().
     OSThreadState state = slot->activeBlockState();
-    bool context_eligible =
-        !unfiltered_tracking || slot->activeBlockRemainedOutsideContextWindow(identity_slot);
-    bool sampled = slot->sampledThisRun();
-    OSThreadState last_sampled_state =
-        sampled ? slot->lastSampledState() : OSThreadState::UNKNOWN;
-    bool suppressible_state = isPrecheckSuppressionState(state);
-    if (owner == BlockRunOwner::NONE || !context_eligible ||
-        !suppressible_state || !sampled || state != last_sampled_state) {
+    if (!isPrecheckSuppressionState(state)) return false;
+
+    ThreadFilter::RecordingEpoch epoch = registry->recordingEpoch();
+    if (epoch == 0 || entry.recording_epoch != epoch ||
+        identity_slot->recordingEpoch() != epoch ||
+        !slot->activeBlockRemainedOutsideContextWindow(identity_slot)) {
         return false;
     }
+
+    u64 block_generation = slot->blockGeneration();
+    BlockRunOwner owner = slot->activeBlockOwner();
+    u64 sampled_generation = slot->sampledBlockGeneration();
+    if (owner == BlockRunOwner::NONE) return false;
 
 #ifdef UNIT_TEST
     if (_suppression_snapshot_hook != nullptr) {
@@ -161,19 +211,27 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
     }
 #endif
 
-    // Independent atomics can describe different runs during an exit/re-entry.
-    // Reject a payload unless both the identity and block generation still match.
+    // The payload is spread across independent atomics. Accept it only if the
+    // slot still represents the lifecycle and block run captured earlier in
+    // this wall-clock timer-thread pass, when `entry` was populated — either
+    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
+    // or by the lazy registry lookup at the top of sampleThreadCommon() —
+    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
+    // template defined in wallClock.h).
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
+        slot->activeBlockState() != state ||
         identity_slot->nativeTid() != entry.tid ||
-        identity_slot->lifecycleGeneration() != entry.lifecycle_generation) {
+        identity_slot->lifecycleGeneration() != entry.lifecycle_generation ||
+        slot->sampledBlockGeneration() != sampled_generation) {
         return false;
     }
-    if (unfiltered_tracking &&
-        (registry->recordingEpoch() != epoch || identity_slot->recordingEpoch() != epoch ||
-         !slot->activeBlockRemainedOutsideContextWindow(identity_slot))) {
+    if (registry->recordingEpoch() != epoch || identity_slot->recordingEpoch() != epoch ||
+        !slot->activeBlockRemainedOutsideContextWindow(identity_slot)) {
         return false;
     }
+    generation = block_generation;
+    already_sampled = sampled_generation == block_generation;
     return true;
 }
 
@@ -227,7 +285,10 @@ WallClockBlockTracker::UnownedContextCell* WallClockBlockTracker::unownedContext
         ThreadFilter::SlotID slot_id) const {
     if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
     auto* chunk = _context_chunks[slot_id >> ThreadFilter::kChunkShift].load(std::memory_order_acquire);
-    return chunk != nullptr ? &chunk->cells[slot_id & ThreadFilter::kChunkMask] : nullptr;
+    // Clang 14/aarch64 UBSan sign-extends signed masked subscripts at 128..255.
+    // Keep the index unsigned while that compiler remains supported.
+    unsigned index = static_cast<unsigned>(slot_id) & ThreadFilter::kChunkMask;
+    return chunk != nullptr ? &chunk->cells[index] : nullptr;
 }
 
 bool WallClockBlockTracker::canPublishUnownedContext(ThreadFilter::SlotID slot_id) const {

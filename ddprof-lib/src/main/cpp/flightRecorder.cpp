@@ -1003,6 +1003,9 @@ Recording::Recording(int fd, Arguments &args)
 }
 
 Recording::~Recording() {
+#ifdef UNIT_TEST
+  if (_fd == -1) return; // Buffer/table-only serializer fixture.
+#endif
   finishChunk(true);
   close(_fd);
 }
@@ -2409,6 +2412,21 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
+void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_TASK_BLOCK);
+  buf->putVar64(event->_start);
+  buf->putVar64(event->_end - event->_start);
+  buf->putVar64(tid);
+  buf->putVar64(event->_blocker);
+  buf->putVar64(event->_unblockingSpanId);
+  buf->putVar64(event->_callTraceId);
+  buf->put8(static_cast<int>(event->_observedBlockingState));
+  writeContextSnapshot(buf, event->_ctx);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_WALLCLOCK_SAMPLE_EPOCH);
@@ -2419,7 +2437,7 @@ void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   buf->putVar64(event->_num_failed_samples);
   buf->putVar64(event->_num_exited_threads);
   buf->putVar64(event->_num_permission_denied);
-  buf->putVar64(event->_num_suppressed_sampled_run);
+  buf->putVar64(event->_num_suppressed_owned_block);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -2716,9 +2734,9 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 }
 
 // assumption is that we hold the lock (with lock_index)
-void Recording::addThread(int lock_index, int tid) {
+bool Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
+    return _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
@@ -2826,6 +2844,23 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
       rec->recordQueueTime(buf, tid, event);
     }
   }
+}
+
+bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
+                                     TaskBlockEvent *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      // Reject before serialization if eventThread cannot enter this chunk's
+      // constant pool. The TaskBlock caller counts false as RECORD_FAILED.
+      if (!rec->addThread(lock_index, tid)) return false;
+      rec->recordTaskBlock(buf, tid, event);
+      return true;
+    }
+  }
+  return false;
 }
 
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,

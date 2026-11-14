@@ -261,10 +261,8 @@ class Recording {
   friend ObjectSampler;
   friend Profiler;
   friend Lookup;
-  // Grants gtest access to the private countSerializableChildren() helper below,
-  // since Recording itself can't be constructed in a plain gtest binary (its
-  // constructor needs a live JVMTI environment). Same pattern as
-  // VMTestAccessor/ProfilerTestAccessor in the test sources.
+  // Gtest access to private serializer invariants; the production constructor
+  // requires a live JVMTI environment.
   friend class RecordingTestAccessor;
 
 private:
@@ -349,6 +347,10 @@ private:
 
 public:
   Recording(int fd, Arguments &args);
+#ifdef UNIT_TEST
+  // Buffer/table-only recording for serializer tests without a live JVM.
+  Recording() : _fd(-1), _bytes_written(0) {}
+#endif
   ~Recording();
 
   void copyTo(int target_fd);
@@ -466,6 +468,7 @@ public:
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
+  void recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
   void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
@@ -484,7 +487,7 @@ public:
   void recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
                      float machine_total);
 
-  void addThread(int lock_index, int tid);
+  bool addThread(int lock_index, int tid);
 
 private:
   void cleanupUnreferencedMethods();
@@ -633,6 +636,9 @@ public:
 
 class FlightRecorder {
   friend Profiler;
+#ifdef UNIT_TEST
+  friend class FlightRecorderTestAccessor;
+#endif
 
 private:
   std::string _filename;
@@ -651,6 +657,7 @@ public:
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
+  bool recordTaskBlock(int lock_index, int tid, TaskBlockEvent *event);
 
   bool active() const { return _rec != NULL; }
 
