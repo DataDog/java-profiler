@@ -60,25 +60,75 @@ class UnloadProtectionTest : public ::testing::Test {
   }
 };
 
-// Copies the test DSO to a fresh file, so no test in this binary has loaded it.
-// Removes the copy on failure.
-static bool copyFile(const char* from, char* to, size_t size) {
-  const char* dir = getenv("TMPDIR");
-  snprintf(to, size, "%s/libunloadprot-XXXXXX.so", dir != nullptr && dir[0] != '\0' ? dir : "/tmp");
-  int out = mkstemps(to, 3);
-  if (out < 0) return false;
-  int in = open(from, O_RDONLY);
-  bool ok = in >= 0;
-  char buf[8192];
-  ssize_t n = 0;
-  while (ok && (n = read(in, buf, sizeof(buf))) > 0) {
-    ok = write(out, buf, n) == n;
+// Owns a file descriptor; closes it on scope exit.
+class FdOwner {
+ public:
+  explicit FdOwner(int fd) : _fd(fd) {}
+  ~FdOwner() { if (_fd >= 0) close(_fd); }
+  FdOwner(const FdOwner&) = delete;
+  FdOwner& operator=(const FdOwner&) = delete;
+  int get() const { return _fd; }
+
+ private:
+  int _fd;
+};
+
+// Owns a read-only private mapping of a whole file; unmaps it on scope exit.
+class FileMapping {
+ public:
+  explicit FileMapping(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) == 0) {
+      _size = st.st_size;
+      _addr = mmap(NULL, _size, PROT_READ, MAP_PRIVATE, fd, 0);
+    }
   }
-  ok = ok && n == 0;
-  if (in >= 0) close(in);
-  close(out);
-  if (!ok) unlink(to);
-  return ok;
+  ~FileMapping() { if (_addr != MAP_FAILED) munmap(_addr, _size); }
+  FileMapping(const FileMapping&) = delete;
+  FileMapping& operator=(const FileMapping&) = delete;
+  bool ok() const { return _addr != MAP_FAILED; }
+  const char* base() const { return static_cast<const char*>(_addr); }
+  size_t size() const { return _size; }
+
+ private:
+  void* _addr = MAP_FAILED;
+  size_t _size = 0;
+};
+
+// A fresh copy of a file in TMPDIR, removed on scope exit.
+class TempCopy {
+ public:
+  explicit TempCopy(const char* from) {
+    const char* dir = getenv("TMPDIR");
+    snprintf(_path, sizeof(_path), "%s/libunloadprot-XXXXXX.so",
+             dir != nullptr && dir[0] != '\0' ? dir : "/tmp");
+    FdOwner out(mkstemps(_path, 3));
+    _created = out.get() >= 0;
+    FdOwner in(_created ? open(from, O_RDONLY) : -1);
+    char buf[8192];
+    ssize_t n = -1;
+    bool written = true;
+    while (in.get() >= 0 && written && (n = read(in.get(), buf, sizeof(buf))) > 0) {
+      written = write(out.get(), buf, n) == n;
+    }
+    _ok = in.get() >= 0 && written && n == 0;
+  }
+  ~TempCopy() { if (_created) unlink(_path); }
+  TempCopy(const TempCopy&) = delete;
+  TempCopy& operator=(const TempCopy&) = delete;
+  bool ok() const { return _ok; }
+  const char* path() const { return _path; }
+
+ private:
+  char _path[PATH_MAX];
+  bool _created = false;
+  bool _ok = false;
+};
+
+static bool isLoaded(const char* path) {
+  void* handle = dlopen(path, RTLD_LAZY | RTLD_NOLOAD);
+  if (handle != nullptr) dlclose(handle);
+  return handle != nullptr;
 }
 
 }  // namespace
@@ -87,32 +137,16 @@ static bool copyFile(const char* from, char* to, size_t size) {
 // not yet known to the loader. UnloadProtection ignores the mapping's protection,
 // so PROT_READ keeps the test working on a noexec TMPDIR.
 TEST_F(UnloadProtectionTest, RejectsImageNotLoadedByTheLoader) {
-  char path[PATH_MAX];
-  ASSERT_TRUE(copyFile(_lib_path, path, sizeof(path))) << strerror(errno);
-  int fd = open(path, O_RDONLY);
-  struct stat st;
-  void* map = MAP_FAILED;
-  if (fd >= 0 && fstat(fd, &st) == 0) {
-    map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  }
-  int map_errno = errno;
-  if (fd >= 0) close(fd);
-  // Cleanup runs before the ASSERTs below, so a failing check leaves no temp file.
-  void* handle = map != MAP_FAILED ? dlopen(path, RTLD_LAZY | RTLD_NOLOAD) : nullptr;
-  bool loaded = handle != nullptr;
-  if (loaded) dlclose(handle);
-  bool valid = false;
-  if (map != MAP_FAILED && !loaded) {
-    const char* base = static_cast<const char*>(map);
-    CodeCache cc(path, 0, base, base + st.st_size, base);
-    valid = UnloadProtection(&cc).isValid();
-  }
-  if (map != MAP_FAILED) munmap(map, st.st_size);
-  unlink(path);
+  TempCopy copy(_lib_path);
+  ASSERT_TRUE(copy.ok()) << strerror(errno);
+  FdOwner fd(open(copy.path(), O_RDONLY));
+  ASSERT_GE(fd.get(), 0) << strerror(errno);
+  FileMapping map(fd.get());
+  ASSERT_TRUE(map.ok()) << strerror(errno);
+  ASSERT_FALSE(isLoaded(copy.path())) << "the copy must not be loaded";
 
-  ASSERT_NE(map, MAP_FAILED) << strerror(map_errno);
-  ASSERT_FALSE(loaded) << "the copy must not be loaded";
-  EXPECT_FALSE(valid);
+  CodeCache cc(copy.path(), 0, map.base(), map.base() + map.size(), map.base());
+  EXPECT_FALSE(UnloadProtection(&cc).isValid());
 }
 
 TEST_F(UnloadProtectionTest, AcceptsLoadedImage) {
