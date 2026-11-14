@@ -322,7 +322,7 @@ the pool count is not known up front. A 1-byte placeholder is written and
 | Pool | Written by | Source of entries | Always present |
 |------|------------|-------------------|----------------|
 | `jdk.types.FrameType` | `writeFrameTypes()` | fixed list of 8 | yes |
-| `jdk.types.ThreadState` | `writeThreadStates()` | fixed list of 10 | yes |
+| `jdk.types.ThreadState` | `writeThreadStates()` | fixed list of 11 | yes |
 | `datadog.types.ExecutionMode` | `writeExecutionModes()` | fixed list of 6 | yes |
 | `profiler.types.LogLevel` | `writeLogLevels()` | fixed list | yes |
 | `java.lang.Thread` | `writeThreads()` | `_thread_ids` + `ThreadInfo` | yes (contains the recording thread) |

@@ -35,7 +35,11 @@
 #include <gtest/gtest.h>
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 #include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
 #include <string>
 #include "../../main/cpp/profiler.h"
 #include "../../main/cpp/os.h"
@@ -82,7 +86,7 @@ struct EphemeralThread {
 
     void join() {
         stop.store(true, std::memory_order_release);
-        pthread_join(handle, nullptr);
+        ASSERT_EQ(0, pthread_join(handle, nullptr));
     }
 };
 
@@ -100,6 +104,20 @@ TEST(NativeThreadNameRaceTest, threadDyingBetweenScansIsNeverNamed) {
     t.start();
     int tid = t.tid.load();
     t.join();
+
+    // pthread_join completes before the task's /proc entry must disappear.
+    // Establish the disappearance this test requires before either scan.
+    char task_path[64];
+    std::snprintf(task_path, sizeof(task_path), "/proc/self/task/%d", tid);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (access(task_path, F_OK) == 0 && std::chrono::steady_clock::now() < deadline) {
+        struct timespec ts{0, 1000000};
+        nanosleep(&ts, nullptr);
+    }
+    int task_result = access(task_path, F_OK);
+    int task_errno = errno;
+    ASSERT_EQ(-1, task_result) << "joined task remains visible after the bounded wait";
+    ASSERT_EQ(ENOENT, task_errno);
 
     // Next refresher-style pass: the thread is already gone from
     // /proc/self/task, so the scan cannot record its name.

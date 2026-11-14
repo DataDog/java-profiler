@@ -189,7 +189,7 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
 
   if (name[0] == '_' && name[1] == 'Z') {
     int status;
-    
+
     state._demangled = abi::__cxa_demangle(name, NULL, NULL, &status);
     if (state._demangled != NULL) {
       cutArguments(state._demangled);
@@ -327,7 +327,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
-        
+
         bool is_table_valid = (line_number_table_size >= 0 && line_number_table_size <= MAX_LINE_NUMBER_TABLE_ENTRIES);
         bool is_table_readable =  (line_number_table != nullptr && is_table_valid &&
                                    (line_number_table_size > 0 ?
@@ -336,7 +336,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         if (line_table_error != JVMTI_ERROR_NONE ||
             // On Hotspot, it returns a malloc'd pointer even table size = 0, but there is no point to keep it
             line_number_table_size == 0 ||
-            // a corrupted table 
+            // a corrupted table
             !is_table_valid ||
             !is_table_readable) {
             if (is_table_readable) {
@@ -1915,7 +1915,7 @@ void Recording::writeFrameTypes(Buffer *buf) {
 
 void Recording::writeThreadStates(Buffer *buf) {
   buf->putVar64(T_THREAD_STATE);
-  buf->put8(10);
+  buf->put8(11);
   buf->put8(static_cast<int>(OSThreadState::UNKNOWN));
   buf->putUtf8("UNKNOWN");
   buf->put8(static_cast<int>(OSThreadState::NEW));
@@ -1936,6 +1936,8 @@ void Recording::writeThreadStates(Buffer *buf) {
   buf->putUtf8("TERMINATED");
   buf->put8(static_cast<int>(OSThreadState::SYSCALL));
   buf->putUtf8("SYSCALL");
+  buf->put8(static_cast<int>(OSThreadState::IO_WAIT));
+  buf->putUtf8("IO_WAIT");
   flushIfNeeded(buf);
 }
 

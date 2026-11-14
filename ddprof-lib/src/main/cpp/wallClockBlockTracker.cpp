@@ -231,7 +231,9 @@ bool WallClockBlockTracker::ownedBlockGeneration(ThreadFilter* registry,
         return false;
     }
     generation = block_generation;
-    already_sampled = sampled_generation == block_generation;
+    // A first wall signal can interrupt native I/O before its completion hook.
+    // Native owners capture synchronously at exit, unlike Java/JVMTI owners.
+    already_sampled = owner == BlockRunOwner::NATIVE || sampled_generation == block_generation;
     return true;
 }
 

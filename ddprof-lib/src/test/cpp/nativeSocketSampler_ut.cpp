@@ -22,6 +22,11 @@
 #include "libraryPatcher.h"
 
 #include <atomic>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 #include <chrono>
 #include <future>
 #include <sys/socket.h>
@@ -63,6 +68,76 @@ static ssize_t stub_read(int /*fd*/, void* /*buf*/, size_t /*len*/) {
     return g_read_ret.load();
 }
 
+static const int kSamplerFdTypeCacheSizeForTest = 65536;
+static const int kSamplerHighFdCacheSizeForTest = 4096;
+static std::atomic<int> g_probe_calls{0};
+static std::atomic<int> g_probe_last_fd{-1};
+static std::atomic<int> g_probe_rc{0};
+static std::atomic<int> g_probe_errno{0};
+static std::atomic<int> g_probe_so_type{SOCK_STREAM};
+
+static int stub_probe(int fd, int *so_type, int *probe_errno) {
+    g_probe_calls++;
+    g_probe_last_fd = fd;
+    *so_type = g_probe_so_type.load();
+    *probe_errno = g_probe_errno.load();
+    return g_probe_rc.load();
+}
+
+static int datagramSocketAtFdForTest(int target_fd) {
+    int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (datagram_fd < 0) {
+        return -1;
+    }
+    if (datagram_fd == target_fd) {
+        return datagram_fd;
+    }
+    int dup_fd = dup2(datagram_fd, target_fd);
+    int saved_errno = errno;
+    close(datagram_fd);
+    errno = saved_errno;
+    return dup_fd;
+}
+
+class ScopedFdForTest {
+public:
+    explicit ScopedFdForTest(int fd = -1) : _fd(fd) {}
+    ~ScopedFdForTest() {
+        if (_fd >= 0) {
+            close(_fd);
+        }
+    }
+    ScopedFdForTest(const ScopedFdForTest&) = delete;
+    ScopedFdForTest& operator=(const ScopedFdForTest&) = delete;
+
+    void reset(int fd) {
+        if (_fd >= 0) {
+            close(_fd);
+        }
+        _fd = fd;
+    }
+
+    int release() {
+        int fd = _fd;
+        _fd = -1;
+        return fd;
+    }
+
+private:
+    int _fd;
+};
+
+class ScopedSamplerProbeOverride {
+public:
+    explicit ScopedSamplerProbeOverride(NativeSocketSampler::ProbeOverride probe) {
+        NativeSocketSampler::setProbeOverrideForTest(probe);
+    }
+
+    ~ScopedSamplerProbeOverride() {
+        NativeSocketSampler::setProbeOverrideForTest(nullptr);
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Test fixture — installs stubs as the "original" function pointers so the
 // hooks invoke them without needing GOT patching or a running JVM.
@@ -74,8 +149,10 @@ protected:
     NativeSocketSampler::recv_fn  _saved_recv;
     NativeSocketSampler::write_fn _saved_write;
     NativeSocketSampler::read_fn  _saved_read;
+    bool _saved_active;
 
     void SetUp() override {
+        _saved_active = NativeSocketSampler::setActiveForTest(true);
         NativeSocketSampler::getOriginalFunctions(_saved_send, _saved_recv, _saved_write, _saved_read);
         NativeSocketSampler::setOriginalFunctions(stub_send, stub_recv, stub_write, stub_read);
         g_send_calls  = 0;
@@ -85,6 +162,7 @@ protected:
     }
 
     void TearDown() override {
+        NativeSocketSampler::setActiveForTest(_saved_active);
         NativeSocketSampler::setOriginalFunctions(_saved_send, _saved_recv, _saved_write, _saved_read);
         NativeSocketSampler::send_fn cur_send; NativeSocketSampler::recv_fn cur_recv;
         NativeSocketSampler::write_fn cur_write; NativeSocketSampler::read_fn cur_read;
@@ -511,6 +589,333 @@ TEST(NativeSocketSamplerLruTest, ClearResetsCache) {
         << "clearFdCache() must empty both the map and the LRU list";
 }
 
+TEST(NativeSocketSamplerLruTest, ClearFdCacheEntryRemovesOnlyRequestedEntry) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    inst->fdAddrCacheInsertForTest(1, "1.2.3.4:100");
+    inst->fdAddrCacheInsertForTest(2, "1.2.3.4:200");
+    ASSERT_EQ(inst->fdAddrCacheSizeForTest(), 2);
+
+    inst->clearFdCacheEntry(1);
+
+    EXPECT_FALSE(inst->fdAddrCacheContainsForTest(1));
+    EXPECT_TRUE(inst->fdAddrCacheContainsForTest(2));
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), 1);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerLruTest, ClearFdCacheEntryHandlesInvalidFds) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    inst->fdAddrCacheInsertForTest(7, "1.2.3.4:700");
+
+    inst->clearFdCacheEntry(-1);
+    inst->clearFdCacheEntry(NativeSocketSampler::MAX_FD_CACHE + 1);
+
+    EXPECT_TRUE(inst->fdAddrCacheContainsForTest(7));
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), 1);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerLruTest, ClearFdCacheEntryInvalidatesFdTypeBeforeReuse) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    int stream_fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds), 0);
+
+    int reused_fd = stream_fds[0];
+    EXPECT_TRUE(inst->isSocketForTest(reused_fd));
+    close(reused_fd);
+
+    inst->clearFdCacheEntry(reused_fd);
+
+    int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    ASSERT_EQ(datagram_fd, reused_fd);
+    EXPECT_FALSE(inst->isSocketForTest(datagram_fd));
+
+    close(datagram_fd);
+    close(stream_fds[1]);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, RevalidateSocketDowngradesReusedFdToNonSocket) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    int stream_fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds), 0);
+
+    int reused_fd = stream_fds[0];
+    ScopedFdForTest stream_peer(stream_fds[1]);
+    ASSERT_TRUE(inst->isSocketForTest(reused_fd));
+    close(reused_fd);
+
+    int datagram_fd = datagramSocketAtFdForTest(reused_fd);
+    ScopedFdForTest datagram(datagram_fd);
+    ASSERT_EQ(datagram_fd, reused_fd);
+
+    EXPECT_FALSE(inst->revalidateSocketForTest(datagram_fd));
+    EXPECT_FALSE(inst->isSocketForTest(datagram_fd));
+
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, RevalidationDoesNotCacheClosedFdAsNonSocket) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    int stream_fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds), 0);
+    ScopedFdForTest peer(stream_fds[1]);
+    int reused_fd = stream_fds[0];
+    ASSERT_EQ(close(reused_fd), 0);
+    EXPECT_FALSE(inst->revalidateSocketForTest(reused_fd));
+    EXPECT_EQ(EBADF, errno);
+
+    // An EBADF observation is transient, unlike ENOTSOCK. A later valid fd
+    // must be probed even if its creation was outside the patched JDK DSOs.
+    int replacement[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, replacement), 0);
+    ScopedFdForTest replacement_fd(replacement[0]);
+    ScopedFdForTest replacement_peer(replacement[1]);
+    ASSERT_EQ(replacement[0], reused_fd);
+    EXPECT_TRUE(inst->isSocketForTest(reused_fd));
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, HighFdRevalidationDoesNotCacheClosedFdAsNonSocket) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    int stream_fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds), 0);
+    ScopedFdForTest stream(stream_fds[0]);
+    ScopedFdForTest peer(stream_fds[1]);
+    int high_fd = fcntl(stream_fds[0], F_DUPFD_CLOEXEC, kSamplerFdTypeCacheSizeForTest + 71);
+    ASSERT_GE(high_fd, kSamplerFdTypeCacheSizeForTest);
+    ASSERT_EQ(close(high_fd), 0);
+    EXPECT_FALSE(inst->revalidateSocketForTest(high_fd));
+    EXPECT_EQ(EBADF, errno);
+    ASSERT_EQ(dup2(stream_fds[0], high_fd), high_fd);
+    ScopedFdForTest replacement(high_fd);
+    EXPECT_TRUE(inst->isSocketForTest(high_fd));
+    inst->clearFdCache();
+}
+
+namespace {
+std::atomic<bool> revalidation_probe_started{false};
+std::atomic<bool> release_revalidation_probe{false};
+
+int blocking_revalidation_probe(int, int* so_type, int* probe_errno) {
+    revalidation_probe_started.store(true, std::memory_order_release);
+    while (!release_revalidation_probe.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    *so_type = SOCK_STREAM;
+    *probe_errno = 0;
+    return 0;
+}
+} // namespace
+
+TEST(NativeSocketSamplerFdTypeTest, RevalidationCannotPublishAcrossLowOrHighFdReuse) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    for (bool high : {false, true}) {
+        inst->clearFdCache();
+        int stream_fds[2];
+        ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds), 0);
+        ScopedFdForTest stream(stream_fds[0]);
+        ScopedFdForTest peer(stream_fds[1]);
+        int fd = fcntl(stream_fds[0], F_DUPFD_CLOEXEC,
+                       high ? kSamplerFdTypeCacheSizeForTest + 73 : 0);
+        ASSERT_GE(fd, 0);
+        if (high) ASSERT_GE(fd, kSamplerFdTypeCacheSizeForTest);
+        else ASSERT_LT(fd, kSamplerFdTypeCacheSizeForTest);
+        ScopedFdForTest reused(fd);
+        int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        ASSERT_GE(datagram_fd, 0);
+        ScopedFdForTest datagram(datagram_fd);
+        ASSERT_TRUE(inst->isSocketForTest(fd));
+        revalidation_probe_started.store(false, std::memory_order_release);
+        release_revalidation_probe.store(false, std::memory_order_release);
+        std::atomic<bool> done{false};
+        bool stale_stream = true;
+        int replacement_result;
+        {
+            ScopedSamplerProbeOverride override(blocking_revalidation_probe);
+            std::thread probe([&]() {
+                stale_stream = inst->revalidateSocketForTest(fd);
+                done.store(true, std::memory_order_release);
+            });
+            while (!revalidation_probe_started.load(std::memory_order_acquire) &&
+                   !done.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            replacement_result = dup2(datagram_fd, fd);
+            inst->clearFdCacheEntry(fd);
+            release_revalidation_probe.store(true, std::memory_order_release);
+            probe.join();
+        }
+        ASSERT_TRUE(revalidation_probe_started.load(std::memory_order_acquire));
+        ASSERT_EQ(replacement_result, fd);
+        EXPECT_FALSE(stale_stream) << "high fd=" << high;
+        EXPECT_FALSE(inst->isSocketForTest(fd)) << "high fd=" << high;
+    }
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, HighFdStreamVerdictIsCached) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    ScopedSamplerProbeOverride override(stub_probe);
+    g_probe_calls = 0;
+    g_probe_rc = 0;
+    g_probe_errno = 0;
+    g_probe_so_type = SOCK_STREAM;
+    int fd = kSamplerFdTypeCacheSizeForTest;
+
+    EXPECT_TRUE(inst->isSocketForTest(fd));
+    EXPECT_TRUE(inst->isSocketForTest(fd));
+
+    EXPECT_EQ(g_probe_calls.load(), 1);
+    EXPECT_EQ(g_probe_last_fd.load(), fd);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, HighFdEnotsockVerdictIsCached) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    ScopedSamplerProbeOverride override(stub_probe);
+    g_probe_calls = 0;
+    g_probe_rc = -1;
+    g_probe_errno = ENOTSOCK;
+    g_probe_so_type = 0;
+    int fd = kSamplerFdTypeCacheSizeForTest + 1;
+
+    EXPECT_FALSE(inst->isSocketForTest(fd));
+    EXPECT_FALSE(inst->isSocketForTest(fd));
+
+    EXPECT_EQ(g_probe_calls.load(), 1);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, HighFdTransientProbeFailureIsNotCached) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    ScopedSamplerProbeOverride override(stub_probe);
+    g_probe_calls = 0;
+    g_probe_rc = -1;
+    g_probe_errno = EBADF;
+    g_probe_so_type = 0;
+    int fd = kSamplerFdTypeCacheSizeForTest + 2;
+
+    EXPECT_FALSE(inst->isSocketForTest(fd));
+    EXPECT_EQ(g_probe_calls.load(), 1);
+
+    g_probe_rc = 0;
+    g_probe_errno = 0;
+    g_probe_so_type = SOCK_STREAM;
+
+    EXPECT_TRUE(inst->isSocketForTest(fd));
+    EXPECT_TRUE(inst->isSocketForTest(fd));
+    EXPECT_EQ(g_probe_calls.load(), 2);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, ClearFdCacheEntryInvalidatesHighFdOnly) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    ScopedSamplerProbeOverride override(stub_probe);
+    g_probe_calls = 0;
+    g_probe_rc = 0;
+    g_probe_errno = 0;
+    g_probe_so_type = SOCK_STREAM;
+    int fd = kSamplerFdTypeCacheSizeForTest + 3;
+    int other_fd = fd + 1;
+
+    ASSERT_TRUE(inst->isSocketForTest(fd));
+    ASSERT_TRUE(inst->isSocketForTest(other_fd));
+    EXPECT_EQ(g_probe_calls.load(), 2);
+
+    g_probe_so_type = SOCK_DGRAM;
+    inst->clearFdCacheEntry(fd);
+
+    EXPECT_FALSE(inst->isSocketForTest(fd));
+    EXPECT_TRUE(inst->isSocketForTest(other_fd));
+    EXPECT_EQ(g_probe_calls.load(), 3);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, ClearFdCacheInvalidatesHighFdsByGeneration) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    ScopedSamplerProbeOverride override(stub_probe);
+    g_probe_calls = 0;
+    g_probe_rc = 0;
+    g_probe_errno = 0;
+    g_probe_so_type = SOCK_STREAM;
+    int fd = kSamplerFdTypeCacheSizeForTest + 4;
+
+    ASSERT_TRUE(inst->isSocketForTest(fd));
+    EXPECT_EQ(g_probe_calls.load(), 1);
+
+    g_probe_so_type = SOCK_DGRAM;
+    inst->clearFdCache();
+
+    EXPECT_FALSE(inst->isSocketForTest(fd));
+    EXPECT_EQ(g_probe_calls.load(), 2);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, HighFdCacheCollisionReprobesExactFd) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    ScopedSamplerProbeOverride override(stub_probe);
+    g_probe_calls = 0;
+    g_probe_rc = 0;
+    g_probe_errno = 0;
+    int stream_fd = kSamplerFdTypeCacheSizeForTest + 5;
+    int datagram_fd = stream_fd + kSamplerHighFdCacheSizeForTest;
+
+    g_probe_so_type = SOCK_STREAM;
+    ASSERT_TRUE(inst->isSocketForTest(stream_fd));
+    EXPECT_EQ(g_probe_calls.load(), 1);
+
+    g_probe_so_type = SOCK_DGRAM;
+    EXPECT_FALSE(inst->isSocketForTest(datagram_fd));
+    EXPECT_EQ(g_probe_calls.load(), 2);
+    EXPECT_EQ(g_probe_last_fd.load(), datagram_fd);
+
+    g_probe_so_type = SOCK_STREAM;
+    EXPECT_TRUE(inst->isSocketForTest(stream_fd));
+    EXPECT_EQ(g_probe_calls.load(), 3);
+    EXPECT_EQ(g_probe_last_fd.load(), stream_fd);
+    inst->clearFdCache();
+}
+
+TEST_F(NativeSocketSamplerHookTest, HighFdWriteHookRevalidatesCachedSocketVerdict) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+    ScopedSamplerProbeOverride override(stub_probe);
+    g_probe_calls = 0;
+    g_probe_rc = 0;
+    g_probe_errno = 0;
+    g_probe_so_type = SOCK_STREAM;
+    g_write_ret = -1;
+    int fd = kSamplerFdTypeCacheSizeForTest + 6;
+    char buf[16] = {};
+
+    bool prev = LibraryPatcher::_socket_active.exchange(true, std::memory_order_release);
+    EXPECT_EQ(-1, NativeSocketSampler::write_hook(fd, buf, sizeof(buf)));
+    EXPECT_EQ(-1, NativeSocketSampler::write_hook(fd, buf, sizeof(buf)));
+    LibraryPatcher::_socket_active.store(prev, std::memory_order_release);
+
+    EXPECT_EQ(g_write_calls.load(), 2);
+    // Unpatched raw close/dup2 can change this fd between consecutive calls.
+    EXPECT_EQ(g_probe_calls.load(), 2);
+    inst->clearFdCache();
+}
+
 TEST(NativeSocketSamplerLruTest, InsertAndLookupPreservesEntries) {
     NativeSocketSampler* inst = NativeSocketSampler::instance();
     inst->clearFdCache();
@@ -602,3 +1007,116 @@ TEST(ArgumentsNatsock, OverflowRejected) {
     Error e = args.parse("natsock=99999999999999999s");
     ASSERT_TRUE(static_cast<bool>(e)) << "Expected error for natsock with overflow value";
 }
+
+#if defined(__linux__)
+
+TEST(NativeSocketSamplerFdTypeTest,
+     WarmStreamRevalidationKeepsTransientFailuresNonsticky) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    ScopedSamplerProbeOverride override(stub_probe);
+    for (int fd : {61, kSamplerFdTypeCacheSizeForTest + 61}) {
+        for (int failure : {EBADF, EINTR, EIO, EAGAIN}) {
+            SCOPED_TRACE(fd);
+            SCOPED_TRACE(failure);
+            inst->clearFdCache();
+            g_probe_calls = 0;
+            g_probe_rc = 0;
+            g_probe_errno = 0;
+            g_probe_so_type = SOCK_STREAM;
+            ASSERT_TRUE(inst->isSocketForTest(fd));
+            g_probe_rc = -1;
+            g_probe_errno = failure;
+            errno = 0;
+            EXPECT_FALSE(inst->revalidateSocketForTest(fd));
+            EXPECT_EQ(failure, errno);
+            EXPECT_FALSE(inst->revalidateSocketForTest(fd));
+            EXPECT_EQ(3, g_probe_calls.load());
+
+            g_probe_rc = 0;
+            g_probe_errno = 0;
+            g_probe_so_type = SOCK_STREAM;
+            EXPECT_TRUE(inst->revalidateSocketForTest(fd));
+            EXPECT_TRUE(inst->isSocketForTest(fd));
+            EXPECT_EQ(4, g_probe_calls.load());
+        }
+    }
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest,
+     ForcedRevalidationRecoversUnpatchedPipeToStreamReuse) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    for (int minimum : {0, kSamplerFdTypeCacheSizeForTest}) {
+        SCOPED_TRACE(minimum);
+        inst->clearFdCache();
+        int pipes[2];
+        ASSERT_EQ(0, pipe(pipes));
+        ScopedFdForTest pipe_read(pipes[0]);
+        ScopedFdForTest pipe_write(pipes[1]);
+        int sockets[2];
+        ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+        ScopedFdForTest stream(sockets[0]);
+        ScopedFdForTest peer(sockets[1]);
+        int fd = fcntl(pipes[0], F_DUPFD_CLOEXEC, minimum);
+        ASSERT_GE(fd, minimum);
+        ScopedFdForTest target(fd);
+        if (minimum == 0) ASSERT_LT(fd, kSamplerFdTypeCacheSizeForTest);
+        ASSERT_FALSE(inst->isSocketForTest(fd));
+        ASSERT_EQ(fd, ::dup2(sockets[0], fd));
+        int type = 0;
+        socklen_t size = sizeof(type);
+        ASSERT_EQ(0, getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &size));
+        ASSERT_EQ(SOCK_STREAM, type);
+        EXPECT_FALSE(inst->isSocketForTest(fd));
+        EXPECT_TRUE(inst->revalidateSocketForTest(fd));
+        EXPECT_TRUE(inst->isSocketForTest(fd));
+    }
+    inst->clearFdCache();
+}
+
+namespace {
+uint32_t sampler_epoch_invalidations = 0;
+uint32_t completed_sampler_epoch_invalidations = 0;
+int sampler_epoch_probe_calls = 0;
+
+int epoch_invalidating_sampler_probe(int, int* so_type, int* probe_errno) {
+    sampler_epoch_probe_calls++;
+    for (uint32_t index = 0; index < sampler_epoch_invalidations; index++) {
+        NativeSocketSampler::instance()->clearFdCache();
+        completed_sampler_epoch_invalidations++;
+    }
+    *so_type = SOCK_STREAM;
+    *probe_errno = 0;
+    return 0;
+}
+} // namespace
+
+TEST(NativeSocketSamplerFdTypeTest,
+     HighFdForcedProbeCannotPublishAcrossFullPackedEpochCycle) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    const int fd = kSamplerFdTypeCacheSizeForTest + 62;
+    for (uint32_t invalidations : {1u, 1u << 17}) {
+        SCOPED_TRACE(invalidations);
+        inst->clearFdCache();
+        inst->clearFdCacheEntry(fd);
+        sampler_epoch_invalidations = invalidations;
+        completed_sampler_epoch_invalidations = 0;
+        sampler_epoch_probe_calls = 0;
+        {
+            ScopedSamplerProbeOverride override(epoch_invalidating_sampler_probe);
+            EXPECT_FALSE(inst->revalidateSocketForTest(fd));
+            EXPECT_EQ(1, sampler_epoch_probe_calls);
+            EXPECT_EQ(invalidations, completed_sampler_epoch_invalidations);
+        }
+        ScopedSamplerProbeOverride override(stub_probe);
+        g_probe_calls = 0;
+        g_probe_rc = 0;
+        g_probe_errno = 0;
+        g_probe_so_type = SOCK_DGRAM;
+        EXPECT_FALSE(inst->isSocketForTest(fd));
+        EXPECT_EQ(1, g_probe_calls.load());
+    }
+    inst->clearFdCache();
+}
+
+#endif // __linux__

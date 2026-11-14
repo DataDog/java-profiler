@@ -17,6 +17,7 @@ import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Map;
@@ -26,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +38,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   private static final String WORKER = "unowned-origin-context";
   private static final String[] FIELDS = {TAG_1, TAG_2, TAG_3};
   private static volatile long spinSink;
+  private final AtomicLong workerNativeTid = new AtomicLong(-1);
 
   @Override
   protected void withTestAssumptions() {
@@ -56,6 +59,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
 
   /** Registers the native owner, then leaves unfiltered workers outside context. */
   private void registerUnownedWorker() {
+    workerNativeTid.set(WallClockBlockTrackerTestSupport.currentTid());
     profiler.addThread();
     if (unfiltered()) {
       profiler.removeThread();
@@ -104,10 +108,11 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     worker.start();
     try {
       assertTrue(ready.await(10, TimeUnit.SECONDS), "Worker did not register");
-      awaitSuppression(before, workerFailure);
+      awaitWorkerWeightedTailReady(workerFailure);
       int blockedSamples = 0;
       for (int i = 0; i < snapshots.length; i++) {
-        snapshots[i] = Files.createTempFile("unowned-context-dump-" + i, ".jfr");
+        snapshots[i] =
+            Files.createTempFile(Paths.get("/tmp/recordings"), "unowned-context-dump-" + i, ".jfr");
         System.out.println("===> attribution recording: " + snapshots[i]);
         dump(snapshots[i]);
         JfrEvents samples = verifyEvents(snapshots[i], "datadog.MethodSample", false);
@@ -126,9 +131,9 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
         }
       }
       assertTrue(blockedSamples > 0, "No original worker samples across retained dumps");
-      // Require fresh real suppression after the last dump, before releasing the only selected
-      // worker. This is a coverage precondition, not an exact scheduler-derived tail weight.
-      awaitSuppression(profiler.getDebugCounters(), workerFailure);
+      // Require this worker's fresh pending tail after the last dump. Other native Java I/O
+      // workers can now legitimately contribute to the global suppression counters.
+      awaitWorkerWeightedTailReady(workerFailure);
       releaseA.countDown();
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter B");
       assertNull(workerFailure.get(), "Worker failed during transition");
@@ -257,22 +262,38 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     worker.start();
     try {
       assertTrue(readyA.await(10, TimeUnit.SECONDS), "Worker did not register A");
-      awaitSuppression(before, workerFailure);
+      awaitWorkerWeightedTailReady(workerFailure);
       releaseA.countDown();
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter traced B");
       assertNull(workerFailure.get(), "Worker failed before traced B");
-      Map<String, Long> inSpan = profiler.getDebugCounters();
-      Thread.sleep(100);
+      long retainedPending =
+          WallClockBlockTrackerTestSupport.pendingUnownedWeight((int) workerNativeTid.get());
+      for (int i = 0; i < 100; i++) {
+        Thread.sleep(1);
+        retainedPending = assertPendingDoesNotGrow(retainedPending);
+      }
       for (int i = 0; i < snapshots.length; i++) {
-        snapshots[i] = Files.createTempFile("unowned-span-context-dump-" + i, ".jfr");
+        snapshots[i] =
+            Files.createTempFile(
+                Paths.get("/tmp/recordings"), "unowned-span-context-dump-" + i, ".jfr");
         System.out.println("===> attribution recording: " + snapshots[i]);
         dump(snapshots[i]);
         recordings[i] = verifyEvents(snapshots[i], "datadog.MethodSample", false);
+        retainedPending = assertPendingDoesNotGrow(retainedPending);
       }
-      assertEquals(
-          inSpan.getOrDefault("wc_unowned_blocked_suppressed", 0L),
-          profiler.getDebugCounters().getOrDefault("wc_unowned_blocked_suppressed", 0L),
-          "A known active span must not accumulate unowned weight");
+      int tracedWorkerSamples = 0;
+      for (int i = 0; i < snapshots.length; i++) {
+        for (JfrEvent sample : recordings[i]) {
+          if (isWorker(sample) && sample.getStackTraceString().contains("runnableTracedContextB")) {
+            assertEquals(7102L, sample.getLong(SPAN_ID, -1));
+            assertEquals(7101L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
+            assertEquals(
+                1L, sample.getLong(WEIGHT, 0), "Traced B must remain an ordinary unit sample");
+            tracedWorkerSamples++;
+          }
+        }
+      }
+      assertTrue(tracedWorkerSamples > 0, "No actual traced B worker samples in retained dumps");
       inB.set(false);
       assertTrue(readyC.await(10, TimeUnit.SECONDS), "Worker did not clear into C");
       assertNull(workerFailure.get(), "Worker failed during clear");
@@ -391,13 +412,14 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
               }
             },
             WORKER);
-    Path recording = Files.createTempFile("unowned-context-restart-", ".jfr");
+    Path recording =
+        Files.createTempFile(Paths.get("/tmp/recordings"), "unowned-context-restart-", ".jfr");
     System.out.println("===> attribution recording: " + recording);
     boolean restarted = false;
     worker.start();
     try {
       assertTrue(readyA.await(10, TimeUnit.SECONDS), "Worker did not register A");
-      awaitSuppression(before, workerFailure);
+      awaitWorkerWeightedTailReady(workerFailure);
       stopProfiler();
       releaseA.countDown();
       assertTrue(readyInactive.await(10, TimeUnit.SECONDS), "Worker did not survive stop");
@@ -461,38 +483,60 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   }
 
   /** Waits for observed recording/suppression on the only explicitly selected worker. */
-  private void awaitSuppression(Map<String, Long> before, AtomicReference<Throwable> failure)
-      throws Exception {
+  /** Old A weight may survive the span boundary: allow its drain, never new B growth. */
+  private long assertPendingDoesNotGrow(long previous) {
+    if (!WallClockBlockTrackerTestSupport.available()) return previous;
+    long pending =
+        WallClockBlockTrackerTestSupport.pendingUnownedWeight((int) workerNativeTid.get());
+    assertTrue(
+        pending <= previous,
+        "The known-span worker grew unowned pending weight: " + previous + " -> " + pending);
+    return pending;
+  }
+
+  /** Requires the target worker, not ambient native owners, to supply weighted-tail coverage. */
+  private void awaitWorkerWeightedTailReady(AtomicReference<Throwable> failure) throws Exception {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-    long suppressionTarget = -1;
     while (System.nanoTime() < deadline) {
-      assertNull(failure.get(), "Worker failed before required suppression");
-      Map<String, Long> counters = profiler.getDebugCounters();
-      long suppressed = counters.getOrDefault("wc_unowned_blocked_suppressed", 0L);
-      if (suppressionTarget < 0
-          && counters.getOrDefault("wc_unowned_blocked_recorded", 0L)
-              > before.getOrDefault("wc_unowned_blocked_recorded", 0L)) {
-        // A periodic record consumes preceding suppression. Require new suppressed observations
-        // after that record instead of releasing at the just-flushed boundary.
-        suppressionTarget = suppressed + 2;
-      }
-      if (suppressionTarget >= 0 && suppressed >= suppressionTarget) {
-        System.out.println(
-            "Attribution suppression ready: recorded="
-                + counters.getOrDefault("wc_unowned_blocked_recorded", 0L)
-                + ", suppressed="
-                + suppressed
-                + ", target="
-                + suppressionTarget);
-        return;
+      assertNull(failure.get(), "Worker failed before required weighted tail");
+      if (WallClockBlockTrackerTestSupport.available()) {
+        int tid = (int) workerNativeTid.get();
+        assertTrue(tid > 0, "Worker did not publish its actual native TID");
+        long pending = WallClockBlockTrackerTestSupport.pendingUnownedWeight(tid);
+        long segment = WallClockBlockTrackerTestSupport.maxPendingUnownedSegmentWeight(tid);
+        if (pending >= 2 && pending <= 5 && segment >= 2) {
+          System.out.println(
+              "Attribution worker tail ready: tid="
+                  + tid
+                  + ", pending="
+                  + pending
+                  + ", segment="
+                  + segment);
+          return;
+        }
+      } else {
+        Path witness =
+            Files.createTempFile(Paths.get("/tmp/recordings"), "unowned-worker-readiness-", ".jfr");
+        try {
+          dump(witness);
+          for (JfrEvent sample : verifyEvents(witness, "datadog.MethodSample", false)) {
+            if (isWorker(sample)
+                && sample.getStackTraceString().contains("blockedOriginA")
+                && "PARKED".equals(sample.getEnumName(THREAD_STATE))
+                && sample.getLong(WEIGHT, 0) > 1) {
+              return;
+            }
+          }
+        } finally {
+          if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(witness);
+        }
       }
       Thread.sleep(1);
     }
     throw new AssertionError(
-        "Coverage incomplete: real unowned recording/suppression not observed");
+        "No target-worker weighted-tail coverage within bounded readiness wait");
   }
 
-  /** Identifies the actual selected worker, not arbitrary process-wide samples. */
   private static boolean isWorker(JfrEvent sample) {
     return WORKER.equals(sample.getThreadName("eventThread"));
   }
@@ -512,9 +556,24 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     }
   }
 
-  /** Leaves a distinct unowned blocked frame for actual signal-driven stack walking. */
-  private static void blockedOriginA(CountDownLatch release) throws InterruptedException {
+  /** Keeps the acting thread in A until its real pending tail is ready for the transition. */
+  private void blockedOriginA(CountDownLatch release) throws InterruptedException {
     release.await();
+    if (!WallClockBlockTrackerTestSupport.available()) return;
+    int tid = WallClockBlockTrackerTestSupport.currentTid();
+    assertEquals(workerNativeTid.get(), (long) tid, "Readiness must run on the actual A worker");
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (System.nanoTime() < deadline) {
+      long pending = WallClockBlockTrackerTestSupport.pendingUnownedWeight(tid);
+      // The real fallback ratio is 10 (WallClockBlockTracker::BlockState). A mid-cycle
+      // observation on this worker avoids the main-to-worker periodic-rollup race.
+      // One actual epoch segment must coalesce: aggregate units can span different epochs.
+      long segment = WallClockBlockTrackerTestSupport.maxPendingUnownedSegmentWeight(tid);
+      if (pending >= 2 && pending <= 5 && segment >= 2) return;
+      if (Thread.interrupted()) throw new InterruptedException("A readiness was interrupted");
+      LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+    }
+    throw new AssertionError("A worker never acquired a real mid-cycle tail before transition");
   }
 
   /** Remains runnable while profiling is stopped, so restart cannot create a new blocked origin. */

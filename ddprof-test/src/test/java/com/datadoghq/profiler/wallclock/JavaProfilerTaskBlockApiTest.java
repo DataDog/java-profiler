@@ -29,8 +29,21 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** End-to-end coverage for the paired synchronous TaskBlock API. */
 public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
+  private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long BLOCKER = 0x7301L;
   private static final long UNBLOCKING_SPAN_ID = 0x7302L;
+
+  /** The instrumented block hook must reject real JDK housekeeping threads. */
+  @Test
+  public void blockEnterRejectsJvmInternalThreadBeforeProjection() throws Exception {
+    assertJvmInternalAdmissionRejected(false);
+  }
+
+  /** The public paired API must enforce the same housekeeping-thread containment. */
+  @Test
+  public void beginTaskBlockRejectsJvmInternalThreadBeforeProjection() throws Exception {
+    assertJvmInternalAdmissionRejected(true);
+  }
 
   @Test
   public void pairedApiEmitsTaskBlockWithStack() throws Exception {
@@ -390,6 +403,79 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(snapshot);
       else System.out.println("TASK_BLOCK snapshot recording=" + snapshot.toAbsolutePath());
     }
+  }
+
+  /** Uses the JDK Cleaner's real InnocuousThread, without setting profiler flags or context. */
+  private void assertJvmInternalAdmissionRejected(boolean pairedApi) throws Exception {
+    Class<?> cleanerClass;
+    try {
+      cleanerClass = Class.forName("java.lang.ref.Cleaner");
+    } catch (ClassNotFoundException beforeJdk9) {
+      Assumptions.assumeTrue(false, "The default InnocuousThread Cleaner requires JDK 9");
+      return;
+    }
+    AtomicLong ordinaryToken = new AtomicLong();
+    runWorker(() -> ordinaryToken.set(enterAndCloseBlock(pairedApi)));
+    assertNotEquals(
+        0L, ordinaryToken.get(), "The ordinary unfiltered admission path must be armed");
+
+    CountDownLatch completed = new CountDownLatch(1);
+    AtomicBoolean reached = new AtomicBoolean();
+    AtomicReference<Throwable> error = new AtomicReference<>();
+    Object cleaner = cleanerClass.getMethod("create").invoke(null);
+    Method register = cleanerClass.getMethod("register", Object.class, Runnable.class);
+    registerCleanerAction(
+        cleaner,
+        register,
+        () -> {
+          try {
+            assertEquals(
+                "jdk.internal.misc.InnocuousThread", Thread.currentThread().getClass().getName());
+            reached.set(true);
+            long skippedBefore =
+                profiler
+                    .getDebugCounters()
+                    .getOrDefault("task_block_skipped_jvm_internal_thread", 0L);
+            long token = enterAndCloseBlock(pairedApi);
+            long skippedAfter =
+                profiler
+                    .getDebugCounters()
+                    .getOrDefault("task_block_skipped_jvm_internal_thread", 0L);
+            assertEquals(0L, token, "A real JVM-internal thread must not acquire a block owner");
+            assertTrue(skippedAfter > skippedBefore, "The counted JVM-internal guard must fire");
+          } catch (Throwable t) {
+            error.set(t);
+          } finally {
+            completed.countDown();
+          }
+        });
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (completed.getCount() != 0 && System.nanoTime() < deadline) {
+      System.gc();
+      completed.await(50L, TimeUnit.MILLISECONDS);
+    }
+    assertEquals(0L, completed.getCount(), "The JDK Cleaner action must actually execute");
+    assertTrue(reached.get(), "The admission scenario must run on an InnocuousThread");
+    if (error.get() != null) throw new AssertionError(error.get());
+  }
+
+  /** Ends the referent's stack lifetime before the caller requests collection. */
+  private static void registerCleanerAction(Object cleaner, Method register, Runnable action)
+      throws Exception {
+    register.invoke(cleaner, new Object(), action);
+  }
+
+  /** Closes even an unexpectedly admitted token before an assertion can fail. */
+  private long enterAndCloseBlock(boolean pairedApi) {
+    long token =
+        pairedApi
+            ? profiler.beginTaskBlock()
+            : ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+    if (token != 0) {
+      if (pairedApi) profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID);
+      else ProfilerOwnedBlockHooks.blockExit(profiler, token);
+    }
+    return token;
   }
 
   @Override

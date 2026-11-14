@@ -61,17 +61,17 @@ protected:
 // Basic functionality tests
 TEST_F(ThreadFilterTest, BasicRegisterAndAccept) {
     EXPECT_TRUE(filter->enabled());
-    
+
     int slot_id = filter->registerThread(1234);
     EXPECT_GE(slot_id, 0);
-    
+
     // Initially should not accept (not yet in the context window)
     EXPECT_FALSE(filter->accept(slot_id));
-    
+
     // Add tid and test accept
     filter->add(1234, slot_id);
     EXPECT_TRUE(filter->accept(slot_id));
-    
+
     // Remove and test
     filter->remove(slot_id);
     EXPECT_FALSE(filter->accept(slot_id));
@@ -106,7 +106,7 @@ TEST_F(ThreadFilterTest, InvalidSlotHandling) {
     // Test invalid slot IDs for accept() - still safe due to negative check
     EXPECT_FALSE(filter->accept(-1));
     EXPECT_FALSE(filter->accept(-999));
-    
+
     // These should not crash
     filter->add(1234, -1);
     filter->remove(-1);
@@ -117,21 +117,21 @@ TEST_F(ThreadFilterTest, InvalidSlotHandling) {
 TEST_F(ThreadFilterTest, ValidSlotIDContract) {
     // Verify that all slot IDs returned by registerThread() are valid
     std::vector<int> slot_ids;
-    
+
     for (int i = 0; i < 100; i++) {
         int slot_id = filter->registerThread(i + 10000);
         ASSERT_GE(slot_id, 0) << "registerThread() returned invalid slot_id: " << slot_id;
         ASSERT_LT(slot_id, ThreadFilter::kMaxThreads) << "slot_id out of range: " << slot_id;
-        
+
         slot_ids.push_back(slot_id);
-        
+
         // These operations should always be safe with slot_ids from registerThread()
         filter->add(i + 10000, slot_id);
         EXPECT_TRUE(filter->accept(slot_id));
         filter->remove(slot_id);
         EXPECT_FALSE(filter->accept(slot_id));
     }
-    
+
     // Verify slot IDs are unique (no duplicates)
     std::set<int> unique_slots(slot_ids.begin(), slot_ids.end());
     EXPECT_EQ(unique_slots.size(), slot_ids.size()) << "registerThread() returned duplicate slot IDs";
@@ -140,7 +140,7 @@ TEST_F(ThreadFilterTest, ValidSlotIDContract) {
 // Edge case: Maximum capacity
 TEST_F(ThreadFilterTest, MaxCapacityReached) {
     std::vector<int> slot_ids;
-    
+
     // Register up to the maximum
     for (int i = 0; i < ThreadFilter::kMaxThreads; i++) {
         int slot_id = filter->registerThread(i + 1000);  // Use unique tids
@@ -149,13 +149,13 @@ TEST_F(ThreadFilterTest, MaxCapacityReached) {
             filter->add(i + 1000, slot_id);
         }
     }
-    
-    fprintf(stderr, "Successfully registered %zu slots (max=%d)\n", 
+
+    fprintf(stderr, "Successfully registered %zu slots (max=%d)\n",
             slot_ids.size(), ThreadFilter::kMaxThreads);
-    
+
     // Should have registered all slots
     EXPECT_EQ(slot_ids.size(), ThreadFilter::kMaxThreads);
-    
+
     // Next registration should fail and make capacity loss observable
 #ifdef COUNTERS
     long long capacity_failures_before =
@@ -167,12 +167,12 @@ TEST_F(ThreadFilterTest, MaxCapacityReached) {
     EXPECT_EQ(capacity_failures_before + 1,
               Counters::getCounter(THREAD_REGISTRY_CAPACITY_EXHAUSTED));
 #endif
-    
+
     // Verify all registered slots work
     std::vector<int> collected_tids;
     filter->collect(collected_tids);
     EXPECT_EQ(collected_tids.size(), ThreadFilter::kMaxThreads);
-    
+
     // Verify all tids are unique
     std::set<int> unique_tids(collected_tids.begin(), collected_tids.end());
     EXPECT_EQ(unique_tids.size(), ThreadFilter::kMaxThreads);
@@ -181,7 +181,7 @@ TEST_F(ThreadFilterTest, MaxCapacityReached) {
 // Edge case: Recovery after max capacity
 TEST_F(ThreadFilterTest, RecoveryAfterMaxCapacity) {
     std::vector<int> slot_ids;
-    
+
     // Fill to capacity
     for (int i = 0; i < ThreadFilter::kMaxThreads; i++) {
         int slot_id = filter->registerThread(i + 2000);
@@ -189,17 +189,17 @@ TEST_F(ThreadFilterTest, RecoveryAfterMaxCapacity) {
         slot_ids.push_back(slot_id);
         filter->add(i + 2000, slot_id);
     }
-    
+
     // Should fail to register more
     EXPECT_EQ(filter->registerThread(100000), -1);
-    
+
     // Unregister half the slots
     int slots_to_free = ThreadFilter::kMaxThreads / 2;
     for (int i = 0; i < slots_to_free; i++) {
         filter->unregisterThread(slot_ids[i]);
         slot_ids[i] = -1;  // Mark as freed
     }
-    
+
     // Should be able to register new slots again
     std::vector<int> new_slot_ids;
     for (int i = 0; i < slots_to_free; i++) {
@@ -210,13 +210,13 @@ TEST_F(ThreadFilterTest, RecoveryAfterMaxCapacity) {
         // range. The registry intentionally rejects two slots for one native TID.
         filter->add(i + 5000, slot_id);
     }
-    
+
     // Verify we can still register up to capacity
     EXPECT_EQ(new_slot_ids.size(), slots_to_free);
-    
+
     // Should fail again when at capacity
     EXPECT_EQ(filter->registerThread(100001), -1);
-    
+
     // Verify collect works correctly
     std::vector<int> collected_tids;
     filter->collect(collected_tids);
@@ -227,10 +227,10 @@ TEST_F(ThreadFilterTest, RecoveryAfterMaxCapacity) {
 TEST_F(ThreadFilterTest, FreeListStressTest) {
     const int iterations = 1000;
     const int batch_size = 100;
-    
+
     for (int iter = 0; iter < iterations; iter++) {
         std::vector<int> slot_ids;
-        
+
         // Register a batch
         for (int i = 0; i < batch_size; i++) {
             int slot_id = filter->registerThread(iter * batch_size + i);
@@ -238,17 +238,17 @@ TEST_F(ThreadFilterTest, FreeListStressTest) {
             slot_ids.push_back(slot_id);
             filter->add(iter * batch_size + i, slot_id);
         }
-        
+
         // Verify all work
         for (int slot_id : slot_ids) {
             EXPECT_TRUE(filter->accept(slot_id));
         }
-        
+
         // Unregister all
         for (int slot_id : slot_ids) {
             filter->unregisterThread(slot_id);
         }
-        
+
         // Verify cleanup
         std::vector<int> tids;
         filter->collect(tids);
@@ -260,12 +260,12 @@ TEST_F(ThreadFilterTest, FreeListStressTest) {
 TEST_F(ThreadFilterTest, ConcurrentMaxCapacityStress) {
     const int num_threads = 8;
     const int slots_per_thread = ThreadFilter::kMaxThreads / num_threads;
-    
+
     std::vector<std::thread> threads;
     std::atomic<int> successful_registrations{0};
     std::atomic<int> failed_registrations{0};
     std::vector<std::vector<int>> thread_slots(num_threads);
-    
+
     // Each thread tries to register its share of slots
     for (int t = 0; t < num_threads; t++) {
         threads.emplace_back([&, t]() {
@@ -281,20 +281,20 @@ TEST_F(ThreadFilterTest, ConcurrentMaxCapacityStress) {
             }
         });
     }
-    
+
     // Wait for all threads
     for (auto& t : threads) {
         t.join();
     }
-    
+
     fprintf(stderr, "Successful: %d, Failed: %d, Total attempted: %d\n",
             successful_registrations.load(), failed_registrations.load(),
             num_threads * (slots_per_thread + 10));
-    
+
     // Should have registered exactly kMaxThreads
     EXPECT_EQ(successful_registrations.load(), ThreadFilter::kMaxThreads);
     EXPECT_GT(failed_registrations.load(), 0);  // Some should have failed
-    
+
     // Verify collect works
     std::vector<int> collected_tids;
     filter->collect(collected_tids);
@@ -304,27 +304,27 @@ TEST_F(ThreadFilterTest, ConcurrentMaxCapacityStress) {
 // Chunk boundary testing
 TEST_F(ThreadFilterTest, ChunkBoundaryBehavior) {
     std::vector<int> slot_ids;
-    
+
     // Register enough slots to span multiple chunks
     int slots_to_register = ThreadFilter::kChunkSize * 3 + 10;  // 3+ chunks
-    
+
     for (int i = 0; i < slots_to_register; i++) {
         int slot_id = filter->registerThread(i + 5000);
         ASSERT_GE(slot_id, 0) << "Failed at slot " << i;
         slot_ids.push_back(slot_id);
         filter->add(i + 5000, slot_id);
     }
-    
+
     // Verify all chunks work correctly
     for (int i = 0; i < slots_to_register; i++) {
         EXPECT_TRUE(filter->accept(slot_ids[i])) << "Slot " << slot_ids[i] << " (index " << i << ") not accepted";
     }
-    
+
     // Test collect across chunks
     std::vector<int> collected_tids;
     filter->collect(collected_tids);
     EXPECT_EQ(collected_tids.size(), slots_to_register);
-    
+
     // Verify tids are correct
     std::sort(collected_tids.begin(), collected_tids.end());
     for (int i = 0; i < slots_to_register; i++) {
@@ -336,53 +336,53 @@ TEST_F(ThreadFilterTest, ChunkBoundaryBehavior) {
 TEST_F(ThreadFilterTest, ConcurrentAddRemoveAccept) {
     const int num_threads = 4;
     const int operations_per_thread = 10000;
-    
+
     // Pre-register slots for each thread
     std::vector<int> slot_ids(num_threads);
     for (int i = 0; i < num_threads; i++) {
         slot_ids[i] = filter->registerThread(i + 6000);
         ASSERT_GE(slot_ids[i], 0);
     }
-    
+
     std::vector<std::thread> threads;
     std::atomic<int> total_operations{0};
-    
+
     for (int t = 0; t < num_threads; t++) {
         threads.emplace_back([&, t]() {
             int slot_id = slot_ids[t];
             int tid = t + 6000;
-            
+
             for (int i = 0; i < operations_per_thread; i++) {
                 // Add
                 filter->add(tid, slot_id);
-                
+
                 // Should accept
                 bool accepted = filter->accept(slot_id);
                 if (!accepted) {
                     fprintf(stderr, "Thread %d: accept failed after add (op %d)\n", t, i);
                 }
-                
+
                 // Remove
                 filter->remove(slot_id);
-                
+
                 // Should not accept
                 accepted = filter->accept(slot_id);
                 if (accepted) {
                     fprintf(stderr, "Thread %d: accept succeeded after remove (op %d)\n", t, i);
                 }
-                
+
                 total_operations++;
             }
         });
     }
-    
+
     // Wait for all threads
     for (auto& t : threads) {
         t.join();
     }
-    
+
     EXPECT_EQ(total_operations.load(), num_threads * operations_per_thread);
-    
+
     // Final state should be empty
     std::vector<int> final_tids;
     filter->collect(final_tids);
@@ -393,7 +393,7 @@ TEST_F(ThreadFilterTest, ConcurrentAddRemoveAccept) {
 TEST_F(ThreadFilterTest, FreeListExhaustionRecovery) {
     // Fill up the free list by registering and unregistering
     std::vector<int> slot_ids;
-    
+
     // Register many slots
     for (int i = 0; i < ThreadFilter::kFreeListSize + 100; i++) {
         int slot_id = filter->registerThread(i + 7000);
@@ -402,14 +402,14 @@ TEST_F(ThreadFilterTest, FreeListExhaustionRecovery) {
             filter->add(i + 7000, slot_id);
         }
     }
-    
+
     fprintf(stderr, "Registered %zu slots\n", slot_ids.size());
-    
+
     // Unregister all (this should fill the free list)
     for (int slot_id : slot_ids) {
         filter->unregisterThread(slot_id);
     }
-    
+
     // Try to register new slots - should reuse from free list
     std::vector<int> new_slot_ids;
     for (int i = 0; i < 100; i++) {
@@ -418,12 +418,12 @@ TEST_F(ThreadFilterTest, FreeListExhaustionRecovery) {
         new_slot_ids.push_back(slot_id);
         filter->add(i + 8000, slot_id);
     }
-    
+
     // Verify reused slots work
     for (int slot_id : new_slot_ids) {
         EXPECT_TRUE(filter->accept(slot_id));
     }
-    
+
     std::vector<int> final_tids;
     filter->collect(final_tids);
     EXPECT_EQ(final_tids.size(), new_slot_ids.size());
@@ -433,27 +433,27 @@ TEST_F(ThreadFilterTest, FreeListExhaustionRecovery) {
 TEST_F(ThreadFilterTest, CollectMixedStates) {
     std::vector<int> slot_ids;
     std::vector<int> expected_tids;
-    
+
     // Register slots and add some tids, leave others empty
     for (int i = 0; i < 50; i++) {
         int slot_id = filter->registerThread(i + 9000);
         ASSERT_GE(slot_id, 0);
         slot_ids.push_back(slot_id);
-        
+
         if (i % 3 == 0) {  // Add tid to every 3rd slot
             filter->add(i + 9000, slot_id);
             expected_tids.push_back(i + 9000);
         }
         // Leave other slots empty
     }
-    
+
     // Collect should only return slots with tids
     std::vector<int> collected_tids;
     filter->collect(collected_tids);
-    
+
     std::sort(expected_tids.begin(), expected_tids.end());
     std::sort(collected_tids.begin(), collected_tids.end());
-    
+
     EXPECT_EQ(collected_tids.size(), expected_tids.size());
     for (size_t i = 0; i < expected_tids.size(); i++) {
         EXPECT_EQ(collected_tids[i], expected_tids[i]);
@@ -1686,4 +1686,106 @@ TEST_F(ThreadRegistryTest, FilteredResetDoesNotRestoreLogicalMembershipFromBlock
     registry.collect(selected);
     ASSERT_EQ(1u, selected.size());
     EXPECT_EQ(owner->tid(), selected[0].tid);
+}
+
+TEST_F(ThreadFilterTest, OwnedNativeIoSuppressesBeforeAnyWallSample) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    auto* slot = tracker->slotForId(slot_id);
+    auto* identity = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = tracker->enterBlockedRun(filter.get(),
+        slot_id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, identity, slot_id, identity->lifecycleGeneration(),
+                      identity->recordingEpoch()};
+    u64 generation = WallClockBlockTracker::tokenGeneration(token);
+    EXPECT_EQ(0u, slot->sampledBlockGeneration());
+    EXPECT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(),
+        {1235, identity, slot_id, identity->lifecycleGeneration(), identity->recordingEpoch()}));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(),
+        {1234, identity, slot_id, identity->lifecycleGeneration() + 1,
+         identity->recordingEpoch()}));
+
+    ASSERT_TRUE(tracker->exitBlockedRun(slot_id, generation));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+}
+
+TEST_F(ThreadFilterTest, ConcurrentNativeExitInvalidatesSuppressionSnapshot) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    auto* slot = tracker->slotForId(slot_id);
+    auto* identity = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = tracker->enterBlockedRun(filter.get(),
+        slot_id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, identity, slot_id, identity->lifecycleGeneration(),
+                      identity->recordingEpoch()};
+    struct SnapshotPause {
+        std::atomic<bool> reached{false};
+        std::atomic<bool> resume{false};
+    } pause;
+    tracker->setSuppressionSnapshotHookForTest(
+        [](void* raw) {
+            SnapshotPause* pause = static_cast<SnapshotPause*>(raw);
+            pause->reached.store(true, std::memory_order_release);
+            while (!pause->resume.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        },
+        &pause);
+
+    std::atomic<bool> suppressed{true};
+    std::thread reader([&] {
+        suppressed.store(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry),
+                         std::memory_order_release);
+    });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!pause.reached.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    if (!pause.reached.load(std::memory_order_acquire)) {
+        pause.resume.store(true, std::memory_order_release);
+        reader.join();
+        tracker->setSuppressionSnapshotHookForTest(nullptr, nullptr);
+        GTEST_FAIL() << "Suppression reader did not reach the snapshot barrier";
+    }
+
+    EXPECT_TRUE(tracker->exitBlockedRun(
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
+    pause.resume.store(true, std::memory_order_release);
+    reader.join();
+    tracker->setSuppressionSnapshotHookForTest(nullptr, nullptr);
+
+    EXPECT_FALSE(suppressed.load(std::memory_order_acquire));
+}
+
+TEST_F(ThreadFilterTest, OwnedJvmtiBlockSuppressesOnlyAfterSuccessfulWallSample) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    auto* slot = tracker->slotForId(slot_id);
+    auto* identity = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = tracker->enterBlockedRun(filter.get(),
+        slot_id, OSThreadState::MONITOR_WAIT, BlockRunOwner::JVMTI);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, identity, slot_id, identity->lifecycleGeneration(),
+                      identity->recordingEpoch()};
+    u64 generation = WallClockBlockTracker::tokenGeneration(token);
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+
+    slot->markBlockGenerationSampled(generation);
+    EXPECT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+
+    ASSERT_TRUE(tracker->exitBlockedRun(slot_id, generation));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
 }

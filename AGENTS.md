@@ -172,6 +172,7 @@ before working on a subsystem.
 | Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; lazy wall-block backing survives recording resets; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers; native delivery custody retains failed output) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
+| Native I/O hooks (shared-owner JDK import patches, FD classification, synchronous exit-time IO_WAIT TaskBlocks) | [doc/architecture/NativeIoHooks.md](doc/architecture/NativeIoHooks.md) |
 | Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
@@ -339,6 +340,11 @@ Retained units serialize at their original epoch-window start. See [CallTraceSto
 **Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.
 Only owner-side entry/exit changes membership; signals and timers do not walk remote TLS.
 See [TLSContext](doc/architecture/TLSContext.md#context-window-membership).
+
+**Native I/O hooks.** Installed patches do not imply either owner is active. When both
+owners disable, entered stream hooks forward without classification, clock reads or block scopes.
+FD revalidation publishes only against the pre-probe epoch/incarnation; transient failures are not cached.
+See [NativeIoHooks](doc/architecture/NativeIoHooks.md).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

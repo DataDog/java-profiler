@@ -1,3 +1,4 @@
+# Copyright 2026, Datadog, Inc.
 # C++ unit tests under ASan, TSan, and release optimisation.
 #
 # These run on every branch push (not MR pipelines — GitHub Actions handles those).
@@ -32,13 +33,14 @@
   script:
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
+      mkdir -p "ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml"
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
         | grep "/${SANITIZER_LC}_" \
         | sort \
         | while read binary; do
           echo ""
           echo "=== $(basename $binary) ==="
-          "$binary"
+          GTEST_OUTPUT="xml:ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml/$(basename "$binary").xml" "$binary"
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "FAILED: $(basename $binary) exited $rc"
@@ -49,6 +51,9 @@
     when: always
     paths:
       - ddprof-lib/build/bin/gtest/${SANITIZER_LC}*/
+      - ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml/
+    reports:
+      junit: ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml/*.xml
     expire_in: 1 day
 
 gtest-asan-amd64:
@@ -73,10 +78,11 @@ gtest-tsan-amd64:
   script:
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
+      mkdir -p "ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml"
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
         | grep "/${SANITIZER_LC}_" | sort | while read binary; do
           echo "=== $(basename $binary) ==="
-          GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
+          GTEST_DEATH_TEST_STYLE=threadsafe GTEST_OUTPUT="xml:ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml/$(basename "$binary").xml" "$binary"
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "FAILED: $(basename $binary) exited $rc"
@@ -130,10 +136,11 @@ gtest-tsan-arm64:
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
       sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
+      mkdir -p "ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml"
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
         | grep "/${SANITIZER_LC}_" | sort | while read binary; do
           echo "=== $(basename $binary) ==="
-          GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
+          GTEST_DEATH_TEST_STYLE=threadsafe GTEST_OUTPUT="xml:ddprof-lib/build/reports/gtest/${SANITIZER_LC}/xml/$(basename "$binary").xml" "$binary"
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "FAILED: $(basename $binary) exited $rc"

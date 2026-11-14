@@ -471,6 +471,10 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
     return JNI_FALSE;
   }
   Profiler *profiler = Profiler::instance();
+  if (current->isJvmInternalThread()) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
+    return 0;
+  }
   ThreadFilter *tf = profiler->threadFilter();
   Context context = ContextApi::snapshot();
   ThreadFilter::SlotID slot_id = tf->registryActive() && context.spanId == 0
@@ -553,6 +557,10 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (current == nullptr) {
     return 0;
   }
+  if (current->isJvmInternalThread()) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
+    return 0;
+  }
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
     Counters::increment(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT);
@@ -625,6 +633,10 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   Profiler *profiler = Profiler::instance();
   if (current == nullptr || !profiler->isRunning() ||
       !profiler->taskBlockEnabled()) {
+    return 0;
+  }
+  if (current->isJvmInternalThread()) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
     return 0;
   }
   ThreadFilter *tf = profiler->threadFilter();
@@ -1351,6 +1363,60 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   ContextApi::get(spanId, rootSpanId);
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
+
+#ifdef DEBUG
+// Read-only test observations: no registry allocation, state seeding or admission changes.
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_currentTid0(
+    JNIEnv* env, jclass unused) {
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  return current != nullptr ? current->tid() : -1;
+}
+
+static WallClockBlockTracker::BlockState* existingWallBlockStateForTest(
+    jint tid, ThreadFilter::SlotID* out_slot_id = nullptr) {
+  if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return nullptr;
+  Profiler* profiler = Profiler::instance();
+  ThreadFilter* registry = profiler->threadFilter();
+  ThreadEntry entry{};
+  entry.tid = tid;
+  if (!registry->lookupThreadEntry(entry, registry->recordingEpoch())) return nullptr;
+  if (out_slot_id != nullptr) *out_slot_id = entry.slot_id;
+  return profiler->blockTracker()->slotForId(entry.slot_id);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_pendingUnownedWeight0(
+    JNIEnv* env, jclass unused, jint tid) {
+  WallClockBlockTracker::BlockState* state = existingWallBlockStateForTest(tid);
+  return state != nullptr
+      ? static_cast<jlong>(state->unowned_blocked_pending_weight.load(std::memory_order_acquire))
+      : 0;
+}
+
+// A deferred wire event contains one epoch segment, not the aggregate pending weight.
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_maxPendingUnownedSegmentWeight0(
+    JNIEnv* env, jclass unused, jint tid) {
+  ThreadFilter::SlotID slot_id = -1;
+  if (existingWallBlockStateForTest(tid, &slot_id) == nullptr) return 0;
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  size_t count = Profiler::instance()->blockTracker()->copyUnownedWeightSegments(slot_id, segments);
+  u64 maximum = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (segments[i].weight > maximum) maximum = segments[i].weight;
+  }
+  return static_cast<jlong>(maximum);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_hasActiveOwnedBlock0(
+    JNIEnv* env, jclass unused, jint tid) {
+  WallClockBlockTracker::BlockState* state = existingWallBlockStateForTest(tid);
+  return state != nullptr && state->activeBlockOwner() != BlockRunOwner::NONE
+      ? JNI_TRUE : JNI_FALSE;
+}
+#endif // DEBUG
 
 // LivenessTracker/ReferenceChainTracker test seams. They mutate real tracker
 // state, so they are only implemented in DEBUG builds; release builds get the

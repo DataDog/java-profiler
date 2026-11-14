@@ -731,6 +731,9 @@ public:
 #ifdef UNIT_TEST
   using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
+  bool setTaskBlockEnabledForTest(bool enabled) {
+    return _task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
+  }
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
   enum class TaskBlockActivityStage {

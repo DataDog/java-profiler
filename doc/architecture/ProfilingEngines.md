@@ -451,8 +451,8 @@ not ordinary periodic samples or failed writes.
 Omitting `filter` defaults to context filtering (`filter=0`); an explicit empty
 `filter=` disables it. With empty `filter=`, an activated, supported wall engine,
 and `wallprecheck=true`, thread identities register lazily on their first context,
-park, or block hook, not eagerly at ThreadStart. Only already-sampled owned blocks
-that remain **outside** context windows can suppress signals in this mode.
+park, or block hook, not eagerly at ThreadStart. Java/JVMTI owned blocks suppress only after a successful sample; native owners
+suppress immediately. Both must remain **outside** context windows.
 Context-scoped profiling never suppresses owned blocks. Unfiltered recordings keep
 ordinary sampling inside context windows. Stackful ASGCT uses weighted fallback
 for other unowned blocked observations. Delegated and `lightweight=true` sampling
@@ -510,6 +510,9 @@ This engine has no collapsing or cached-stack replay; unowned samples keep unit 
 `wallprecheck=true` with unfiltered wall tracking enables completed-at-exit
 `datadog.TaskBlock` events. Java park hooks own park intervals. Java generic
 hooks own `SLEEPING` and `OBJECT_WAIT`; the public paired API owns `SLEEPING`.
+Linux native I/O hooks own physical platform/carrier `IO_WAIT` intervals; see
+[NativeIoHooks](NativeIoHooks.md). Native owners suppress wall signals immediately
+because the completion hook captures their stack synchronously.
 
 Native JVMTI callbacks own monitor contention. They also own `Object.wait`
 unless the Java bridge delegates monitor wait events to Java instrumentation.

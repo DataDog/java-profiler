@@ -5,6 +5,13 @@
 
 #include <gtest/gtest.h>
 #include "codeCache.h"
+#ifdef __linux__
+#include "libraries.h"
+#include <dlfcn.h>
+#endif
+
+#include <atomic>
+#include <thread>
 
 #include <stdio.h>
 
@@ -173,3 +180,87 @@ TEST(CodeCacheTest, CommitAddTakesOwnership) {
     EXPECT_EQ(nullptr, prepared.grown);
     EXPECT_EQ(reinterpret_cast<const void *>(0x1000), cc.findSymbol("owned"));
 }
+
+TEST(CodeCacheTest, PeekImportFinalizesVariableCountLayoutWithoutWritingMappings) {
+    CodeCache cache("non-writing-imports");
+    void** read_slot = reinterpret_cast<void**>(1);
+    void** second_read_slot = reinterpret_cast<void**>(2);
+    void** recv_slot = reinterpret_cast<void**>(3);
+    cache.addImport(recv_slot, "recv");
+    cache.addImport(second_read_slot, "read");
+    cache.addImport(read_slot, "read");
+    cache.addImport(read_slot, "read");
+
+    EXPECT_EQ(read_slot, cache.peekImport(im_read));
+    EXPECT_EQ(2u, cache.importCount(im_read));
+    EXPECT_EQ(recv_slot, cache.peekImport(im_recv));
+    EXPECT_EQ(nullptr, cache.peekImport(im_sigaction));
+    // Negative values are outside ImportId's C++ enum domain; use a valid upper outlier.
+    EXPECT_EQ(nullptr, cache.peekImport(static_cast<ImportId>(NUM_IMPORTS + 1)));
+    EXPECT_EQ(nullptr, cache.peekImport(NUM_IMPORTS));
+}
+
+TEST(CodeCacheTest, PublishedImportsPreserveLookupAndDeduplication) {
+    CodeCache cache("published-imports");
+    void** read_slot = reinterpret_cast<void**>(1);
+    void** recv_slot = reinterpret_cast<void**>(2);
+    cache.addImport(recv_slot, "recv");
+    cache.addImport(read_slot, "read");
+    cache.addImport(recv_slot, "recv");
+    cache.markPublished();
+
+    EXPECT_EQ(read_slot, cache.peekImport(im_read));
+    EXPECT_EQ(recv_slot, cache.peekImport(im_recv));
+    EXPECT_EQ(1u, cache.importCount(im_read));
+    EXPECT_EQ(1u, cache.importCount(im_recv));
+}
+
+#ifdef __linux__
+TEST(CodeCacheTest, ConcurrentImportLookupAndReprotectionUseIndependentWriterDomains) {
+    const char* paths[] = {
+        "build/test/resources/native-libs/patch-target-lib/libpatchtarget.so",
+        "../build/test/resources/native-libs/patch-target-lib/libpatchtarget.so",
+    };
+    void* handle = nullptr;
+    for (const char* path : paths) {
+        handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        if (handle != nullptr) break;
+    }
+    ASSERT_NE(nullptr, handle) << dlerror();
+    void* symbol = dlsym(handle, "patch_target_write");
+    ASSERT_NE(nullptr, symbol);
+    Libraries::instance()->updateSymbols(false);
+    CodeCache* cache = Libraries::instance()->findLibraryByAddress(symbol);
+    ASSERT_NE(nullptr, cache);
+    void** slot = cache->findImport(im_write);
+    ASSERT_NE(nullptr, slot);
+    void* original = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+    std::atomic<bool> start{false};
+    std::atomic<bool> lookup_ok{true};
+    std::atomic<bool> reprotect_ok{true};
+    std::thread lookup([&]() {
+        while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (int i = 0; i < 2000; i++) {
+            if (cache->findImport(im_write) != slot ||
+                __atomic_load_n(slot, __ATOMIC_ACQUIRE) != original) {
+                lookup_ok.store(false, std::memory_order_release);
+            }
+        }
+    });
+    std::thread reprotect([&]() {
+        while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (int i = 0; i < 2000; i++) {
+            if (!cache->makeImportsWritable()) {
+                reprotect_ok.store(false, std::memory_order_release);
+            }
+        }
+    });
+    start.store(true, std::memory_order_release);
+    lookup.join();
+    reprotect.join();
+    EXPECT_TRUE(lookup_ok.load(std::memory_order_acquire));
+    EXPECT_TRUE(reprotect_ok.load(std::memory_order_acquire));
+    EXPECT_EQ(original, __atomic_load_n(slot, __ATOMIC_ACQUIRE));
+    EXPECT_EQ(0, dlclose(handle));
+}
+#endif

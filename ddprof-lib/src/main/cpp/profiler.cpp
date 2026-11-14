@@ -10,6 +10,7 @@
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
+#include "nativeSocketInterposer.h"
 #include "context.h"
 #include "guards.h"
 #include "common.h"
@@ -96,6 +97,31 @@ static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
+// jdk.internal.misc.InnocuousThread is the JDK's own marker class for its
+// security-context-free housekeeping threads (Read-Poller/Write-Poller,
+// Common-Cleaner, VirtualThread-unblocker). These are JVM plumbing, never
+// application "task" work, so TaskBlock producers must not attribute
+// blocking activity to them.
+static bool isJvmInternalThread(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  jclass cls = jni->GetObjectClass(thread);
+  if (cls == nullptr) {
+    if (jni->ExceptionCheck()) {
+      jni->ExceptionClear();
+    }
+    return false;
+  }
+  char *sig = nullptr;
+  bool result = false;
+  if (jvmti->GetClassSignature(cls, &sig, nullptr) == 0 && sig != nullptr) {
+    result = strcmp(sig, "Ljdk/internal/misc/InnocuousThread;") == 0;
+  }
+  if (sig != nullptr) {
+    jvmti->Deallocate(reinterpret_cast<unsigned char *>(sig));
+  }
+  jni->DeleteLocalRef(cls);
+  return result;
+}
+
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   // JVMTI callback - outside signal handler
   ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -104,6 +130,8 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   current->setJavaThread(true);
+  current->setJvmInternalThread(thread != nullptr && jvmti != nullptr && jni != nullptr &&
+                                isJvmInternalThread(jvmti, jni, thread));
   int tid = current->tid();
   // Context-filtered recordings pre-register Java threads. Unfiltered wall
   // tracking binds lazily in context/block/park hooks, so an idle thread that
@@ -2512,6 +2540,10 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     setTaskBlockEnabled(
         (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
+    if (taskBlockEnabled()) {
+      Error native_io_error = NativeSocketInterposer::instance()->start();
+      if (native_io_error) Log::warn("%s", native_io_error.message());
+    }
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -2618,6 +2650,7 @@ Error Profiler::stop() {
   // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
+  NativeSocketInterposer::instance()->stop();
   if (_activated_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
   if (_activated_mask & EM_WALL)

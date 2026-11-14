@@ -8,6 +8,7 @@ package com.datadoghq.profiler.wallclock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -21,6 +22,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -45,6 +48,12 @@ public class PrecheckTest extends AbstractProfilerTest {
 
     long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
     assertTrue(token != 0, "Expected native blockEnter to arm SLEEPING state");
+    if (WallClockBlockTrackerTestSupport.available()) {
+      assertTrue(
+          WallClockBlockTrackerTestSupport.hasActiveOwnedBlock(
+              WallClockBlockTrackerTestSupport.currentTid()),
+          "Positive control: the actual explicit owner must be observable");
+    }
     Instant ownedStart;
     Instant ownedEnd;
     try {
@@ -53,6 +62,12 @@ public class PrecheckTest extends AbstractProfilerTest {
       ownedEnd = Instant.now();
     } finally {
       ProfilerOwnedBlockHooks.blockExit(profiler, token);
+    }
+    if (WallClockBlockTrackerTestSupport.available()) {
+      assertFalse(
+          WallClockBlockTrackerTestSupport.hasActiveOwnedBlock(
+              WallClockBlockTrackerTestSupport.currentTid()),
+          "Exited explicit owner must no longer be observable");
     }
 
     stopProfiler();
@@ -203,35 +218,75 @@ public class PrecheckTest extends AbstractProfilerTest {
     assertUnownedSamples(TAIL_WEIGHT_THREAD);
   }
 
+  /** Checks the actual traced worker, not global counters polluted by other native I/O owners. */
   @Test
   public void tracedSleepingThreadIsSampled() throws InterruptedException {
     Assumptions.assumeTrue(!Platform.isJ9());
     Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
 
-    Map<String, Long> countersBefore = profiler.getDebugCounters();
+    AtomicBoolean observing = new AtomicBoolean(true);
+    AtomicBoolean unexpectedOwner = new AtomicBoolean();
+    AtomicInteger observations = new AtomicInteger();
+    AtomicReference<Throwable> observerFailure = new AtomicReference<>();
+    Thread observer = null;
     profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
     try {
+      if (WallClockBlockTrackerTestSupport.available()) {
+        int tid = WallClockBlockTrackerTestSupport.currentTid();
+        assertTrue(tid > 0);
+        observer =
+            new Thread(
+                () -> {
+                  try {
+                    while (observing.get()) {
+                      if (WallClockBlockTrackerTestSupport.hasActiveOwnedBlock(tid)) {
+                        unexpectedOwner.set(true);
+                      }
+                      observations.incrementAndGet();
+                      Thread.sleep(1);
+                    }
+                  } catch (Throwable failure) {
+                    observerFailure.set(failure);
+                  }
+                },
+                "traced-sleep-owner-observer");
+        observer.setDaemon(true);
+        observer.start();
+      }
       Thread.sleep(300);
     } finally {
-      profiler.clearTraceContext();
+      observing.set(false);
+      try {
+        if (observer != null) observer.join(5000);
+      } finally {
+        profiler.clearTraceContext();
+      }
+    }
+    if (observer != null) {
+      assertFalse(observer.isAlive(), "Observer survived bounded cleanup");
+      assertNull(observerFailure.get(), "Target-owner observation failed");
+      assertTrue(observations.get() >= 10, "No target-specific owned-block observation coverage");
+      assertFalse(unexpectedOwner.get(), "The traced sleeper must never acquire an owned block");
     }
 
     stopProfiler();
 
-    long sampleCount = samplesForThread(Thread.currentThread().getName());
+    long sampleCount = 0;
+    String worker = Thread.currentThread().getName();
+    for (JfrEvent sample : verifyEvents("datadog.MethodSample", true)) {
+      if (worker.equals(sample.getThreadName("eventThread"))
+          && sample.getLong(SPAN_ID, 0) == 0x5101L
+          && sample.getStackTraceString().contains("java.lang.Thread.sleep")) {
+        assertEquals(0x5100L, sample.getLong(LOCAL_ROOT_SPAN_ID, 0));
+        assertEquals(
+            1L, sample.getLong(WEIGHT, 0), "Traced sleep must remain an ordinary unit sample");
+        sampleCount++;
+      }
+    }
     assertTrue(
         sampleCount >= 10,
-        "Expected normal MethodSample volume for traced sleep, got: " + sampleCount);
-
-    if (countersBefore.containsKey("wc_signals_suppressed_owned_block")) {
-      long suppressedBefore = countersBefore.get("wc_signals_suppressed_owned_block");
-      long suppressedAfter =
-          profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
-      assertEquals(
-          suppressedBefore,
-          suppressedAfter,
-          "wc_signals_suppressed_owned_block must not increment for traced sleep");
-    }
+        "Expected normal context-carrying MethodSample volume for traced sleep, got: "
+            + sampleCount);
   }
 
   @Test

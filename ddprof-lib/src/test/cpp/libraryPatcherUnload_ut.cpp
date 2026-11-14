@@ -4,8 +4,9 @@
  */
 
 // LibraryPatcher keeps raw GOT-slot addresses of patched DSOs (and
-// CodeCacheArray never drops a CodeCache), but nothing pins those DSOs. Once a
-// patched DSO is dlclose()d and unmapped, restoring the hooks on stop, or
+// CodeCacheArray never drops a CodeCache). Non-socket live walks do not pin
+// DSOs; native socket imports stay pinned until restoration. Once an unpinned
+// DSO is dlclose()d and unmapped, restoring the hooks on stop, or
 // re-installing them on the next start, must not write through the stale
 // address: that is a SIGSEGV if the range is unmapped and silent corruption if
 // something else reused it.
@@ -74,7 +75,14 @@ struct PatchKind {
 
 const PatchKind SOCKET = {
   "socket", im_write,
-  []() { LibraryPatcher::patch_socket_functions(); },
+  []() {
+    // This general unload fixture is not a production-selected socket DSO.
+    // Exercise the native pin/restore mechanism without widening its allowlist.
+    CodeCache* cc = Libraries::instance()->findLibraryByName("libpatchtarget");
+    if (cc == nullptr) _exit(CHILD_LIB_NOT_FOUND);
+    LibraryPatcher::patch_socket_import_for_test(
+        cc, im_write, (void*)NativeSocketSampler::write_hook, "write", true);
+  },
   []() { LibraryPatcher::unpatch_socket_functions(); },
 };
 
@@ -397,7 +405,7 @@ static LoadedLib loadUnlinkedLib(bool unlink_before_parse, LoadName load_name) {
   if (!unlink_before_parse) unlink(path);
   CodeCache* cc = Libraries::instance()->findLibraryByName("libpatchtarget");
   if (cc == nullptr) _exit(CHILD_LIB_NOT_FOUND);
-  void** slot = cc->findImport(im_write);
+  void** slot = cc->findImport(im_pthread_create);
   if (slot == nullptr) _exit(CHILD_NO_IMPORT);
   return {handle, slot, *slot};
 }
@@ -407,8 +415,8 @@ static LoadedLib loadUnlinkedLib(bool unlink_before_parse, LoadName load_name) {
 // identifies it.
 static void patchAndRestoreUnlinkedLibrary(bool unlink_before_parse, LoadName load_name) {
   LoadedLib lib = loadUnlinkedLib(unlink_before_parse, load_name);
-  patchAndVerify(SOCKET, lib);
-  unpatchAndVerifyRestored(SOCKET, lib);
+  patchAndVerify(PTHREAD_CREATE, lib);
+  unpatchAndVerifyRestored(PTHREAD_CREATE, lib);
 }
 
 TEST_F(LibraryPatcherIdentityTest, PatchesLibraryUnlinkedBeforeParsing) {
@@ -433,14 +441,14 @@ TEST_F(LibraryPatcherIdentityTest, PatchesLibraryLoadedBySymlinkAndUnlinked) {
 }
 
 // Registers a CodeCache that claims the test DSO's image base, with the given
-// file and image identity and a write() import pointing at *slot.
+// file and image identity and a pthread_create() import pointing at *slot.
 static void addCacheAtLibraryBase(CodeCache* real, u64 file_id, u64 fingerprint, void** slot) {
   if (real->imageFingerprint() == 0) _exit(CHILD_NO_FINGERPRINT);
   CodeCache* cc = new CodeCache("fake-at-same-base", -1, real->minAddress(), real->maxAddress(),
                                 real->imageBase(), /*imports_patchable=*/true);
   cc->setFileId(file_id);
   cc->setImageFingerprint(fingerprint);
-  cc->addImport(slot, "write");
+  cc->addImport(slot, "pthread_create");
   Libraries::instance()->addLibraryForTest(cc);
 }
 
@@ -450,8 +458,8 @@ static bool patchWritesFakeCache(const LoadedLib& lib, u64 file_id, u64 fingerpr
   CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
   static void* word = (void*)&SENTINEL;
   addCacheAtLibraryBase(real, file_id, fingerprint, &word);
-  LibraryPatcher::patch_socket_functions();
-  if (*lib.slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
+  PTHREAD_CREATE.patch();
+  if (*lib.slot == lib.orig) _exit(CHILD_SLOT_NOT_HOOKED);
   return word != (void*)&SENTINEL;
 }
 
@@ -464,7 +472,7 @@ static CodeCache* realCache() {
 // library. It has neither the file nor the image identity of the new one.
 TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfDifferentImageAtSameBase) {
   runInChild([]() {
-    LoadedLib lib = loadLib(SOCKET);
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
     if (patchWritesFakeCache(lib, realCache()->fileId() + 1, realCache()->imageFingerprint() + 1)) {
       _exit(CHILD_CORRUPTED);
     }
@@ -476,7 +484,7 @@ TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfDifferentImageAtSameBase) {
 // deleted file, and is then not parsed, because the inode has been seen.
 TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfSameFileButDifferentImage) {
   runInChild([]() {
-    LoadedLib lib = loadLib(SOCKET);
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
     if (patchWritesFakeCache(lib, realCache()->fileId(), realCache()->imageFingerprint() + 1)) {
       _exit(CHILD_CORRUPTED);
     }
@@ -486,7 +494,7 @@ TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheOfSameFileButDifferentImage) {
 // Control for the tests above: the image identity alone is enough.
 TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameImageAtSameBase) {
   runInChild([]() {
-    LoadedLib lib = loadLib(SOCKET);
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
     if (!patchWritesFakeCache(lib, realCache()->fileId() + 1, realCache()->imageFingerprint())) {
       _exit(CHILD_SLOT_NOT_HOOKED);
     }
@@ -497,7 +505,7 @@ TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheOfSameImageAtSameBase) {
 // parsed, falls back to the backing file.
 TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheWithoutFingerprintOfSameFile) {
   runInChild([]() {
-    LoadedLib lib = loadLib(SOCKET);
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
     if (!patchWritesFakeCache(lib, realCache()->fileId(), 0)) {
       _exit(CHILD_SLOT_NOT_HOOKED);
     }
@@ -506,7 +514,7 @@ TEST_F(LibraryPatcherIdentityTest, PatchAcceptsCacheWithoutFingerprintOfSameFile
 
 TEST_F(LibraryPatcherIdentityTest, PatchSkipsCacheWithoutFingerprintOfDifferentFile) {
   runInChild([]() {
-    LoadedLib lib = loadLib(SOCKET);
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
     if (patchWritesFakeCache(lib, realCache()->fileId() + 1, 0)) {
       _exit(CHILD_CORRUPTED);
     }
@@ -601,69 +609,70 @@ TEST_F(LibraryPatcherIdentityTest, FingerprintCoversImports) {
 
 // The patched DSO is unloaded and replaced, at the same base, by a build
 // without a build-id whose program headers are identical but whose GOT slot
-// at the saved address holds read() instead of write(). Stopping must not
-// restore write() into it.
+// at the saved address holds posix_memalign() instead of pthread_create().
+// Stopping must not restore pthread_create() into it.
 TEST_F(LibraryPatcherIdentityTest, UnpatchDoesNotWriteIntoReplacementWithSameLayout) {
   runInChild([]() {
-    char write_path[PATH_MAX], read_path[PATH_MAX];
-    testLibPath(write_path, sizeof(write_path), "/libnoid-write.so");
-    testLibPath(read_path, sizeof(read_path), "/libnoid-read.so");
-    requireUnloadableEnvironment(write_path);
+    char pthread_path[PATH_MAX], posix_path[PATH_MAX];
+    testLibPath(pthread_path, sizeof(pthread_path), "/libnoid-pthread.so");
+    testLibPath(posix_path, sizeof(posix_path), "/libnoid-posix.so");
+    requireUnloadableEnvironment(pthread_path);
 
-    void* handle = dlopen(write_path, RTLD_NOW);
+    void* handle = dlopen(pthread_path, RTLD_NOW);
     if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
     Libraries::instance()->updateSymbols(false);
-    CodeCache* old_cache = Libraries::instance()->findLibraryByName("libnoid-write");
+    CodeCache* old_cache = Libraries::instance()->findLibraryByName("libnoid-pthread");
     if (old_cache == nullptr) _exit(CHILD_LIB_NOT_FOUND);
-    void** slot = old_cache->findImport(im_write);
+    void** slot = old_cache->findImport(im_pthread_create);
     if (slot == nullptr) _exit(CHILD_NO_IMPORT);
-    FingerprintQuery old_image = {"/libnoid-write.so", 0, nullptr, 0, 0};
+    FingerprintQuery old_image = {"/libnoid-pthread.so", 0, nullptr, 0, 0};
     queryLoaded(old_image);
     ElfW(Phdr) old_phdrs[16];
     if (old_image.phnum > 16) _exit(CHILD_SKIP);
     memcpy(old_phdrs, old_image.phdrs, old_image.phnum * sizeof(ElfW(Phdr)));
 
-    LibraryPatcher::patch_socket_functions();
-    if (*slot != (void*)NativeSocketSampler::write_hook) _exit(CHILD_SLOT_NOT_HOOKED);
-    if (!unload(handle, slot, write_path)) _exit(CHILD_SKIP);  // pinned: no replacement possible
+    void* original = *slot;
+    PTHREAD_CREATE.patch();
+    if (*slot == original) _exit(CHILD_SLOT_NOT_HOOKED);
+    if (!unload(handle, slot, pthread_path)) _exit(CHILD_SKIP);  // pinned: no replacement possible
 
-    if (dlopen(read_path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
-    FingerprintQuery new_image = {"/libnoid-read.so", 0, nullptr, 0, 0};
+    if (dlopen(posix_path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
+    FingerprintQuery new_image = {"/libnoid-posix.so", 0, nullptr, 0, 0};
     queryLoaded(new_image);
     if (new_image.base != old_image.base || new_image.phnum != old_image.phnum
         || memcmp(new_image.phdrs, old_phdrs, new_image.phnum * sizeof(ElfW(Phdr))) != 0) {
       _exit(CHILD_SKIP);  // not the same layout at the same base
     }
     Libraries::instance()->updateSymbols(false);
-    CodeCache* new_cache = Libraries::instance()->findLibraryByName("libnoid-read");
+    CodeCache* new_cache = Libraries::instance()->findLibraryByName("libnoid-posix");
     if (new_cache == nullptr) _exit(CHILD_LIB_NOT_FOUND);
-    if (new_cache->peekImport(im_read) != slot) _exit(CHILD_SKIP);  // GOTs laid out differently
+    if (new_cache->peekImport(im_posix_memalign) != slot) _exit(CHILD_SKIP);  // GOTs laid out differently
 
     void* before = *slot;
-    LibraryPatcher::unpatch_socket_functions();
+    PTHREAD_CREATE.unpatch();
     if (*slot != before) _exit(CHILD_CORRUPTED);
   });
 }
 
-// Set by the stopping thread just before it calls unpatch_socket_functions().
+// Set by the stopping thread just before it calls unpatch_libraries().
 std::atomic<bool> g_stopper_started{false};
 
-static void* stopSocketPatching(void*) {
+static void* stopLibraryPatching(void*) {
   g_stopper_started.store(true);
-  LibraryPatcher::unpatch_socket_functions();
+  LibraryPatcher::unpatch_libraries();
   return nullptr;
 }
 
 // A foreign dl_iterate_phdr() callback, holding dl_load_write_lock, that
 // patches as a refresh does: loading a library through the JVM from such a
 // callback reaches Profiler::dlopen_hook(), which refreshes synchronously.
-// Meanwhile another thread stops socket patching and waits for the same lock.
+// Meanwhile another thread stops non-socket patching and waits for the same lock.
 static int patchInsideForeignWalk(struct dl_phdr_info*, size_t, void* data) {
   pthread_t* stopper = (pthread_t*)data;
-  if (pthread_create(stopper, nullptr, stopSocketPatching, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
+  if (pthread_create(stopper, nullptr, stopLibraryPatching, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
   while (!g_stopper_started.load()) sched_yield();
   usleep(200 * 1000);  // let the stopper block on dl_load_write_lock
-  LibraryPatcher::patch_socket_functions();
+  PTHREAD_CREATE.patch();
   return 1;
 }
 
@@ -671,8 +680,8 @@ static int patchInsideForeignWalk(struct dl_phdr_info*, size_t, void* data) {
 // the stopper must not hold the patch lock while it waits for the loader's lock.
 TEST_F(LibraryPatcherLockOrderTest, PatchInsideForeignWalkDoesNotDeadlockWithStop) {
   runInChild([]() {
-    LoadedLib lib = loadLib(SOCKET);
-    patchAndVerify(SOCKET, lib);
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    patchAndVerify(PTHREAD_CREATE, lib);
     signal(SIGALRM, [](int) { _exit(CHILD_DEADLOCK); });
     alarm(10);
     pthread_t stopper;
