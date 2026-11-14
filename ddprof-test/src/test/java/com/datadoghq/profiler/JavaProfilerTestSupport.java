@@ -53,4 +53,22 @@ public final class JavaProfilerTestSupport {
     return JavaProfiler.recordUnownedWallTailAcrossDumpForTest0(
         Thread.currentThread(), snapshot, dumpAfterPrimary, resetBeforeTail);
   }
+
+  /**
+   * Seeds a blocked stack and five suppressed observations, dumps JFR, then invokes a real
+   * owned-block producer while profiling signals are blocked. Debug builds only.
+   *
+   * @param snapshot path receiving the chunk containing the initial blocked sample
+   * @param producer producer to invoke: 0 for paired API, 1 for generic block, 2 for park, or 3 for
+   *     native monitor contention
+   * @return whether seeding, dumping and producer admission succeeded
+   */
+  public static boolean recordUnownedWallTailBeforeOwnedBlockForTest(
+      String snapshot, int producer) {
+    return recordUnownedWallTailBeforeOwnedBlockForTest0(
+        Thread.currentThread(), snapshot, producer);
+  }
+
+  private static native boolean recordUnownedWallTailBeforeOwnedBlockForTest0(
+      Thread thread, String snapshot, int producer);
 }

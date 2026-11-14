@@ -7,6 +7,8 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <dlfcn.h>
+#include <memory>
+#include <limits>
 
 // mallinfo2() replaced the int-based mallinfo() in glibc 2.33; the older struct
 // silently truncates past 2 GiB, so it is not a usable fallback for byte
@@ -957,13 +959,15 @@ char *Recording::_jvm_flags = NULL;
 char *Recording::_java_command = NULL;
 
 Recording::Recording(int fd, Arguments &args)
-    : _fd(fd), _method_map(), _has_post_flush(false) {
+    : _fd(fd), _output(fd), _method_map(), _has_post_flush(false) {
+
+  if (!_output.good()) throw OutputFailure{};
 
   memset(_post_flush_live, 0, sizeof(_post_flush_live));
   memset(_post_flush_max, 0, sizeof(_post_flush_max));
 
   args.save(_args);
-  _chunk_start = lseek(_fd, 0, SEEK_END);
+  _chunk_start = static_cast<off_t>(_output.size());
   _start_time = OS::micros();
   _start_ticks = TSC::ticks();
   _recording_start_time = _start_time;
@@ -993,6 +997,7 @@ Recording::Recording(int fd, Arguments &args)
   }
   flush(_buf);
 
+  _cold_io = false;
   _cpu_monitor_enabled = !args.hasOption(NO_CPU_LOAD);
   if (_cpu_monitor_enabled) {
     _last_times.proc.real =
@@ -1003,24 +1008,45 @@ Recording::Recording(int fd, Arguments &args)
 }
 
 Recording::~Recording() {
-#ifdef UNIT_TEST
-  if (_fd == -1) return; // Buffer/table-only serializer fixture.
-#endif
-  finishChunk(true);
-  close(_fd);
+  if (_fd >= 0) {
+    finishChunk(true);
+    _output.closeTarget(_fd);
+  }
 }
 
-void Recording::copyTo(int target_fd) {
-  OS::copyFile(_fd, target_fd, 0, finishChunk(true));
+RecordingOutput::Delivery Recording::closeOutput() {
+  RecordingOutput::Delivery delivery = _output.sealAndClose(_first_retained_chunk, _chunk_sequence);
+  if (delivery) _fd = -1;
+  return delivery;
+}
+
+bool Recording::copyTo(int target_fd) {
+  off_t end = finishChunk(true);
+  return end >= 0 && OS::copyFile(_fd, target_fd, 0, end);
 }
 
 off_t Recording::finishChunk() { return finishChunk(false); }
 
 off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
+  if (!_output.good()) return -1;
+  if (!_chunk_open) return static_cast<off_t>(_output.size());
+  _cold_io = true;
+  try {
+    off_t end = finishChunkContents(end_recording, do_cleanup);
+    _chunk_open = false;
+    _cold_io = false;
+    return end;
+  } catch (const OutputFailure&) {
+    _cold_io = false;
+    return -1;
+  }
+}
+
+off_t Recording::finishChunkContents(bool end_recording, bool do_cleanup) {
   jvmtiEnv *jvmti = VM::jvmti();
   JNIEnv *env = VM::jni();
 
-  jclass *classes;
+  jclass *classes = nullptr;
   jint count = 0;
   // Pin all currently-loaded classes for the duration of finishChunk().
   // resolveMethod() calls GetLineNumberTable/GetClassSignature/GetMethodName on
@@ -1031,6 +1057,11 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // call.  Classes already unloaded before finishChunk() was entered are not
   // present in the list and receive no protection here.
   jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
+  auto unpin = [env, jvmti, count](jclass* pinned) {
+    for (int i = 0; i < count; ++i) env->DeleteLocalRef(pinned[i]);
+    jvmti->Deallocate(reinterpret_cast<unsigned char*>(pinned));
+  };
+  std::unique_ptr<jclass, decltype(unpin)> pins(err == JVMTI_ERROR_NONE ? classes : nullptr, unpin);
   // fjmethodid=lazy resolves raw frames only of these classes: they stay
   // pinned until the local references are deleted below. Always called, so a
   // failed GetLoadedClasses() leaves no list at all rather than a stale one,
@@ -1095,26 +1126,24 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
     flush(&_buf[i]);
   }
 
-  off_t cpool_offset = lseek(_fd, 0, SEEK_CUR);
+  off_t cpool_offset = static_cast<off_t>(_output.size());
   int count_offset_in_cpool = 0;
   int pool_count = writeCpool(_buf, &count_offset_in_cpool);
   flush(_buf);
 
-  off_t cpool_end = lseek(_fd, 0, SEEK_CUR);
+  off_t cpool_end = static_cast<off_t>(_output.size());
 
   // Patch cpool size field
   _buf->putVar32(0, cpool_end - cpool_offset);
-  ssize_t result = pwrite(_fd, _buf->data(), 5, cpool_offset);
-  (void)result;
+  patch(_buf, 5, cpool_offset);
 
   // Patch the constant pool count placeholder (written as a 1-byte put8 in
   // writeCpool). Done flush-safe via pwrite to the FILE offset, mirroring the
   // size patch above: _buf has been flushed/reset, so _buf->data() is scratch.
   _buf->put8(0, (char)pool_count);
-  result = pwrite(_fd, _buf->data(), 1, cpool_offset + count_offset_in_cpool);
-  (void)result;
+  patch(_buf, 1, cpool_offset + count_offset_in_cpool);
 
-  off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
+  off_t chunk_end = static_cast<off_t>(_output.size());
 
   // // Workaround for JDK-8191415: compute actual TSC frequency, in case JFR is
   // wrong
@@ -1132,8 +1161,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   _buf->put64((_stop_time - _start_time) * 1000);
   _buf->put64(_start_ticks);
   _buf->put64(tsc_frequency);
-  result = pwrite(_fd, _buf->data(), 56, _chunk_start + 8);
-  (void)result;
+  patch(_buf, 56, _chunk_start + 8);
 
   OS::freePageCache(_fd, _chunk_start);
 
@@ -1158,54 +1186,61 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   capturePostFlushNativeMem();
 
   JVMSupport::endDump();
-  if (!err) {
-    // delete all local references
-    for (int i = 0; i < count; i++) {
-      env->DeleteLocalRef((jobject)classes[i]);
-    }
-    // deallocate the class array
-    jvmti->Deallocate((unsigned char *)classes);
-  }
+
   return chunk_end;
 }
 
-// Finish the current chunk, move it to the external file `fd` (must be a valid
-// open descriptor), then restart the continuous recording file with a fresh
-// chunk header. Callers guarantee fd > -1 (see FlightRecorder::dump).
-void Recording::switchChunk(int fd) {
-  _chunk_start = finishChunk(/*end_recording=*/true, /*do_cleanup=*/true);
-
-  TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
-  TEST_LOG("Recording::switchChunk copying [0, %lld) from _fd=%d to fd=%d",
-           (long long)_chunk_start, _fd, fd);
-
+// Finish the current chunk and consume the qualified destination descriptor.
+// Failed delivery retains every sealed chunk in the source; new observations
+// begin a new chunk after that retained prefix, not inside its patched header.
+RecordingOutput::Delivery Recording::switchChunk(int fd) {
+  if (_chunk_sequence == std::numeric_limits<u64>::max()) {
+    _output.invalidate(EOVERFLOW);
+    _output.closeTarget(fd);
+    return {};
+  }
+  off_t end = finishChunk(/*end_recording=*/true, /*do_cleanup=*/true);
+  if (end < 0) {
+    _output.closeTarget(fd);
+    return {};
+  }
+  RecordingOutput::Delivery delivery = _output.deliverAndClose(fd, _first_retained_chunk, _chunk_sequence);
+  if (!_output.good()) return {};
+  if (delivery) {
+    if (!_output.restart()) return {};
+    _chunk_start = 0;
+    _bytes_written = 0;
+    _first_retained_chunk = _chunk_sequence + 1;
+  } else {
+    _chunk_start = end;
+  }
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
-  _bytes_written = 0;
+  ++_chunk_sequence;
+  _chunk_open = true;
 
-  // move the chunk to the external file and reset the continuous recording file
-  OS::copyFile(_fd, fd, 0, _chunk_start);
-  OS::truncateFile(_fd);
-  _chunk_start = 0;
-
-  // the recording file is restarted, so write out all the info events again
-  writeHeader(_buf);
-  writeMetadata(_buf);
-  writeSettings(_buf, _args);
-  if (!_args.hasOption(NO_SYSTEM_INFO)) {
-    writeOsCpuInfo(_buf);
-    writeJvmInfo(_buf);
+  _cold_io = true;
+  try {
+    writeHeader(_buf);
+    writeMetadata(_buf);
+    writeSettings(_buf, _args);
+    if (!_args.hasOption(NO_SYSTEM_INFO)) {
+      writeOsCpuInfo(_buf);
+      writeJvmInfo(_buf);
+    }
+    if (!_args.hasOption(NO_SYSTEM_PROPS)) writeSystemProperties(_buf);
+    if (!_args.hasOption(NO_NATIVE_LIBS)) {
+      _recorded_lib_count = 0;
+      writeNativeLibraries(_buf);
+    } else {
+      _recorded_lib_count = -1;
+    }
+    flush(_buf);
+  } catch (const OutputFailure&) {
+    delivery = {};
   }
-  if (!_args.hasOption(NO_SYSTEM_PROPS)) {
-    writeSystemProperties(_buf);
-  }
-  if (!_args.hasOption(NO_NATIVE_LIBS)) {
-    _recorded_lib_count = 0;
-    writeNativeLibraries(_buf);
-  } else {
-    _recorded_lib_count = -1;
-  }
-  flush(_buf);
+  _cold_io = false;
+  return delivery;
 }
 
 void Recording::cpuMonitorCycle() {
@@ -1297,7 +1332,9 @@ void Recording::appendRecording(const char *target_file, size_t size) {
   int append_fd = open(target_file, O_WRONLY);
   if (append_fd >= 0) {
     lseek(append_fd, 0, SEEK_END);
-    OS::copyFile(_fd, append_fd, 0, size);
+    if (!OS::copyFile(_fd, append_fd, 0, size)) {
+      Log::warn("Failed to append complete JFR recording to %s", target_file);
+    }
     close(append_fd);
   } else {
     Log::warn("Failed to open JFR recording at %s: %s", target_file,
@@ -1361,17 +1398,29 @@ bool Recording::parseAgentProperties() {
 }
 
 void Recording::flush(Buffer *buf) {
-  ssize_t result = write(_fd, buf->data(), buf->offset());
-  if (result > 0) {
-    atomicInc(_bytes_written, result);
+  size_t bytes = buf->offset();
+  if (!_output.append(buf->data(), bytes)) {
+    if (_cold_io) throw OutputFailure{};
+    return;  // Keep the original buffer and all dictionaries owned on failure.
   }
+  atomicInc(_bytes_written, bytes);
   buf->reset();
 }
 
-void Recording::flushIfNeeded(Buffer *buf, int limit) {
+void Recording::patch(Buffer* buf, size_t size, off_t offset) {
+  if (!_output.patch(buf->data(), size, offset)) throw OutputFailure{};
+}
+
+// True when it is safe to append to buf: a needed flush either succeeded or
+// threw (cold paths). False only when the flush failed with bytes retained:
+// pre-reservation callers must abort their serializer, not append past the
+// preserved range.
+bool Recording::flushIfNeeded(Buffer *buf, int limit) {
   if (buf->offset() >= limit) {
     flush(buf);
+    if (buf->offset() != 0 && !outputGood()) return false;
   }
+  return true;
 }
 
 void Recording::writeMetadata(Buffer *buf) {
@@ -1386,7 +1435,7 @@ void Recording::writeMetadata(Buffer *buf) {
   for (size_t i = 0; i < strings.size(); i++) {
     const char *string = strings[i].c_str();
     int length = strlen(string);
-    flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
+    if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length)) return;
     buf->putUtf8(string, length);
   }
 
@@ -1546,8 +1595,10 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
 
 void Recording::writeStringSetting(Buffer *buf, int category, const char *key,
                                    const char *value) {
-  flushIfNeeded(buf, RECORDING_BUFFER_LIMIT -
-                         (2 * MAX_STRING_LENGTH + MAX_JFR_EVENT_SIZE));
+  if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT -
+                         (2 * MAX_STRING_LENGTH + MAX_JFR_EVENT_SIZE))) {
+    return;
+  }
   int start = buf->skip(5);
   buf->putVar64(T_ACTIVE_SETTING);
   buf->putVar64(_start_ticks);
@@ -1584,7 +1635,7 @@ void Recording::writeListSetting(Buffer *buf, int category, const char *key,
 
 void Recording::writeDatadogSetting(Buffer *buf, int length, const char *name,
                                     const char *value, const char *unit) {
-  flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
+  if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length)) return;
   int start = buf->skip(MAX_VAR32_LENGTH);
   buf->putVar64(T_DATADOG_SETTING);
   buf->putVar64(_start_ticks);
@@ -1604,9 +1655,11 @@ void Recording::writeDatadogProfilerConfig(
     Buffer *buf, long cpuInterval, long wallInterval, long allocInterval,
     long memleakInterval, long memleakCapacity, double memleakRatio,
     bool gcGenerations, int modeMask, const char *cpuEngine) {
-  flushIfNeeded(buf, RECORDING_BUFFER_LIMIT -
+  if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT -
                          (1 + 6 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH +
-                          3 * MAX_STRING_LENGTH));
+                          3 * MAX_STRING_LENGTH))) {
+    return;
+  }
   int start = buf->skip(1);
   buf->putVar64(T_DATADOG_PROFILER_CONFIG);
   buf->putVar64(_start_ticks);
@@ -1679,8 +1732,21 @@ void Recording::writeJvmInfo(Buffer *buf) {
   jvmtiEnv *jvmti = VM::jvmti();
   jvmti->GetSystemProperty("java.vm.name", &jvm_name);
   jvmti->GetSystemProperty("java.vm.version", &jvm_version);
+  // Both strings are JVMTI-allocated on every path below; this owner releases
+  // them on every exit, including the preflush abort and a cold OutputFailure.
+  struct OwnedProperties {
+    jvmtiEnv *env;
+    char *name;
+    char *version;
+    ~OwnedProperties() {
+      env->Deallocate((unsigned char *)version);
+      env->Deallocate((unsigned char *)name);
+    }
+  } owned{jvmti, jvm_name, jvm_version};
 
-  flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - 5 * MAX_STRING_LENGTH);
+  if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - 5 * MAX_STRING_LENGTH)) {
+    return;
+  }
   int start = buf->skip(5);
   buf->putVar64(T_JVM_INFORMATION);
   buf->putVar64(_start_ticks);
@@ -1693,9 +1759,6 @@ void Recording::writeJvmInfo(Buffer *buf) {
   buf->putVar64(OS::processId());
   buf->putVar32(start, buf->offset() - start);
   flushIfNeeded(buf);
-
-  jvmti->Deallocate((unsigned char *)jvm_version);
-  jvmti->Deallocate((unsigned char *)jvm_name);
 }
 
 void Recording::writeSystemProperties(Buffer *buf) {
@@ -1706,24 +1769,45 @@ void Recording::writeSystemProperties(Buffer *buf) {
     return;
   }
 
-  for (int i = 0; i < count; i++) {
+  // Every keys[] element is separately JVMTI-allocated: Deallocate(keys)
+  // frees only the array. This owner releases every key and the array on
+  // every exit, including a mid-iteration abort and a cold OutputFailure.
+  struct OwnedKeys {
+    jvmtiEnv *env;
+    jint count;
+    char **keys;
+    ~OwnedKeys() {
+      for (jint i = 0; i < count; i++) {
+        env->Deallocate((unsigned char *)keys[i]);
+      }
+      env->Deallocate((unsigned char *)keys);
+    }
+  } owned_keys{jvmti, count, keys};
+
+  for (jint i = 0; i < count; i++) {
     char *key = keys[i];
     char *value = NULL;
+    // Releases this iteration's value on every exit; OwnedKeys frees the key.
+    struct OwnedValue {
+      jvmtiEnv *env;
+      char *&value;
+      ~OwnedValue() {
+        if (value != NULL) env->Deallocate((unsigned char *)value);
+      }
+    } owned_value{jvmti, value};
     if (jvmti->GetSystemProperty(key, &value) == 0) {
-      flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - 2 * MAX_STRING_LENGTH);
+      if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - 2 * MAX_STRING_LENGTH)) {
+        break;
+      }
       int start = buf->skip(5);
       buf->putVar64(T_INITIAL_SYSTEM_PROPERTY);
       buf->putVar64(_start_ticks);
       buf->putUtf8(key);
       buf->putUtf8(value);
       buf->putVar32(start, buf->offset() - start);
-      jvmti->Deallocate((unsigned char *)value);
     }
-    jvmti->Deallocate((unsigned char *)key);
   }
   flushIfNeeded(buf);
-
-  jvmti->Deallocate((unsigned char *)keys);
 }
 
 void Recording::writeNativeLibraries(Buffer *buf) {
@@ -1740,7 +1824,7 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   for (int i = _recorded_lib_count; i < native_lib_count; i++) {
     CodeCache* lib = native_libs[i];
 
-    flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
+    if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH)) return;
     int start = buf->skip(5);
     buf->putVar64(T_NATIVE_LIBRARY);
     buf->putVar64(_start_ticks);
@@ -2096,7 +2180,7 @@ int Recording::writeConstantPoolSection(
        it != constants.end(); ++it) {
     int length = strlen(it->second);
     // 5 is max varint length
-    flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length - 5);
+    if (!flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length - 5)) return 0;
     buf->putVar64(it->first);
     buf->putUtf8(it->second, length);
   }
@@ -2629,10 +2713,14 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // the truncation cap from drifting apart; reserving the full per-hop label
   // bytes even when labels are absent (edge_count == 0) can only flush the
   // buffer earlier, never underflow it.
-  flushIfNeeded(
-      buf, RECORDING_BUFFER_LIMIT -
-               (REFERENCE_CHAIN_EVENT_FIXED_BYTES +
-                (int)emitted_size * REFERENCE_CHAIN_EVENT_PER_HOP_BYTES));
+  if (!flushIfNeeded(
+          buf, RECORDING_BUFFER_LIMIT -
+                   (REFERENCE_CHAIN_EVENT_FIXED_BYTES +
+                    (int)emitted_size * REFERENCE_CHAIN_EVENT_PER_HOP_BYTES))) {
+    // The failed flush retained the buffer's bytes; aborting is the only way
+    // to avoid appending past that preserved range and overflowing.
+    return;
+  }
 
   // Multi-byte size prefix (like writeDatadogSetting() above), not
   // writeEventSizePrefix()'s single byte - this event's size can exceed
@@ -2742,13 +2830,16 @@ bool Recording::addThread(int lock_index, int tid) {
 Error FlightRecorder::start(Arguments &args, bool reset) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
+  if (_rec != nullptr || _uncertain_create_fd >= 0) {
+    return Error("Previous recording output is still owned");
+  }
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {
     _filename = "";
     return Error("Flight Recorder output file is not specified");
   }
   _filename = file;
-  _args = args;
+  args.save(_args);
 
   TSC::enable(args._clock);
 
@@ -2763,19 +2854,36 @@ Error FlightRecorder::newRecording(bool reset) {
     return Error("Could not open Flight Recorder output file");
   }
 
-  _rec = new Recording(fd, _args);
+  try {
+    _rec = new Recording(fd, _args);
+  } catch (const Recording::OutputFailure&) {
+    if (close(fd) != 0) _uncertain_create_fd = fd;
+    return Error("Could not initialize complete Flight Recorder output");
+  }
   // The Recording embeds the JFR RecordingBuffer array and the cpu-monitor
   // buffer, so its allocation size is the profiler's JFR buffer footprint.
   NativeMem::record(NM_JFR_BUFFERS, (long long)sizeof(Recording));
   return Error::OK;
 }
 
-void FlightRecorder::stop() {
+Error FlightRecorder::stop() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
-    // NULL first, deallocate later
+    if (rec->finishChunk(true) < 0) {
+      return Error("Incomplete recording output retained; restart refused");
+    }
+    RecordingOutput::Delivery delivery = rec->closeOutput();
+    if (!delivery) return Error("Recording close incomplete; ownership retained");
+    Counters::increment(JFR_DELIVERIES_CERTIFIED);
+    TEST_LOG("JFR stop delivery custody: recording=%llu first_chunk=%llu last_chunk=%llu bytes=%llu inherited_prefix_bytes=%llu (not receiving credit)",
+             (unsigned long long)delivery.recording_id,
+             (unsigned long long)delivery.first_chunk,
+             (unsigned long long)delivery.last_chunk,
+             (unsigned long long)delivery.bytes,
+             (unsigned long long)delivery.inherited_prefix_bytes);
+    // NULL first, deallocate later. Failed output remains owned above.
     _rec = nullptr;
     // Decrement AFTER delete: ~Recording() runs finishChunk(), which emits the
     // native-memory counters for the final chunk. The Recording buffers are
@@ -2784,6 +2892,7 @@ void FlightRecorder::stop() {
     delete rec;
     NativeMem::record(NM_JFR_BUFFERS, -(long long)sizeof(Recording));
   }
+  return Error::OK;
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
@@ -2796,12 +2905,24 @@ Error FlightRecorder::dump(const char *filename, const int length) {
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
       // working file there
-      int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
+      if (!rec->outputGood()) return Error("Incomplete recording output is still owned");
+      int copy_fd = open(filename, O_CREAT | O_RDWR, 0644);
       if (copy_fd == -1) {
         return Error("Could not open recording file for dump");
       }
-      rec->switchChunk(copy_fd);
-      close(copy_fd);
+      if (!rec->prepareDumpTarget(copy_fd)) {
+        rec->_output.closeTarget(copy_fd);
+        return Error("Could not qualify recording dump destination");
+      }
+      RecordingOutput::Delivery delivery = rec->switchChunk(copy_fd);
+      if (!delivery) return Error("Incomplete recording delivery; source bytes retained");
+      Counters::increment(JFR_DELIVERIES_CERTIFIED);
+      TEST_LOG("JFR delivery custody: recording=%llu first_chunk=%llu last_chunk=%llu bytes=%llu inherited_prefix_bytes=%llu (not receiving credit)",
+               (unsigned long long)delivery.recording_id,
+               (unsigned long long)delivery.first_chunk,
+               (unsigned long long)delivery.last_chunk,
+               (unsigned long long)delivery.bytes,
+               (unsigned long long)delivery.inherited_prefix_bytes);
       return Error::OK;
     }
     return Error(
@@ -2815,7 +2936,7 @@ void FlightRecorder::wallClockEpoch(int lock_index,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordWallClockEpoch(buf, event);
     }
@@ -2827,7 +2948,7 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordTraceRoot(buf, tid, event);
     }
@@ -2839,7 +2960,7 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordQueueTime(buf, tid, event);
     }
@@ -2851,13 +2972,13 @@ bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       // Reject before serialization if eventThread cannot enter this chunk's
       // constant pool. The TaskBlock caller counts false as RECORD_FAILED.
       if (!rec->addThread(lock_index, tid)) return false;
       rec->recordTaskBlock(buf, tid, event);
-      return true;
+      return rec->outputGood();
     }
   }
   return false;
@@ -2870,7 +2991,7 @@ void FlightRecorder::recordDatadogSetting(int lock_index, int length,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       rec->writeDatadogSetting(buf, length, name, value, unit);
     }
@@ -2882,7 +3003,7 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       rec->writeHeapUsage(buf, value, live);
     }
@@ -2895,7 +3016,7 @@ void FlightRecorder::recordReferenceChainAbandoned(
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordReferenceChainAbandoned(buf, event);
     }
@@ -2908,7 +3029,7 @@ void FlightRecorder::recordReferenceChain(int lock_index,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordReferenceChain(buf, event);
     }
@@ -2920,7 +3041,7 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
       case BCI_CPU:
@@ -2955,7 +3076,7 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
         }
         rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
-        return true;
+        return rec->outputGood();
       }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
@@ -2971,12 +3092,12 @@ bool FlightRecorder::recordWallSample(int lock_index, int tid, u64 call_trace_id
     return false;
   }
   Recording* rec = _rec;
-  if (rec == nullptr) return false;
+  if (rec == nullptr || !rec->outputGood()) return false;
   RecordingBuffer* buf = rec->buffer(lock_index);
   rec->recordMethodSample(buf, tid, call_trace_id, 0, event, &context);
   rec->flushIfNeeded(buf);
   rec->addThread(lock_index, tid);
-  return true;
+  return rec->outputGood();
 }
 
 bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
@@ -2985,7 +3106,7 @@ bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
         case BCI_CPU:
@@ -3002,7 +3123,7 @@ bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
       }
       rec->flushIfNeeded(buf);
       rec->addThread(lock_index, tid);
-      return true;
+      return rec->outputGood();
     }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
@@ -3015,7 +3136,7 @@ void FlightRecorder::recordLog(LogLevel level, const char *message,
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
-    if (rec != nullptr) {
+    if (rec != nullptr && rec->outputGood()) {
       if (len > MAX_STRING_LENGTH)
         len = MAX_STRING_LENGTH;
       // cppcheck-suppress obsoleteFunctions

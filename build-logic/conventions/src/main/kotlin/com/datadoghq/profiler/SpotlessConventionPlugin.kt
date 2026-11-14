@@ -23,7 +23,7 @@ class SpotlessConventionPlugin : Plugin<Project> {
         toggleOffOn()
         target("src/**/*.java")
         targetExclude("src/test/resources/**")
-        googleJavaFormat("1.30.0")
+        googleJavaFormat("1.36.1")
       }
     }
 

@@ -5,6 +5,11 @@
 
 #include "taskBlockRecorder.h"
 
+#include "context_api.h"
+#include "jvmSupport.h"
+#include "threadLocalData.inline.h"
+#include "tsc.h"
+
 #include <atomic>
 
 static const u64 kMinTaskBlockNanos = 1000000;
@@ -67,6 +72,39 @@ bool recoverAbandonedTaskBlock(ProfiledThread* current,
   return true;
 }
 
+u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
+                       OSThreadState state, BlockRunOwner owner) {
+  Profiler* profiler = Profiler::instance();
+  ThreadFilter* registry = profiler->threadFilter();
+  WallClockBlockTracker* tracker = profiler->blockTracker();
+  WallClockBlockTracker::BlockState* slot = tracker->slotForId(slot_id);
+  if (slot == nullptr) return 0;
+
+  bool fallback_enabled = slot->pauseUnownedBlockedFallback();
+  if (fallback_enabled &&
+      slot->unowned_blocked_pending_weight.load(std::memory_order_acquire) != 0) {
+    // Signal handlers normally own this write path. A producer needs the
+    // same stop/dump exclusion before replaying a cached trace into JFR.
+    TaskBlockActivity activity;
+    if (!activity.active() || !registry->unfilteredWallTrackingActive() ||
+        registry->activeSlotForId(slot_id, current->tid()) == nullptr) {
+      slot->resumeUnownedBlockedFallback();
+      return 0;
+    }
+    CriticalSection cs(current);
+    // The stripe-held writer retains the original context and epoch segments.
+    // Admission must not erase pending provenance when a write cannot commit.
+    if (!profiler->recordUnownedBlockedTail(current->tid(), slot_id)) {
+      slot->resumeUnownedBlockedFallback();
+      return 0;
+    }
+  }
+
+  u64 token = tracker->enterBlockedRun(registry, slot_id, state, owner);
+  if (token == 0 && fallback_enabled) slot->resumeUnownedBlockedFallback();
+  return token;
+}
+
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 blocker,
@@ -87,7 +125,8 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
-                           u64 unblocking_span_id) {
+                           u64 unblocking_span_id, u64 end_ticks) {
+  if (end_ticks == 0) end_ticks = TSC::ticks();
   Profiler* profiler = Profiler::instance();
   TaskBlockActivity activity;
   bool recording_enabled = profiler->taskBlockEnabled();
@@ -125,6 +164,151 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   }
 
   return recordTaskBlockIfEligible(
-      current->tid(), thread, start_depth, start_ticks, TSC::ticks(), context,
+      current->tid(), thread, start_depth, start_ticks, end_ticks, context,
       blocker, unblocking_span_id, snapshot.active_state, true);
+}
+
+#ifdef UNIT_TEST
+static u64 g_monitor_ticks_for_test = 0;
+
+void setMonitorTaskBlockTicksForTest(u64 ticks) {
+  g_monitor_ticks_for_test = ticks;
+}
+#endif
+
+static inline u64 monitorTicks() {
+#ifdef UNIT_TEST
+  if (g_monitor_ticks_for_test != 0) return g_monitor_ticks_for_test;
+#endif
+  return TSC::ticks();
+}
+
+static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
+  if (object == NULL) return 0;
+  jint hash = 0;
+  if (jvmti->GetObjectHashCode(object, &hash) != JVMTI_ERROR_NONE) return 0;
+  return static_cast<u64>(static_cast<uint32_t>(hash));
+}
+
+// Entry takes no jvmtiEnv: monitorBlockExit resolves the blocker hash after filtering.
+// GetObjectHashCode mutates HotSpot's object mark word, so short intervals avoid it.
+static void monitorBlockEnter(JNIEnv *jni, jthread thread,
+                              OSThreadState state) {
+  Profiler *profiler = Profiler::instance();
+  if (!profiler->taskBlockEnabled() ||
+      !profiler->nativeMonitorTaskBlockEnabled() ||
+      !JVMSupport::isPlatformThread(jni, thread)) {
+    return;
+  }
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) return;
+  Context context = ContextApi::snapshot();
+  if (context.spanId != 0) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    return;
+  }
+
+  ThreadFilter *tf = profiler->threadFilter();
+  ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
+  if (!tf->unfilteredWallTrackingActive() || slot_id < 0) return;
+  current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
+  if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
+    u64 token = current->monitorBlockToken();
+    bool current_owner = false;
+    if (token != 0) {
+      ThreadFilter::SlotID slot_id = WallClockBlockTracker::tokenSlotId(token);
+      ThreadFilter::Slot *slot = current->filterSlotId() == slot_id
+          ? tf->activeSlotForId(slot_id, current->tid())
+          : nullptr;
+      if (slot != nullptr) {
+        WallClockBlockTracker::BlockState *block_state = profiler->blockTracker()->slotForId(slot_id);
+        current_owner = block_state != nullptr &&
+            block_state->activeBlockState() != OSThreadState::UNKNOWN &&
+            block_state->activeBlockOwner() == BlockRunOwner::JVMTI &&
+            block_state->blockGeneration() == WallClockBlockTracker::tokenGeneration(token);
+      }
+    }
+    if (current_owner) {
+      return;
+    }
+    current->clearMonitorBlock();
+    if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
+      return;
+    }
+  }
+
+  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::JVMTI);
+  if (token == 0) {
+    ThreadFilter::Slot *slot = tf->slotForId(slot_id);
+    if (slot != nullptr && slot->inContextWindow()) {
+      Counters::increment(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW);
+    }
+    current->clearMonitorBlock();
+    return;
+  }
+  current->setMonitorBlockToken(token);
+}
+
+static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                             jobject object, OSThreadState state) {
+  Profiler *profiler = Profiler::instance();
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) return;
+  if (!JVMSupport::isPlatformThread(jni, thread)) return;
+
+  u64 start_ticks = 0;
+  Context context{};
+  // The entry side no longer records a blocker; it is resolved lazily below.
+  u64 blocker = 0;
+  u64 token = 0;
+  if (!current->monitorExit(state, start_ticks, context, blocker, token) ||
+      token == 0) {
+    return;
+  }
+
+  // Filter before GetObjectHashCode can mutate the object's mark word.
+  // Share end_ticks with taskBlockPassesBasicEligibility to avoid boundary drift.
+  u64 end_ticks = monitorTicks();
+  if (profiler->taskBlockEnabled() && profiler->nativeMonitorTaskBlockEnabled() &&
+      context.spanId == 0 &&
+      checkTaskBlockDuration(start_ticks, end_ticks) == TaskBlockDurationCheck::ELIGIBLE) {
+    blocker = monitorBlockerHash(jvmti, object);
+  }
+
+  finishTaskBlockAtExit(current, profiler->threadFilter(),
+                        profiler->blockTracker(), thread, 0, token,
+                        start_ticks, context, blocker, 0, end_ticks);
+}
+
+void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,
+                                   jthread thread, jobject object) {
+  monitorBlockEnter(jni, thread, OSThreadState::MONITOR_WAIT);
+}
+
+void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
+                                     jthread thread, jobject object) {
+  monitorBlockExit(jvmti, jni, thread, object, OSThreadState::MONITOR_WAIT);
+}
+
+void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                         jobject object, jlong timeout) {
+  if (!VM::monitorWaitEventsDelegated()) {
+    monitorBlockEnter(jni, thread, OSThreadState::OBJECT_WAIT);
+  }
+}
+
+void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                           jobject object, jboolean timed_out) {
+  if (!VM::monitorWaitEventsDelegated()) {
+    monitorBlockExit(jvmti, jni, thread, object, OSThreadState::OBJECT_WAIT);
+  }
+}
+
+bool setNativeMonitorTaskBlockEventsEnabled(bool enabled) {
+  if (enabled) {
+    return VM::nativeMonitorEventsAvailable() &&
+        VM::setNativeMonitorEventsEnabled(true);
+  }
+  VM::setNativeMonitorEventsEnabled(false);
+  return false;
 }

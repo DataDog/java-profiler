@@ -18,7 +18,9 @@
 package com.datadoghq.profiler;
 
 import java.io.IOException;
-import java.lang.reflect.Method;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
@@ -38,27 +40,30 @@ public final class JavaProfiler {
 
   private static JavaProfiler instance;
 
-  // Thread.isVirtual() was added in JDK 21; resolved reflectively (once) so this class
-  // still compiles against a JDK 17 (or older) bootclasspath. null means the JVM this
-  // code is running on predates virtual threads, so no thread can ever be one.
-  private static final Method IS_VIRTUAL_METHOD = resolveIsVirtualMethod();
+  // Exact primitive invocation avoids reflection's varargs allocation on blocking hooks.
+  // A missing method means the runtime predates virtual threads.
+  private static final MethodHandle IS_VIRTUAL = resolveIsVirtual();
 
-  private static Method resolveIsVirtualMethod() {
+  private static MethodHandle resolveIsVirtual() {
     try {
-      return Thread.class.getMethod("isVirtual");
+      return MethodHandles.publicLookup()
+          .findVirtual(Thread.class, "isVirtual", MethodType.methodType(boolean.class));
     } catch (NoSuchMethodException e) {
       return null;
+    } catch (IllegalAccessException e) {
+      throw new ExceptionInInitializerError(e);
     }
   }
 
   private static boolean isVirtualThread(Thread thread) {
-    if (IS_VIRTUAL_METHOD == null) {
+    if (IS_VIRTUAL == null) {
       return false;
     }
     try {
-      return (Boolean) IS_VIRTUAL_METHOD.invoke(thread);
-    } catch (ReflectiveOperationException e) {
-      return false;
+      return (boolean) IS_VIRTUAL.invokeExact(thread);
+    } catch (Throwable error) {
+      throw new IllegalStateException(
+          "Cannot determine whether the blocking thread is virtual", error);
     }
   }
 
@@ -78,6 +83,10 @@ public final class JavaProfiler {
    * Get a {@linkplain JavaProfiler} instance backed by the bundled native library and using the
    * default temp directory as the scratch where the bundled library will be exploded before
    * linking.
+   *
+   * <p>This overload expresses no preference about monitor-event ownership: when the process-wide
+   * instance already exists it is returned unchanged, whatever its {@code
+   * delegateMonitorWaitEvents} setting is.
    */
   public static JavaProfiler getInstance() throws IOException {
     return getInstance(null, null);
@@ -88,6 +97,9 @@ public final class JavaProfiler {
    * given directory as the scratch where the bundled library will be exploded before linking.
    *
    * @param scratchDir directory where the bundled library will be exploded before linking
+   *     <p>This overload expresses no preference about monitor-event ownership: when the
+   *     process-wide instance already exists it is returned unchanged, whatever its {@code
+   *     delegateMonitorWaitEvents} setting is.
    */
   public static JavaProfiler getInstance(String scratchDir) throws IOException {
     return getInstance(null, scratchDir);
@@ -100,10 +112,52 @@ public final class JavaProfiler {
    * @param libLocation the path to the native library to be used instead of the bundled one
    * @param scratchDir directory where the bundled library will be exploded before linking; ignored
    *     when 'libLocation' is {@literal null}
+   *     <p>This overload expresses no preference about monitor-event ownership: when the
+   *     process-wide instance already exists it is returned unchanged, whatever its {@code
+   *     delegateMonitorWaitEvents} setting is. Only the explicit three-argument overload enforces
+   *     the ownership-conflict check.
    */
   public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir)
       throws IOException {
+    // No preference expressed: an already-initialized singleton is acceptable as-is.
     if (instance != null) {
+      return instance;
+    }
+    // 'false' is the default for the *first* initialization only.
+    return getInstance(libLocation, scratchDir, false);
+  }
+
+  /**
+   * Get a {@linkplain JavaProfiler} instance with explicit monitor-event ownership.
+   *
+   * <p>The first successful native bridge initialization fixes this process-wide setting because
+   * the native profiler is a singleton. This may occur during {@code -agentpath} startup before
+   * this method is called. When delegation is enabled, Java instrumentation owns {@code
+   * Object.wait} TaskBlock intervals and native JVMTI wait callbacks are suppressed; native JVMTI
+   * callbacks continue to own synchronized monitor contention. Ownership is preserved independently
+   * of whether the JVM provides native monitor-event capability.
+   *
+   * @param libLocation the path to the native library to use, or {@literal null} for the bundled
+   *     library
+   * @param scratchDir directory where the bundled library will be exploded before linking
+   * @param delegateMonitorWaitEvents whether Java instrumentation owns {@code Object.wait}
+   *     intervals
+   * @return the process-wide profiler instance
+   * @throws IOException if the native library cannot be loaded
+   * @throws IllegalStateException if monitor ownership conflicts with an earlier native bridge
+   *     initialization
+   */
+  public static synchronized JavaProfiler getInstance(
+      String libLocation, String scratchDir, boolean delegateMonitorWaitEvents) throws IOException {
+    if (instance != null) {
+      if (monitorWaitEventsDelegated0() != delegateMonitorWaitEvents) {
+        // Keep this message identical to the one javaApi.cpp's init0 throws for the
+        // analogous native-bridge conflict; there is no shared constant across the
+        // JNI boundary, so both call sites must be updated together.
+        throw new IllegalStateException(
+            "Monitor-event ownership conflicts with the profiler's "
+                + "process-wide initialization");
+      }
       return instance;
     }
 
@@ -113,12 +167,11 @@ public final class JavaProfiler {
     if (!result.succeeded) {
       throw new IOException("Failed to load Datadog Java profiler library", result.error);
     }
-
     if (isVirtualThread(Thread.currentThread())) {
       throw new IOException("Cannot initialize profiler on a virtual thread");
     }
 
-    init0();
+    init0(delegateMonitorWaitEvents);
 
     instance = profiler;
 
@@ -135,6 +188,18 @@ public final class JavaProfiler {
     }
 
     return profiler;
+  }
+
+  /**
+   * Reports whether Java instrumentation owns {@code Object.wait} TaskBlock intervals instead of
+   * native JVMTI {@code MonitorWait} and {@code MonitorWaited} callbacks. Synchronized-monitor
+   * contention remains owned by native JVMTI callbacks. This reports the process-wide ownership
+   * selected during bridge initialization, independently of native monitor-event capability.
+   *
+   * @return {@code true} when {@code Object.wait} handling is delegated to Java instrumentation
+   */
+  public boolean isMonitorWaitEventsDelegated() {
+    return monitorWaitEventsDelegated0();
   }
 
   /**
@@ -425,7 +490,8 @@ public final class JavaProfiler {
    * @return {@code true} when this call owns a park interval that must be closed
    */
   boolean parkEnter() {
-    return parkEnter0();
+    Thread thread = Thread.currentThread();
+    return parkEnter0(thread, isVirtualThread(thread));
   }
 
   /**
@@ -433,24 +499,34 @@ public final class JavaProfiler {
    * and {@code unblockingSpanId} are reserved for park instrumentation.
    */
   void parkExit(long blocker, long unblockingSpanId) {
-    parkExit0(blocker, unblockingSpanId);
+    Thread thread = Thread.currentThread();
+    parkExit0(thread, isVirtualThread(thread), blocker, unblockingSpanId);
   }
 
   /**
    * Internal hook marking the current platform thread as entering an explicitly instrumented
    * blocked interval. The public paired API is {@link #beginTaskBlock()}.
    *
-   * @param state native {@code OSThreadState} value for the blocked interval; currently only {@code
-   *     SLEEPING} is armed
-   * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
+   * @param state native {@code OSThreadState} value for the blocked interval; currently {@code
+   *     SLEEPING} and {@code OBJECT_WAIT} are armed
+   * @return an opaque token to pass to {@link #blockExit(long, long, long)}, or 0 if no state was
+   *     armed
    */
   long blockEnter(int state) {
-    return blockEnter0(state);
+    Thread thread = Thread.currentThread();
+    return blockEnter0(isVirtualThread(thread), state);
   }
 
-  /** Clears a blocked interval previously armed by {@link #blockEnter(int)}. */
-  void blockExit(long token) {
-    blockExit0(token);
+  /**
+   * Clears a blocked interval previously armed by {@link #blockEnter(int)} and records its {@code
+   * TaskBlock} event when it satisfies the profiler's eligibility rules.
+   *
+   * @param blocker stable identifier describing the blocking resource, or {@code 0}
+   * @param unblockingSpanId span responsible for unblocking the interval, or {@code 0}
+   */
+  void blockExit(long token, long blocker, long unblockingSpanId) {
+    Thread thread = Thread.currentThread();
+    blockExit0(isVirtualThread(thread), token, blocker, unblockingSpanId);
   }
 
   /**
@@ -469,8 +545,9 @@ public final class JavaProfiler {
    * profiler cannot track or verify the current thread, or a trace context is active on the current
    * thread.
    *
-   * <p>On non-HotSpot JVMs running JDK 19 or later, no thread is classified as a platform thread,
-   * so this method always returns {@code 0} there.
+   * <p>On JDK 19 or later, platform-thread classification uses JNI {@code IsVirtualThread} on every
+   * supported JVM. If that entry is unavailable, classification fails closed: this method returns
+   * {@code 0}, and the native profiler counts the failure and emits a one-time warning.
    *
    * @return an opaque token, or {@code 0} when the interval could not be armed or the current
    *     thread is not classified as a platform thread; any non-zero value, including a negative
@@ -538,7 +615,7 @@ public final class JavaProfiler {
     return counters;
   }
 
-  private static native boolean init0();
+  private static native boolean init0(boolean delegateMonitorWaitEvents);
 
   private native void stop0() throws IllegalStateException;
 
@@ -550,6 +627,8 @@ public final class JavaProfiler {
   private static native void filterThreadRemove0();
 
   private static native int getTid0();
+
+  private static native boolean monitorWaitEventsDelegated0();
 
   /**
    * Test seam: returns the calling thread's profiler tid (ProfiledThread::currentTid()), the tid
@@ -582,13 +661,15 @@ public final class JavaProfiler {
       String queueType,
       int queueLength);
 
-  private static native boolean parkEnter0();
+  private static native boolean parkEnter0(Thread thread, boolean isVirtual);
 
-  private static native void parkExit0(long blocker, long unblockingSpanId);
+  private static native void parkExit0(
+      Thread thread, boolean isVirtual, long blocker, long unblockingSpanId);
 
-  private static native long blockEnter0(int state);
+  private static native long blockEnter0(boolean isVirtual, int state);
 
-  private static native void blockExit0(long token);
+  private static native void blockExit0(
+      boolean isVirtual, long token, long blocker, long unblockingSpanId);
 
   private static native long beginTaskBlock0(Thread thread);
 

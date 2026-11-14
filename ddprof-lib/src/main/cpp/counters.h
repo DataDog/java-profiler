@@ -109,6 +109,7 @@
   X(TASK_BLOCK_DROPPED_ROTATION, "task_block_dropped_rotation")               \
   X(TASK_BLOCK_SKIPPED_THREAD_MISMATCH, "task_block_skipped_thread_mismatch") \
   X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
+  X(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED, "task_block_virtual_thread_detection_failed") \
   X(TASK_BLOCK_RECOVERED_ABANDONED, "task_block_recovered_abandoned")         \
   X(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT, "block_enter_skipped_trace_context")   \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
@@ -193,6 +194,7 @@
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
    * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(JVMTI_STACKS_DROPPED_NON_JAVA, "jvmti_stacks_dropped_non_java")           \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
@@ -344,6 +346,8 @@
    * almost all classes" — if this tracks the total class count per lap, \
    * the cap is too low; if it stays near zero, the cap is fine. */ \
   X(REFERENCE_CHAIN_STATIC_SWEEP_CLASSES_CAPPED, "reference_chain_static_sweep_classes_capped") \
+  X(JFR_OUTPUT_FAILURES, "jfr_output_failures") \
+  X(JFR_DELIVERIES_CERTIFIED, "jfr_deliveries_certified") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_SAMPLER_PERF(X)                                             \

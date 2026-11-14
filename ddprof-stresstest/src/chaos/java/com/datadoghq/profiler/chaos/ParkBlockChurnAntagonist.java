@@ -5,9 +5,6 @@
 package com.datadoghq.profiler.chaos;
 
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,8 +39,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
   private final AtomicLong parkCalls = new AtomicLong();
   private final AtomicReference<Throwable> failure = new AtomicReference<>();
   private final Object monitor = new Object();
-  private Object profiler;
-  private Method debugCounters;
+  private MethodHandle getDebugCounters;
   private MethodHandle blockEnter;
   private MethodHandle blockExit;
   private MethodHandle parkEnter;
@@ -82,17 +78,16 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
   @Override
   public void start() {
     try {
-      Class<?> profilerClass = resolveProfilerClass();
-      profiler = profilerClass.getMethod("getInstance").invoke(null);
-      debugCounters = profilerClass.getMethod("getDebugCounters");
-      blockEnter = bindHook("blockEnter", int.class);
-      blockExit = bindHook("blockExit", long.class);
-      parkEnter = bindHook("parkEnter");
-      parkExit = bindHook("parkExit", long.class, long.class);
+      Object profiler = ProfilerAccess.getInstance();
+      blockEnter = ProfilerAccess.bind(profiler, "blockEnter", int.class);
+      blockExit = ProfilerAccess.bind(profiler, "blockExit", long.class, long.class, long.class);
+      parkEnter = ProfilerAccess.bind(profiler, "parkEnter");
+      parkExit = ProfilerAccess.bind(profiler, "parkExit", long.class, long.class);
+      getDebugCounters = ProfilerAccess.bind(profiler, "getDebugCounters");
     } catch (Exception e) {
       throw new IllegalStateException("Cannot bind profiler owned-block hooks", e);
     }
-    countersBefore = readCounters();
+    countersBefore = debugCounters();
     interruptor =
         Executors.newSingleThreadScheduledExecutor(
             r -> {
@@ -184,40 +179,19 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     }
   }
 
-  /** Agent shared classdata is invisible to the application's class loader. */
-  private Class<?> resolveProfilerClass() throws ReflectiveOperationException {
-    ClassLoader loader = getClass().getClassLoader();
-    try {
-      Class<?> agent = Class.forName("datadog.trace.bootstrap.Agent", false, loader);
-      Field field = agent.getDeclaredField("AGENT_CLASSLOADER");
-      field.setAccessible(true);
-      loader = (ClassLoader) field.get(null);
-    } catch (ClassNotFoundException standalone) {
-      // Standalone native tests have no agent and expose the profiler on their own classpath.
-    }
-    return Class.forName("com.datadoghq.profiler.JavaProfiler", true, loader);
-  }
-
-  /** Binds hooks to the same private-loader instance that owns the native recording. */
-  private MethodHandle bindHook(String name, Class<?>... parameterTypes)
-      throws ReflectiveOperationException {
-    Method method = profiler.getClass().getDeclaredMethod(name, parameterTypes);
-    method.setAccessible(true);
-    return MethodHandles.lookup().unreflect(method).bindTo(profiler);
-  }
-
+  /** Reads counters from the same profiler instance as the owned-block hooks. */
   @SuppressWarnings("unchecked")
-  private Map<String, Long> readCounters() {
+  private Map<String, Long> debugCounters() {
     try {
-      return (Map<String, Long>) debugCounters.invoke(profiler);
-    } catch (ReflectiveOperationException e) {
-      throw new IllegalStateException("Cannot read profiler debug counters", e);
+      return (Map<String, Long>) getDebugCounters.invokeExact();
+    } catch (Throwable t) {
+      throw new IllegalStateException("Cannot read profiler counters", t);
     }
   }
 
   private long counterDelta(String name) {
     long before = countersBefore.getOrDefault(name, -1L);
-    long after = readCounters().getOrDefault(name, -1L);
+    long after = debugCounters().getOrDefault(name, -1L);
     return before < 0 || after < 0 ? -1 : after - before;
   }
 
@@ -332,7 +306,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
     try {
       Thread.sleep(millis);
     } finally {
-      blockExit.invokeExact(token);
+      blockExit.invokeExact(token, 0L, 0L);
     }
   }
 }

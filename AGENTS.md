@@ -16,6 +16,8 @@ or suggested edits on memory files.
 
 # AGENTS.md
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 This file provides guidance to AI coding assistants when working with code in this
 repository. It is deliberately a thin index: rules that must always be in context live
 here; subsystem details live in `doc/` (start at the [doc/README.md](doc/README.md)
@@ -124,6 +126,17 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   Full flags in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
 
+Full container flag reference: [TestingGuide](doc/building/TestingGuide.md#bounded-local-container-runs).
+Use `--mount --source-root=/absolute/path` for an exact local Git candidate.
+
+`--offline` forbids image builds, pulls and container network access; missing caches fail.
+`--max-workers=1` disables Gradle project parallelism, not test threads or JVM allocation.
+Resource checks and execution approval remain separate; shared Git metadata is read-only.
+
+`--mount --artifacts-dir=/absolute/existing/directory` retains per-cell gtest XML and JFRs.
+Use an approved evidence-only root under the selected source's `build/logs/`.
+The TestingGuide defines paths, restrictions and coverage boundaries.
+
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:
 debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 `gradle/sanitizers/*.supp`, and `sudo sysctl vm.mmap_rnd_bits=28` if ASan crashes occur.
@@ -156,8 +169,8 @@ before working on a subsystem.
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; lazy wall-block backing survives recording resets; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
-| JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
+| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; lazy wall-block backing survives recording resets; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
+| JFR integration (FlightRecorder, metadata, constant pools, buffers; native delivery custody retains failed output) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |

@@ -8,6 +8,16 @@ built `ddprof.jar` (see `utils/patch-dd-java-agent.sh`). Native crashes and
 workload failures produce a non-zero exit. Native crashes also leave an
 `hs_err_pid*.log` captured by the runner script.
 
+The profiler-aware workloads bind method handles through the attached agent's
+isolated class loader. The application jar does not contain a second copy of
+`JavaProfiler`. Standalone native tests resolve the profiler on their test classpath.
+To also check the packaged harness with a real patched agent in both profiler-only
+and profiler-plus-tracer modes, pass its path to the test task:
+
+```bash
+./.claude/commands/build-and-summarize :ddprof-stresstest:testOwnedBlockPrecheck -PchaosAgentJar=/path/to/dd-java-agent-patched.jar
+```
+
 ## Antagonist roster
 
 | Name              | Targets                                                                  |

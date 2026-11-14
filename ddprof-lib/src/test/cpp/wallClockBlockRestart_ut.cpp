@@ -9,22 +9,17 @@
 #include <mutex>
 #include <thread>
 #include "guards.h"
+#include "javaApi.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
 #include "vmEntry.h"
 #include "threadLocalData.inline.h"
 #include "wallClockBlockTracker.h"
 
+
 extern "C" {
 void JNICALL JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
 void JNICALL JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0();
-jlong JNICALL Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(JNIEnv*, jclass, jint);
-void JNICALL Java_com_datadoghq_profiler_JavaProfiler_blockExit0(JNIEnv*, jclass, jlong);
-void JNICALL Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv*, jclass);
-void JNICALL Java_com_datadoghq_profiler_JavaProfiler_parkExit0(JNIEnv*, jclass, jlong, jlong);
-jlong JNICALL Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(JNIEnv*, jclass, jthread);
-jboolean JNICALL Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
-    JNIEnv*, jclass, jthread, jlong, jlong, jlong);
 }
 
 enum class RestartHook { BLOCK, PARK, TASK_BLOCK };
@@ -98,9 +93,10 @@ protected:
         }
         if (GetParam() == RestartHook::BLOCK) {
             return static_cast<u64>(Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
-                nullptr, nullptr, static_cast<jint>(OSThreadState::SLEEPING)));
+                nullptr, nullptr, JNI_FALSE, static_cast<jint>(OSThreadState::SLEEPING)));
         }
-        Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(nullptr, nullptr);
+        Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+            nullptr, nullptr, nullptr, JNI_FALSE);
         return ProfiledThread::current()->snapshotForTest().park_block_token;
     }
 
@@ -110,9 +106,10 @@ protected:
                 &env, nullptr, reinterpret_cast<jthread>(1), token, 0, 0);
         } else if (GetParam() == RestartHook::BLOCK) {
             Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
-                nullptr, nullptr, static_cast<jlong>(token));
+                nullptr, nullptr, JNI_FALSE, static_cast<jlong>(token), 0, 0);
         } else {
-            Java_com_datadoghq_profiler_JavaProfiler_parkExit0(nullptr, nullptr, 0, 0);
+            Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+                nullptr, nullptr, nullptr, JNI_FALSE, 0, 0);
         }
     }
 
@@ -165,6 +162,27 @@ TEST_P(WallClockBlockRestartTest, HookWithoutRestartHasNormalLifecycle) {
     exitHook(token);
     EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
     EXPECT_EQ(OSThreadState::UNKNOWN, block->activeBlockState());
+}
+
+TEST_P(WallClockBlockRestartTest, AbandonedHookDoesNotBlockNextRecording) {
+    u64 old_token = enterHook();
+    ASSERT_NE(0u, old_token);
+    int slot_id = current->filterSlotId();
+    auto* identity = registry->slotForId(slot_id);
+    u64 lifecycle = identity->lifecycleGeneration();
+
+    // No exit for the old interval: terminal notifications may be disabled
+    // during stop. The surviving owner must still be able to open a new run.
+    registry->deactivateRecording();
+    registry->init("", true);
+    u64 new_token = enterHook();
+    ASSERT_NE(0u, new_token);
+    EXPECT_NE(old_token, new_token);
+    EXPECT_EQ(slot_id, current->filterSlotId());
+    EXPECT_EQ(identity, registry->activeSlotForId(slot_id, current->tid()));
+    EXPECT_EQ(lifecycle, identity->lifecycleGeneration());
+    exitHook(new_token);
+    EXPECT_EQ(BlockRunOwner::NONE, tracker->slotForId(slot_id)->activeBlockOwner());
 }
 
 TEST_P(WallClockBlockRestartTest, PausedHookDoesNotMutateReplacementAcrossRestart) {

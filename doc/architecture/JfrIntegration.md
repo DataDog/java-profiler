@@ -12,6 +12,7 @@ The profiler writes its own JFR files natively; it does not use the JDK's
 | `flightRecorder.h` / `flightRecorder.cpp` | `FlightRecorder` (public entry points), `Recording` (one open recording file), `Lookup` (per-dump symbolication), `MethodMap` / `MethodInfo` |
 | `flightRecorder.inline.h` | `MethodInfo::getLineNumber()` and `MethodInfo::isHidden()` |
 | `jfrMetadata.h` / `jfrMetadata.cpp` | `JfrType` IDs and the `JfrMetadata` type tree |
+| `recordingOutput.h` | Sticky output errors, disjoint append reservations and native delivery custody |
 | `buffers.h` | `Buffer` / `RecordingBuffer`: big-endian and LEB128 encoders, flush thresholds |
 
 Citations below are `file:line` relative to that directory unless a path is
@@ -41,8 +42,8 @@ Profiler
 - `FlightRecorder::start()` opens `args.file()` and creates the `Recording`, charging
   `sizeof(Recording)` (which embeds all the buffers) to `NM_JFR_BUFFERS`
   (`flightRecorder.cpp:2707-2736`).
-- `stop()` nulls `_rec` and deletes the `Recording`, whose destructor calls
-  `finishChunk(true)` (`flightRecorder.cpp:2738-2752`, `1005-1008`).
+- `stop()` seals and closes the output before deleting the `Recording`. A failed
+  write, patch or close retains the owner and refuses a new recording.
 - `dump(filename)` calls `Recording::switchChunk()`; dumping to the recording's
   own file is rejected (`flightRecorder.cpp:2754-2776`).
 
@@ -99,8 +100,9 @@ the recording rather than the neighbouring buffer (`buffers.h:15-22`,
 
 `Recording::flushIfNeeded(buf, limit)` flushes when `offset() >= limit`, with
 `limit` defaulting to `JFR_EVENT_FLUSH_THRESHOLD` (`flightRecorder.cpp:1368-1372`).
-`Recording::flush()` is a plain `write(2)` of the buffer to `_fd`, followed by
-an atomic add to `_bytes_written` and a reset (`flightRecorder.cpp:1360-1366`).
+`Recording::flush()` reserves a disjoint file range and uses bounded `pwrite()`
+retries. It resets the buffer only after every byte is written. Output failure
+is sticky and stops later event admission.
 There is no background writer: the thread that fills a buffer past the
 threshold, which can be a signal handler, writes it out.
 
@@ -167,8 +169,9 @@ See [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 ## Chunk Lifecycle
 
-A recording file holds one JFR chunk at a time. `dump()` finishes it, copies it
-out, truncates the file, and starts the next chunk.
+A recording holds an open JFR chunk after any sealed, undelivered chunks.
+`dump()` seals the open chunk and copies the complete retained prefix. It
+truncates the source only after successful copying and destination close.
 
 ```
 Recording()          header, metadata, settings, OS/CPU/JVM info, system props,
@@ -176,8 +179,8 @@ Recording()          header, metadata, settings, OS/CPU/JVM info, system props,
    ... events appended to _buf[0..15] by samplers ...
 finishChunk()        info events, flush all 16 buffers, write constant pool,
                      back-patch sizes and chunk header
-switchChunk(fd)      finishChunk(true, true), copy [0, chunk_end) to fd,
-                     truncate, rewrite header/metadata/info events
+switchChunk(fd)      finishChunk(true, true), copy retained prefix, close fd,
+                     truncate only on success; start next chunk after retained bytes
 ```
 
 The start-of-chunk events go into `_buf[0]`; OS/CPU/JVM info, system
@@ -186,6 +189,20 @@ properties and native libraries can be turned off with `NO_SYSTEM_INFO`,
 `1188-1205`). `writeHeader()` writes a 68-byte header whose chunk size is a
 1 GiB placeholder ("for JMC to skip incomplete chunk") and whose offsets are 0
 (`flightRecorder.cpp:1396-1411`).
+
+### Delivery custody
+
+`RecordingOutput::Delivery` identifies the recording, inclusive chunk range,
+byte count and inherited prefix size. It certifies native write/copy/close
+completion, not consumer decoding or receiving credit.
+
+Dump rejects aliases to the source before truncating the destination. A failed
+copy keeps sealed chunks and starts the next chunk after them. A later successful
+dump delivers all retained chunks with their original clocks and constant pools.
+
+Write, patch and close failures quarantine the output. Recording buffers and
+dictionary roots stay owned; restart is refused. A failed close is not retried,
+because descriptor ownership after failure is platform-dependent.
 
 ### `finishChunk()`
 
@@ -229,7 +246,8 @@ runs `_jfr.stop()` the same way.
 3. `lockAll()` takes all 16 stripe locks, runs the JFR operation, `unlockAll()`.
    With every stripe held, no sampler can write to a `RecordingBuffer` or to
    `CallTraceStorage` while the chunk is finished.
-4. `clearStandby()` on the three dictionaries.
+4. On success, `clearStandby()` on the three dictionaries. Failed output keeps
+   those roots owned.
 
 ## Metadata
 

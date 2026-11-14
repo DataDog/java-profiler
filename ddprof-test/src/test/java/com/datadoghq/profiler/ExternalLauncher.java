@@ -14,6 +14,7 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
 import java.math.BigInteger;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -22,6 +23,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -74,6 +80,23 @@ import java.util.regex.Pattern;
  *       ThreadLocalLeakScenario}: a growing {@code byte[]} collection held only through the leaking
  *       thread's {@code ThreadLocal} map; the {@code -late} variant starts the leak thread only
  *       after the recording began (see that scenario's own comment).
+ *   <li>profiler-agent-compatible - reuses native monitor ownership after agent initialization
+ *   <li>profiler-delegation-conflict - requests delegated monitor ownership after agent
+ *       initialization
+ *   <li>profiler-java-default-delegation-reuse - verifies explicit native ownership after default
+ *       initialization
+ *   <li>profiler-java-default-delegation-conflict - verifies delegated ownership conflicts after
+ *       default initialization
+ *   <li>profiler-java-delegation-reuse:&lt;delegated&gt; - verifies compatible Java singleton
+ *       ownership reuse
+ *   <li>profiler-java-delegation-conflict:&lt;initial&gt;:&lt;requested&gt; - verifies conflicting
+ *       Java singleton ownership requests
+ *   <li>profiler-java-delegation-legacy-reuse:&lt;initial&gt; - verifies the legacy no-preference
+ *       overloads reuse the existing singleton
+ *   <li>profiler-preexisting-monitor-wait &lt;recording path&gt; - records Object.wait on a thread
+ *       created before profiler initialization
+ *   <li>profiler-preexisting-monitor-contention &lt;recording path&gt; - records monitor contention
+ *       on a thread created before profiler initialization
  *   <li>lazy-calibration-preexisting-arrays &lt;comma delimited profiler command list, required&gt;
  *       - creates {@code Void} arrays of dimensions 1 to the {@code ddprof_test.calibration_dims}
  *       system property (default 0), each with a hundred class definitions in between, then starts
@@ -186,6 +209,73 @@ public class ExternalLauncher {
     return new String[] {packed.substring(0, sep), packed.substring(sep + "|||".length())};
   }
 
+  /** Runs one native monitor callback lifecycle on a platform thread created before JNI load. */
+  private static void runPreExistingMonitorCallback(boolean contention, Path recording)
+      throws Exception {
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(
+            task -> {
+              Thread thread = new Thread(task, "preexisting-monitor-callback");
+              thread.setDaemon(true);
+              return thread;
+            });
+    Thread worker = executor.submit(Thread::currentThread).get(5, TimeUnit.SECONDS);
+
+    JavaProfiler profiler = null;
+    boolean started = false;
+    try {
+      profiler = JavaProfiler.getInstance();
+      profiler.execute(
+          "start,wall=1ms,filter=,wallprecheck=true,jfr,file=" + recording.toAbsolutePath());
+      started = true;
+      Object monitor = new Object();
+
+      if (contention) {
+        CountDownLatch attempting = new CountDownLatch(1);
+        Future<?> blocked;
+        synchronized (monitor) {
+          blocked =
+              executor.submit(
+                  () -> {
+                    attempting.countDown();
+                    synchronized (monitor) {
+                      // Acquiring the monitor completes the contended interval.
+                    }
+                  });
+          if (!attempting.await(5, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Worker did not attempt monitor entry");
+          }
+          Thread.sleep(100L);
+        }
+        blocked.get(5, TimeUnit.SECONDS);
+      } else {
+        executor
+            .submit(
+                () -> {
+                  synchronized (monitor) {
+                    monitor.wait(100L);
+                  }
+                  return null;
+                })
+            .get(5, TimeUnit.SECONDS);
+      }
+
+      profiler.stop();
+      started = false;
+      System.out.println(
+          "[preexisting-monitor] "
+              + worker.getId()
+              + " "
+              + Integer.toUnsignedLong(System.identityHashCode(monitor)));
+    } finally {
+      if (started) {
+        profiler.stop();
+      }
+      executor.shutdownNow();
+      executor.awaitTermination(5, TimeUnit.SECONDS);
+    }
+  }
+
   /** How long the {@code line-numbers} workload runs under each command list. */
   private static final long LINE_NUMBER_WORKLOAD_MILLIS = 1500;
 
@@ -248,6 +338,96 @@ public class ExternalLauncher {
                   }
                 });
         vt.join();
+        JavaProfiler initial = JavaProfiler.getInstance();
+        JavaProfiler reused = JavaProfiler.getInstance();
+        System.out.println(
+            "[virtual-thread-recovery] "
+                + (initial == reused)
+                + " "
+                + reused.isMonitorWaitEventsDelegated());
+      } else if (args[0].equals("profiler-delegated-object-wait")) {
+        com.datadoghq.profiler.wallclock.DelegatedObjectWaitScenario.record(args[1]);
+      } else if (args[0].equals("profiler-delegation-conflict")) {
+        String libraryPath = System.getProperty("ddprof.test.agent.path");
+        try {
+          JavaProfiler.getInstance(libraryPath, null, true);
+          System.out.println("[delegation-conflict-missed]");
+        } catch (IllegalStateException expected) {
+          JavaProfiler recovered = JavaProfiler.getInstance(libraryPath, null, false);
+          System.out.println("[delegation-conflict] " + recovered.isMonitorWaitEventsDelegated());
+        }
+      } else if (args[0].equals("profiler-java-default-delegation-reuse")) {
+        JavaProfiler initial = JavaProfiler.getInstance();
+        JavaProfiler reused = JavaProfiler.getInstance(null, null, false);
+        System.out.println(
+            "[java-default-delegation-reuse] "
+                + (initial == reused)
+                + " "
+                + reused.isMonitorWaitEventsDelegated());
+      } else if (args[0].equals("profiler-java-default-delegation-conflict")) {
+        JavaProfiler initial = JavaProfiler.getInstance();
+        try {
+          JavaProfiler.getInstance(null, null, true);
+          System.out.println("[java-default-delegation-conflict-missed]");
+        } catch (IllegalStateException expected) {
+          JavaProfiler recovered = JavaProfiler.getInstance(null, null, false);
+          System.out.println(
+              "[java-default-delegation-conflict] "
+                  + (initial == recovered)
+                  + " "
+                  + recovered.isMonitorWaitEventsDelegated());
+        }
+      } else if (args[0].startsWith("profiler-java-delegation-reuse:")) {
+        boolean delegated =
+            Boolean.parseBoolean(args[0].substring("profiler-java-delegation-reuse:".length()));
+        JavaProfiler initial = JavaProfiler.getInstance(null, null, delegated);
+        JavaProfiler reused = JavaProfiler.getInstance(null, null, delegated);
+        System.out.println(
+            "[java-delegation-reuse] "
+                + (initial == reused)
+                + " "
+                + reused.isMonitorWaitEventsDelegated());
+      } else if (args[0].startsWith("profiler-java-delegation-legacy-reuse:")) {
+        // A legacy overload expresses no preference about monitor-event ownership:
+        // it must return the existing singleton whatever its delegation setting is,
+        // never throw IllegalStateException. An escaping ISE is the failure signal.
+        boolean initialDelegation =
+            Boolean.parseBoolean(
+                args[0].substring("profiler-java-delegation-legacy-reuse:".length()));
+        JavaProfiler initial = JavaProfiler.getInstance(null, null, initialDelegation);
+        JavaProfiler reused = JavaProfiler.getInstance();
+        JavaProfiler reused2 = JavaProfiler.getInstance(null, null);
+        System.out.println(
+            "[java-delegation-legacy-reuse] "
+                + (initial == reused)
+                + " "
+                + (initial == reused2)
+                + " "
+                + initial.isMonitorWaitEventsDelegated());
+      } else if (args[0].startsWith("profiler-java-delegation-conflict:")) {
+        String[] delegationModes = args[0].split(":");
+        boolean initialDelegation = Boolean.parseBoolean(delegationModes[1]);
+        boolean requestedDelegation = Boolean.parseBoolean(delegationModes[2]);
+        JavaProfiler initial = JavaProfiler.getInstance(null, null, initialDelegation);
+        try {
+          JavaProfiler.getInstance(null, null, requestedDelegation);
+          System.out.println("[java-delegation-conflict-missed]");
+        } catch (IllegalStateException expected) {
+          JavaProfiler recovered = JavaProfiler.getInstance(null, null, initialDelegation);
+          System.out.println(
+              "[java-delegation-conflict] "
+                  + (initial == recovered)
+                  + " "
+                  + recovered.isMonitorWaitEventsDelegated());
+        }
+      } else if (args[0].equals("profiler-agent-compatible")) {
+        String libraryPath = System.getProperty("ddprof.test.agent.path");
+        JavaProfiler profiler = JavaProfiler.getInstance(libraryPath, null, false);
+        System.out.println("[agent-compatible] " + profiler.isMonitorWaitEventsDelegated());
+      } else if (args[0].equals("profiler-preexisting-monitor-wait")) {
+        runPreExistingMonitorCallback(false, Paths.get(args[1]));
+      } else if (args[0].equals("profiler-preexisting-monitor-contention")) {
+        runPreExistingMonitorCallback(true, Paths.get(args[1]));
       } else if (args[0].equals("profiler")) {
         JavaProfiler instance = JavaProfiler.getInstance();
         if (args.length == 2) {

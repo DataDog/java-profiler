@@ -12,7 +12,6 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
-import com.datadoghq.profiler.Platform;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -28,7 +27,38 @@ final class TaskBlockAssertions {
   private static final String CORRELATION_ID = "correlationId";
   private static final String DURATION = "duration";
 
-  private TaskBlockAssertions() {}
+  /** Counts events with the expected blocker identity. */
+  static int countBlockerEvents(JfrEvents events, long blocker) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Counts events attributed to the named worker. */
+  static int countEventsForThread(JfrEvents events, String threadName) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Sums segment duration across rotations for the named worker. */
+  static double durationNanosForThread(JfrEvents events, String threadName) {
+    double durationNanos = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        durationNanos += item.getLong("duration", 0L);
+      }
+    }
+    return durationNanos;
+  }
 
   /**
    * Value of {@code OSThreadState::SLEEPING} in {@code ddprof-lib/src/main/cpp/threadState.h}. Keep
@@ -38,32 +68,13 @@ final class TaskBlockAssertions {
    */
   static final int OSTHREAD_STATE_SLEEPING = 7;
 
-  /**
-   * {@code java.vm.name} substrings that the native {@code VM::init()} (vmEntry.cpp) uses to set
-   * {@code VM::isHotspot()}. Keep this list in sync with that check.
-   */
-  private static final String[] HOTSPOT_VM_NAME_MARKERS = {
-    "OpenJDK", "HotSpot", "GraalVM", "Dynamic Code Evolution"
-  };
+  private TaskBlockAssertions() {}
 
-  /**
-   * Returns whether the native layer can classify the current thread as a platform thread on this
-   * JVM. At JDK 19+, {@code JVMSupport::isPlatformThread()} fails closed when {@code
-   * !VM::isHotspot()}, so {@code beginTaskBlock()} always returns {@code 0} there.
-   *
-   * <p>This predicate must not report support on a JVM that the native check rejects. It therefore
-   * applies the same {@code java.vm.name} test as {@code VM::isHotspot()} instead of listing known
-   * non-HotSpot JVMs: J9, Zing, and any unrecognized VM name are reported as unsupported.
-   */
-  static boolean platformThreadClassificationSupported() {
-    return !Platform.isJavaVersionAtLeast(19)
-        || isHotspotVmName(System.getProperty("java.vm.name"));
-  }
-
-  private static boolean isHotspotVmName(String vmName) {
-    if (vmName == null) return false;
-    for (String marker : HOTSPOT_VM_NAME_MARKERS) {
-      if (vmName.contains(marker)) return true;
+  static boolean containsBlocker(JfrEvents events, long blocker) {
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
+        return true;
+      }
     }
     return false;
   }

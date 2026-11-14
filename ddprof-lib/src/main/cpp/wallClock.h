@@ -323,6 +323,9 @@ public:
     static bool recordUnownedWallTailAcrossDumpForTest(
         jthread thread, const char* path, int path_length, bool dump_after_primary,
         bool reset_before_tail);
+    // Seeds a real cached stack and five suppressed observations. The caller
+    // blocks profiling signals until the tested ownership transition finishes.
+    static bool seedUnownedWallTailForTest(jthread thread);
 #endif
 };
 

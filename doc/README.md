@@ -2,6 +2,8 @@
 
 # Java Profiler Documentation
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 ## Directory Structure
 
 | Directory | Purpose |
@@ -20,10 +22,10 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ### Architecture
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots and exact-copy failure handling
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
-- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: stripe-owned deferred wall tails, recordings, buffers, metadata and constant pools
+- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: stripe-owned deferred wall tails, recordings, buffers, metadata, constant pools and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
 - [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception and allocation sampling
-- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir and retained-weight epoch provenance; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
+- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir and retained-weight epoch provenance; lazy wall-block backing; [TaskBlock producer contract](architecture/ProfilingEngines.md#taskblock-producer-contract); allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness
@@ -40,6 +42,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
 - [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, and local workflows
 - [Versioning](building/Versioning.md) - Version computation from git tags
+  - [Bounded local container runs](building/TestingGuide.md#bounded-local-container-runs) - Exact Git worktrees, offline cache-only execution, worker limits, and retained test artifacts
 
 ### Reference
 - [ProfilerMemoryRequirements](reference/ProfilerMemoryRequirements.md) - Memory usage and limits

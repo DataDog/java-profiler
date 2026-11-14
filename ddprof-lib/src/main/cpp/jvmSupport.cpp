@@ -7,6 +7,7 @@
 
 #include "asyncSampleMutex.h"
 #include "common.h"
+#include "counters.h"
 #include "frames.h"
 #include "log.h"
 #include "os.h"
@@ -18,6 +19,8 @@
 #include "hotspot/hotspotSupport.h"
 
 #include <jni.h>
+
+#include <atomic>
 
 using JniFunction = void (JNICALL*)();
 using IsVirtualThreadFunction = jboolean (JNICALL*)(JNIEnv*, jobject);
@@ -37,24 +40,29 @@ Mutex JVMSupport::_initialization_lock;
 // - JVMTI::VMInit() callback (vmEntry.cpp)
 // - JavaProfiler.getInstance() via JNI down call - JVM must have been initialized
 bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
-    if (jni == nullptr || thread == nullptr) return false;
+    if (jni == nullptr || thread == nullptr || jni->functions == nullptr) return false;
     jint jni_version = jni->GetVersion();
     if (jni_version <= 0) return false;
     if (jni_version < JNI_VERSION_19_VALUE) return true;
-    // IS_VIRTUAL_THREAD_INDEX is a hardcoded JNI function-table offset that
-    // is only trusted on HotSpot. On any other VM reporting JNI >= 19 the
-    // thread may be virtual and the table entry is not read, so fail closed:
-    // every thread is reported as non-platform, which keeps the task-block
-    // hooks disabled there until that VM's table layout is verified.
-    if (!VM::isHotspot()) return false;
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);
     IsVirtualThreadFunction is_virtual_thread =
         reinterpret_cast<IsVirtualThreadFunction>(
             functions[IS_VIRTUAL_THREAD_INDEX]);
-    return is_virtual_thread != nullptr &&
-        is_virtual_thread(jni, thread) == JNI_FALSE;
+    if (is_virtual_thread == nullptr) {
+        Counters::increment(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED);
+        static std::atomic<bool> warning_emitted{false};
+        bool expected = false;
+        if (warning_emitted.compare_exchange_strong(expected, true,
+                                                     std::memory_order_relaxed)) {
+            LOG_WARN("Failed to resolve IsVirtualThread from the JNI function table "
+                     "even though JNI version is 19 or later; JVM producer callbacks "
+                     "will be ignored");
+        }
+        return false;
+    }
+    return is_virtual_thread(jni, thread) == JNI_FALSE;
 }
 
 bool JVMSupport::initialize() {

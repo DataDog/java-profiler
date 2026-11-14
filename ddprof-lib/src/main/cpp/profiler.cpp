@@ -944,6 +944,55 @@ WallClockBlockTracker::BlockState* Profiler::wallSampleSlot(const WallSampleRequ
   return _block_tracker.slotForId(request.slot_id);
 }
 
+// Caller owns the recording stripe. Commit only successful epoch segments so
+// retries preserve the original context and never replay already-delivered units.
+bool Profiler::writeUnownedBlockedTail(u32 lock_index, const WallSampleRequest& request,
+                                      WallClockBlockTracker::BlockState* block) {
+  Context origin{};
+  u64 publication = 0, tail_id = 0, tail_weight = 0;
+  OSThreadState tail_state = OSThreadState::UNKNOWN;
+  if (!_block_tracker.readUnownedContext(request.slot_id, origin, publication) ||
+      !block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state)) return false;
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  size_t count = _block_tracker.copyUnownedWeightSegments(request.slot_id, segments);
+  bool all_recorded = count != 0;
+  for (size_t i = 0; i < count; ++i) {
+    ExecutionEvent deferred;
+    deferred._thread_state = tail_state;
+    deferred._execution_mode = ExecutionMode::UNKNOWN;
+    deferred._weight = segments[i].weight;
+    deferred._sample_ticks = segments[i].epoch_start;
+    atomicIncRelaxed(_total_samples);
+    bool recorded = writeSampleEvent(lock_index, request.tid, tail_id,
+                                    BCI_WALL, &deferred, &origin);
+    if (wallSampleSlot(request) != block) return false;
+    if (recorded) {
+      _block_tracker.commitUnownedWeightSegment(request.slot_id, segments[i]);
+      Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+    } else {
+      all_recorded = false;
+    }
+  }
+  return all_recorded &&
+      block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+}
+
+bool Profiler::recordUnownedBlockedTail(int tid, ThreadFilter::SlotID slot_id) {
+  auto* identity = _thread_filter.activeSlotForId(slot_id, tid);
+  if (identity == nullptr) return false;
+  WallSampleRequest request{};
+  request.tid = tid;
+  request.slot_id = slot_id;
+  request.lifecycle_generation = identity->lifecycleGeneration();
+  request.registry_epoch = identity->recordingEpoch();
+  RecordingStripe stripe(_locks, getLockIndex(tid));
+  if (!stripe.owned()) return false;
+  auto* block = wallSampleSlot(request);
+  if (block == nullptr || !writeUnownedBlockedTail(stripe.index(), request, block)) return false;
+  block->resetUnownedBlockedSampling();
+  return true;
+}
+
 WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
                                            ExecutionEvent* event, const WallSampleRequest& request) {
   WallSampleResult result;
@@ -998,28 +1047,8 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   bool has_tail = block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state);
   if (!matching_periodic && origin_readable && has_tail &&
       (request.flush_tail || request.unowned_sample)) {
-    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
-    size_t count = _block_tracker.copyUnownedWeightSegments(request.slot_id, segments);
-    bool all_recorded = count != 0;
-    for (size_t i = 0; i < count; ++i) {
-      ExecutionEvent deferred;
-      deferred._thread_state = tail_state;
-      deferred._execution_mode = ExecutionMode::UNKNOWN;
-      deferred._weight = segments[i].weight;
-      deferred._sample_ticks = segments[i].epoch_start;
-      atomicIncRelaxed(_total_samples);
-      bool recorded = writeSampleEvent(stripe.index(), request.tid, tail_id,
-                                      BCI_WALL, &deferred, &origin);
-      if (wallSampleSlot(request) != block) return result;
-      if (recorded) {
-        _block_tracker.commitUnownedWeightSegment(request.slot_id, segments[i]);
-        Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
-      } else {
-        all_recorded = false;
-      }
-    }
-    result.tail_recorded = all_recorded &&
-        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+    result.tail_recorded = writeUnownedBlockedTail(stripe.index(), request, block);
+    if (wallSampleSlot(request) != block) return result;
     if (result.tail_recorded) {
       if (request.unowned_sample) {
         block->clearUnownedBlockedTailKeepingCadence();
@@ -1129,9 +1158,11 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   // JVM (as user_data) and to our own event.
   u64 correlation_id = atomicIncRelaxed(_sample_seq);
 
-  Counters::increment(JVMTI_STACKS_REQUESTED);
   jvmtiError rc = VM::requestStackTrace(ucontext, (jlong)correlation_id);
   if (rc != JVMTI_ERROR_NONE) {
+    if (rc == JVMTI_ERROR_INVALID_THREAD) {
+      return false; // The admission drop is counted by VM::requestStackTrace.
+    }
     if (rc == JVMTI_ERROR_WRONG_PHASE) {
       Counters::increment(JVMTI_STACKS_FAILED_WRONG_PHASE);
     } else {
@@ -2043,11 +2074,33 @@ Error Profiler::init() {
   return Error::OK;
 }
 
+void Profiler::setTaskBlockEnabled(bool enabled) {
+  if (enabled) {
+    // Keep callback admission closed until native setup has either completed
+    // or rolled back, so partial event enablement cannot create paired state.
+    bool monitor_events_enabled = setNativeMonitorTaskBlockEventsEnabled(true);
+    _task_block_monitor_events_enabled.store(monitor_events_enabled,
+                                             std::memory_order_release);
+    _task_block_enabled.store(true, std::memory_order_release);
+    return;
+  }
+
+  _task_block_enabled.store(false, std::memory_order_release);
+  // Clear callback admission before teardown. Failed setup and rollback can leave
+  // JVMTI events enabled while this flag is false, so teardown is unconditional.
+  _task_block_monitor_events_enabled.exchange(false, std::memory_order_acq_rel);
+  setNativeMonitorTaskBlockEventsEnabled(false);
+}
+
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   Error error = checkState();
   if (error) {
     return error;
+  }
+  // Reject before resetRecordingState() can clear roots retained by failed output.
+  if (_jfr._rec != nullptr || _jfr._uncertain_create_fd >= 0) {
+    return Error("Previous recording output is still owned");
   }
   _task_block_enabled.store(false, std::memory_order_release);
   // A previous mixed-success or failed start must not leave a stale mask that a
@@ -2199,6 +2252,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("thread hook calls did not drain; retry start()");
   }
   __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
+
+  // Java API starts opt in after the bridge's startup-argument probe has run.
+  // Enable the extension before a selected delegated engine can request stacks.
+  if (args._jvmtistacks &&
+      (((_event_mask & EM_CPU) &&
+        (_cpu_engine == &ctimer_jvmti || _cpu_engine == &itimer_jvmti)) ||
+       ((_event_mask & EM_WALL) && _wall_engine == &wall_jvmti_engine)) &&
+      !VM::initializeRequestStackTrace()) {
+    return Error("Failed to initialize JVM delegated stack traces");
+  }
 
   const char *filter = args._filter != nullptr ? args._filter : "0";
   _block_tracker.setUnownedContextSnapshotsNeeded(
@@ -2447,9 +2510,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
-    _task_block_enabled.store(
-        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
-        std::memory_order_release);
+    setTaskBlockEnabled(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -2467,7 +2529,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
-  _task_block_enabled.store(false, std::memory_order_release);
+  setTaskBlockEnabled(false);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
@@ -2621,13 +2683,13 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  rotateDictsAndRun([&]{ _jfr.stop(); });
+  Error output_error = rotateDictsAndRun([&]{ return _jfr.stop(); });
   endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
-  LibraryPatcher::unpatch_libraries();
+  if (!output_error) LibraryPatcher::unpatch_libraries();
 
   if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
     _state.store(ERROR, std::memory_order_release);
@@ -2637,7 +2699,7 @@ Error Profiler::stop() {
   if (!hooks_drained) {
     return Error("thread hook calls did not drain; the profiler is stopped");
   }
-  return Error::OK;
+  return output_error;
 }
 
 Error Profiler::check(Arguments &args) {
@@ -2760,14 +2822,13 @@ Error Profiler::dump(const char *path, const int length) {
     updateNativeLibMemStats();
 
     Error err = Error::OK;
-    // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
-    // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
-    // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination.
+    // rotateDictsAndRun fences ASGCT/JNI CallTraceStorage writers with lockAll().
+    // StringDictionary coordinates its own readers and writers with RefCountGuard.
     if (beginTaskBlockRotation()) {
-      rotateDictsAndRun([&]{
-        err = _jfr.dump(path, length);
+      err = rotateDictsAndRun([&]{
+        Error delivered = _jfr.dump(path, length);
         __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+        return delivered;
       });
       endTaskBlockRotation();
     } else {
@@ -2777,7 +2838,7 @@ Error Profiler::dump(const char *path, const int length) {
       TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
     }
 
-    _thread_info.clearAll(thread_ids);
+    if (!err) _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
 
     // reset unwinding counters

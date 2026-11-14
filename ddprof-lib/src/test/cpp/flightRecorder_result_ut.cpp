@@ -7,9 +7,11 @@
 #include "event.h"
 #include "flightRecorder.h"
 #include "profiler.h"
+#include "recordingWriteFailureFixture.h"
 #include "wallClock.h"
 
 #include <gtest/gtest.h>
+#include <cstdio>
 #include <memory>
 #include <unordered_set>
 
@@ -41,17 +43,68 @@ TEST(FlightRecorderResultTest, RecordEventDelegatedReturnsFalseForUnsupportedEve
 
 class RecordingTestAccessor {
 public:
+  // Match post-start hot writes: real flush failures retain bytes instead of throwing.
+  static void activateHotWrites(Recording* recording) { recording->_cold_io = false; }
+
   static void collectThreads(Recording* recording, int stripe, std::unordered_set<int>& tids) {
     recording->_thread_ids[stripe][recording->_active_index.load()].collect(tids);
   }
 };
 
 class FlightRecorderTestAccessor {
+  FlightRecorder* _recorder;
+
 public:
+  FlightRecorderTestAccessor(FlightRecorder* recorder, Recording* recording)
+      : _recorder(recorder) {
+    setRecording(recorder, recording);
+  }
+  ~FlightRecorderTestAccessor() { setRecording(_recorder, nullptr); }
+
   static void setRecording(FlightRecorder* recorder, Recording* recording) {
     recorder->_rec = recording;
   }
 };
+
+TEST(FlightRecorderResultTest, RecordWallSampleReturnsFalseWhenActiveOutputFlushFails) {
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  auto recording = std::make_unique<Recording>(output.fd());
+  RecordingTestAccessor::activateHotWrites(recording.get());
+  FlightRecorder recorder;
+  FlightRecorderTestAccessor active(&recorder, recording.get());
+  RecordingBuffer* buffer = recording->buffer(0);
+  buffer->skip(JFR_EVENT_FLUSH_THRESHOLD - 1);
+  ASSERT_TRUE(recording->outputGood());
+  ASSERT_TRUE(output.failWrites());
+
+  ExecutionEvent event;
+  Context context{};
+  EXPECT_FALSE(recorder.recordWallSample(0, 1, 42, &event, context));
+  EXPECT_FALSE(recording->outputGood());
+  EXPECT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD)
+      << "the failed real pwrite must leave its serialized bytes owned";
+}
+
+TEST(FlightRecorderResultTest, RecordWallSampleRejectsStickyOutputFailureWithoutBufferGrowth) {
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  auto recording = std::make_unique<Recording>(output.fd());
+  RecordingTestAccessor::activateHotWrites(recording.get());
+  FlightRecorder recorder;
+  FlightRecorderTestAccessor active(&recorder, recording.get());
+  RecordingBuffer* buffer = recording->buffer(0);
+  buffer->skip(JFR_EVENT_FLUSH_THRESHOLD);
+  ASSERT_TRUE(output.failWrites());
+  EXPECT_FALSE(recording->flushIfNeeded(buffer));
+  ASSERT_FALSE(recording->outputGood());
+  int before = buffer->offset();
+
+  ExecutionEvent event;
+  Context context{};
+  EXPECT_FALSE(recorder.recordWallSample(0, 1, 42, &event, context));
+  EXPECT_EQ(before, buffer->offset()) << "sticky failure must reject before serialization";
+}
 
 namespace {
 u64 readVar64(const Buffer* buffer, int& offset) {
@@ -68,7 +121,9 @@ u64 readVar64(const Buffer* buffer, int& offset) {
 } // namespace
 
 TEST(FlightRecorderResultTest, TaskBlockOverflowNeverSerializesAnUndefinedThread) {
-  auto recording = std::make_unique<Recording>();
+  auto output = std::unique_ptr<FILE, int (*)(FILE*)>(tmpfile(), fclose);
+  ASSERT_NE(nullptr, output);
+  auto recording = std::make_unique<Recording>(fileno(output.get()));
   FlightRecorder recorder;
   FlightRecorderTestAccessor::setRecording(&recorder, recording.get());
   TaskBlockEvent event{};
@@ -111,7 +166,9 @@ public:
 };
 
 TEST(FlightRecorderResultTest, LightweightShortBurstsSerializeEveryUnitOfWeight) {
-  auto recording = std::make_unique<Recording>();
+  auto output = std::unique_ptr<FILE, int (*)(FILE*)>(tmpfile(), fclose);
+  ASSERT_NE(nullptr, output);
+  auto recording = std::make_unique<Recording>(fileno(output.get()));
   Profiler* profiler = Profiler::instance();
   FlightRecorder* recorder = ProfilerTestAccessor::recorder(profiler);
   FlightRecorderTestAccessor::setRecording(recorder, recording.get());

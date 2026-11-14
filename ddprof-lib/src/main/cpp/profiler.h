@@ -238,6 +238,7 @@ private:
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
   std::atomic<bool> _task_block_enabled{false};
+  std::atomic<bool> _task_block_monitor_events_enabled{false};
   static constexpr u64 TASK_BLOCK_CLOSED = 1ULL << 63;
   std::atomic<u64> _task_block_activity_state{0};
 
@@ -279,6 +280,8 @@ private:
   bool writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
                         const Context* context = nullptr);
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
+  bool writeUnownedBlockedTail(u32 lock_index, const WallSampleRequest& request,
+                               WallClockBlockTracker::BlockState* block);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
@@ -358,10 +361,11 @@ private:
   // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
   void reportDrainTimeout(const char *what);
   void unlockAll();
+  void setTaskBlockEnabled(bool enabled);
   bool beginTaskBlockRotation();
   void endTaskBlockRotation();
 
-  // Rotate all three dictionaries, then run jfr_op under lockAll().
+  // Rotate dictionaries and run jfr_op under lockAll(); failed output retains roots.
   //
   // rotate() drains concurrent JNI readers itself (RefCountGuard), and
   // SignalBlocker prevents profiling signals on this thread from inserting
@@ -375,7 +379,7 @@ private:
   // Dictionary writers that bypass lockAll() (e.g. recordTrace0) are handled
   // by the dictionary's own RefCountGuard protocol, not by lockAll().
   template<typename F>
-  void rotateDictsAndRun(F jfr_op) {
+  Error rotateDictsAndRun(F jfr_op) {
     SignalBlocker blocker;
     if (!_class_map.rotate()) {
       reportDrainTimeout("Class map reused a standby buffer it could not clear");
@@ -387,8 +391,9 @@ private:
       reportDrainTimeout("Context value map reused a standby buffer it could not clear");
     }
     lockAll();
-    jfr_op();
+    Error error = jfr_op();
     unlockAll();
+    if (error) return error;
     if (!_class_map.clearStandby()) {
       reportDrainTimeout("Class map standby buffer not cleared");
     }
@@ -398,6 +403,7 @@ private:
     if (!_context_value_map.clearStandby()) {
       reportDrainTimeout("Context value map standby buffer not cleared");
     }
+    return Error::OK;
   }
 
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
@@ -689,6 +695,9 @@ public:
   WallSampleResult recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
                                     ExecutionEvent* event, const WallSampleRequest& request);
 
+  // Producer-side tail flush; the caller holds TaskBlockActivity and pauses fallback.
+  bool recordUnownedBlockedTail(int tid, ThreadFilter::SlotID slot_id);
+
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
@@ -737,6 +746,9 @@ public:
 
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
+  }
+  bool nativeMonitorTaskBlockEnabled() const {
+    return _task_block_monitor_events_enabled.load(std::memory_order_acquire);
   }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);

@@ -5,28 +5,38 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.Platform;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Assumptions;
 
-/**
- * Runs the wallprecheck regression suite through HotSpot's delegated RequestStackTrace wall-clock
- * engine.
- */
+/** Runs wallprecheck through HotSpot delegated RequestStackTrace sampling. */
 public class JvmtiBasedPrecheckTest extends PrecheckTest {
   private boolean jvmtiDelegationAvailable;
   private long requestedBefore;
 
+  /** Requires a real periodic delegated request before even an instantaneous rejection test. */
   @Override
   protected void before() throws Exception {
-    Map<String, Long> counters = profiler.getDebugCounters();
+    // Require the selected delegated engine, not just extension availability.
     Assumptions.assumeTrue(
-        counters.getOrDefault("jvmti_stacks_init_ok", 0L) > 0,
-        "HotSpot RequestStackTrace JVMTI extension is not available");
+        profiler.getStatus().contains("WallClock Engine : WallClock (JVMTI)"),
+        "HotSpot RequestStackTrace JVMTI wall engine was not selected");
+    requestedBefore = profiler.getDebugCounters().getOrDefault("jvmti_stacks_requested", 0L);
+    // Instantaneous hook-rejection tests can finish before the first periodic wall signal.
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    long requested = requestedBefore;
+    while (requested <= requestedBefore && System.nanoTime() < deadline) {
+      Thread.sleep(1L);
+      requested = profiler.getDebugCounters().getOrDefault("jvmti_stacks_requested", 0L);
+    }
+    assertTrue(
+        requested > requestedBefore,
+        "The delegated wall engine did not issue a stack request within five seconds");
     jvmtiDelegationAvailable = true;
-    requestedBefore = counters.getOrDefault("jvmti_stacks_requested", 0L);
   }
 
   @Override
@@ -34,10 +44,12 @@ public class JvmtiBasedPrecheckTest extends PrecheckTest {
     if (!jvmtiDelegationAvailable) {
       return;
     }
-    long requestedAfter = profiler.getDebugCounters().getOrDefault("jvmti_stacks_requested", 0L);
+    Map<String, Long> counters = profiler.getDebugCounters();
+    long requestedAfter = counters.getOrDefault("jvmti_stacks_requested", 0L);
     assertTrue(
         requestedAfter > requestedBefore,
         "Expected wallclock jvmtistacks path to request delegated stack traces");
+    assertEquals(Long.valueOf(0L), counters.get("jvmti_stacks_failed_other"));
   }
 
   @Override
@@ -58,11 +70,5 @@ public class JvmtiBasedPrecheckTest extends PrecheckTest {
   @Override
   protected String getPrecheckDisabledProfilerCommand() {
     return "wall=1ms,filter=,wallprecheck=false,jvmtistacks=true";
-  }
-
-  /** Delegated stacks cannot replay weighted tails through a local call-trace ID. */
-  @Override
-  protected boolean usesWeightedUnownedFallback() {
-    return false;
   }
 }

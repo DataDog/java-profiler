@@ -327,6 +327,34 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   event._thread_state = OSThreadState::RUNNABLE;
   return recordAsgctWallSampleForTest(&event, tail.transaction, dump_test);
 }
+
+bool BaseWallClock::seedUnownedWallTailForTest(jthread thread) {
+  Profiler* profiler = Profiler::instance();
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  ThreadFilter* registry = profiler->threadFilter();
+  if (current == nullptr || !profiler->isRunning() ||
+      !registry->unfilteredWallTrackingActive()) return false;
+  ThreadFilter::SlotID slot_id = registry->ensureOwnerSlot(*current);
+  WallClockBlockTracker::BlockState* slot = profiler->blockTracker()->slotForId(slot_id);
+  if (slot == nullptr || slot->activeBlockOwner() != BlockRunOwner::NONE) return false;
+  if (!awaitInitialSamplingEpochForTest(5 * NANOTIME_FREQ)) return false;
+  profiler->blockTracker()->resetSlot(slot_id);
+  ExecutionEvent event;
+  event._thread_state = OSThreadState::SLEEPING;
+  event._execution_mode = ExecutionMode::JAVA;
+  WallPrecheckResult first = prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING);
+  if (first.suppress || !first.transaction.unowned_sample) return false;
+  u64 trace_id = profiler->recordJVMTISample(
+      1, current->tid(), thread, BCI_WALL, &event, true);
+  first.transaction.trace_epoch = profiler->recordingEpoch();
+  if (trace_id == 0 || !profiler->recordWallSample(
+      nullptr, 1, trace_id, &event, first.transaction).ordinary_recorded) return false;
+  finishWallPrecheck(first, true);
+  for (int i = 0; i < 5; i++) {
+    if (!prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING).suppress) return false;
+  }
+  return true;
+}
 #endif
 
 bool BaseWallClock::inSyscall(void *ucontext) {
@@ -697,13 +725,10 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     event._thread_state = state;
     event._execution_mode = mode;
     event._weight = 1;
-    // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
-    // Passing the signal-frame PC causes the extension to reject samples where
-    // the thread is currently inside JVM-internal (non-Java) code.
-    // Unowned observations retain unit weight: this engine cannot replay a
-    // cached blocked stack to account for suppressed tail observations.
+    // Pass the interrupted context for HotSpot's no-last-Java-frame path.
+    // Unowned samples retain unit weight: this engine cannot replay a cached stack.
     bool recorded = Profiler::instance()->recordSampleDelegated(
-        nullptr, last_sample, tid, BCI_WALL, &event);
+        ucontext, last_sample, tid, BCI_WALL, &event);
     finishWallPrecheck(precheck, recorded);
   }
 }

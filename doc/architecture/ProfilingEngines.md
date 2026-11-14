@@ -501,8 +501,39 @@ common skeleton and then:
   `RUNNABLE`.
 - Calls `recordSample(..., BCI_WALL, ...)`.
 
-`WallClockJvmti` is identical except that it calls `recordSampleDelegated()`
-with `ucontext = nullptr` and has no collapsing (`wallClock.cpp:448-493`).
+`WallClockJvmti` passes the interrupted `ucontext` to `recordSampleDelegated()`.
+HotSpot needs that context when the thread has no last-Java-frame anchor.
+This engine has no collapsing or cached-stack replay; unowned samples keep unit weight.
+
+### TaskBlock producer contract
+
+`wallprecheck=true` with unfiltered wall tracking enables completed-at-exit
+`datadog.TaskBlock` events. Java park hooks own park intervals. Java generic
+hooks own `SLEEPING` and `OBJECT_WAIT`; the public paired API owns `SLEEPING`.
+
+Native JVMTI callbacks own monitor contention. They also own `Object.wait`
+unless the Java bridge delegates monitor wait events to Java instrumentation.
+This process-wide setting does not disable native contention callbacks.
+
+Each platform thread has one token-qualified blocked-run owner. Nested or
+mismatched exits cannot consume it. Virtual-thread hooks and monitor callbacks
+are excluded; they cannot clear a platform thread's owner on its carrier.
+
+Entry requires no active span and no context window. Exit requires the same
+recording slot and token, no context-window crossing, and at least 1 ms duration.
+Rejected eligibility still clears the exiting owner's lifecycle.
+
+The exit captures the workload stack synchronously and writes blocker,
+unblocking span, entry context, duration and observed state. `OBJECT_WAIT`
+serializes as `WAITING`; monitor contention serializes as `CONTENDED`.
+
+A live dump does not emit a prefix for an open interval. A later eligible exit
+writes one completed event, so its start may precede an earlier dump. Stop/start
+invalidates open owners instead of attributing them to a new recording.
+
+HotSpot sends `MonitorWaited` before monitor reacquisition completes. A native
+wait event ends at that callback and excludes the subsequent reacquisition time.
+A delegated Java wait ends at the instrumented return from `Object.wait`.
 
 ### `J9WallClock` (`j9/j9WallClock.cpp`)
 
