@@ -121,6 +121,10 @@ TEST_F(NativeFdClassifierExhaustionTest,
   NativeFdClassifier::setProbeOverrideForTest(nullptr);
   struct rlimit limit;
   ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+  if (limit.rlim_max <= 65536u) {
+    GTEST_SKIP() << "requires RLIMIT_NOFILE > 65536; runner hard limit is "
+                 << limit.rlim_max << " — see the CI runner image configuration";
+  }
   ASSERT_GT(limit.rlim_cur, 65536u);
   for (int minimum : {0, 65536}) {
     SCOPED_TRACE(minimum);
