@@ -213,16 +213,19 @@ never read the saved pair below the restored SP. The epilogue repair applies to
 exact interrupted PCs, while recovered return addresses keep the normal
 compiled-frame path.
 
-Linux arm64's vDSO `__kernel_rt_sigreturn` omits DWARF metadata. The shared
-native step recognizes its exact syscall instruction pair only in `[vdso]`,
-bounds-checks the `siginfo_t`/`ucontext_t` signal-frame layout, and restores the
-interrupted PC, SP, FP and register-context view. The interrupted PC is exact;
-its LR can seed the next leaf even after native handler frames were recorded.
-The VM walker also recognizes interrupted Java entry, interpreter, epilogue
-and vtable phases after that prefix. Invalid instructions, stack bounds or
-restored register values reject recovery. The sampled and saved ucontexts
-remain unchanged. Restoration requires a forward, aligned SP within the walk's existing stack
-bound; transitions outside that bound are rejected.
+Linux arm64's vDSO `__kernel_rt_sigreturn` omits DWARF metadata.
+`SignalFrame::decode` in `signalFrame_linux.cpp` recognizes its instruction pair
+and validates the `siginfo_t`/`ucontext_t` layout before returning saved registers.
+
+The shared native step applies recovered PC, SP, FP and register-context provenance;
+unsupported ABIs return `NOT_SIGNAL` without probing code or stack memory.
+
+The interrupted PC is exact; its LR can seed the next leaf after native handler
+frames were recorded. The VM walker also recognizes interrupted Java entry,
+interpreter, epilogue and vtable phases after that prefix.
+
+Invalid instructions or saved registers reject recovery without modifying either
+ucontext. Restoration requires a forward, aligned SP within the walk's stack bound.
 Recognized restorers whose saved context is invalid remain marked truncated.
 Linux also permits custom restorers through `SA_RESTORER`
 (`arch/arm64/kernel/signal.c`, `setup_return`). An exact `mov w8/x8, #139;
