@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package com.datadoghq.native.util
 
@@ -63,6 +67,24 @@ object PlatformUtils {
     }
 
     /**
+     * Google Test install locations probed by the gtest plugin (and by the coverage
+     * preflight check, since a missing gtest silently drops the gtest half of coverage).
+     */
+    val gtestLocations: List<String>
+        get() = when (currentPlatform) {
+            Platform.MACOS -> listOf(
+                "/opt/homebrew/opt/googletest",
+                "/usr/local/opt/googletest"
+            )
+            Platform.LINUX -> listOf(
+                "/usr/include/gtest",
+                "/usr/local/include/gtest"
+            )
+        }
+
+    fun isGtestAvailable(): Boolean = gtestLocations.any { File(it).exists() }
+
+    /**
      * Check if a compiler is available and functional
      */
     fun isCompilerAvailable(compiler: String): Boolean {
@@ -70,7 +92,11 @@ object PlatformUtils {
             val process = ProcessBuilder(compiler, "--version")
                 .redirectErrorStream(true)
                 .start()
-            process.waitFor(5, TimeUnit.SECONDS)
+            // Generous beyond the obvious: on a loaded macOS host the /usr/bin/clang++ Xcode
+            // shim can take several seconds to answer --version (Rosetta translation churn,
+            // oahd-helper at 100% CPU), and a 5s budget made this probe fail intermittently
+            // from invocations that accepted the same path minutes earlier.
+            process.waitFor(30, TimeUnit.SECONDS)
             process.exitValue() == 0
         } catch (e: Exception) {
             false
@@ -136,8 +162,6 @@ object PlatformUtils {
             val archSuffix = when (currentArchitecture) {
                 Architecture.X64 -> "x86_64"
                 Architecture.ARM64 -> "aarch64"
-                Architecture.X86 -> "i386"
-                Architecture.ARM -> "arm"
             }
             val clangAsan = locateLibrary("libclang_rt.asan-$archSuffix", compiler)
             if (clangAsan != null) return clangAsan
@@ -154,8 +178,6 @@ object PlatformUtils {
             val archSuffix = when (currentArchitecture) {
                 Architecture.X64 -> "x86_64"
                 Architecture.ARM64 -> "aarch64"
-                Architecture.X86 -> "i386"
-                Architecture.ARM -> "arm"
             }
             val clangTsan = locateLibrary("libclang_rt.tsan-$archSuffix", compiler)
             if (clangTsan != null) return clangTsan
@@ -372,6 +394,36 @@ object PlatformUtils {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Whether native compilation should be skipped for [project].
+     *
+     * `-Pskip-native` (bare, no value) or `skip-native=true` (the form
+     * gradle.properties.template documents) skips it everywhere — the
+     * long-standing behavior, used when consuming a prebuilt shipped library
+     * via -Pwith-libs and never touching a compiler. `skip-native=false` skips
+     * nothing.
+     *
+     * `-Pskip-native=<comma-separated project names>` skips it only for those
+     * projects. This lets a caller substitute the prebuilt *shipped* library
+     * (ddprof-lib) while still compiling something unrelated to its ABI, like
+     * ddprof-test-native's small JNI test helper, which several ddprof-test
+     * suites need on java.library.path regardless of which profiler binary
+     * is under test.
+     */
+    fun isNativeSkipped(project: Project): Boolean {
+        if (!project.hasProperty("skip-native")) {
+            return false
+        }
+        val value = (project.property("skip-native") as? String)?.trim()
+        if (value.isNullOrEmpty() || value.equals("true", ignoreCase = true)) {
+            return true
+        }
+        if (value.equals("false", ignoreCase = true)) {
+            return false
+        }
+        return value.split(",").map { it.trim() }.contains(project.name)
     }
 
     /**

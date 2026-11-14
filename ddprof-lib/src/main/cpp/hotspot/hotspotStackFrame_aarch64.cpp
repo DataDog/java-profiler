@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include "hotspot/hotspotStackFrame.h"
+#include "hotspot/stubUnwindInfo.h"
 // The VMNMethod accessors used below are inline in vmStructs.h and assert via crashProtectionActive()
 // / cast_to(), both of which are defined in vmStructs.inline.h. Without this include, assertion-enabled
 // builds (the gtest targets) leave those symbols unresolved at link time.
@@ -217,7 +218,55 @@ NOSANALIGSANITIZE bool HotspotStackFrame::unwindEpilogue(VMNMethod* nm, uintptr_
     }
     return false;
 }
-NOSANALIGSANITIZE bool HotspotStackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool HotspotStackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp, const StubUnwindInfo* info) {
+    // Precomputed metadata first (see stubUnwindInfo.h for the safety model);
+    // a miss or an SU_UNSUPPORTED range falls through to the legacy
+    // heuristics. entry == info->_start cross-checks the registry lookup
+    // (keyed by the blob start) against the entry the caller passed.
+    if (info != nullptr && entry != NULL && (const void*)entry == info->_start) {
+        int64_t index = ((intptr_t)pc - (intptr_t)info->_start) / (int64_t)sizeof(instruction_t);
+        if (index >= 0 && pc < (uintptr_t)info->_end) {
+            const StubUnwindPhase* phase = info->findPhase((int)index);
+            switch (phase->kind) {
+                case SU_PC_TO_LR:
+                    Counters::increment(WALKVM_STUB_INFO_HIT);
+                    pc = link();
+                    return true;
+                case SU_SP_DELTA_LR:
+                    Counters::increment(WALKVM_STUB_INFO_HIT);
+                    sp += phase->arg;
+                    pc = link();
+                    return true;
+                case SU_FP_PROLOGUE:
+                    // The pc slot sits at a fixed offset from sp, derived from
+                    // the stub's own code. Dereferencing is only sound when sp
+                    // itself is in the sampled stack -- the same guard the
+                    // SU_FP_FRAME case applies to fp.
+                    if (!withinCurrentStack(sp)) {
+                        break;
+                    }
+                    Counters::increment(WALKVM_STUB_INFO_HIT);
+                    pc = ((uintptr_t*)sp)[phase->arg2 / (int)sizeof(uintptr_t)];
+                    sp += phase->arg;
+                    return true;
+                case SU_FP_FRAME:
+                    if (withinCurrentStack(fp)) {
+                        uintptr_t new_fp = ((uintptr_t*)fp)[(phase->arg2 - 8) / (int)sizeof(uintptr_t)];
+                        uintptr_t ret = ((uintptr_t*)fp)[phase->arg2 / (int)sizeof(uintptr_t)];
+                        Counters::increment(WALKVM_STUB_INFO_HIT);
+                        sp = fp + phase->arg;
+                        fp = new_fp;
+                        pc = ret;
+                        return true;
+                    }
+                    break;
+                case SU_UNSUPPORTED:
+                    break;
+            }
+        }
+        Counters::increment(WALKVM_STUB_INFO_FALLBACK);
+    }
+
     instruction_t* ip = (instruction_t*)pc;
     if (ip == entry || *ip == 0xd65f03c0) {
         pc = link();

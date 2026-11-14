@@ -39,6 +39,7 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
 
     _preserve_set_buffer.max_load_factor(0.75f);
     _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
+    _collector_set_buffer.max_load_factor(0.75f);
 
     // Initialize triple-buffered storage
     auto active_table = std::make_unique<CallTraceHashTable>();
@@ -72,17 +73,20 @@ CallTraceStorage::~CallTraceStorage() {
     CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_ACQ_REL));
     CallTraceHashTable* scratch = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_ACQ_REL));
 
-    // Wait for any ongoing refcount usage to complete and delete each unique table
+    // The caller must have stopped put() on this storage: put() loads
+    // _active_storage before it takes its guard, so a put() still in flight
+    // could find this object freed.  The drains below are defense in depth for
+    // a straggler that already holds a guard: a table one still holds after
+    // the drain timeout is leaked rather than deleted under it
+    // (waitForRefCountToClear() aborts debug builds first).
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
-    RefCountGuard::waitForRefCountToClear(active);
-    delete active;
-
-    if (standby != active) {
-        RefCountGuard::waitForRefCountToClear(standby);
+    if (RefCountGuard::waitForRefCountToClear(active)) {
+        delete active;
+    }
+    if (standby != active && RefCountGuard::waitForRefCountToClear(standby)) {
         delete standby;
     }
-    if (scratch != active && scratch != standby) {
-        RefCountGuard::waitForRefCountToClear(scratch);
+    if (scratch != active && scratch != standby && RefCountGuard::waitForRefCountToClear(scratch)) {
         delete scratch;
     }
 
@@ -103,9 +107,10 @@ CallTrace* CallTraceStorage::getDroppedTrace() {
     return &dropped_trace;
 }
 
-void CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
+void CallTraceStorage::registerLivenessChecker(LivenessChecker checker,
+    std::function<void(const CallTraceIdSet&)> completion) {
     ExclusiveLockGuard lock(&_liveness_lock);
-    _liveness_checkers.push_back(checker);
+    _liveness_checkers.push_back({std::move(checker), std::move(completion)});
 }
 
 void CallTraceStorage::clearLivenessCheckers() {
@@ -146,8 +151,10 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     //   5. This check detects the race: _active_storage was nullified by scanner
     //   6. We return DROPPED_TRACE_ID, never touching the deleted table
     //
-    // Memory ordering: ACQUIRE load ensures we see scanner's ACQ_REL exchange to nullptr
-    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
+    // Memory ordering: the load sees the scanner's ACQ_REL exchange to nullptr or its swap
+    // SEQ_CST rather than ACQUIRE: the re-check must not be satisfied before the
+    // guard's slot store is visible to a scanning drainer (see RefCountGuard).
+    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_SEQ_CST));
     if (original_active != active || original_active == nullptr) {
         // Storage was swapped or nullified during guard construction
         // SAFE: We detected the race, drop this trace, never use the table pointer
@@ -163,7 +170,8 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
 
 /*
  * Trace processing with signal blocking for simplified concurrency.
- * This function is safe to call concurrently with put() operations.
+ * Tolerates concurrent put(): tables are reclaimed only after being swapped
+ * out and drained (see the class comment).
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {
@@ -175,8 +183,13 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
         _preserve_set_buffer.clear();
 
         for (const auto& checker : _liveness_checkers) {
-            checker(_preserve_set_buffer);
+            _collector_set_buffer.clear();
+            checker.collect(_collector_set_buffer);
+            // The heap collector clears its output, including while disabled.
+            // Transfer nodes so it cannot erase roots from earlier collectors.
+            _preserve_set_buffer.merge(_collector_set_buffer);
         }
+        _collector_set_buffer.clear();  // Release duplicate nodes not transferred by merge.
     }
 
     // PHASE 2: 10-Step Triple-Buffer Rotation
@@ -196,7 +209,9 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     // so we can iterate the first one and at the same time add new elements to the second one safely
     original_standby->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
-            original_scratch->putWithExistingId(trace, 1);
+            if (original_scratch->putWithExistingId(trace, 1)) {
+                _preserve_set_buffer.erase(trace->trace_id);
+            }
         }
     });
 
@@ -225,14 +240,26 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
 
     // Just make sure all puts to the original_active are done before proceeding
     // Do this outside of the critical section not to block the new active area needlessly
-    RefCountGuard::waitForRefCountToClear(original_active);
+    // On a timeout the collection below still runs (this chunk needs the traces),
+    // but step 10 must not free the table's chunks.
+    const bool active_drained = RefCountGuard::waitForRefCountToClear(original_active);
 
     // Step 6: Collect from old active directly to _traces_buffer with hook for immediate preservation
     original_active->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
-            original_scratch->putWithExistingId(trace, 1);
+            if (original_scratch->putWithExistingId(trace, 1)) {
+                _preserve_set_buffer.erase(trace->trace_id);
+            }
         }
     });
+
+    // Report only unconfirmed requests, before source frames are reclaimed.
+    {
+        SharedLockGuard lock(&_liveness_lock);
+        for (const auto& checker : _liveness_checkers) {
+            if (checker.complete) checker.complete(_preserve_set_buffer);
+        }
+    }
 
     // Step 7: Update the instance id for the recently retired active buffer
     original_active->setInstanceId(getNextInstanceId());
@@ -246,8 +273,13 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     // This completes the deferred deallocation that prevents use-after-free
     LinearAllocator::freeChunks(standby_chunks);
 
-    // Step 10: Clear the original active area (now scratch)
-    original_active->clear();
+    // Step 10: Clear the original active area (now scratch).  After a failed
+    // drain, reset it without draining again and leak its chunks.
+    if (active_drained) {
+        original_active->clear();
+    } else {
+        original_active->clearAfterFailedDrain();
+    }
     
     // Triple-buffer rotation maintains trace continuity with thread-safe malloc-free operations:
     // - Pre-allocated collections prevent malloc/free during processTraces

@@ -115,7 +115,7 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
     EXPECT_NE(nullptr, self);
     if (!self) return;
 
-    ThreadFilter::SlotID slot = filter->registerThread();
+    ThreadFilter::SlotID slot = filter->registerThread(self->tid());
     if (slot >= 0) {
       self->setFilterSlotId(slot);
       filter->add(self->tid(), slot);

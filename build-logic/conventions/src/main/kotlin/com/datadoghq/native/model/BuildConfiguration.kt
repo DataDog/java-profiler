@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package com.datadoghq.native.model
 
@@ -18,11 +22,19 @@ abstract class BuildConfiguration @Inject constructor(
     abstract val testJvmArgs: ListProperty<String>
     abstract val active: Property<Boolean>
 
+    /**
+     * Whether this configuration's jar is part of the published artifact set. An
+     * unpublishable configuration (e.g. the opt-in coverage build) is only packaged
+     * while it is active, for in-repo consumers such as the test projects.
+     */
+    abstract val publishable: Property<Boolean>
+
     override fun getName(): String = configName
 
     init {
         // Default to active unless overridden
         active.convention(true)
+        publishable.convention(true)
         testEnvironment.convention(emptyMap())
         testJvmArgs.convention(emptyList())
     }

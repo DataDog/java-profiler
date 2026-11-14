@@ -14,9 +14,10 @@ import org.junit.jupiter.api.Assumptions;
 public class JvmtiBasedMonitorTaskBlockTest extends MonitorTaskBlockTest {
   @Override
   protected void before() {
-    Map<String, Long> counters = profiler.getDebugCounters();
-    Assumptions.assumeTrue(counters.getOrDefault("jvmti_stacks_init_ok", 0L) > 0,
-        "HotSpot RequestStackTrace JVMTI extension is not available");
+    // Require the selected delegated engine, not just extension availability.
+    Assumptions.assumeTrue(
+        profiler.getStatus().contains("WallClock Engine : WallClock (JVMTI)"),
+        "HotSpot RequestStackTrace JVMTI wall engine was not selected");
   }
 
   @Override
@@ -29,18 +30,12 @@ public class JvmtiBasedMonitorTaskBlockTest extends MonitorTaskBlockTest {
     return "wall=1ms,filter=,wallprecheck=true,jvmtistacks=true";
   }
 
-  /**
-   * Proves the restarted recording really ran with {@code jvmtistacks=true}: JVMTI stacks
-   * must have been requested again after the restart. Catches a regression back to a
-   * hardcoded restart command that drops this class's configuration.
-   *
-   * <p>Starting the restarted recording resets the native counters, so any non-zero count
-   * here was accumulated by the restarted recording alone.
-   */
+  /** Counter reset on start makes requests here evidence of the restarted session. */
   @Override
   protected void assertRestartedConfiguration(Map<String, Long> counters) {
     long requested = counters.getOrDefault("jvmti_stacks_requested", 0L);
-    Assertions.assertTrue(requested > 0,
+    Assertions.assertTrue(
+        requested > 0,
         "restarted recording did not use the JVMTI stack path: jvmti_stacks_requested "
             + requested);
   }

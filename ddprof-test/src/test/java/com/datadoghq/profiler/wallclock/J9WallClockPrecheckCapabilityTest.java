@@ -25,18 +25,28 @@ import org.junit.jupiter.api.Test;
 
 /** Verifies that unsupported J9 wall sampling does not activate unfiltered precheck tracking. */
 public class J9WallClockPrecheckCapabilityTest extends AbstractProfilerTest {
-  private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final int BLOCK_HOLD_MILLIS = 500;
 
   /** Ensures owned-block hooks stay inactive when the selected wall engine cannot consume them. */
   @Test
   public void unsupportedEngineDoesNotActivateRegistry() {
-    long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+    long token =
+        ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
 
     assertEquals(0L, token, "J9WallClock must not activate unfiltered precheck tracking");
   }
 
-  /** Ensures unsupported precheck falls back to ordinary wall samples without a profiling gap. */
+  @Override
+  protected boolean isPlatformSupported() {
+    return Platform.isJ9();
+  }
+
+  @Override
+  protected String getProfilerCommand() {
+    return "wall=1ms,wallsampler=jvmti,filter=,wallprecheck=true";
+  }
+
+  /** Verifies ordinary wall samples remain when native TaskBlock tracking is unsupported. */
   @Test
   public void blockingSocketReadFallsBackToMethodSample() throws Exception {
     String workerName = "taskblock-j9-jvmti-fallback";
@@ -63,16 +73,6 @@ public class J9WallClockPrecheckCapabilityTest extends AbstractProfilerTest {
     assertTrue(
         TaskBlockAssertions.containsEventThread(methodSamples, workerName),
         "J9WallClock fallback must retain wall-clock MethodSample coverage for the worker");
-  }
-
-  @Override
-  protected boolean isPlatformSupported() {
-    return Platform.isJ9();
-  }
-
-  @Override
-  protected String getProfilerCommand() {
-    return "wall=1ms,wallsampler=jvmti,filter=,wallprecheck=true";
   }
 
   private static void runBlockingSocketRead(String workerName) throws Exception {

@@ -10,11 +10,13 @@ not install these hooks.
 
 ## Ownership and forwarding
 
-Each consumer publishes its own active flag before requesting installation.
+Each owner start reserves an installation generation and publishes its active flag
+together under the patch lock, before library discovery.
 `LibraryPatcher::_socket_active` describes installed/shared-refresh state, not
 producer eligibility. Stop disables the consumer before conditionally removing
 the patches; patches remain installed while the other consumer is active.
-Installation failure disables both consumers and restores saved import values.
+A current installation failure disables both consumers and restores saved import values.
+A failed discovery from an older generation cannot disable a newer owner.
 Original libc function pointers remain available for hooks entered before
 restoration.
 
@@ -24,6 +26,39 @@ recording or NativeBlockScope construction. With only the bytes sampler active,
 the wrappers use its existing hooks. With both active, the underlying I/O call
 runs once and bytes recording follows the TaskBlock scope. Hook forwarding
 preserves arguments, return values and errno.
+
+## Interval and patch domains
+
+Native scopes project the current thread's registry identity lazily. They use the
+same generation-qualified block tracker and recording-activity gate as Java and
+JVMTI producers. Entry requires no active span or context window. Exit captures
+one synchronous IO_WAIT stack for an eligible completed interval.
+
+A live dump emits no prefix for an open native interval. An exit after the dump
+writes the full interval. An exit during closed rotation clears its owner and
+increments `task_block_dropped_rotation` without retaining an event. Stop/start
+invalidates open owners; an old exit cannot consume a new recording's native run.
+TaskBlocks have no cached anchor or correlation field.
+
+Socket transactions pin their selected DSOs while import slots are installed.
+Non-socket patching uses a live-library walk for pthread and sigaction imports.
+The domains can share a DSO, but never an import slot or restoration table.
+Image fingerprints hash relocation layout and symbol names, not patched values.
+
+### Full-RELRO reloads
+
+Each new socket transaction candidate re-establishes GOT writability while its
+validated image is pinned and the patch lock is held. Stopping releases that
+pin; an identical DSO can then reload at the same base with a read-only
+full-RELRO GOT. The append-only `CodeCache` survives that reload, so its cached
+patchability flag cannot establish the new mapping's protection. The native
+transaction and the non-socket live walker both use unconditional
+`makeImportsWritable()` before writing new mappings, retaining their separate
+import ownership and rollback rules.
+
+The patchability cache is atomic: `LibraryPatcher` and `MallocHooker` use
+separate patch locks. Acquire/release protects that shared flag, not DSO
+lifetime; each writer still needs its own mapped-image validation and pin.
 
 ## FD type and lifecycle
 
@@ -122,6 +157,12 @@ baseline/hook comparisons; preserving a libc-origin fault is not evidence of a
 new hook fault or of successful EFAULT recovery.
 
 ## Source-named checks
+
+- `LibraryPatcherSocketTransactionTest.OwnerRestartMakesReloadedFullRelroImportsWritable`:
+  production owner start/stop, actual unmap/reload at the same base, read-only GOT
+  precondition, restarted installation/forwarding and restored originals.
+- `libraryPatcherUnload_ut.cpp`: pin/restore socket safety, pthread live-walk
+  fingerprint identity, foreign-loader-lock order and same-layout replacement.
 
 - `nativeSocketInterposer_ut.cpp`: inactive stream forwarding without probes or
   TaskBlock entry, active block kinds, sampler-only/combined forwarding,

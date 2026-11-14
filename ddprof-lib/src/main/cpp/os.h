@@ -212,11 +212,13 @@ class OS {
     static int getCpuCount();
     static int getCgroupCpuMillicores();
     static long getContainerMemoryLimit();
+    static long getContainerMemoryUsage();
     static u64 getProcessCpuTime(u64* utime, u64* stime);
     static u64 getTotalCpuTime(u64* utime, u64* stime);
 
     static int createMemoryFile(const char* name);
-    static void copyFile(int src_fd, int dst_fd, off_t offset, size_t size);
+    // True only when every requested byte was copied; preserves the source.
+    static bool copyFile(int src_fd, int dst_fd, off_t offset, size_t size);
     static void freePageCache(int fd, off_t start_offset);
     static int mprotect(void* addr, size_t size, int prot);
 

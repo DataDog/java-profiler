@@ -1,5 +1,8 @@
-// Copyright 2026, Datadog, Inc.
-// SPDX-License-Identifier: Apache-2.0
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 
 package com.datadoghq.native.gtest
 
@@ -73,7 +76,7 @@ class GtestPlugin : Plugin<Project> {
             }
 
             // Check if gtest is available
-            val hasGtest = checkGtestAvailable()
+            val hasGtest = PlatformUtils.isGtestAvailable()
             if (!hasGtest) {
                 project.logger.warn("WARNING: Google Test not found - skipping native tests")
             }
@@ -93,21 +96,6 @@ class GtestPlugin : Plugin<Project> {
         }
     }
 
-    private fun checkGtestAvailable(): Boolean {
-        // Check common gtest locations
-        val locations = when (PlatformUtils.currentPlatform) {
-            Platform.MACOS -> listOf(
-                "/opt/homebrew/opt/googletest",
-                "/usr/local/opt/googletest"
-            )
-            Platform.LINUX -> listOf(
-                "/usr/include/gtest",
-                "/usr/local/include/gtest"
-            )
-        }
-        return locations.any { File(it).exists() }
-    }
-
     private fun createBuildNativeLibsTask(project: Project, extension: GtestExtension, hasGtest: Boolean) {
         project.tasks.register("buildNativeLibs") {
             group = "build"
@@ -115,7 +103,7 @@ class GtestPlugin : Plugin<Project> {
 
             onlyIf {
                 hasGtest &&
-                !project.hasProperty("skip-native") &&
+                !PlatformUtils.isNativeSkipped(project) &&
                 !project.hasProperty("skip-gtest") &&
                 PlatformUtils.currentPlatform == Platform.LINUX &&
                 extension.nativeLibsSourceDir.isPresent &&
@@ -173,7 +161,7 @@ class GtestPlugin : Plugin<Project> {
             onlyIf {
                 hasGtest &&
                 !project.hasProperty("skip-tests") &&
-                !project.hasProperty("skip-native") &&
+                !PlatformUtils.isNativeSkipped(project) &&
                 !project.hasProperty("skip-gtest")
             }
         }
@@ -202,10 +190,10 @@ class GtestPlugin : Plugin<Project> {
         val buildGtestConfigTask = project.tasks.register("buildGtest${config.capitalizedName()}") {
             group = "build"
             description = "Compile and link all Google Tests for the ${config.name} build (no run)"
-            if (extension.buildNativeLibs.get()) {
-                // CI executes these binaries directly, so the build-only task must also produce
-                // the native fixtures that the binaries load at runtime.
-                dependsOn("buildNativeLibs")
+            // The binaries load the helper DSOs at run time, and CI runs them
+            // straight from this task's output, so build the DSOs here too.
+            if (PlatformUtils.currentPlatform == Platform.LINUX && extension.buildNativeLibs.get()) {
+                project.tasks.findByName("buildNativeLibs")?.let { dependsOn(it) }
             }
         }
 

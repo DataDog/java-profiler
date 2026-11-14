@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026, Datadog, Inc.
+# Capture Gradle and produce deterministic local reports; never invoke a coding agent.
 set -euo pipefail
-
-# Run locally: logs and summaries must never be sent to an external coding CLI.
-exec python3 "$(dirname "$0")/summarize_gradle.py" "$@"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+exec python3 "$ROOT/utils/gradle_summary.py" "$@"

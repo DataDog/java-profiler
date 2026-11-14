@@ -10,6 +10,8 @@
 #include "common.h"
 #include "counters.h"
 #include "dwarf.h"
+#include "mallocFootprint.h"
+#include "nativeMem.h"
 #include "utils.h"
 
 #include <atomic>
@@ -93,6 +95,18 @@ public:
     return align_up(sizeof(NativeFunc) + 1 + strlen(name), sizeof(NativeFunc *));
   }
 
+  // Allocator overhead on that allocation -- rounding to the size quantum plus
+  // the per-chunk header, measured rather than assumed. Lives here because only
+  // NativeFunc knows the real allocation base: `name` points *into* the block at
+  // offset sizeof(NativeFunc), so querying the allocator with `name` itself
+  // would be undefined. 0 if null.
+  static size_t nameOverhead(const char *name) {
+    if (name == nullptr) {
+      return 0;
+    }
+    return MallocFootprint::overheadOf(from(name), allocSize(name));
+  }
+
   static short libIndex(const char *name) {
     if (name == nullptr) {
       return -1;
@@ -166,12 +180,15 @@ private:
   char *_build_id;           // GNU build-id (hex string, null if not available)
   size_t _build_id_len;      // Build-id length in bytes (raw, not hex string length)
   uintptr_t _load_bias;      // Load bias (image_base - file_base address)
+  u64 _file_id;              // Backing file identity, see makeFileId(); 0 if unknown
+  u64 _image_fingerprint;    // Symbols::imageFingerprint() of the mapped image; 0 if unknown
 
   std::vector<ImportLocation> _imports;
   size_t _import_offsets[NUM_IMPORTS + 1];
   u64 _incomplete_imports;
   bool _imports_finalized;
-  bool _imports_patchable;
+  // LibraryPatcher and MallocHooker protect import writes with different locks.
+  std::atomic<bool> _imports_patchable{false};
   bool _debug_symbols;
 
   FrameDesc *_dwarf_table;
@@ -182,12 +199,35 @@ private:
   int _count;
   CodeBlob *_blobs;
 
+  // Running total of memoryUsage()'s formula, updated incrementally by the
+  // same pre-publication mutators (constructor, add()/commitAdd(),
+  // setDwarfTable()) instead of recomputed by iterating _blobs. Safe because
+  // every contributing field is fixed before publication (see _published
+  // below) -- there is no point after construction-and-population where this
+  // total could be stale relative to a fresh recompute.
+  long long _memory_usage;
+
+  // Measured allocator overhead -- rounding to the size quantum plus the
+  // per-chunk header -- on the name allocations counted in _memory_usage.
+  // Tracked incrementally alongside it, by the same mutators, because overhead
+  // is a function of *per-allocation* size and so cannot be recovered later
+  // from a byte total: a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
+  //
+  // The _blobs array is deliberately excluded. It is one allocation per
+  // library, large enough that its overhead is a rounding error, and it comes
+  // from new CodeBlob[] -- whose returned pointer is not guaranteed to be the
+  // allocator's block base, so querying the allocator with it would be unsound.
+  // Excluding it understates by a negligible amount rather than risking a wrong
+  // reading.
+  long long _name_overhead;
+
   // Set once the cache is registered into a CodeCacheArray (see markPublished()).
   // After that, memoryUsage() may be read lock-free from another thread (dump),
-  // so the mutators that touch the fields it reads (add()/expand()/
-  // setDwarfTable()) must not run — asserted in debug. Standalone caches that
+  // so the mutators that touch the fields it reads (add()/prepareAdd()/
+  // commitAdd()/setDwarfTable()) must not run — asserted in debug. Standalone caches that
   // are never registered (e.g. JitCodeCache::_runtime_stubs, which is instead
-  // guarded by its own JitCodeCache::_stubs_lock) stay unpublished, so the
+  // guarded by its own JitCodeCache::_stubs_lock, with writers serialized by
+  // JitCodeCache::_stubs_write_lock) stay unpublished, so the
   // asserts never fire for them. Atomic with release/acquire so the flag is
   // observably true on any thread that reaches a published cache — the store is
   // sequenced before CodeCacheArray::add()'s RELEASE publish of the pointer, and
@@ -251,13 +291,62 @@ public:
   void setBuildId(const char* build_id, size_t build_id_len);
   void setLoadBias(uintptr_t load_bias) { _load_bias = load_bias; }
 
+  // Identity of the file backing a mapping. dev is encoded as in
+  // /proc/self/maps parsing: major << 8 | minor.
+  static u64 makeFileId(unsigned long dev, unsigned long inode) {
+    return u64(dev) << 32 | inode;
+  }
+  u64 fileId() const { return _file_id; }
+  void setFileId(u64 file_id) { _file_id = file_id; }
+
+  u64 imageFingerprint() const { return _image_fingerprint; }
+  void setImageFingerprint(u64 fingerprint) { _image_fingerprint = fingerprint; }
+
   // Mark this cache as published into a CodeCacheArray. Call before the array
-  // makes the pointer visible to readers; afterwards add()/expand()/
-  // setDwarfTable() must not be called (see _published).
-  void markPublished() { _published.store(true, std::memory_order_release); }
+  // makes the pointer visible to readers; afterwards add()/prepareAdd()/
+  // commitAdd()/setDwarfTable() must not be called (see _published).
+  void markPublished() {
+    finalizeImports();
+    _published.store(true, std::memory_order_release);
+  }
 
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);
+
+  // Heap allocations that prepareAdd() makes for one later commitAdd().
+  // commitAdd() takes ownership of name and grown and sets them to nullptr.
+  // If no commitAdd() happens, the destructor frees them.
+  struct PreparedAdd {
+    char *name = nullptr;          // NativeFunc name copy, non-printables replaced
+    long long name_size = 0;       // NativeFunc::allocSize() of the name
+    long long name_overhead = 0;   // NativeFunc::nameOverhead() of the copy
+    CodeBlob *grown = nullptr;     // filled copy of _blobs at twice the capacity, or
+                                   // nullptr when the current array has a free slot
+    int capacity = 0;              // _capacity that this preparation is valid for
+
+    PreparedAdd() = default;
+    ~PreparedAdd() {
+      if (name != nullptr) {
+        NativeFunc::destroy(name);
+      }
+      delete[] grown;
+    }
+    // Non-copyable: a copy would free the same allocations twice.
+    PreparedAdd(const PreparedAdd &) = delete;
+    PreparedAdd &operator=(const PreparedAdd &) = delete;
+  };
+
+  // Two-phase add() for a cache whose readers run in signal handlers under a
+  // SpinLock (JitCodeCache::_runtime_stubs): prepareAdd() makes every heap
+  // allocation and can run outside the lock; commitAdd() only stores and
+  // copies pointers, so it is safe under the exclusive lock. commitAdd()
+  // returns the replaced blob array (or nullptr), which the caller must
+  // delete[] after it releases the lock. Between prepareAdd() and commitAdd()
+  // nothing else may mutate this cache; the caller serializes the pair
+  // against other writers. Pass a freshly constructed PreparedAdd.
+  void prepareAdd(const char *name, PreparedAdd &prepared) const;
+  CodeBlob *commitAdd(const void *start, int length, PreparedAdd &prepared,
+                      bool update_bounds = false);
   void updateBounds(const void *start, const void *end);
   void sort();
 
@@ -288,6 +377,9 @@ public:
   bool prepareImportsForPatch();
   void **findImport(ImportId id, size_t index = 0);
   bool patchImport(ImportId, void *hook_func);
+  // Import lookup without making the library writable.
+  void **peekImport(ImportId id);
+  bool makeImportsWritable() { return makeImportsPatchable(); }
 
   CodeBlob *findBlob(const char *name);
   CodeBlob *findBlobByAddress(const void *address);
@@ -303,12 +395,16 @@ public:
 
   // Live size of what this CodeCache owns on the heap: the blob array, the
   // per-symbol name strings (variable length), this cache's own name, and the
-  // DWARF unwind table. Recomputed on demand (called only at dump time), so it
-  // reflects the current contents. The build-id string is deliberately excluded
-  // — it is mutated by the background refresher and negligible in size (see the
-  // definition). Const and lock-free: reads only fields that are stable once the
-  // library is published.
+  // DWARF unwind table. An O(1) read of a running total (see _memory_usage).
+  // The build-id string is deliberately excluded — it is mutated by the
+  // background refresher and negligible in size (see the definition). Const and
+  // lock-free: reads only fields that are stable once the library is published.
   long long memoryUsage() const;
+
+  // Measured allocator overhead on the name allocations that memoryUsage()
+  // counts (see _name_overhead). Same O(1) running-total read, same lock-free
+  // guarantees.
+  long long nameOverhead() const { return _name_overhead; }
 
   int count() { return _count; }
   CodeBlob* blob(int idx) {
@@ -350,8 +446,23 @@ public:
     } while (!__atomic_compare_exchange_n(&_reserved, &slot, slot + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     assert(__atomic_load_n(&_libs[slot], __ATOMIC_RELAXED) == nullptr);
+    // Record this library's contribution to NM_NATIVE_SYMBOLS exactly once,
+    // right here at publication -- not via a periodic recompute-and-overwrite
+    // elsewhere. A cache that fails to publish (the overflow branch above) is
+    // simply never recorded, so there is no corresponding decrement to get
+    // right on the parse-failure/duplicate discard path in
+    // Symbols::parseLibraries (which deletes an unpublished cache directly).
+    // Because record() is a relaxed atomic add, concurrent publishers from
+    // different threads (or a publish racing Profiler::dump()'s read of the
+    // aggregate) can never clobber each other's contribution -- unlike the
+    // read-modify-write a periodic setLive(sum-of-everything) would need.
+    NativeMem::record(NM_NATIVE_SYMBOLS, lib->memoryUsage());
+    // The allocator overhead on those same allocations, measured rather than
+    // assumed, recorded at the same instant and by the same relaxed-atomic add
+    // so it stays consistent with the logical bytes above.
+    NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, lib->nameOverhead());
     // Mark published before the RELEASE store makes the pointer visible, so any
-    // later add()/expand()/setDwarfTable() on this cache trips the assert (its
+    // later add()/prepareAdd()/commitAdd()/setDwarfTable() on this cache trips the assert (its
     // _blobs would then be read lock-free by memoryUsage() at dump time).
     lib->markPublished();
     // Store pointer before publishing count. The RELEASE here pairs with
@@ -373,11 +484,11 @@ public:
     return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE);
   }
 
-  // Sum the live memory of all registered libraries. Recomputed on demand
-  // (called only at dump time) so it reflects each library's fully-populated
-  // state at that point — the accurate per-library formula rather than a value
-  // cached at add() time. (Libraries are populated before being registered and
-  // not grown afterwards.) The array is append-only, so iterating the published
+  // Sum the live memory of all registered libraries. Each lib->memoryUsage()
+  // is now an O(1) read of a running total (see CodeCache::_memory_usage),
+  // not a rescan of its symbol table, so this whole sum is O(libraries) --
+  // still only called at dump time, but no longer the reason to avoid calling
+  // it more often. The array is append-only, so iterating the published
   // prefix is safe alongside concurrent add()s.
   size_t memoryUsage() const {
     size_t total = 0;

@@ -22,29 +22,14 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <functional>
 
 #include "arch.h"
-#include "counters.h"
 #include "threadState.h"
 
-class ProfiledThread;
 struct ThreadEntry;  // defined after ThreadFilter; carries a pointer to a ThreadFilter::Slot
-
-enum class BlockRunOwner : int {
-    NONE = 0,
-    JAVA = 1,
-    JVMTI = 2,
-    NATIVE = 3,
-};
-
-struct BlockRunSnapshot {
-    OSThreadState active_state{OSThreadState::UNKNOWN};
-    BlockRunOwner owner{BlockRunOwner::NONE};
-    u64 generation{0};
-    bool active{false};
-    bool context_eligible{false};
-};
+class ProfiledThread;
+class WallClockBlockTracker;  // wall-clock owned/unowned block-run suppression state, see wallClockBlockTracker.h
+class ProfiledThread;
 
 class ThreadFilter {
 public:
@@ -57,65 +42,44 @@ public:
     static constexpr int kChunkMask = kChunkSize - 1;
     static constexpr int kMaxThreads = 2048;
     static constexpr int kMaxChunks = (kMaxThreads + kChunkSize - 1) / kChunkSize;  // = 8 chunks
-    static constexpr int kBlockRunSlotBits = 11;
-    static constexpr u64 kBlockRunSlotMask = (1ULL << kBlockRunSlotBits) - 1;
-    static constexpr u64 kMaxBlockRunGeneration = UINT64_MAX >> kBlockRunSlotBits;
-    static_assert(kMaxThreads == (1 << kBlockRunSlotBits),
-                  "block-run token slot bits must cover every ThreadFilter slot");
     // High-performance free list using Treiber stack, 64 shards
     static constexpr int kFreeListSize  = kMaxThreads;
     static constexpr int kShardCount    = 64;          // power-of-two for fast modulo
     static constexpr int kTidIndexSize  = 8192;        // 4x maximum live slots
     static constexpr int kTidIndexMask  = kTidIndexSize - 1;
 
-    // One cache line per slot to avoid false sharing. Slot instances are never freed
-    // (ChunkStorage is process-lifetime), so a captured Slot* is always dereferenceable.
+    // One cache line per slot to avoid false sharing. Slot instances are freed
+    // only by ~ThreadFilter, which requires quiescence (see the destructor), so a
+    // captured Slot* stays dereferenceable while the filter is in use.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
-        static constexpr u64 kUnownedBlockedFallbackRatio = 10;
-
-        std::atomic<u64>           unowned_blocked_pending_weight{0};
-        std::atomic<u64>           unowned_blocked_decision_count{0};
-        std::atomic<u64>           unowned_blocked_call_trace_id{0};
-        // Packed as (epoch << 1) | in_context_window so a transition and its
-        // epoch change are observed atomically by block admission and exit.
+        // Unfiltered recordings project the native owner's packed logical
+        // (version << 1) | membership source. Filtered recordings use the bit
+        // for explicit recording-local selection; restoring logical truth must
+        // not undo clearActive(). Both versions invalidate incompatible runs.
         std::atomic<u64>           context_window_state{0};
         std::atomic<u64>           lifecycle_generation{0};
         // Per-recording publication flag. A retained TID mapping is eligible for
         // unfiltered suppression only when this value matches the registry's
-        // active recording epoch. The payload is reset before the epoch is
-        // release-published.
+        // active recording epoch. Its WallClockBlockTracker::BlockState is reset
+        // before the epoch is release-published; logical context membership survives.
         std::atomic<u64>           recording_epoch{0};
-        std::atomic<u64>           active_block_context_epoch{0};
-        std::atomic<u64>           block_generation{0};
-        // The most recent owned-block generation for which a MethodSample was
-        // recorded successfully. Generations are monotonic, so a delayed
-        // completion from an older run cannot mark a newer run as sampled.
-        std::atomic<u64>           sampled_block_generation{0};
-        std::atomic<OSThreadState> unowned_blocked_state{OSThreadState::UNKNOWN};
         // Native identity and context-window membership are independent so an
         // unfiltered wall recording can retain lifecycle metadata without
         // changing ordinary thread selection.
         std::atomic<int>           tid{-1};
-        std::atomic<int>           active_block_owner{static_cast<int>(BlockRunOwner::NONE)};
-        std::atomic<int>           unowned_blocked_fallback_enabled{1};
-        // Set by explicit block enter/exit hooks. It lets the timer skip sending a signal
-        // only while instrumentation still owns a suppressible blocking interval.
-        std::atomic<OSThreadState> active_block_state{OSThreadState::UNKNOWN};
-        char padding[2 * DEFAULT_CACHE_LINE_SIZE
+        // Retirement bookkeeping (retireThreadByTid()/drainRetiredLocked()):
+        // the tid a retired-pending slot was indexed under, and the intrusive
+        // link of the per-instance retired stack. Both are -1 unless the slot
+        // is retired-pending.
+        std::atomic<int>           retiring_tid{-1};
+        std::atomic<int>           retire_next{-1};
+        char padding[DEFAULT_CACHE_LINE_SIZE
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<int>)
-                     - sizeof(std::atomic<int>)
-                     - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<OSThreadState>)];
+                     - sizeof(std::atomic<int>)];
 
         inline int nativeTid() const {
             return tid.load(std::memory_order_acquire);
@@ -132,18 +96,26 @@ public:
         inline u64 contextWindowEpoch() const {
             return context_window_state.load(std::memory_order_acquire) >> 1;
         }
-        // add()/remove() (and therefore these) are only ever called by the slot's
-        // own owning thread transitioning its own context window, so there is no
-        // writer-writer race to protect against here. A CAS is unnecessary: the
-        // load and store below are never interleaved with another writer's RMW,
-        // only observed by concurrent readers via the acquire load in
-        // inContextWindow()/contextWindowEpoch(), for which the release store is
-        // sufficient. (unregisterThreadLocked()/resetRegistrationsLocked() can
-        // also zero this field from another thread, but only as part of tearing
-        // down or resetting the slot entirely, a case where clobbering an
-        // in-flight transition from the exiting/reset thread is already
-        // tolerated.) Avoiding the CAS turns a locked RMW into a plain store on
-        // every context-filtered enter/exit.
+        // enterContextWindow()/exitContextWindow() are owner-only: add()/remove()
+        // only ever call them on the calling thread's own slot, so the release
+        // store is sufficient for concurrent readers using the acquire loads in
+        // inContextWindow()/contextWindowEpoch(). Avoiding a CAS turns a locked
+        // RMW into a plain store on every context-filtered enter/exit.
+        //
+        // Other writers of this field (R-A5):
+        // - refreshSlotForRecording() copies the owner's source snapshot only
+        //   after invalidating old recording payload. Normal owner context
+        //   hooks publish warm logical transitions without resetting tails.
+        // - unregisterThreadLocked()/retireThreadByTid() reset it only after
+        //   winning the tid CAS, so the slot has no live owner afterwards.
+        // - registerThread() initializes it before publishing native ownership.
+        // - clearActive() is the only cross-thread writer while the owner is
+        //   live, and it uses exitContextWindowFromNonOwner() (a CAS).
+        // Why this is safe: only the owner sets bit 0. After the owner loads
+        // bit 0 clear, nobody else can change the word before its store. After
+        // it loads bit 0 set, the only overlapping write is clearActive()'s
+        // identical current+1. Neither the bit nor the epoch is lost or moved
+        // backwards except by lifecycle resets or an owner's logical-word wrap.
         inline bool enterContextWindow() {
             u64 current = context_window_state.load(std::memory_order_relaxed);
             if ((current & 1) != 0) return false;
@@ -156,155 +128,38 @@ public:
             context_window_state.store(current + 1, std::memory_order_release);
             return true;
         }
-
-        inline OSThreadState activeBlockState() const {
-            return active_block_state.load(std::memory_order_acquire);
-        }
-        inline void setActiveBlockState(OSThreadState state) {
-            active_block_state.store(state, std::memory_order_release);
-        }
-        inline BlockRunOwner activeBlockOwner() const {
-            return static_cast<BlockRunOwner>(active_block_owner.load(std::memory_order_acquire));
-        }
-        inline u64 blockGeneration() const {
-            return block_generation.load(std::memory_order_acquire);
-        }
-#ifdef UNIT_TEST
-        inline void setBlockGenerationForTest(u64 value) {
-            block_generation.store(value, std::memory_order_relaxed);
-        }
-#endif
-        inline u64 sampledBlockGeneration() const {
-            return sampled_block_generation.load(std::memory_order_acquire);
-        }
-        inline void markBlockGenerationSampled(u64 generation) {
-            u64 sampled = sampled_block_generation.load(std::memory_order_relaxed);
-            while (sampled < generation &&
-                   !sampled_block_generation.compare_exchange_weak(
-                       sampled, generation, std::memory_order_release,
-                       std::memory_order_relaxed)) {
+        // Cross-thread exit used by clearActive(): CAS so a racing owner
+        // transition is never overwritten (R-A5). Returns whether this call
+        // cleared bit 0.
+        inline bool exitContextWindowFromNonOwner() {
+            u64 current = context_window_state.load(std::memory_order_acquire);
+            while ((current & 1) != 0) {
+                if (context_window_state.compare_exchange_weak(
+                        current, current + 1, std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {
+                    return true;
+                }
             }
-        }
-        inline void resetSampledBlockGeneration() {
-            sampled_block_generation.store(0, std::memory_order_relaxed);
-        }
-        inline bool unownedBlockedFallbackEnabled() const {
-            return unowned_blocked_fallback_enabled.load(std::memory_order_acquire) != 0;
-        }
-        inline void enableUnownedBlockedFallback() {
-            resetUnownedBlockedSampling();
-            unowned_blocked_fallback_enabled.store(1, std::memory_order_release);
-        }
-        inline void disableUnownedBlockedFallback() {
-            unowned_blocked_fallback_enabled.store(0, std::memory_order_release);
-            resetUnownedBlockedSampling();
-        }
-        inline void resetUnownedBlockedSampling() {
-            unowned_blocked_pending_weight.store(0, std::memory_order_relaxed);
-            unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
-            unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
-            unowned_blocked_call_trace_id.store(0, std::memory_order_release);
-        }
-        inline bool shouldRecordUnownedBlockedSample() {
-            u64 decision = unowned_blocked_decision_count.fetch_add(1, std::memory_order_relaxed) + 1;
-            if ((decision % kUnownedBlockedFallbackRatio) == 1) {
-                return true;
-            }
-            unowned_blocked_pending_weight.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
-        inline u64 consumeUnownedBlockedWeight() {
-            return unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed) + 1;
-        }
-        inline void restoreUnownedBlockedWeight(u64 weight) {
-            if (weight > 1) {
-                unowned_blocked_pending_weight.fetch_add(weight - 1, std::memory_order_relaxed);
-            }
-        }
-        inline void recordUnownedBlockedSample(u64 call_trace_id, OSThreadState state) {
-            unowned_blocked_state.store(state, std::memory_order_relaxed);
-            unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
-        }
-        inline bool flushUnownedBlockedTail(u64& call_trace_id, u64& weight,
-                                            OSThreadState& state) {
-            call_trace_id = unowned_blocked_call_trace_id.exchange(0, std::memory_order_acq_rel);
-            weight = unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed);
-            state = unowned_blocked_state.exchange(OSThreadState::UNKNOWN, std::memory_order_relaxed);
-            unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
-            if (call_trace_id == 0 || weight == 0 || state == OSThreadState::UNKNOWN) {
-                return false;
-            }
-            return true;
-        }
-        inline bool tryPrepareActiveBlockRun(BlockRunOwner owner,
-                                             u64* generation_out,
-                                             bool outside_context_required) {
-            u64 context_state = context_window_state.load(std::memory_order_acquire);
-            if (outside_context_required && (context_state & 1) != 0) {
-                return false;
-            }
-            int expected_owner = static_cast<int>(BlockRunOwner::NONE);
-            if (!active_block_owner.compare_exchange_strong(
-                    expected_owner, static_cast<int>(owner), std::memory_order_acq_rel,
-                    std::memory_order_acquire)) {
-                return false;
-            }
-            if (outside_context_required &&
-                context_window_state.load(std::memory_order_acquire) != context_state) {
-                active_block_owner.store(static_cast<int>(BlockRunOwner::NONE),
-                                         std::memory_order_release);
-                return false;
-            }
-            u64 generation = block_generation.load(std::memory_order_relaxed);
-            if (generation == kMaxBlockRunGeneration) {
-                active_block_owner.store(static_cast<int>(BlockRunOwner::NONE),
-                                         std::memory_order_release);
-                Counters::increment(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED);
-                return false;
-            }
-            generation++;
-            block_generation.store(generation, std::memory_order_relaxed);
-            active_block_context_epoch.store(context_state >> 1, std::memory_order_relaxed);
-            resetSampledBlockGeneration();
-            disableUnownedBlockedFallback();
-            *generation_out = generation;
-            return true;
-        }
-        inline void publishActiveBlockRun(OSThreadState state) {
-            active_block_state.store(state, std::memory_order_release);
-        }
-        inline void clearActiveBlockRun() {
-            active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
-            resetSampledBlockGeneration();
-            enableUnownedBlockedFallback();
-            active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
-        }
-        inline bool activeBlockRemainedOutsideContextWindow() const {
-            u64 context_state = context_window_state.load(std::memory_order_acquire);
-            return (context_state & 1) == 0 &&
-                   active_block_context_epoch.load(std::memory_order_acquire) ==
-                       (context_state >> 1);
-        }
-        inline BlockRunSnapshot snapshotBlockRun() const {
-            BlockRunSnapshot snapshot;
-            snapshot.active_state = activeBlockState();
-            snapshot.owner = activeBlockOwner();
-            snapshot.generation = blockGeneration();
-            snapshot.active = snapshot.owner != BlockRunOwner::NONE &&
-                snapshot.active_state != OSThreadState::UNKNOWN;
-            snapshot.context_eligible = activeBlockRemainedOutsideContextWindow();
-            return snapshot;
+        // Exposes the raw packed context-window state to WallClockBlockTracker,
+        // which reads it (twice, around its owner CAS) to validate that an owned
+        // block run did not span a context-window transition.
+        inline u64 rawContextWindowState() const {
+            return context_window_state.load(std::memory_order_acquire);
         }
     };
-    static_assert(sizeof(Slot) == 2 * DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly two cache lines");
-    static_assert(std::atomic<OSThreadState>::is_always_lock_free,
-                  "Slot OSThreadState fields must be lock-free for signal-handler safety");
+    static_assert(sizeof(Slot) == DEFAULT_CACHE_LINE_SIZE, "Slot must fit exactly one cache line");
     static_assert(std::atomic<u64>::is_always_lock_free,
                   "Slot::recording_epoch must be lock-free for signal-handler safety");
 
     ThreadFilter();
+    // PRECONDITION: quiescence (no concurrent users); see threadFilter.cpp.
     ~ThreadFilter();
 
+    // Retains native ownership across recordings. Unfiltered owners register on
+    // their first context/block/park hook; live owners continue to consume capacity
+    // until teardown. Their recording payload is refreshed lazily by its owner.
     void init(const char* filter, bool track_unfiltered_wall = false);
     void initFreeList();
     bool enabled() const;
@@ -312,88 +167,42 @@ public:
     bool unfilteredWallTrackingActive() const;
     RecordingEpoch recordingEpoch() const;
     // Hot path methods - slot_id MUST be from registerThread(), undefined behavior otherwise.
-    // add() is lock-free in the common case (slot already indexed by registerThread()).
-    // It falls back to acquiring _registry_lock - no longer strictly lock-free - only
-    // when it observes the slot's tid cleared to -1 by a concurrent registry reset
-    // (e.g. a recording restart racing this call). Returns false if the thread could
-    // not be placed in the context window (e.g. the lazy indexSlot() fallback failed
-    // because the tid index is exhausted); callers must not assume membership on
-    // failure and should clear any cached slot id so it is re-derived.
+    // add() is lock-free. It returns false, without touching the slot, when the slot no
+    // longer belongs to `tid` (the previous owner has exited). On failure, clear any
+    // cached slot id so registerThread() re-derives it before assuming membership.
     bool accept(SlotID slot_id) const;
     bool add(int tid, SlotID slot_id);
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
     void collect(std::vector<ThreadEntry>& entries) const;
-    // Liveness hook for CallTraceStorage::processTraces: a slot may cache a
-    // call_trace_id for a still-blocked thread's weighted fallback tail
-    // (recordUnownedBlockedSample) well before flushUnownedBlockedTail() emits
-    // it. Without this, a chunk rotation racing that window drops the trace,
-    // and the eventual deferred sample references an id with no constant-pool
-    // entry in the chunk it lands in.
-    void collectUnownedBlockedTraceIds(const std::function<void(u64)>& visit) const;
     // Clears per-recording membership and suppression state while keeping
-    // process-lifetime slot ownership intact. Threads must opt in again with add().
+    // native slot ownership intact. Threads must opt in again with add().
     void clearActive();
-    void resetSlotRunState(SlotID slot_id);
-    u64 enterBlockedRun(SlotID slot_id, OSThreadState state,
-                        BlockRunOwner owner = BlockRunOwner::JAVA);
-    // Unconditional cleanup for reset/unregister paths only. Normal block
-    // lifecycles must use the generation-checked overload so they cannot clear
-    // another owner.
-    void exitBlockedRun(SlotID slot_id);
-    bool exitBlockedRun(SlotID slot_id, u64 generation);
-    bool snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
-                                   BlockRunSnapshot* snapshot);
-    bool activeOwnedBlockGeneration(const ThreadEntry& entry,
-                                    u64& generation) const;
-    bool isOwnedBlockSuppressionCandidate(const ThreadEntry& entry) const;
-    // Single-pass merge of activeOwnedBlockGeneration()/isOwnedBlockSuppressionCandidate():
-    // callers that need both the generation and the already-sampled state should use this
-    // instead of calling the two wrappers above in sequence, which would re-validate the
-    // same slot atomics twice.
-    bool ownedBlockDecision(const ThreadEntry& entry, bool& already_sampled,
-                            u64& generation) const {
-        return ownedBlockGeneration(entry, generation, already_sampled);
-    }
+    // Non-owning; wired up once by Profiler so ThreadFilter's own
+    // registry-lifecycle resets (registerThread/unregisterThread/
+    // refreshSlotForRecording/clearActive) also clear the tracker's
+    // parallel per-slot state. See wallClockBlockTracker.h. Must be wired
+    // before the first registerThread(); the tracker's storage is allocated
+    // lazily by registerThread().
+    void setBlockTracker(WallClockBlockTracker* tracker) { _block_tracker = tracker; }
 
 #ifdef UNIT_TEST
-    using SuppressionSnapshotHook = void (*)(void*);
-    void setSuppressionSnapshotHookForTest(SuppressionSnapshotHook hook,
-                                           void* arg) {
-        _suppression_snapshot_hook = hook;
-        _suppression_snapshot_hook_arg = arg;
+    // Expose published bucket state for reclamation tests without timing assertions.
+    int tidIndexEntryForTest(int bucket) const;
+    static unsigned tidIndexBucketForTest(int tid) {
+        return hashTid(tid) & kTidIndexMask;
     }
 
-    // Invoked by registerThread() right after the pre-lock _registry_active
-    // check passes, before _registry_lock is acquired - lets tests inject a
-    // deactivation into the exact TOCTOU window being fixed.
+    // Invoked by registerThread() immediately before _registry_lock is
+    // acquired, once the pre-lock _registry_active and capacity checks have
+    // passed - lets tests inject a deactivation between the lock-free
+    // _registry_active check and the in-lock recheck, and observe whether a
+    // call reached the lock at all.
     using PostActiveCheckHook = void (*)(void*);
     void setPostActiveCheckHookForTest(PostActiveCheckHook hook, void* arg) {
         _post_active_check_hook = hook;
         _post_active_check_hook_arg = arg;
     }
-#endif
-
-    static inline u64 encodeBlockRunToken(SlotID slot_id, u64 generation) {
-        return (generation << kBlockRunSlotBits) | static_cast<u64>(slot_id);
-    }
-    static inline SlotID tokenSlotId(u64 token) {
-        return static_cast<SlotID>(token & kBlockRunSlotMask);
-    }
-    static inline u64 tokenGeneration(u64 token) {
-        return token >> kBlockRunSlotBits;
-    }
-    static inline bool decodeBlockRunToken(u64 token, SlotID& slot_id,
-                                           u64& generation) {
-        if (token == 0) return false;
-        slot_id = tokenSlotId(token);
-        generation = tokenGeneration(token);
-        return generation != 0;
-    }
-
-#ifdef UNIT_TEST
-    using BlockRunPublishObserver = void (*)(ThreadFilter*, SlotID);
-    static void setBlockRunPublishObserverForTest(BlockRunPublishObserver observer);
 #endif
 
     // Returns nullptr if slot_id is invalid or its chunk has not been allocated.
@@ -406,22 +215,39 @@ public:
         return chunk != nullptr ? &chunk->slots[slot_idx] : nullptr;
     }
 
-    SlotID registerThread(int tid = -1);
+    // Returns the slot owned by native thread `tid` (allocating one if needed),
+    // or -1 if tid < 0, the registry is inactive, or it is full.
+    SlotID registerThread(int tid, u64 logical_window_state);
+    // Normal-owner JNI/context hooks only. No remote TLS lookup or signal-side
+    // registration. An inactive registry does not allocate or reserve a slot.
+    SlotID ensureOwnerSlot(ProfiledThread& owner);
+    void onContextWindowEnter(ProfiledThread& owner);
+    void onContextWindowExit(ProfiledThread& owner);
+#ifdef UNIT_TEST
+    // Synthetic legacy registry fixtures have no ProfiledThread. Production
+    // callers must supply the actual owner's explicit logical source instead.
+    SlotID registerThread(int tid) {
+        Slot* slot = lookupByTid(tid);
+        return registerThread(tid, slot != nullptr ? slot->rawContextWindowState() : 0);
+    }
+#endif
+    // An expected TID re-resolves a stale slot cache before retiring ownership.
     void unregisterThread(SlotID slot_id, int expected_tid = -1);
     void unregisterThreadByTid(int tid);
+    // Lock-free retirement for the pthread-key TLS destructor (never blocks).
+    // Unknown/already-retired tid is a no-op. Locked bookkeeping is deferred to
+    // the next _registry_lock holder (drainRetiredLocked()).
+    void retireThreadByTid(int tid);
     Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;
     Slot* lookupByTid(int tid, RecordingEpoch epoch, SlotID* out_slot_id = nullptr) const;
     Slot* activeSlotForId(SlotID slot_id, int tid) const;
     // Populates lifecycle metadata from an existing mapping without registering
     // the TID. Timer-side observation must remain read-only.
     bool lookupThreadEntry(ThreadEntry& entry, RecordingEpoch epoch) const;
-    SlotID ensureCurrentThreadSlot(ProfiledThread* current);
     void deactivateRecording();
     SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
 
 private:
-    bool ownedBlockGeneration(const ThreadEntry& entry, u64& generation,
-                              bool& already_sampled) const;
 
     // Lock-free free list using a stack-like structure
     struct FreeListNode {
@@ -433,6 +259,16 @@ private:
     struct ChunkStorage {
         std::array<Slot, kChunkSize> slots;
     };
+
+    struct TidIndex {
+        std::array<std::atomic<int>, kTidIndexSize> entries;
+        // Number of live entries whose home-to-destination probe path crosses
+        // each bucket, excluding the destination itself. Writers alone access
+        // these counts, under _registry_lock. A tombstone is needed exactly
+        // while its count is nonzero; readers only inspect entries.
+        std::array<uint16_t, kTidIndexSize> probe_through{};
+    };
+    static_assert(kMaxThreads <= UINT16_MAX, "TID probe counts must fit in uint16_t");
 
     std::atomic<bool> _enabled{false};
     std::atomic<bool> _registry_active{false};
@@ -447,17 +283,42 @@ private:
     // Lock-free slot allocation
     std::atomic<SlotID> _next_index{0};
     std::unique_ptr<FreeListNode[]> _free_list;
+    // Number of slots currently linked into the free list. Maintained only by
+    // pushToFreeList()/popFromFreeList()/initFreeList(), all of which run under
+    // _registry_lock (or single-threaded construction), so it is exact under
+    // the lock; outside it may lag an in-flight push or lead an in-flight pop,
+    // but never misses a completed push - see capacityExhausted(). Together
+    // with _next_index and _retired_count it lets registerThread() reject
+    // registrations against a full registry without taking _registry_lock.
+    std::atomic<int> _free_count{0};
+    // Per-instance intrusive Treiber stack of retired-pending slots linked via
+    // Slot::retire_next (capacity == kMaxThreads, nothing can be dropped).
+    // Pushed lock-free by retireThreadByTid(); consumed whole (exchange) by
+    // drainRetiredLocked() under _registry_lock, so there is no ABA.
+    std::atomic<SlotID> _retired_head{-1};
+    // Retired-but-undrained slots; incremented BEFORE the push, decremented
+    // AFTER pushToFreeList(), so a completed retirement is always counted in
+    // _retired_count or _free_count (see capacityExhausted()).
+    std::atomic<int> _retired_count{0};
     // Entries contain slot_id + 1. Zero terminates a lookup probe; -1 is a
     // tombstone left by unregister. The slot's published TID is the key.
-    std::array<std::atomic<int>, kTidIndexSize> _tid_index;
+    // Entries and probe counts share one allocation made by the first init()
+    // that activates the registry and kept until destruction (requires
+    // quiescence; no grace period for lock-free readers), so processes that never use a
+    // context filter or unfiltered precheck don't pay for it. Null until then:
+    // lookups find nothing, and nothing can be indexed while it is null because
+    // registration requires an active registry.
+    // Retired-but-undrained entries stay occupied; readers and indexSlot skip
+    // them because slot->tid is -1; unindexSlot later matches on
+    // value == slot_id+1.
+    std::atomic<TidIndex*> _tid_index{nullptr};
     // Registration and teardown never run in a signal handler. Serializing
     // writers prevents duplicate TID mappings while lookups remain lock-free.
     std::mutex _registry_lock;
 
+    WallClockBlockTracker* _block_tracker = nullptr;
+
 #ifdef UNIT_TEST
-    static std::atomic<BlockRunPublishObserver> _block_run_publish_observer;
-    SuppressionSnapshotHook _suppression_snapshot_hook = nullptr;
-    void* _suppression_snapshot_hook_arg = nullptr;
     PostActiveCheckHook _post_active_check_hook = nullptr;
     void* _post_active_check_hook_arg = nullptr;
 #endif
@@ -472,12 +333,45 @@ private:
     void initializeChunk(int chunk_idx);
     bool pushToFreeList(SlotID slot_id);
     SlotID popFromFreeList();
+    // Lock-free admission gate: true when every slot index has been handed
+    // out, no retirement is pending and no slot is waiting in the free list,
+    // i.e. a new registration cannot succeed.
+    // 1. _next_index only changes under _registry_lock and never drops below
+    //    kMaxThreads once reached (an overshoot is reverted, never reset).
+    // 2. Load order matters: _retired_count before _free_count. Drain removes
+    //    a slot from _retired_count only after pushToFreeList() has counted it
+    //    in _free_count, so every completed retirement is visible in at least
+    //    one of the two reads.
+    // 3. A free whose pushToFreeList() has not yet incremented _free_count is
+    //    an in-progress operation ordered after this rejection - the same
+    //    outcome as the locked path.
+    // 4. Consequently THREAD_REGISTRY_CAPACITY_EXHAUSTED counts genuine
+    //    full-registry rejections; the caller retries on its next hook
+    //    (ensureOwnerSlot()).
+    // 5. Pending retirements count as capacity, so a registry full of retired
+    //    slots reaches the lock and drains them (starvation guard).
+    // 6. Do not reorder the loads and do not take the lock here
+    //    (FullRegistryRejectsUnknownTidWithoutLocking).
+    // 7. retireThreadByTid() increments _retired_count before its Treiber push,
+    //    so if the exiting thread is descheduled between the two, drains briefly
+    //    find an empty list while this gate returns false and over-capacity
+    //    registrations take _registry_lock. That is intentional (over-report is
+    //    the safe direction); do not "fix" the order.
+    inline bool capacityExhausted() const {
+        return _next_index.load(std::memory_order_acquire) >= kMaxThreads &&
+               _retired_count.load(std::memory_order_acquire) == 0 &&
+               _free_count.load(std::memory_order_acquire) == 0;
+    }
+    // Caller holds _registry_lock. Moves every retired-pending slot to the
+    // free list (unindex, reset, push).
+    void drainRetiredLocked();
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
     void rollbackFailedIndex(Slot& slot);
     bool indexOrRollback(Slot& slot, SlotID slot_id, int tid);
-    void refreshSlotForRecording(Slot* slot, RecordingEpoch epoch);
-    void resetRegistrationsLocked();
+    void refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch,
+                                  u64 logical_window_state);
+    void ensureTidIndexLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
     SlotID lookupSlotIdByTid(int tid) const;
     static inline unsigned hashTid(int tid) {
@@ -489,6 +383,7 @@ private:
 struct ThreadEntry {
     int tid;
     ThreadFilter::Slot* slot;
+    ThreadFilter::SlotID slot_id;
     u64 lifecycle_generation;
     ThreadFilter::RecordingEpoch recording_epoch;
 };

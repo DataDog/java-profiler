@@ -61,11 +61,13 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _build_id = nullptr;
   _build_id_len = 0;
   _load_bias = 0;
+  _file_id = 0;
+  _image_fingerprint = 0;
 
   memset(_import_offsets, 0, sizeof(_import_offsets));
   _incomplete_imports = 0;
   _imports_finalized = true;
-  _imports_patchable = imports_patchable;
+  _imports_patchable.store(imports_patchable, std::memory_order_release);
 
   _dwarf_table = NULL;
   _dwarf_table_length = 0;
@@ -74,6 +76,10 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _capacity = INITIAL_CODE_CACHE_CAPACITY;
   _count = 0;
   _blobs = new CodeBlob[_capacity];
+
+  _memory_usage = (long long)_capacity * sizeof(CodeBlob) +
+                  (long long)NativeFunc::allocSize(_name);
+  _name_overhead = (long long)NativeFunc::nameOverhead(_name);
 
   _published.store(false, std::memory_order_relaxed);
 }
@@ -102,12 +108,15 @@ void CodeCache::copyFrom(const CodeCache& other) {
     _build_id = nullptr;
   }
   _load_bias = other._load_bias;
+  _file_id = other._file_id;
+  _image_fingerprint = other._image_fingerprint;
 
   _imports.clear();
   memset(_import_offsets, 0, sizeof(_import_offsets));
   _incomplete_imports = 0;
   _imports_finalized = true;
-  _imports_patchable = other._imports_patchable;
+  _imports_patchable.store(other._imports_patchable.load(std::memory_order_acquire),
+                           std::memory_order_release);
 
   _dwarf_table_length = other._dwarf_table_length;
   if (_dwarf_table_length > 0) {
@@ -131,6 +140,15 @@ void CodeCache::copyFrom(const CodeCache& other) {
       _blobs[i]._name = NativeFunc::create(other._blobs[i]._name, _lib_index);
     }
   }
+
+  // Identical content to `other`, so its running total transfers as-is --
+  // no need to recompute (and `other` may itself already be published, whose
+  // _blobs this copy must not depend on after construction).
+  _memory_usage = other._memory_usage;
+  // Likewise for the overhead: the name strings above are fresh allocations,
+  // but of exactly the same sizes, and overhead is a function of the requested
+  // size, so `other`'s total describes this copy just as well.
+  _name_overhead = other._name_overhead;
 
   // A copy is a fresh, not-yet-registered cache.
   _published.store(false, std::memory_order_relaxed);
@@ -166,80 +184,91 @@ CodeCache::~CodeCache() {
 }
 
 long long CodeCache::memoryUsage() const {
-  // The blob array: _capacity entries of CodeBlob.
-  long long total = (long long)_capacity * sizeof(CodeBlob);
-
-  // This cache's own name, plus each symbol's name string. Each is a
-  // variable-length allocation whose size depends on the name length
-  // (see NativeFunc::allocSize). The lock-free read here is safe only for caches
-  // registered in a CodeCacheArray (Libraries::native_libs): their _blobs array
-  // and name pointers are fixed once published (add()/expand()/setDwarfTable()
-  // run only pre-publish — asserted via _published), which is the same read the
-  // symbolication fast path relies on. It must NOT be called on a continuously
-  // mutated, unpublished cache such as JitCodeCache::_runtime_stubs without
-  // holding JitCodeCache::_stubs_lock (shared), since a concurrent add()/expand()
-  // would free _blobs underneath the reader.
-  total += (long long)NativeFunc::allocSize(_name);
-  for (int i = 0; i < _count; i++) {
-    total += (long long)NativeFunc::allocSize(_blobs[i]._name);
-  }
-
-  // The DWARF unwind table, when present (length only — no pointer deref).
-  total += (long long)_dwarf_table_length * sizeof(FrameDesc);
-
-  // The build-id string is intentionally NOT counted here: the background
-  // library refresher (Libraries::updateBuildIds) frees and replaces _build_id
-  // on already-published caches under _build_id_lock, which dump does not hold,
-  // so dereferencing it here would race. It is negligible (~tens of bytes per
-  // library) next to the symbol tables, so excluding it costs no meaningful
-  // accuracy while keeping this read lock-free.
-
-  return total;
+  // O(1): _memory_usage is updated incrementally by the constructor,
+  // add()/commitAdd(), and setDwarfTable() -- the same pre-publication mutators that
+  // used to be re-summed here on every call. Safe to read lock-free once
+  // published (Libraries::native_libs) because those mutators never run
+  // afterwards (asserted via _published), same invariant the old per-call
+  // rescan relied on.
+  //
+  // Deliberately excludes the build-id string: the background library
+  // refresher (Libraries::updateBuildIds) frees and replaces _build_id on
+  // already-published caches under _build_id_lock, which dump does not hold,
+  // so folding it into this running total would race. It is negligible
+  // (~tens of bytes per library) next to the symbol tables.
+  return _memory_usage;
 }
 
-void CodeCache::expand() {
-  // Must not run after publication: memoryUsage() reads _blobs lock-free from
-  // the dump thread and a concurrent realloc would free it underneath.
-  assert(!_published.load(std::memory_order_acquire) &&
-         "expand() on a published CodeCache races memoryUsage()");
-  CodeBlob *old_blobs = _blobs;
-  CodeBlob *new_blobs = new CodeBlob[_capacity * 2];
-
-  memcpy(new_blobs, old_blobs, _count * sizeof(CodeBlob));
-
-  _capacity *= 2;
-  _blobs = new_blobs;
-  delete[] old_blobs;
-}
-
-void CodeCache::add(const void *start, int length, const char *name,
-                    bool update_bounds) {
+void CodeCache::prepareAdd(const char *name, PreparedAdd &prepared) const {
   // Symbols are added while parsing a library, before it is registered into a
   // CodeCacheArray. Adding after publication would race memoryUsage() (which
   // reads _blobs/_count lock-free at dump time). Unpublished standalone caches
   // (e.g. _runtime_stubs) are exempt — they are never published.
   assert(!_published.load(std::memory_order_acquire) &&
          "add() on a published CodeCache races memoryUsage()");
+  // A reused PreparedAdd would leak the allocations it still owns.
+  assert(prepared.name == nullptr && prepared.grown == nullptr);
   char *name_copy = NativeFunc::create(name, _lib_index);
+  prepared.name = name_copy;
+  prepared.name_size = (long long)NativeFunc::allocSize(name);
+  // Measured off the block just handed back, while the pointer is in hand: the
+  // gauge is published as a total at add() time, with no pointer left to probe.
+  prepared.name_overhead = (long long)NativeFunc::nameOverhead(name_copy);
   // Replace non-printable characters
   for (char *s = name_copy; *s != 0; s++) {
     if (*s < ' ')
       *s = '?';
   }
 
+  prepared.capacity = _capacity;
+  prepared.grown = nullptr;
   if (_count >= _capacity) {
-    expand();
+    prepared.grown = new CodeBlob[_capacity * 2];
+    memcpy(prepared.grown, _blobs, _count * sizeof(CodeBlob));
   }
+}
+
+CodeBlob *CodeCache::commitAdd(const void *start, int length,
+                               PreparedAdd &prepared,
+                               bool update_bounds) {
+  assert(!_published.load(std::memory_order_acquire) &&
+         "add() on a published CodeCache races memoryUsage()");
+  // A mutation between prepareAdd() and commitAdd() would make the grown copy
+  // stale or leave no free slot.
+  assert(prepared.capacity == _capacity &&
+         (prepared.grown != nullptr || _count < _capacity));
+  CodeBlob *retired = nullptr;
+  if (prepared.grown != nullptr) {
+    // Delta is exactly the current (pre-doubling) capacity's worth of blobs.
+    _memory_usage += (long long)_capacity * sizeof(CodeBlob);
+    _capacity *= 2;
+    retired = _blobs;
+    _blobs = prepared.grown;
+  }
+  _memory_usage += prepared.name_size;
+  _name_overhead += prepared.name_overhead;
 
   const void *end = (const char *)start + length;
   _blobs[_count]._start = start;
   _blobs[_count]._end = end;
-  _blobs[_count]._name = name_copy;
+  _blobs[_count]._name = prepared.name;
   _count++;
+  // The cache owns both allocations now; the PreparedAdd destructor must not
+  // free them.
+  prepared.name = nullptr;
+  prepared.grown = nullptr;
 
   if (update_bounds) {
     updateBounds(start, end);
   }
+  return retired;
+}
+
+void CodeCache::add(const void *start, int length, const char *name,
+                    bool update_bounds) {
+  PreparedAdd prepared;
+  prepareAdd(name, prepared);
+  delete[] commitAdd(start, length, prepared, update_bounds);
 }
 
 void CodeCache::updateBounds(const void *start, const void *end) {
@@ -508,10 +537,15 @@ bool CodeCache::importsComplete(ImportId id) const {
 }
 
 bool CodeCache::prepareImportsForPatch() {
-  if (_imports_patchable) {
+  if (_imports_patchable.load(std::memory_order_acquire)) {
     return true;
   }
   return makeImportsPatchable();
+}
+
+void **CodeCache::peekImport(ImportId id) {
+  if (importCount(id) == 0) return nullptr;
+  return _imports[_import_offsets[id]]._location;
 }
 
 void **CodeCache::findImport(ImportId id, size_t index) {
@@ -555,7 +589,7 @@ bool CodeCache::makeImportsPatchable() {
       return false;
     }
   }
-  _imports_patchable = true;
+  _imports_patchable.store(true, std::memory_order_release);
   return true;
 }
 
@@ -568,6 +602,7 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &def
   // buffer to exactly `length` entries before returning it from table(), so
   // memoryUsage()'s length-based formula matches the real allocation with no
   // trim step needed here.
+  _memory_usage += (long long)length * sizeof(FrameDesc);
   _dwarf_table = table;
   _dwarf_table_length = length;
   _default_frame = &default_frame;

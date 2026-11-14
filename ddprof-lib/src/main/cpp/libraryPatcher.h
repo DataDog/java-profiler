@@ -14,6 +14,8 @@
 
 #ifdef __linux__
 
+struct dl_phdr_info;
+
 // Patch libraries' imported function relocation slots.
 typedef struct _patchEntry {
   CodeCache* _lib;
@@ -44,6 +46,17 @@ enum SocketPatchTarget : u8 {
 };
 
 const int SOCKET_BASE_TABLE_SIZE = MAX_NATIVE_LIBS * 2;
+// A library to visit with a LibraryPatcher::LiveLibraryWalk
+typedef struct _libraryRef {
+  uintptr_t  _base;  // lib->imageBase(), the sort key
+  CodeCache* _lib;
+  int        _tag;   // caller-defined, passed back to the visitor
+} LibraryRef;
+
+// Adds a walk's candidates with LibraryPatcher::add_live_candidate(); ctx is
+// the context the walk was given.
+typedef void (*LiveLibraryCollector)(void* ctx);
+typedef void (*LiveLibraryVisitor)(CodeCache* lib, int tag);
 
 class LibraryPatcher {
   friend class LibraryPatcherTestAccessor;
@@ -72,6 +85,34 @@ private:
   static std::vector<SocketPatchedLibrary> _socket_libraries;
   static const void* _socket_bases[SOCKET_BASE_TABLE_SIZE];
 
+  // Candidates of the current LiveLibraryWalk, filled by add_live_candidate().
+  // Guarded by _lock.
+  static LibraryRef  _live_refs[MAX_NATIVE_LIBS];
+  static int         _live_count;
+
+  // Takes _lock, which it holds until destroyed, then calls collect(ctx) and
+  // visit(lib, tag) for every candidate whose library is still loaded, and
+  // clears the candidates. On glibc it does so inside a dl_iterate_phdr()
+  // walk, so _lock is always taken after the loader's dl_load_write_lock (see
+  // libraryPatcher_linux.cpp). Walker-owned non-socket slots are written only
+  // during a live visit; those libraries are not pinned and may be dlclose()d.
+  // Pinned socket transactions own disjoint slots and do not use this walk.
+  // (MallocHooker patches without a walk: it pins each library with
+  // UnloadProtection while writing to it, and never restores.)
+  class LiveLibraryWalk {
+  public:
+    LiveLibraryWalk(LiveLibraryCollector collect, void* ctx, LiveLibraryVisitor visit);
+    ~LiveLibraryWalk() { _lock.unlock(); }
+    LiveLibraryWalk(const LiveLibraryWalk&) = delete;
+    LiveLibraryWalk& operator=(const LiveLibraryWalk&) = delete;
+  };
+
+  static void add_live_candidate(CodeCache* lib, int tag);
+  static int visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data);
+  static bool needs_socket_patch(CodeCache* lib);
+  static void patch_socket_slots(CodeCache* lib);
+  static void patch_socket_slot(void** location, void* hook_fn, const char* fn_name, CodeCache* lib);
+  static bool excluded_from_pthread_create_patch(CodeCache* lib);
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
   static void patch_pthread_setspecific();

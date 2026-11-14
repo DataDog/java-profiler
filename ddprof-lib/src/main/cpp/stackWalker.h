@@ -68,6 +68,22 @@ namespace StackWalkValidation {
         return depth;
     }
 
+    // Allocation samples can retry with JVMTI when unwinding or method
+    // resolution fails. Synthetic native roots do not carry jmethodIDs.
+    static inline bool isCompleteWalk(const ASGCT_CallFrame* frames, int depth) {
+        if (depth <= 0) {
+            return false;
+        }
+        for (int i = 0; i < depth; i++) {
+            if (frames[i].bci == BCI_ERROR ||
+                    (frames[i].bci >= 0 && (frames[i].method_id == nullptr ||
+                                           frames[i].method_id == JMETHODID_NOT_WALKABLE))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static inline bool isPlausibleInterpreterFrame(uintptr_t fp, uintptr_t sp, int bcp_offset){
         return fp != 0 && aligned(fp) && !inDeadZone((const void*)fp)
                 && sp != 0 && sp > fp - MAX_INTERPRETER_FRAME_SIZE
@@ -87,6 +103,36 @@ typedef struct {
 
 class StackWalker {
   public:
+    // callchain[] must have room for max_depth + 1 entries whenever
+    // `truncated` is non-null. Both walkers deliberately walk one frame past
+    // max_depth to learn whether the stack really continued, write that frame,
+    // and only then clamp the returned depth back to max_depth -- a buffer of
+    // exactly max_depth is overflowed by one entry on any stack deep enough to
+    // reach the limit. Without a truncation flag, max_depth entries suffice.
+    //
+    // ADDRESSING CONVENTION -- one rule, every walker, in-process and on the
+    // wire.
+    //
+    // A recorded frame address is an *attribution* address: pc - 1 wherever
+    // the pc came out of a return-address slot, the exact pc otherwise (see
+    // attributionPC in stackWalker.inline.h). It names the instruction that
+    // transferred control, not the one execution would resume at, so a call
+    // that is the last instruction of its caller still resolves to the caller.
+    //
+    // This holds for walkFP, walkDwarf, walkVM and walkKernel alike. LBR
+    // entries are the one thing left unadjusted, and are not an exception to
+    // the rule: branch endpoints already name the instruction to symbolize.
+    //
+    // StackContext::pc is deliberately *not* adjusted -- it is a resume point
+    // handed to the JVM, not something to symbolize.
+    //
+    // It reaches the wire unchanged: the remote-symbolication pc_offset is
+    // this address minus the image base, whether it is packed by
+    // populateRemoteFrame or by resolveNativeFrameForWalkVM. An off-process
+    // symbolizer must therefore NOT apply its own return-address adjustment;
+    // doing so would step off the front of the call instruction. The packed
+    // field carries no version bit, so this comment and
+    // doc/reference/RemoteSymbolication.md are the contract.
     static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
     static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
 };

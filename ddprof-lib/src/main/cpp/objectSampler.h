@@ -67,6 +67,8 @@ protected:
 public:
   static ObjectSampler *const instance() { return _instance; }
 
+  // Reset per-recording metadata gates even when this optional engine will not start.
+  void resetSession();
   Error check(Arguments &args);
   Error start(Arguments &args);
   void stop();

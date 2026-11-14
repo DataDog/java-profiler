@@ -52,11 +52,21 @@ public:
   virtual void stop();
   virtual long interval() const { return 0L; }
 
-  // Whether empty-filter wall prechecks can consume ThreadFilter registry state.
-  virtual bool supportsUnfilteredWallPrecheck() const { return false; }
+  // Whether this engine can keep the ThreadFilter registry populated and
+  // tracked when context filtering is disabled with an explicit empty
+  // `filter=` (e.g. to support wall-clock prechecks). Without a filter
+  // argument the filter defaults to "0", which enables context filtering.
+  virtual bool supportsUnfilteredThreadRegistryTracking() const { return false; }
 
   virtual int registerThread(int tid) { return -1; }
   virtual void unregisterThread(int tid) {}
+  // Releases the per-thread resources the engine keeps across stop(). Called
+  // when another engine replaces it in its Profiler slot: thread exits no
+  // longer reach it after that, so nothing else would release them.
+  virtual void releaseThreads() {}
+  // True when the per-thread state outlives stop(), so a registration call
+  // still inside the engine may use it after stop() returns.
+  virtual bool keepsThreadStateAcrossStop() const { return false; }
 
   virtual void enableEvents(bool enabled) {
     // do nothing

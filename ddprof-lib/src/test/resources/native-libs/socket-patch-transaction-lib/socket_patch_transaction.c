@@ -4,6 +4,7 @@
  */
 
 #include <stddef.h>
+#include <pthread.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -13,6 +14,10 @@ int socket_patch_directory_anchor(void) {
     return 1;
 }
 #else
+int socket_patch_thread(pthread_t* thread, void* (*routine)(void*), void* arg) {
+    return pthread_create(thread, NULL, routine, arg);
+}
+
 ssize_t socket_patch_read(int fd, void* buffer, size_t size) {
     return read(fd, buffer, size);
 }

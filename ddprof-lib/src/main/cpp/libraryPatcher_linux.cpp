@@ -9,21 +9,25 @@
 #include "counters.h"
 #include "guards.h"
 #include "jvmThread.h"
-#include "nativeSocketInterposer.h"
 #include "nativeSocketSampler.h"
+#include "nativeSocketInterposer.h"
+#include "os.h"
 #include "profiler.h"
 #include "symbols.h"
 
 #include <algorithm>
-#include <cassert>
+#include <assert.h>
 #include <dlfcn.h>
-#include <new>
+#include <link.h>
 #include <mutex>
-#include <setjmp.h>
-#include <string.h>
+#include <new>
 #include <stdlib.h>
 #include <unistd.h>
 #include <utility>
+#include <setjmp.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 typedef void* (*func_start_routine)(void*);
 
@@ -38,6 +42,152 @@ std::vector<SocketPatchEntry> LibraryPatcher::_socket_entries;
 std::vector<SocketPatchedLibrary> LibraryPatcher::_socket_libraries;
 const void* LibraryPatcher::_socket_bases[SOCKET_BASE_TABLE_SIZE] = {};
 std::atomic<bool> LibraryPatcher::_socket_active{false};
+LibraryRef LibraryPatcher::_live_refs[MAX_NATIVE_LIBS];
+int        LibraryPatcher::_live_count = 0;
+
+static bool has_entry_for(const PatchEntry* entries, int size, CodeCache* lib) {
+  for (int index = 0; index < size; index++) {
+    if (entries[index]._lib == lib) return true;
+  }
+  return false;
+}
+
+void LibraryPatcher::add_live_candidate(CodeCache* lib, int tag) {
+  // Libraries without a known image base never had their imports parsed.
+  if (lib->imageBase() == nullptr) return;
+  // Every caller adds at most one candidate per CodeCache, and there are at
+  // most MAX_NATIVE_LIBS of them. unpatch_socket_functions() adds one per run
+  // of a library's entries, and a library has a single run: its slots are
+  // appended in one patch_socket_slots() call, and a later pass adds none,
+  // since its remaining slots were skipped as already present or because the
+  // table was full, which it stays until the entries are cleared.
+  assert(_live_count < MAX_NATIVE_LIBS && "more live candidates than libraries");
+  if (_live_count >= MAX_NATIVE_LIBS) return;
+  _live_refs[_live_count++] = {(uintptr_t)lib->imageBase(), lib, tag};
+}
+
+// Liveness is decided inside a dl_iterate_phdr() callback. glibc holds
+// dl_load_write_lock for the whole iteration, and dlclose() unmaps and unlinks
+// an object only while holding the same lock (_dl_close_worker in
+// elf/dl-close.c, unchanged from 2.17 to current), so a library reported to the
+// callback stays mapped until the callback returns.
+//
+// Lock order: dl_load_write_lock, then _lock. A walk takes _lock only in its
+// first callback, when glibc already holds dl_load_write_lock, and keeps it
+// until the walk is destroyed. The reverse order deadlocks: dl_iterate_phdr()
+// runs arbitrary callbacks under dl_load_write_lock, and one that loads a
+// library through the JVM (a JNI System.loadLibrary(), say) reaches
+// Profiler::dlopen_hook() and a refresh that patches. In this order that
+// refresh re-enters the recursive dl_load_write_lock and waits for _lock,
+// whose holder waits for nothing.
+//
+// In turn, nothing may wait for a loader lock while holding _lock: a
+// concurrent dlopen() or dlclose() holds dl_load_lock and dl_load_tls_lock
+// while it waits for dl_load_write_lock, which a walk waiting for _lock may
+// hold. So code under _lock must not call dlopen(), dlsym(), dladdr() or
+// dlinfo(), nor touch dynamic TLS for the first time.
+//
+// musl's dlclose() never unmaps, so every parsed library is still loaded, and
+// a walk just takes _lock.
+struct LiveWalkState {
+  LiveLibraryCollector collect;
+  void* ctx;
+  LiveLibraryVisitor visit;
+  bool locked;  // _lock taken and the candidates collected
+};
+
+LibraryPatcher::LiveLibraryWalk::LiveLibraryWalk(LiveLibraryCollector collect, void* ctx,
+                                                 LiveLibraryVisitor visit) {
+  if (OS::isMusl()) {
+    _lock.lock();
+    collect(ctx);
+    for (int index = 0; index < _live_count; index++) {
+      visit(_live_refs[index]._lib, _live_refs[index]._tag);
+    }
+  } else {
+    LiveWalkState state = {collect, ctx, visit, false};
+    dl_iterate_phdr(visit_loaded_object, &state);
+    if (!state.locked) {
+      // No object was reported, so none of the candidates is provably loaded.
+      _lock.lock();
+      collect(ctx);
+    }
+  }
+  _live_count = 0;
+}
+
+// Visits the candidates that are the object being reported: the same image
+// base and the same image fingerprint, or the same backing file for a cache
+// without a fingerprint. The identity check rejects a stale CodeCache whose
+// library was unloaded and replaced by a different one at the same address.
+// An image with the same fingerprint at the same base is accepted, a reload
+// of the same build in particular: the fingerprint covers the import layout,
+// so each saved slot address holds the same import as when it was saved.
+int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data) {
+  LiveWalkState* state = (LiveWalkState*)data;
+  if (!state->locked) {
+    // glibc holds dl_load_write_lock now, so _lock may be taken (see above).
+    _lock.lock();
+    state->locked = true;
+    state->collect(state->ctx);
+    std::sort(_live_refs, _live_refs + _live_count,
+              [](const LibraryRef& a, const LibraryRef& b) { return a._base < b._base; });
+  }
+  if (_live_count == 0) return 1;  // nothing to visit, end the walk
+
+  uintptr_t min_vaddr = UINTPTR_MAX;
+  for (int i = 0; i < info->dlpi_phnum; i++) {
+    if (info->dlpi_phdr[i].p_type == PT_LOAD && info->dlpi_phdr[i].p_vaddr < min_vaddr) {
+      min_vaddr = info->dlpi_phdr[i].p_vaddr;
+    }
+  }
+  if (min_vaddr == UINTPTR_MAX) return 0;
+  uintptr_t base = (info->dlpi_addr + min_vaddr) & ~OS::page_mask;
+
+  LibraryRef* end = _live_refs + _live_count;
+  LibraryRef* ref = std::lower_bound(_live_refs, end, base,
+                                     [](const LibraryRef& r, uintptr_t b) { return r._base < b; });
+  if (ref == end || ref->_base != base) return 0;
+
+  // glibc names the main executable "". It is never unloaded, so nothing else
+  // can occupy its image base.
+  bool main_executable = info->dlpi_name == nullptr || info->dlpi_name[0] == '\0';
+  // The fingerprint decides whenever the cache has one. The backing file does
+  // not identify the image: a file can be replaced by a different build that
+  // reuses the freed inode (and is then not parsed, because its inode has been
+  // seen), and a relative or symlinked name may now resolve to another file.
+  // Both are computed lazily, at most once per object.
+  u64 fingerprint = 0;
+  u64 file_id = 0;
+  bool file_id_known = false;
+  LiveLibraryVisitor visit = state->visit;
+  for (; ref != end && ref->_base == base; ref++) {
+    bool same_image = main_executable;
+    if (!same_image && ref->_lib->imageFingerprint() != 0) {
+      if (fingerprint == 0) {
+        fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum, info->dlpi_addr);
+      }
+      same_image = ref->_lib->imageFingerprint() == fingerprint;
+    } else if (!same_image) {
+      if (!file_id_known) {
+        struct stat st;
+        if (stat(info->dlpi_name, &st) == 0) {
+          file_id = CodeCache::makeFileId(major(st.st_dev) << 8 | minor(st.st_dev), st.st_ino);
+        }
+        file_id_known = true;
+      }
+      same_image = file_id != 0 && ref->_lib->fileId() == file_id;
+    }
+    if (same_image) {
+      // The library may be a reload at the same address that is still
+      // represented by this CodeCache (a reload is not re-parsed, its inode
+      // has been seen), so its writability state cannot be trusted.
+      if (ref->_lib->makeImportsWritable()) visit(ref->_lib, ref->_tag);
+    }
+  }
+  return 0;
+}
+
 #ifdef UNIT_TEST
 static std::atomic<LibraryPatcher::SocketImportFailureForTest>
     socket_import_failure_for_test{nullptr};
@@ -571,33 +721,32 @@ void LibraryPatcher::patch_libraries() {
    TEST_LOG("%d libraries patched", _size);
 }
 
-void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
-  if (lib->name() == nullptr) return;
+bool LibraryPatcher::excluded_from_pthread_create_patch(CodeCache* lib) {
+  if (lib->name() == nullptr) return true;
 
   if (is_profiler_library(lib)) { // Don't patch self
-    return;
+    return true;
   }
 
   // Don't patch sanitizer runtime libraries — intercepting their internal
   // pthread_create calls causes reentrancy and heap corruption under ASAN.
   const char* base = strrchr(lib->name(), '/');
   base = (base != nullptr) ? base + 1 : lib->name();
-  if (strncmp(base, "libasan", 7) == 0 ||
-      strncmp(base, "libtsan", 7) == 0 ||
-      strncmp(base, "libubsan", 8) == 0) {
-    return;
-  }
+  return strncmp(base, "libasan", 7) == 0 ||
+         strncmp(base, "libtsan", 7) == 0 ||
+         strncmp(base, "libubsan", 8) == 0;
+}
+
+void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
+  if (excluded_from_pthread_create_patch(lib)) return;
 
   void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
   if (pthread_create_location == nullptr) {
     return;
   }
 
-  for (int index = 0; index < _size; index++) {
-    // Already patched
-    if (_patched_entries[index]._lib == lib) {
-      return;
-    }
+  if (has_entry_for(_patched_entries, _size, lib)) { // Already patched
+    return;
   }
   TEST_LOG("Patching: %s", lib->name());
   void* func = (void*)pthread_create_hook;
@@ -617,23 +766,38 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
 
 void LibraryPatcher::unpatch_libraries() {
   TEST_LOG("Restore libraries");
-  ExclusiveLockGuard locker(&_lock);
-  for (int index = 0; index < _size; index++) {
-    __atomic_store_n(_patched_entries[index]._location, _patched_entries[index]._func, __ATOMIC_RELAXED);
-  }
+  // Entries of unloaded libraries are dropped without being written.
+  LiveLibraryWalk walk(
+      [](void*) {
+        for (int index = 0; index < _size; index++) {
+          add_live_candidate(_patched_entries[index]._lib, index);
+        }
+      },
+      nullptr,
+      [](CodeCache* lib, int index) {
+        __atomic_store_n(_patched_entries[index]._location, _patched_entries[index]._func, __ATOMIC_RELAXED);
+      });
   _size = 0;
 }
 
 void LibraryPatcher::patch_pthread_create() {
-  const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
-  int num_of_libs = native_libs.count();
-  ExclusiveLockGuard locker(&_lock);
-  for (int index = 0; index < num_of_libs; index++) {
-     CodeCache* lib = native_libs.at(index);
-     if (lib != nullptr) {
-       patch_library_unlocked(lib);
-     }
-  }
+  LiveLibraryWalk walk(
+      [](void* ctx) {
+        const CodeCacheArray& native_libs = *(const CodeCacheArray*)ctx;
+        int num_of_libs = native_libs.count();
+        for (int index = 0; index < num_of_libs; index++) {
+          CodeCache* lib = native_libs.at(index);
+          // Filter out everything patch_library_unlocked() would decline, so that
+          // libraries never patched are not re-checked for liveness on every pass.
+          if (lib != nullptr && lib->peekImport(im_pthread_create) != nullptr
+              && !excluded_from_pthread_create_patch(lib)
+              && !has_entry_for(_patched_entries, _size, lib)) {
+            add_live_candidate(lib, 0);
+          }
+        }
+      },
+      (void*)&Libraries::instance()->native_libs(),
+      [](CodeCache* lib, int) { patch_library_unlocked(lib); });
 }
 
 // Patch sigaction in all libraries to prevent any library from overwriting
@@ -661,10 +825,8 @@ void LibraryPatcher::patch_sigaction_in_library(CodeCache* lib) {
   if (_sigaction_size >= MAX_NATIVE_LIBS) {
     return;
   }
-  for (int index = 0; index < _sigaction_size; index++) {
-    if (_sigaction_entries[index]._lib == lib) {
-      return;
-    }
+  if (has_entry_for(_sigaction_entries, _sigaction_size, lib)) {
+    return;
   }
 
   void* hook = OS::getSigactionHook();
@@ -677,15 +839,23 @@ void LibraryPatcher::patch_sigaction_in_library(CodeCache* lib) {
 }
 
 void LibraryPatcher::patch_sigaction() {
-  const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
-  int num_of_libs = native_libs.count();
-  ExclusiveLockGuard locker(&_lock);
-  for (int index = 0; index < num_of_libs; index++) {
-    CodeCache* lib = native_libs.at(index);
-    if (lib != nullptr) {
-      patch_sigaction_in_library(lib);
-    }
-  }
+  if (!_initialized.load(std::memory_order_acquire)) return;
+  LiveLibraryWalk walk(
+      [](void* ctx) {
+        const CodeCacheArray& native_libs = *(const CodeCacheArray*)ctx;
+        int num_of_libs = native_libs.count();
+        for (int index = 0; index < num_of_libs; index++) {
+          CodeCache* lib = native_libs.at(index);
+          // Same filtering as in patch_pthread_create(), for patch_sigaction_in_library().
+          if (lib != nullptr && lib->name() != nullptr && lib->peekImport(im_sigaction) != nullptr
+              && !is_profiler_library(lib)
+              && !has_entry_for(_sigaction_entries, _sigaction_size, lib)) {
+            add_live_candidate(lib, 0);
+          }
+        }
+      },
+      (void*)&Libraries::instance()->native_libs(),
+      [](CodeCache* lib, int) { patch_sigaction_in_library(lib); });
 }
 
 class SocketPatchCandidate {
@@ -952,8 +1122,10 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
 
     if (success) {
       for (SocketPatchCandidate& candidate : candidates) {
+        // A released pin permits an identical-base reload whose full-RELRO GOT
+        // is read-only again, even though this append-only cache says writable.
         if (!socket_library_patched_unlocked(candidate._lib->imageBase()) &&
-            !candidate._lib->prepareImportsForPatch()) {
+            !candidate._lib->makeImportsWritable()) {
           Log::warn("native I/O hooks disabled: cannot make imports writable in %s",
                     candidate._lib->name());
           success = false;
@@ -1059,7 +1231,7 @@ int LibraryPatcher::patch_socket_import_for_test(CodeCache* lib, ImportId import
     return -1;
   }
   ExclusiveLockGuard locker(&_lock);
-  if (!lib->importsComplete(import_id) || !lib->prepareImportsForPatch()) {
+  if (!lib->importsComplete(import_id) || !lib->makeImportsWritable()) {
     return -1;
   }
   size_t count = lib->importCount(import_id);

@@ -39,13 +39,15 @@ class GradleSummaryTest(unittest.TestCase):
         report = self.report()
         self.assertEqual(["./gradlew", "build", "-i", "--console=plain"], report["command"])
         self.assertIn("stderr marker", (self.root / report["log"]).read_text())
-        self.assertIn("not evaluated", report["testAcceptance"])
+        self.assertIsNone(report["tests"]["total"])
+        self.assertTrue(any("XML/JFR" in action for action in report["actions"]))
 
     def test_failure_status_and_arguments_are_preserved(self):
         self.launcher("import sys\nprint('BUILD FAILED')\nsys.exit(23)\n")
         result = self.run_wrapper(":module:test", "--console=plain", "-d", "-Ptests=a b")
         self.assertEqual(23, result.returncode, result.stderr)
-        self.assertEqual(["./gradlew", ":module:test", "--console=plain", "-d", "-Ptests=a b"],
+        self.assertEqual(["./gradlew", ":module:test", "--console=plain", "-d", "-Ptests=a b",
+                          "-i", "--console=plain"],
                          self.report()["command"])
         self.assertEqual(23, self.report()["exitCode"])
 

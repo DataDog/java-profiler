@@ -10,6 +10,7 @@
 #include "guards.h"
 #include "otel_context.h"
 #include "os.h"
+#include "profiler.h"
 #include <cassert>
 #include <cstring>
 #include <time.h>
@@ -94,7 +95,19 @@ void ProfiledThread::freeValue(void* value) {
   // ProfiledThread that cannot be released - memory leak
   blockProfilingForExit();
 
+  // otel_thread_ctx_v1 (a genuine thread_local, not the custom ThreadLocal
+  // above) is nulled by ThreadLocalDataPool::release() below -- via
+  // unclaimAndReset() on the pool-reuse path, or via ~ProfiledThread() on the
+  // delete path it falls back to -- rather than here, so the invariant holds
+  // for every teardown route (including deleteForTest()) and not just this
+  // call site.
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
+  // ThreadEnd notifications are disabled between recordings, so retire the
+  // identity here before pool reuse too. This runs in the pthread-key
+  // destructor and must never block: retirement is lock-free, and an unknown
+  // or already-unregistered TID is a no-op. The locked bookkeeping (index,
+  // free list) is deferred to the next _registry_lock holder.
+  Profiler::instance()->threadFilter()->retireThreadByTid(pt->tid());
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
     // destructor callback), so the THREAD_LOCAL decrement belongs here. Record
@@ -140,7 +153,7 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
     ctx.rootSpanId = root_span_id;
     size_t count = numAttrs < DD_TAGS_CAPACITY ? numAttrs : DD_TAGS_CAPACITY;
     for (size_t i = 0; i < count; i++) {
-      ctx.tags[i].value = _otel_tag_encodings[i];
+      ctx.setTag(i, _otel_tag_encodings[i]);
     }
   }
   return ctx;
@@ -158,8 +171,12 @@ void ProfiledThread::unclaimAndReset() {
   _wall_epoch = 0;
   _call_trace_id = 0;
   _recording_epoch = 0;
-  _park_block_token = 0;
+  _park_slot = {};
+  _task_block_slot = {};
+  _monitor_slot = {};
+  _block_recording_epoch = 0;
   _filter_slot_id = -1;
+  _logical_context_window_state.store(0, std::memory_order_release);
   _init_window = 0;
   _signal_depth = 0;
   _in_critical_section = false;
@@ -170,6 +187,20 @@ void ProfiledThread::unclaimAndReset() {
   for (int index = 0; index < DD_TAGS_CAPACITY; index++) {
     _otel_tag_encodings[index] = 0;
   }
+
+  // otel_thread_ctx_v1 is a genuine thread_local pointer (not the custom
+  // ThreadLocal in this file) that external OTel profilers dereference
+  // directly via its exported address (see otel_context.h). It points into
+  // this instance's _otel_ctx_record, which the FLAG_CLAIMED release store
+  // below makes eligible for another thread to claim and overwrite. Null it
+  // first -- while still running on this (dying) thread -- so a racing
+  // external reader observes "no context" instead of dereferencing memory
+  // that now belongs to a different thread. This is always the current
+  // thread's own ProfiledThread: unclaimAndReset() is only reached via
+  // ThreadLocalDataPool::unclaim(), called from freeValue() (the pthread-key
+  // destructor, run on the dying thread) or deleteForTest() (which mirrors
+  // that same call).
+  __atomic_store_n(&otel_thread_ctx_v1, nullptr, __ATOMIC_SEQ_CST);
 
   DEBUG_ONLY(_unwind_failures.reset();)
   FAULT_INJECTION_ONLY(_fi_rng = 0;)

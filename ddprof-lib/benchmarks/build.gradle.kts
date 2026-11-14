@@ -1,4 +1,6 @@
 /*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
  * Benchmark for testing unwinding failures.
  * Uses NativeCompileTask/NativeLinkExecutableTask from build-logic.
  */
@@ -22,11 +24,21 @@ val shouldBuild = PlatformUtils.currentPlatform == Platform.MACOS ||
   PlatformUtils.currentPlatform == Platform.LINUX
 
 if (shouldBuild) {
-  val compiler = PlatformUtils.findCompiler(project)
+  // Resolved lazily: the probe must not run at configuration time (e.g. for
+  // 'help' on a host without a C++ compiler); it fires only when a task that
+  // consumes the property runs, which the tasks' onlyIf gates on shouldBuild
+  // and the skip-native flag.
+  val compiler = providers.provider { PlatformUtils.findCompiler(project) }
+  // This is the :ddprof-lib:benchmarks subproject, whose own name
+  // ("benchmarks") is not what a caller means by -Pskip-native=ddprof-lib --
+  // benchmarking is part of ddprof-lib's native surface, not a project a
+  // caller names on its own, so the check goes through the parent project's
+  // identity instead of this one's.
+  val nativeSkipped = PlatformUtils.isNativeSkipped(project.parent ?: project)
 
   // Compile task
   val compileTask = tasks.register<NativeCompileTask>("compileBenchmark") {
-    onlyIf { shouldBuild && !project.hasProperty("skip-native") }
+    onlyIf { shouldBuild && !nativeSkipped }
     group = "build"
     description = "Compile the unwinding failures benchmark"
 
@@ -40,7 +52,7 @@ if (shouldBuild) {
   // Link task
   val binary = file("${layout.buildDirectory.get()}/bin/$benchmarkName")
   val linkTask = tasks.register<NativeLinkExecutableTask>("linkBenchmark") {
-    onlyIf { shouldBuild && !project.hasProperty("skip-native") }
+    onlyIf { shouldBuild && !nativeSkipped }
     dependsOn(compileTask)
     group = "build"
     description = "Link the unwinding failures benchmark"

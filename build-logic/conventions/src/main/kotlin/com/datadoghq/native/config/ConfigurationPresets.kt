@@ -1,17 +1,6 @@
 /*
  * Copyright 2026, Datadog, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package com.datadoghq.native.config
@@ -59,14 +48,36 @@ object ConfigurationPresets {
         // applied to asan/tsan/fuzzer: those configs install their own SIGSEGV
         // interception, which conflicts with the deliberately-faulting loads.
         val faultInjection = project.hasProperty("enableFaultInjection")
+
+        // Opt-in compile-time per-sampler performance counters. When
+        // -PenableSamplerPerf is passed we append -D__SAMPLER_PERF__ to the
+        // standard release/debug library builds, so the documented
+        // buildRelease / buildDebug workflows produce a libjavaProfiler.so that
+        // prints the per-sampler timing report at Profiler::stop(). Like fault
+        // injection it is not applied to asan/tsan/fuzzer, but for a different
+        // reason: those configs instrument every memory access, so the measured
+        // per-sample times say more about the sanitizer than about the sampler.
+        val samplerPerf = project.hasProperty("enableSamplerPerf")
+
+        // Opt-in gcov/llvm-cov instrumented build. Inactive by default -- only
+        // registered as an active configuration (and thus only gets its
+        // compile/link/assemble/gtest tasks created at all, see
+        // NativeBuildPlugin/GtestPlugin filtering on getActiveConfigurations)
+        // when -PenableCoverage is passed. This keeps coverage instrumentation
+        // completely out of the default build and out of CI runs that don't
+        // ask for it, mirroring how asan/tsan are gated off when unsupported.
+        val enableCoverage = project.hasProperty("enableCoverage")
+
         extension.buildConfigurations.apply {
             register("release") {
                 configureRelease(this, currentPlatform, currentArch, version)
                 if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
+                if (samplerPerf) compilerArgs.add("-D__SAMPLER_PERF__")
             }
             register("debug") {
                 configureDebug(this, currentPlatform, currentArch, version)
                 if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
+                if (samplerPerf) compilerArgs.add("-D__SAMPLER_PERF__")
             }
             register("asan") {
                 configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
@@ -76,6 +87,9 @@ object ConfigurationPresets {
             }
             register("fuzzer") {
                 configureFuzzer(this, currentPlatform, currentArch, version, rootDir, compiler)
+            }
+            register("coverage") {
+                configureCoverage(this, currentPlatform, currentArch, version, enableCoverage)
             }
         }
 
@@ -408,5 +422,32 @@ object ConfigurationPresets {
                 }
             }
         }
+    }
+
+    /**
+     * gcov/llvm-cov-instrumented debug build (`--coverage` is understood by both
+     * gcc and clang and emits gcov-compatible .gcno/.gcda files, so one preset
+     * covers both toolchains/platforms without a separate clang source-based
+     * coverage format). Inactive unless the caller opts in via -PenableCoverage.
+     *
+     * `-fprofile-update=atomic`: the default counter updates are plain
+     * read-modify-writes, so the profiler's concurrent threads (samplers, signal
+     * handlers, JVM threads) lose and corrupt counts -- a Linux run produced
+     * negative branch counts (GCC bug 68080) that gcovr refuses to parse.
+     */
+    fun configureCoverage(
+        config: BuildConfiguration,
+        platform: Platform,
+        architecture: Architecture,
+        version: String,
+        active: Boolean
+    ) {
+        // Built on configureDebug so coverage measures the same binary testDebug runs
+        // (including -z,nodelete on Linux), only with the instrumentation added.
+        configureDebug(config, platform, architecture, version)
+        config.active.set(active)
+        config.publishable.set(false)
+        config.compilerArgs.addAll("--coverage", "-fprofile-update=atomic")
+        config.linkerArgs.add("--coverage")
     }
 }

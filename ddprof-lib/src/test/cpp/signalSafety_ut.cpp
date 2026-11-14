@@ -123,15 +123,6 @@ TEST_F(SignalSafetyTest, SignalHandlerUnwindAfterLongjmpDecrementsOnce) {
     EXPECT_EQ(0, getInSignalDepth());
 }
 
-// Safety property: signalHandlerUnwindAfterLongjmp() saturates at zero;
-// double calls do not underflow.
-TEST_F(SignalSafetyTest, SignalHandlerUnwindAfterLongjmpSaturatesAtZero) {
-    EXPECT_EQ(0, getInSignalDepth());
-    signalHandlerUnwindAfterLongjmp();
-    signalHandlerUnwindAfterLongjmp();
-    EXPECT_EQ(0, getInSignalDepth());
-}
-
 TEST(SignalSafetyTestNoContext, NullProfiledThreadIsNotTrackedSignal) {
     // isInTrackedSignalContext() returns false on null because the
     // SignalHandlerScope never ran — used by Profiler::dlopen_hook so

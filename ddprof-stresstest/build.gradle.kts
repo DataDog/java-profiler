@@ -17,7 +17,7 @@ import com.datadoghq.native.util.PlatformUtils
 
 plugins {
   java
-  id("me.champeau.jmh") version "0.7.3"
+  id("me.champeau.jmh") version "0.7.4"
   id("com.datadoghq.java-conventions")
 }
 
@@ -70,11 +70,15 @@ tasks.named<Jar>("jmhJar") {
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH
 // benchmark — runs for a wall-clock budget and exits 0 on clean shutdown; JVM
-// crashes propagate as non-zero exit codes. Black-box w.r.t. the profiler:
+// crashes and workload failures propagate as non-zero exit codes. By default it
 // runs under a dd-java-agent.jar patched with the locally built ddprof.jar.
 
 sourceSets {
   create("chaos")
+  create("chaosTest") {
+    compileClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
+    runtimeClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
+  }
 }
 
 dependencies {
@@ -82,9 +86,11 @@ dependencies {
   // dd-trace-api: annotations only at compile time. The patched dd-java-agent
   // provides the (relocated) runtime classes and intercepts @Trace.
   "chaosCompileOnly"(libs.dd.trace.api)
-  // ddprof-lib public API: compile-only; the patched dd-java-agent provides the
-  // classes at runtime for antagonists that call JavaProfiler directly.
+  // ddprof-lib public API: compile-only. At runtime ProfilerAccess binds calls
+  // through the patched agent's isolated loader instead of the application loader.
   "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
+  "chaosTestImplementation"(libs.bundles.testing)
+  "chaosTestImplementation"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
 }
 
 tasks.register<Jar>("chaosJar") {
@@ -98,6 +104,66 @@ tasks.register<Jar>("chaosJar") {
   duplicatesStrategy = DuplicatesStrategy.EXCLUDE
   manifest {
     attributes("Main-Class" to "com.datadoghq.profiler.chaos.Main")
+  }
+}
+
+tasks.register<Test>("testOwnedBlockPrecheck") {
+  group = "verification"
+  description = "Verify native owned-block chaos coverage with enabled and disabled prechecks"
+  testClassesDirs = sourceSets["chaosTest"].output.classesDirs
+  classpath = sourceSets["chaosTest"].runtimeClasspath
+  setExecutable(PlatformUtils.testJavaExecutable())
+  systemProperty("ddprof_test.keep_jfrs", project.hasProperty("keepJFRs"))
+  dependsOn("chaosJar")
+  systemProperty("chaos.harness.jar", layout.buildDirectory.file("libs/chaos.jar").get().asFile.absolutePath)
+  providers.gradleProperty("chaosAgentJar").orNull?.let {
+    val agentJar = file(it)
+    systemProperty("chaos.agent.jar", agentJar.absolutePath)
+    inputs.file(agentJar).withPropertyName("chaosAgentJar")
+  }
+  useJUnitPlatform()
+}
+
+tasks.named("check") {
+  dependsOn("testOwnedBlockPrecheck")
+}
+
+// --- reference-chains repro app ---------------------------------------------
+// Plain, dependency-free demo app for manually reproducing the reference-chains
+// feature: launched directly with `-agentpath:libjavaProfiler.so=start,...`
+// (no dd-trace-java agent, no dynamic attach), so it deliberately has zero
+// compile/runtime dependency on ddprof-lib or dd-trace - the profiler is
+// entirely out-of-process from this app's own point of view.
+
+sourceSets {
+  create("repro")
+}
+
+dependencies {
+  // ddprof-lib's Java API only - not the native library itself (that's the one
+  // already loaded in-process via -agentpath). Used solely to call
+  // JavaProfiler.getInstance().dump(...) periodically: Profiler::dump()
+  // (profiler.cpp) is the only code path that drains ReferenceChainTracker's
+  // pending chain-event queue and actually writes datadog.ReferenceChain into
+  // the JFR file - nothing does this automatically on a timer, and in
+  // production it's dd-trace-java's own recording-chunk rotation that calls
+  // it. Without this dependency+call, chain events get built and enqueued
+  // (visible in TEST_LOG output) but are silently dropped when the process
+  // exits, and the JFR file never shows a single datadog.ReferenceChain event.
+  "reproImplementation"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
+}
+
+tasks.register<Jar>("reproJar") {
+  group = "build"
+  description = "Demo app that leaks memory in a controlled way, for manually reproducing reference-chains via -agentpath"
+  archiveFileName.set("refchains_repro.jar")
+  from(sourceSets["repro"].output)
+  from({
+    configurations["reproRuntimeClasspath"].map { if (it.isDirectory) it else zipTree(it) }
+  })
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  manifest {
+    attributes("Main-Class" to "com.datadoghq.profiler.repro.ReferenceChainLeakDemo")
   }
 }
 

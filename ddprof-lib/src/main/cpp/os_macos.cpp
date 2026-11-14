@@ -384,6 +384,10 @@ long OS::getContainerMemoryLimit() {
     return -1; // macOS has no cgroup support.
 }
 
+long OS::getContainerMemoryUsage() {
+    return -1; // macOS has no cgroup support.
+}
+
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
     struct tms buf;
     clock_t real = times(&buf);
@@ -425,22 +429,29 @@ int OS::createMemoryFile(const char* name) {
     return -1;
 }
 
-void OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
-    char* buf = (char*)mmap(NULL, size + offset, PROT_READ, MAP_PRIVATE, src_fd, 0);
-    if (buf == NULL) {
-        return;
-    }
-
+bool OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
+    // A fixed cold buffer avoids mapping an untrusted range past EOF (SIGBUS)
+    // and retains the source even if a destination write fails part-way through.
+    char buf[16384];
+    unsigned interrupted = 0;
     while (size > 0) {
-        ssize_t bytes = write(dst_fd, buf + offset, size < 262144 ? size : 262144);
-        if (bytes <= 0) {
-            break;
+        size_t requested = size < sizeof(buf) ? size : sizeof(buf);
+        ssize_t bytes = pread(src_fd, buf, requested, offset);
+        if (bytes < 0 && errno == EINTR && ++interrupted <= 256) continue;
+        if (bytes <= 0) return false;
+        interrupted = 0;
+        size_t written = 0;
+        while (written < static_cast<size_t>(bytes)) {
+            ssize_t n = write(dst_fd, buf + written, static_cast<size_t>(bytes) - written);
+            if (n < 0 && errno == EINTR && ++interrupted <= 256) continue;
+            if (n <= 0) return false;
+            interrupted = 0;
+            written += static_cast<size_t>(n);
         }
-        offset += (size_t)bytes;
-        size -= (size_t)bytes;
+        offset += bytes;
+        size -= static_cast<size_t>(bytes);
     }
-
-    munmap(buf, offset);
+    return true;
 }
 
 void OS::freePageCache(int fd, off_t start_offset) {

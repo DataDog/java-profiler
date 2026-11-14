@@ -119,6 +119,13 @@ public:
 #endif
 
 private:
+#ifdef UNIT_TEST
+    friend class NativeSocketSamplerTestAccessor;
+    // Observe the real hook timestamps before recordEvent's running-profiler guard.
+    // Only gtest binaries contain this seam; normal builds have no extra hook work.
+    static void (*_record_observer_for_test)(int, u64, u64, ssize_t, u8);
+#endif
+
     static NativeSocketSampler* const _instance;
 
     // Production publishes these once before PLT patching. Atomic access pairs
@@ -224,6 +231,9 @@ private:
     static inline ssize_t record_if_positive(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
         if (ret > 0) {
             ErrnoGuard errno_guard;
+#ifdef UNIT_TEST
+            if (_record_observer_for_test != nullptr) _record_observer_for_test(fd, t0, t1, ret, op);
+#endif
             _instance->recordEvent(fd, t0, t1, ret, op);
         }
         return ret;

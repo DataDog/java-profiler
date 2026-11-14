@@ -22,6 +22,7 @@
 #include "threadLocalData.h"
 #include "threadFilter.h"
 #include "wallClock.h"
+#include "wallClockBlockTracker.h"
 
 namespace {
 
@@ -40,8 +41,9 @@ TestProfiledThread testThread(int tid) {
 } // namespace
 
 // Tests cover FLAG_PARKED lifecycle and owned-block slot state transitions.
-// The slot state lives in ThreadFilter process-lifetime storage so the wall-clock
-// timer can read it without dereferencing per-thread objects from another thread.
+// The slot state lives in WallClockBlockTracker process-lifetime storage so the
+// wall-clock timer can read it without dereferencing per-thread objects from
+// another thread.
 
 TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
   TestProfiledThread thread = testThread(12345);
@@ -211,7 +213,7 @@ TEST(ProfiledThreadMonitorStateTest, ClearAllowsRecoveryFromStaleState) {
 }
 
 TEST(WallClockOwnedBlockFilterTest, SlotStateTransitions) {
-  ThreadFilter::Slot slot;
+  WallClockBlockTracker::BlockState slot;
 
   EXPECT_EQ(OSThreadState::UNKNOWN, slot.activeBlockState());
 
@@ -225,17 +227,17 @@ TEST(WallClockOwnedBlockFilterTest, SlotStateTransitions) {
 }
 
 TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackCarriesWeight) {
-  ThreadFilter::Slot slot;
+  WallClockBlockTracker::BlockState slot;
 
   EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
   EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
 
-  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+  for (u64 i = 1; i < WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio; i++) {
     EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
   }
 
   EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
-  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio,
+  EXPECT_EQ(WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio,
             slot.consumeUnownedBlockedWeight());
 
   slot.restoreUnownedBlockedWeight(4);
@@ -247,57 +249,62 @@ TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackCarriesWeight) {
 }
 
 TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackFlushesTailWeightWithRecordedStack) {
-  ThreadFilter::Slot slot;
+  WallClockBlockTracker::BlockState slot;
 
   ASSERT_TRUE(slot.shouldRecordUnownedBlockedSample());
   EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
   slot.recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
 
-  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+  for (u64 i = 1; i < WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio; i++) {
     EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
   }
 
   u64 call_trace_id = 0;
   u64 weight = 0;
   OSThreadState state = OSThreadState::UNKNOWN;
-  EXPECT_TRUE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_TRUE(slot.peekUnownedBlockedTail(call_trace_id, weight, state));
   EXPECT_EQ(42ULL, call_trace_id);
-  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio - 1, weight);
+  EXPECT_EQ(WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio - 1, weight);
   EXPECT_EQ(OSThreadState::SLEEPING, state);
 
-  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  // The dump-time liveness hook must still see the ID after preparation.
+  EXPECT_EQ(42ULL, slot.unowned_blocked_call_trace_id.load(std::memory_order_acquire));
+  slot.resetUnownedBlockedSampling();
+  EXPECT_EQ(0ULL, slot.unowned_blocked_call_trace_id.load(std::memory_order_acquire));
+
+  EXPECT_FALSE(slot.peekUnownedBlockedTail(call_trace_id, weight, state));
   EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
   EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
 }
 
 TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackDoesNotFlushWithoutRecordedStack) {
-  ThreadFilter::Slot slot;
+  WallClockBlockTracker::BlockState slot;
 
   ASSERT_TRUE(slot.shouldRecordUnownedBlockedSample());
   EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
 
-  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+  for (u64 i = 1; i < WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio; i++) {
     EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
   }
 
   u64 call_trace_id = 0;
   u64 weight = 0;
   OSThreadState state = OSThreadState::UNKNOWN;
-  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_FALSE(slot.peekUnownedBlockedTail(call_trace_id, weight, state));
   EXPECT_EQ(0ULL, call_trace_id);
-  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio - 1, weight);
+  EXPECT_EQ(WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio - 1, weight);
   EXPECT_EQ(OSThreadState::UNKNOWN, state);
   EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
 }
 
 TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackDoesNotFlushWithoutSavedState) {
-  ThreadFilter::Slot slot;
+  WallClockBlockTracker::BlockState slot;
 
   ASSERT_TRUE(slot.shouldRecordUnownedBlockedSample());
   EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
   slot.recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
 
-  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+  for (u64 i = 1; i < WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio; i++) {
     EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
   }
 
@@ -306,14 +313,14 @@ TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackDoesNotFlushWithoutSav
   u64 call_trace_id = 0;
   u64 weight = 0;
   OSThreadState state = OSThreadState::SLEEPING;
-  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_FALSE(slot.peekUnownedBlockedTail(call_trace_id, weight, state));
   EXPECT_EQ(42ULL, call_trace_id);
-  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio - 1, weight);
+  EXPECT_EQ(WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio - 1, weight);
   EXPECT_EQ(OSThreadState::UNKNOWN, state);
 }
 
 TEST(WallClockOncePerRunFilterTest, UnownedBlockedTailStateConcurrentStress) {
-  ThreadFilter::Slot slot;
+  WallClockBlockTracker::BlockState slot;
   std::atomic<bool> start{false};
   std::atomic<int> invariant_failures{0};
   std::vector<std::thread> workers;
@@ -338,7 +345,7 @@ TEST(WallClockOncePerRunFilterTest, UnownedBlockedTailStateConcurrentStress) {
           u64 call_trace_id = 0;
           u64 weight = 0;
           OSThreadState state = OSThreadState::UNKNOWN;
-          bool flushed = slot.flushUnownedBlockedTail(call_trace_id, weight, state);
+          bool flushed = slot.peekUnownedBlockedTail(call_trace_id, weight, state);
           if (flushed &&
               (call_trace_id == 0 || weight == 0 ||
                state != OSThreadState::SLEEPING)) {
@@ -362,36 +369,41 @@ TEST(WallClockOncePerRunFilterTest, UnownedBlockedTailStateConcurrentStress) {
   u64 call_trace_id = 0;
   u64 weight = 0;
   OSThreadState state = OSThreadState::UNKNOWN;
-  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_FALSE(slot.peekUnownedBlockedTail(call_trace_id, weight, state));
 }
 
 TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
   filter.init("1");
-  ThreadFilter::SlotID slot_id = filter.registerThread();
+  ThreadFilter::SlotID slot_id = filter.registerThread(1234);
 
-  filter.enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
-  ThreadFilter::Slot *slot = filter.slotForId(slot_id);
+  tracker.enterBlockedRun(&filter, slot_id, OSThreadState::CONDVAR_WAIT);
+  WallClockBlockTracker::BlockState *slot = tracker.slotForId(slot_id);
   ASSERT_NE(nullptr, slot);
   EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
 
-  filter.exitBlockedRun(slot_id);
+  tracker.resetSlot(slot_id);
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
   EXPECT_EQ(0ULL, slot->sampledBlockGeneration());
 }
 
 TEST(WallClockOncePerRunFilterTest, ResetClearsOwnedBlockOnSlotReuse) {
   ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
   filter.init("1");
-  ThreadFilter::SlotID slot_id = filter.registerThread();
-  filter.enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
-  ThreadFilter::Slot *slot = filter.slotForId(slot_id);
+  ThreadFilter::SlotID slot_id = filter.registerThread(1234);
+  tracker.enterBlockedRun(&filter, slot_id, OSThreadState::CONDVAR_WAIT);
+  WallClockBlockTracker::BlockState *slot = tracker.slotForId(slot_id);
   ASSERT_NE(nullptr, slot);
   EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
   slot->markBlockGenerationSampled(slot->blockGeneration());
   ASSERT_EQ(slot->blockGeneration(), slot->sampledBlockGeneration());
 
-  filter.resetSlotRunState(slot_id);
+  filter.unregisterThread(slot_id, 1234);
+  ASSERT_EQ(slot_id, filter.registerThread(5678));
 
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
   EXPECT_EQ(0ULL, slot->sampledBlockGeneration());

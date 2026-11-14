@@ -18,18 +18,18 @@ import java.util.Locale;
 /**
  * Long-running chaos harness driving the reliability CI cell.
  *
- * <p>The harness is fully black-box with respect to the profiler: it runs as a
- * regular application under a {@code dd-java-agent.jar} that has been patched
- * with the locally built {@code ddprof.jar} (see {@code utils/patch-dd-java-agent.sh}).
- * That keeps the runtime classloader/relocation path identical to production
- * and avoids parallel-classloader conflicts when the agent loads its own
+ * <p>The harness is fully black-box with respect to the profiler: it runs as a regular application
+ * under a {@code dd-java-agent.jar} that has been patched with the locally built {@code ddprof.jar}
+ * (see {@code utils/patch-dd-java-agent.sh}). That keeps the runtime classloader/relocation path
+ * identical to production and avoids parallel-classloader conflicts when the agent loads its own
  * (relocated) profiler classes.
  *
- * <p>The only failure signal is a JVM crash (SIGSEGV/SIGABRT in the profiler
- * native code), which propagates as a non-zero exit code and an
- * {@code hs_err_pid*.log} captured by the reliability runner script.
+ * <p>The only failure signal is a JVM crash (SIGSEGV/SIGABRT in the profiler native code), which
+ * propagates as a non-zero exit code and an {@code hs_err_pid*.log} captured by the reliability
+ * runner script.
  *
  * <p>Lifecycle:
+ *
  * <ol>
  *   <li>parse {@code --duration} (e.g. {@code 30m}, {@code 2h}) and {@code --antagonists}
  *   <li>start the requested antagonists, sleep until the deadline
@@ -38,105 +38,113 @@ import java.util.Locale;
  */
 public final class Main {
 
-    public static void main(String[] args) throws Exception {
-        Args parsed = Args.parse(args);
-        log("starting duration=" + parsed.duration + " antagonists=" + parsed.antagonists);
+  public static void main(String[] args) throws Exception {
+    Args parsed = Args.parse(args);
+    log("starting duration=" + parsed.duration + " antagonists=" + parsed.antagonists);
 
-        MemoryGovernor.start();
+    MemoryGovernor.start();
 
-        List<Antagonist> running = new ArrayList<>();
-        try {
-            for (String name : parsed.antagonists) {
-                Antagonist a = create(name);
-                a.start();
-                running.add(a);
-                log("antagonist started: " + a.name());
-            }
+    List<Antagonist> running = new ArrayList<>();
+    try {
+      for (String name : parsed.antagonists) {
+        Antagonist a = create(name);
+        a.start();
+        running.add(a);
+        log("antagonist started: " + a.name());
+      }
 
-            long deadlineNanos = System.nanoTime() + parsed.duration.toNanos();
-            while (System.nanoTime() < deadlineNanos) {
-                Thread.sleep(1_000L);
-            }
-        } finally {
-            for (Antagonist a : running) {
-                a.stopGracefully(Duration.ofSeconds(10));
-            }
-        }
-
-        log("completed cleanly");
+      long deadlineNanos = System.nanoTime() + parsed.duration.toNanos();
+      while (System.nanoTime() < deadlineNanos) {
+        Thread.sleep(1_000L);
+      }
+    } finally {
+      for (Antagonist a : running) {
+        a.stopGracefully(Duration.ofSeconds(10));
+      }
     }
 
-    private static Antagonist create(String name) {
-        switch (name) {
-            case "thread-churn":
-                return new ThreadChurnAntagonist();
-            case "alloc-storm":
-                return new AllocStormAntagonist();
-            case "vthread-churn":
-                return new VirtualThreadChurnAntagonist();
-            case "classloader-churn":
-                return new ClassLoaderChurnAntagonist();
-            case "trace-context":
-                return new TraceContextAntagonist();
-            case "bounded-pool":
-                return new BoundedThreadPoolAntagonist();
-            case "context-hop":
-                return new ContextHopAntagonist();
-            case "consumer-group":
-                return new ConsumerGroupAntagonist();
-            case "hidden-class-churn":
-                return new HiddenClassChurnAntagonist();
-            case "direct-memory":
-                return new DirectMemoryAntagonist();
-            case "weakref-wave":
-                return new WeakRefWaveAntagonist();
-            case "dump-storm":
-                return new DumpStormAntagonist();
-            case "reapply-context-value":
-                return new ReapplyContextValueAntagonist();
-            // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
-            default:
-                throw new IllegalArgumentException("unknown antagonist: " + name);
+    log("completed cleanly");
+  }
+
+  private static Antagonist create(String name) {
+    switch (name) {
+      case "thread-churn":
+        return new ThreadChurnAntagonist();
+      case "alloc-storm":
+        return new AllocStormAntagonist();
+      case "vthread-churn":
+        return new VirtualThreadChurnAntagonist();
+      case "classloader-churn":
+        return new ClassLoaderChurnAntagonist();
+      case "trace-context":
+        return new TraceContextAntagonist();
+      case "bounded-pool":
+        return new BoundedThreadPoolAntagonist();
+      case "context-hop":
+        return new ContextHopAntagonist();
+      case "consumer-group":
+        return new ConsumerGroupAntagonist();
+      case "hidden-class-churn":
+        return new HiddenClassChurnAntagonist();
+      case "direct-memory":
+        return new DirectMemoryAntagonist();
+      case "weakref-wave":
+        return new WeakRefWaveAntagonist();
+      case "dump-storm":
+        return new DumpStormAntagonist();
+      case "reference-chain-leak":
+        return new ReferenceChainLeakAntagonist();
+      case "reapply-context-value":
+        return new ReapplyContextValueAntagonist();
+      case "park-block-churn":
+        return new ParkBlockChurnAntagonist();
+      // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
+      default:
+        throw new IllegalArgumentException("unknown antagonist: " + name);
+    }
+  }
+
+  private static void log(String msg) {
+    System.out.println("[chaos] " + msg);
+  }
+
+  private static final class Args {
+    Duration duration = Duration.ofMinutes(5);
+    List<String> antagonists = new ArrayList<>(Arrays.asList("thread-churn"));
+
+    static Args parse(String[] argv) {
+      Args a = new Args();
+      for (int i = 0; i < argv.length; i++) {
+        switch (argv[i]) {
+          case "--duration":
+            a.duration = parseDuration(argv[++i]);
+            break;
+          case "--antagonists":
+            a.antagonists = Arrays.asList(argv[++i].split(","));
+            break;
+          default:
+            throw new IllegalArgumentException("unknown arg: " + argv[i]);
         }
+      }
+      return a;
     }
 
-    private static void log(String msg) {
-        System.out.println("[chaos] " + msg);
+    // Accepts: 90s, 30m, 2h, or ISO-8601 like PT30M.
+    private static Duration parseDuration(String s) {
+      String t = s.trim().toLowerCase(Locale.ROOT);
+      if (t.startsWith("pt")) return Duration.parse(t.toUpperCase(Locale.ROOT));
+      char unit = t.charAt(t.length() - 1);
+      long n = Long.parseLong(t.substring(0, t.length() - 1));
+      switch (unit) {
+        case 's':
+          return Duration.ofSeconds(n);
+        case 'm':
+          return Duration.ofMinutes(n);
+        case 'h':
+          return Duration.ofHours(n);
+        default:
+          throw new IllegalArgumentException("bad duration: " + s);
+      }
     }
-
-    private static final class Args {
-        Duration duration = Duration.ofMinutes(5);
-        List<String> antagonists = new ArrayList<>(Arrays.asList("thread-churn"));
-
-        static Args parse(String[] argv) {
-            Args a = new Args();
-            for (int i = 0; i < argv.length; i++) {
-                switch (argv[i]) {
-                    case "--duration":
-                        a.duration = parseDuration(argv[++i]);
-                        break;
-                    case "--antagonists":
-                        a.antagonists = Arrays.asList(argv[++i].split(","));
-                        break;
-                    default:
-                        throw new IllegalArgumentException("unknown arg: " + argv[i]);
-                }
-            }
-            return a;
-        }
-
-        // Accepts: 90s, 30m, 2h, or ISO-8601 like PT30M.
-        private static Duration parseDuration(String s) {
-            String t = s.trim().toLowerCase(Locale.ROOT);
-            if (t.startsWith("pt")) return Duration.parse(t.toUpperCase(Locale.ROOT));
-            char unit = t.charAt(t.length() - 1);
-            long n = Long.parseLong(t.substring(0, t.length() - 1));
-            switch (unit) {
-                case 's': return Duration.ofSeconds(n);
-                case 'm': return Duration.ofMinutes(n);
-                case 'h': return Duration.ofHours(n);
-                default: throw new IllegalArgumentException("bad duration: " + s);
-            }
-        }
-    }
+  }
 }

@@ -15,6 +15,7 @@
 #include "nativeSocketInterposer.h"
 #include "os.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "tsc.h"
 #include "vmEntry.h"
 
@@ -73,6 +74,11 @@ void NativeSocketSampler::observeHookPhaseForTest(const char* phase, int fd, u8 
         observer(phase, fd, op, ret);
     }
 }
+#endif
+
+
+#ifdef UNIT_TEST
+void (*NativeSocketSampler::_record_observer_for_test)(int, u64, u64, ssize_t, u8) = nullptr;
 #endif
 
 std::string NativeSocketSampler::resolveAddr(int fd) {
@@ -184,6 +190,7 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
     // Admission cannot pin an application's open file description. Revalidate
     // sampled results as well, including send/recv, before resolving the peer.
     if (!revalidateSocket(fd)) return;
+    SAMPLER_PERF_PROBE(SP_NATIVESOCKET);
 #ifdef DEBUG
     {
         uint64_t n = _record_accept_calls.fetch_add(1, std::memory_order_relaxed);

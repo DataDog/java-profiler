@@ -17,10 +17,10 @@
 #include "faultInjection.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
+#include "spinLock.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
-#define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
 inline bool isValidJMethodID(jmethodID method_id) {
   return method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr;
 }
@@ -141,26 +141,15 @@ T* cast_or_null(const void* ptr) {
     f(VMSymbol,               MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,               MATCH_SYMBOLS("Thread"))
 
-// ContinuationEntry type. Only exported via gHotSpotVMTypes starting in
-// JDK 27 (JDK-8378985); there is no mangled-symbol fallback for its size.
-// On JDK <27 type_size() stays 0 and any code that needs the layout
-// (contEntry(), parent()) bails out.
+// Optional ContinuationEntry metadata. Discover actual exports, including backports,
+// rather than assuming availability from the runtime major version. There is no
+// mangled-symbol fallback for its size; missing type_size() remains 0.
 #define DECLARE_V27_TYPES_DO(f) \
     f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
 
-// Fields for virtual-thread / continuation support, all added to
-// gHotSpotVMStructs / gHotSpotVMTypes in JDK 27 (JDK-8378985):
-//   - JavaThread::_cont_entry            -> _cont_entry_offset
-//   - StubRoutines::_cont_returnBarrier  -> _cont_return_barrier_addr
-//   - ContinuationEntry::_return_pc      -> _cont_entry_return_pc_addr
-//   - ContinuationEntry::_parent         -> _cont_entry_parent_offset
-// On JDK <27 these stay at their default (-1 / nullptr).  The two stub
-// *addresses* (_cont_return_barrier, _cont_entry_return_pc) are separately
-// resolved via Itanium-mangled symbol lookup in resolveOffsets() so the
-// cont_returnBarrier / cont_entry_return_pc frame-boundary checks still work
-// on JDK 21-26; the _offset fields have no such fallback.  All entries are
-// intentionally excluded from verify_offsets() so a missing entry causes
-// graceful degradation rather than SIGABRT.
+// Missing continuation exports keep -1/nullptr defaults and bypass verify_offsets().
+// resolveOffsets() also resolves the two stub addresses by Itanium-mangled symbol;
+// continuation offsets have no symbol fallback.
 #define DECLARE_V27_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                \
         field_with_version(_cont_entry_offset, offset, 27, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \
@@ -217,12 +206,16 @@ typedef void* address;
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
         field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
         field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
+        field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags", "_flags._flags"))                          \
+        field(_constmethod_code_size_offset, offset, MATCH_SYMBOLS("_code_size"))                                   \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
     type_end()                                                                                                      \
     type_begin(VMKlass, MATCH_SYMBOLS("Klass", "InstanceKlass"))                                                    \
         field(_klass_name_offset, offset, MATCH_SYMBOLS("_name"))                                                   \
+        field(_klass_super_offset, offset, MATCH_SYMBOLS("_super"))                                                 \
+        field(_klass_access_flags_offset, offset, MATCH_SYMBOLS("_access_flags"))                                   \
         field(_class_loader_data_offset, offset, MATCH_SYMBOLS("_class_loader_data"))                               \
         field(_methods_offset, offset, MATCH_SYMBOLS("_methods"))                                                   \
         field(_jmethod_ids_offset, offset, MATCH_SYMBOLS("_methods_jmethod_ids"))                                   \
@@ -328,12 +321,67 @@ typedef void* address;
  *   - constant defines a constant of a class
  */
 
-#define DECLARE_INT_CONSTANTS_DO(constant, constant_with_version) \
-    constant(frame, entry_frame_call_wrapper_offset)
+// The has_linenumber_table bit of ConstMethod::_flags. JDK 21 moved the flags
+// into ConstMethodFlags (and widened _flags from u2 to u4).
+#define DECLARE_INT_CONSTANTS_DO(constant, constant_with_version)                 \
+    constant(frame, entry_frame_call_wrapper_offset)                             \
+    constant_with_version(ConstMethod, _has_linenumber_table, 8, 20)             \
+    constant_with_version(ConstMethodFlags, _misc_has_linenumber_table, 21, MAX_VERSION)
 
 #define DECLARE_LONG_CONSTANTS_DO(constant, constant_with_version)  \
     constant_with_version(markWord, klass_shift, 24, MAX_VERSION)   \
     constant_with_version(markWord, monitor_value, 24, MAX_VERSION)
+
+// (method, address) pairs that VMStructs::NativeMethodBind() sees before a
+// JNIEnv is available, replayed by the first call that has one.
+class DelayedNativeBindings {
+  public:
+    static const int CAPACITY = 512;
+
+    constexpr DelayedNativeBindings() : _lock(), _bindings(), _count(0), _drained(false) {}
+
+    // Records a binding. Returns false, dropping it, when the list is full or
+    // closed by a drain.
+    bool add(jmethodID method, void* address) {
+        ExclusiveLockGuard guard(&_lock);
+        bool added = !_drained && _count < CAPACITY;
+        if (added) {
+            _bindings[_count].method = method;
+            _bindings[_count].address = address;
+            _count++;
+        }
+        return added;
+    }
+
+    // Calls f(method, address) for each recorded binding, outside the lock.
+    // A drain that finds bindings closes the list for good, so later add()
+    // calls never write to it and reading it needs no lock.
+    template <typename F>
+    void drain(F f) {
+        int count;
+        {
+            ExclusiveLockGuard guard(&_lock);
+            count = _drained ? 0 : _count;
+            if (count > 0) {
+                _drained = true;
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            f(_bindings[i].method, _bindings[i].address);
+        }
+    }
+
+  private:
+    struct Binding {
+        jmethodID method;
+        void* address;
+    };
+
+    SpinLock _lock;
+    Binding _bindings[CAPACITY];
+    int _count;
+    bool _drained;
+};
 
 class VMStructs {
   public:
@@ -495,6 +543,13 @@ class VMStructs {
         return _has_class_loader_data;
     }
 
+    // What fjmethodid=lazy needs on top of the Method* walk: mapping a
+    // java.lang.Class to its Klass* (KlassRegistry) and reading a Klass*'s
+    // methods array (VMKlass::containsMethod).
+    static bool hasKlassMethods() {
+        return _has_method_structs && _methods_offset >= 0 && _klass != NULL;
+    }
+
     static bool hasNativeThreadId() {
         return _has_native_thread_id;
     }
@@ -566,6 +621,7 @@ class VMStructs {
 };
 
 class HeapUsage : VMStructs {
+    friend class HeapUsageTestAccessor; // test-only: heapUsage_ut.cpp
 private:
     static bool is_jmx_attempted;
     static bool is_jmx_supported; // default to not-supported
@@ -703,6 +759,21 @@ DECLARE(VMKlass)
         return VMSymbol::load_then_cast(at(_klass_name_offset));
     }
 
+    // Super class, or nullptr for java.lang.Object and interfaces, or when the
+    // VM does not export Klass::_super.
+    VMKlass* super_or_null() {
+        if (_klass_super_offset < 0) return nullptr;
+        return VMKlass::load_then_cast(at(_klass_super_offset));
+    }
+
+    // Klass::_access_flags (an AccessFlags, i.e. one jint) into `*flags`, or
+    // false if the VM does not export it.
+    bool accessFlags(uint32_t* flags) {
+        if (_klass_access_flags_offset < 0) return false;
+        *flags = *(const uint32_t*)at(_klass_access_flags_offset);
+        return true;
+    }
+
     VMClassLoaderData* classLoaderData() {
         assert(_class_loader_data_offset >= 0);
         return VMClassLoaderData::load_then_cast(at(_class_loader_data_offset));
@@ -717,6 +788,55 @@ DECLARE(VMKlass)
     jmethodID* jmethodIDs() {
         assert(_jmethod_ids_offset >= 0);
         return __atomic_load_n((jmethodID**) at(_jmethod_ids_offset), __ATOMIC_ACQUIRE);
+    }
+
+    // True if `method` is one of the current methods of this InstanceKlass.
+    // InstanceKlass::_methods is an Array<Method*>: an int length followed by
+    // the elements, which start at the next pointer-aligned offset. `method` is
+    // only compared, never dereferenced, so it may be stale. `idnum_hint` is
+    // the method's idnum if known (or -1). HotSpot assigns idnums in method
+    // order when it parses a class, so methods()->at(idnum) is usually the
+    // method itself; methods added later (default-method overpasses merged in
+    // at link time, redefinitions) can break that. Then only a class of at
+    // most MAX_METHODS_SCANNED methods is scanned; for a larger one the
+    // method counts as not found, and `*not_scanned` (if given) is set.
+    //
+    // Keeping the class alive does not keep this array alive: a redefinition
+    // swaps in a new array at a safepoint and frees the old one at a later
+    // one, and a caller in native state does not hold up either. So every
+    // load goes through SafeAccess, and a fault reads as "not a member".
+    static const int MAX_METHODS_SCANNED = 256;
+
+    bool containsMethod(const void* method, int idnum_hint, bool* not_scanned = nullptr) {
+        assert(_methods_offset >= 0);
+        const char* methods = (const char*) SafeAccess::loadPtr((void**) at(_methods_offset), nullptr);
+        if (methods == NULL) {
+            return false;
+        }
+        // Array<Method*>::_length is an int; a method count beyond u2 is not a
+        // valid class file, so a larger value means the array is gone.
+        int len = SafeAccess::load32((int32_t*) methods, -1);
+        if (len < 0 || len > 0xffff) {
+            return false;
+        }
+        // HotSpot's Array<T> (oops/array.hpp) is `int _length; T _data[1];`,
+        // so for pointer elements the data starts at the pointer size.
+        void** data = (void**)(methods + sizeof(void*));
+        if (idnum_hint >= 0 && idnum_hint < len && SafeAccess::loadPtr(&data[idnum_hint], nullptr) == method) {
+            return true;
+        }
+        if (len > MAX_METHODS_SCANNED) {
+            if (not_scanned != nullptr) {
+                *not_scanned = true;
+            }
+            return false;
+        }
+        for (int i = 0; i < len; i++) {
+            if (SafeAccess::loadPtr(&data[i], nullptr) == method) {
+                return true;
+            }
+        }
+        return false;
     }
 DECLARE_END
 
@@ -737,22 +857,28 @@ DECLARE(VMJavaFrameAnchor)
 
     NOADDRSANITIZE uintptr_t lastJavaSP() {
         assert(_anchor_sp_offset >= 0);
-        return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_sp_offset), nullptr);
+        return (uintptr_t) *(void**) at(_anchor_sp_offset);
     }
 
     NOADDRSANITIZE uintptr_t lastJavaFP() {
         assert(_anchor_fp_offset >= 0);
-        return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_fp_offset), nullptr);
+        return (uintptr_t) *(void**) at(_anchor_fp_offset);
     }
 
     NOADDRSANITIZE const void* lastJavaPC() {
         assert(_anchor_pc_offset >= 0);
-        return SafeAccess::loadPtr((void**) at(_anchor_pc_offset), nullptr);
+        return *(void**) at(_anchor_pc_offset);
     }
 
-    void setLastJavaPC(const void* pc) {
+    template <bool SafeStore = true>
+    bool setLastJavaPC(const void* pc) {
         assert(_anchor_pc_offset >= 0);
-        *(const void**) at(_anchor_pc_offset) = pc;
+        if (SafeStore) {
+            return SafeAccess::storePtr((void**)at(_anchor_pc_offset), (void*)pc);
+        } else {
+           *(const void**) at(_anchor_pc_offset) = pc;
+           return true;
+        }
     }
 
     NOADDRSANITIZE bool getFrame(const void*& pc, uintptr_t& sp, uintptr_t& fp) {
@@ -767,16 +893,13 @@ DECLARE(VMJavaFrameAnchor)
 DECLARE_END
 
 DECLARE(VMContinuationEntry)
-    // Address of the enterSpecial frame's {saved_fp, return_addr} pair.
-    // Layout above this address: [saved_fp][return_addr_to_carrier][carrier_sp...]
-    // The ContinuationEntry struct is embedded on the carrier stack immediately
-    // below enterSpecial's saved-fp slot; its size() equals the JVM's
-    // ContinuationEntry::size() static method, confirmed at:
-    //   https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/continuationEntry.hpp
-    //   https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/continuationEntry.cpp
+    // HotSpot entry_fp() adds ContinuationEntry::size(), not the exported sizeof.
+    // Round to two machine words to reach the {saved_fp, return_addr} pair.
     uintptr_t entryFP() const {
         assert(type_size() > 0); // must not be called before ContinuationEntry is resolved
-        return (uintptr_t)this + type_size();
+        constexpr uintptr_t alignment = 2 * sizeof(uintptr_t);
+        const uintptr_t size = (type_size() + alignment - 1) & ~(alignment - 1);
+        return (uintptr_t)this + size;
     }
 
     // Returns the enclosing ContinuationEntry when continuations are nested
@@ -899,6 +1022,12 @@ DECLARE(VMConstMethod)
     inline VMConstantPool* constants_or_null() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
+    inline u16 idnum() const;
+    inline u16 codeSize() const;
+    // Start of the compressed line number table, which HotSpot places right
+    // after the bytecodes, or nullptr if the method has none (or the VM does
+    // not export what is needed to locate it).
+    inline const unsigned char* compressedLineNumberTable() const;
 private:
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
@@ -915,6 +1044,11 @@ DECLARE(VMMethod)
 
     // Performs extra validation when VMMethod comes from incomplete frame
     inline jmethodID validatedId();
+
+    // The holder Klass* (constMethod -> constants -> pool holder), read with
+    // SafeAccess so it is usable from a signal handler; nullptr if any link
+    // is unreadable.
+    inline const void* holderOrNull() const;
 
     const char* bytecode() {
         assert(_method_constmethod_offset >= 0);
@@ -1202,6 +1336,62 @@ class ScopeDesc : VMStructs {
     int bci() {
         return _bci;
     }
+};
+
+// Decoder for ConstMethod's compressed line number table, a mirror of
+// HotSpot's CompressedLineNumberReadStream. Each entry is either a single byte
+// holding (bci_delta << 3 | line_delta), or 0xFF followed by the two deltas as
+// signed CompressedStream ints. A 0 byte terminates the table.
+//
+// Reads the raw stream without any safety checks: callers must run with crash
+// protection installed and bound the number of entries they accept.
+class VMLineNumberStream : VMStructs {
+  private:
+    const unsigned char* _stream;
+    int _bci;
+    int _line;
+
+    // Same UNSIGNED5 decoding as ScopeDesc::readInt() (see JDK-8292758 for
+    // the _unsigned5_base shift).
+    unsigned int readUInt() {
+        unsigned char c = *_stream++;
+        unsigned int n = c - _unsigned5_base;
+        if (c >= 192) {
+            for (int shift = 6; ; shift += 6) {
+                c = *_stream++;
+                n += (c - _unsigned5_base) << shift;
+                if (c < 192 || shift >= 24) break;
+            }
+        }
+        return n;
+    }
+
+    int readSignedInt() {
+        unsigned int n = readUInt();
+        return (int)(n >> 1) ^ -(int)(n & 1);
+    }
+
+  public:
+    explicit VMLineNumberStream(const unsigned char* table) : _stream(table), _bci(0), _line(0) {}
+
+    // Advances to the next (bci, line) pair; returns false at the terminator.
+    bool readPair() {
+        unsigned char next = *_stream++;
+        if (next == 0) {
+            return false;
+        }
+        if (next == 0xFF) {
+            _bci += readSignedInt();
+            _line += readSignedInt();
+        } else {
+            _bci += next >> 3;
+            _line += next & 0x7;
+        }
+        return true;
+    }
+
+    int bci() const { return _bci; }
+    int line() const { return _line; }
 };
 
 class InterpreterFrame : VMStructs {

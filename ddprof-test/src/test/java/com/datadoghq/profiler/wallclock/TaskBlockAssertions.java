@@ -5,17 +5,19 @@
 
 package com.datadoghq.profiler.wallclock;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.JfrEvent;
-import com.datadoghq.profiler.JfrEvents;
-import com.datadoghq.profiler.JfrFrame;
-import java.util.HashSet;
-import java.util.Set;
-
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.JfrFrame;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /** Assertions for the synchronous {@code datadog.TaskBlock} event contract. */
 final class TaskBlockAssertions {
@@ -25,8 +27,50 @@ final class TaskBlockAssertions {
   private static final String SUPPRESSED_SAMPLE_COUNT = "suppressedSampleCount";
   private static final String OBSERVED_BLOCKING_STATE = "observedBlockingState";
   private static final String CORRELATION_ID = "correlationId";
-  private static final String EVENT_THREAD = "eventThread";
   private static final String DURATION = "duration";
+
+  /** Counts events with the expected blocker identity. */
+  static int countBlockerEvents(JfrEvents events, long blocker) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Counts events attributed to the named worker. */
+  static int countEventsForThread(JfrEvents events, String threadName) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Sums segment duration across rotations for the named worker. */
+  static double durationNanosForThread(JfrEvents events, String threadName) {
+    double durationNanos = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        durationNanos += item.getLong("duration", 0L);
+      }
+    }
+    return durationNanos;
+  }
+
+  /**
+   * Value of {@code OSThreadState::SLEEPING} in {@code ddprof-lib/src/main/cpp/threadState.h}. Keep
+   * in sync with that enum: the native {@code blockEnter0} decodes this int via {@code
+   * decodeJavaBlockState}, so a renumbered enum would silently arm a different OS thread state
+   * here.
+   */
+  static final int OSTHREAD_STATE_SLEEPING = 7;
+
+  private static final String EVENT_THREAD = "eventThread";
 
   private TaskBlockAssertions() {}
 
@@ -39,18 +83,31 @@ final class TaskBlockAssertions {
     return false;
   }
 
-  static int countBlockerEvents(JfrEvents events, long blocker) {
-    int count = 0;
+  /**
+   * Asserts that at least one event has a {@code duration} within {@code [minMillis, maxMillis]}.
+   * The JFR parser normalizes the {@code @Timespan(TICKS)} duration to nanoseconds.
+   */
+  static void assertContainsDuration(JfrEvents events, long minMillis, long maxMillis) {
+    List<Long> durations = new ArrayList<>();
     for (JfrEvent item : events) {
-      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
-        count++;
+      Long millis = item.getNanosAsMillis(DURATION);
+      if (millis == null) continue;
+      if (millis >= minMillis && millis <= maxMillis) {
+        return;
       }
+      durations.add(millis);
     }
-    return count;
+    throw new AssertionError(
+        "Expected TaskBlock duration in ["
+            + minMillis
+            + ", "
+            + maxMillis
+            + "] ms, got "
+            + durations);
   }
 
-  static void assertContains(JfrEvents events, long rootSpanId, long spanId,
-      long blocker, long unblockingSpanId) {
+  static void assertContains(
+      JfrEvents events, long rootSpanId, long spanId, long blocker, long unblockingSpanId) {
     for (JfrEvent item : events) {
       if (item.getLong(AbstractProfilerTest.LOCAL_ROOT_SPAN_ID, Long.MIN_VALUE) == rootSpanId
           && item.getLong(AbstractProfilerTest.SPAN_ID, Long.MIN_VALUE) == spanId
@@ -59,8 +116,8 @@ final class TaskBlockAssertions {
         return;
       }
     }
-    throw new AssertionError("Expected TaskBlock blocker=" + blocker
-        + ", unblockingSpanId=" + unblockingSpanId);
+    throw new AssertionError(
+        "Expected TaskBlock blocker=" + blocker + ", unblockingSpanId=" + unblockingSpanId);
   }
 
   static void assertContainsObservedState(JfrEvents events, String expected) {
@@ -104,8 +161,7 @@ final class TaskBlockAssertions {
 
   static void assertNoCorrelationId(JfrEvents events) {
     for (JfrEvent item : events) {
-      assertTrue(item.getLong(CORRELATION_ID, Long.MIN_VALUE) == 0,
-          "Direct-stack TaskBlock must have correlationId=0");
+      assertNull(item.get(CORRELATION_ID));
     }
   }
 
@@ -136,26 +192,6 @@ final class TaskBlockAssertions {
     return false;
   }
 
-  static int countEventsForThread(JfrEvents events, String threadName) {
-    int count = 0;
-    for (JfrEvent item : events) {
-      if (threadName.equals(item.getThreadName(EVENT_THREAD))) {
-        count++;
-      }
-    }
-    return count;
-  }
-
-  static double durationNanosForThread(JfrEvents events, String threadName) {
-    double durationNanos = 0;
-    for (JfrEvent item : events) {
-      if (threadName.equals(item.getThreadName(EVENT_THREAD))) {
-        durationNanos += item.getLong(DURATION, 0L);
-      }
-    }
-    return durationNanos;
-  }
-
   static boolean containsSpan(JfrEvents events, long spanId) {
     for (JfrEvent item : events) {
       if (item.getLong(AbstractProfilerTest.SPAN_ID, Long.MIN_VALUE) == spanId) {
@@ -172,7 +208,9 @@ final class TaskBlockAssertions {
       if (item.getLong(BLOCKER, Long.MIN_VALUE) != blocker) continue;
       Long eventThreadId = item.getThreadJavaId(EVENT_THREAD);
       assertNotNull(eventThreadId, "TaskBlock eventThread must not be null");
-      assertNotEquals(Long.valueOf(logicalThreadId), eventThreadId,
+      assertNotEquals(
+          Long.valueOf(logicalThreadId),
+          eventThreadId,
           "Native TaskBlock must identify the physical carrier, not the virtual thread");
       checked++;
     }

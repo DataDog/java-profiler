@@ -22,6 +22,7 @@
 #include "common.h"
 #include "countingAllocator.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "dictionary.h"
 #include "stringDictionary.h"
 #include "event.h"
@@ -30,11 +31,14 @@
 #include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
+#include "recordingOutput.h"
 #include "threadFilter.h"
 #include "threadIdTable.h"
 #include "vmEntry.h"
 
 class VMSymbol;  // hotspot/vmStructs.h
+class ProfiledThread;
+struct CallTrace;
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
@@ -42,6 +46,41 @@ const int MAX_JFR_EVENT_SIZE = 256;
 const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
+
+// Chain length Recording::recordReferenceChain() (flightRecorder.cpp) will
+// actually serialize per datadog.ReferenceChain event, independent of
+// the engine's own _hop_cap/frontier-table cap - the frontier table's
+// defensive walk bound is its maxCapacity(), which can run into the tens of
+// thousands of entries, and neither that cap nor _hop_cap is itself
+// range-validated against a buffer-safe maximum (see arguments.cpp's own
+// sub-option parsing). recordReferenceChain() truncates event->_hops to
+// this many entries before writing, so its own worst-case size never
+// depends on trusting either of those upstream caps to stay small - a chain
+// longer than this is still truncated defense-in-depth even if a caller
+// changes those caps later.
+//
+// Derived from the recording buffer's capacity, not a hand-picked constant:
+// each serialized hop costs up to one chain entry (putVar32, <=
+// MAX_VAR32_LENGTH) plus one edge label (putUtf8 = 1 encoding-tag byte + a
+// var32 length prefix + MAX_REFERENCE_CHAIN_EDGE_LABEL payload bytes), and
+// the event's fixed fields cost REFERENCE_CHAIN_EVENT_FIXED_BYTES - so a
+// full-cap event always fits inside RECORDING_BUFFER_LIMIT and the
+// reservation in recordReferenceChain() can never underflow (a fixed 4096
+// allowed a ~438 KB worst case against a 61 KB buffer - a debug assert and
+// a release-mode write past the buffer).
+const int REFERENCE_CHAIN_EVENT_FIXED_BYTES =
+    MAX_VAR32_LENGTH /* multi-byte event size prefix */ +
+    4 * MAX_VAR64_LENGTH /* type id, start_time, target_tag,
+                            leak_tag_incarnation */ +
+    3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
+    32 /* rootKind string, generous */ +
+    MAX_VAR32_LENGTH /* edges count */;
+const int REFERENCE_CHAIN_EVENT_PER_HOP_BYTES =
+    MAX_VAR32_LENGTH /* chain entry */ +
+    1 + MAX_VAR32_LENGTH + MAX_REFERENCE_CHAIN_EDGE_LABEL /* edge label */;
+const int MAX_REFERENCE_CHAIN_EVENT_HOPS =
+    (RECORDING_BUFFER_LIMIT - REFERENCE_CHAIN_EVENT_FIXED_BYTES) /
+    REFERENCE_CHAIN_EVENT_PER_HOP_BYTES;
 
 #ifndef CONCURRENCY_LEVEL
 const int CONCURRENCY_LEVEL = 16;
@@ -67,13 +106,24 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
-  // Owned malloc'd buffer holding a copy of the JVMTI line number table.
-  // Owning the memory (instead of holding the JVMTI-allocated pointer
-  // directly) keeps lifetime independent of class unload.
-  void *_ptr;
+  // Either the buffer jvmti->GetLineNumberTable() returned, held directly (not
+  // a copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
+  // so native-memory-tracking accounting stays correct, or -- when
+  // _jvmti_allocated is false -- a malloc'd table decoded from VM metadata by
+  // HotspotSupport::resolve(), freed via free(). Either way the array is
+  // decoupled from the Method's lifetime, so holding onto it is safe across
+  // class unload.
+  jvmtiLineNumberEntry* _table;
+  bool _jvmti_allocated;
 
-  SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
+  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr, bool jvmti_allocated = true) :
+    _size(size), _table(ptr), _jvmti_allocated(jvmti_allocated) {}
   ~SharedLineNumberTable();
+  // The destructor frees _table, so a copy would free it twice.
+  SharedLineNumberTable(const SharedLineNumberTable&) = delete;
+  SharedLineNumberTable& operator=(const SharedLineNumberTable&) = delete;
+  SharedLineNumberTable(SharedLineNumberTable&&) = delete;
+  SharedLineNumberTable& operator=(SharedLineNumberTable&&) = delete;
 };
 
 class MethodInfo {
@@ -98,14 +148,15 @@ public:
   inline bool isHidden();
 };
 
-// MethodMap's key can be derived from 3 sources:
+// MethodMap's key can be derived from 4 sources:
 // 1) jmethodID for Java methods
-// 2) void* address for native method names
-// 3) Encoded RemoteFrameInfo
+// 2) raw Method* and its frame tag, for HotSpot frames without a jmethodID
+// 3) void* address for native method names
+// 4) Encoded RemoteFrameInfo
 // The values of the keys are potentially overlapping, so we use 
 // the highest 2 bits to distinguish them.
 // Key encoding (top two bits):
-//   00 - jmethodID
+//   00 - jmethodID, or with bit 61 set a raw Method* (see makeRawKey())
 //   10 - void* address (native frame names)
 //   01 - RemoteFrameInfo (packed remote symbolication)
 //   11 - vtable_receiver class_id (BCI_VTABLE_RECEIVER frames)
@@ -118,6 +169,9 @@ public:
   static constexpr unsigned long REMOTE_FRAME_MARK = 0x4000000000000000ULL;
   static constexpr unsigned long VTABLE_RECEIVER_MARK = ADDRESS_MARK | REMOTE_FRAME_MARK;
   static constexpr unsigned long KEY_TYPE_MASK = ADDRESS_MARK | REMOTE_FRAME_MARK;
+  static constexpr unsigned long RAW_METHOD_MARK = 0x2000000000000000ULL;
+  static constexpr int RAW_METHOD_TAG_SHIFT = 48;
+  static constexpr uint32_t RAW_METHOD_TAG_MASK = 0x1fff;
 
   MethodMap() {}
 
@@ -137,6 +191,19 @@ public:
     unsigned long key = packed_remote_frame;
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | REMOTE_FRAME_MARK);}
+
+  // A raw frame's row: its untagged Method* (below 2^48, which
+  // HotspotSupport::fillJavaFrame() checks when it stores the frame), the low 13 bits of its tag, and
+  // RAW_METHOD_MARK, which keeps it apart from every jmethodID. The truncated
+  // tag only has to separate loads of a class at the same address that are
+  // both accepted in one dump; Lookup::fillRawMethod() keeps refused frames
+  // away from the rows, and refills every row at its first use in a chunk.
+  static unsigned long makeRawKey(const void* untagged_method, uint32_t tag) {
+    unsigned long key = (unsigned long)untagged_method;
+    assert((key >> RAW_METHOD_TAG_SHIFT) == 0);
+    return key | RAW_METHOD_MARK |
+           ((unsigned long)(tag & RAW_METHOD_TAG_MASK) << RAW_METHOD_TAG_SHIFT);
+  }
 
   // BCI_VTABLE_RECEIVER frames key by the resolved class_id (not by the
   // VMSymbol* captured at sample time), so two distinct Symbol addresses
@@ -171,19 +238,33 @@ public:
     }
   }
 
+  // Pool id for Lookup::_unknown_method, the shared row for frames that could
+  // not be resolved. That row deliberately lives outside this map (see
+  // Lookup::unknownMethod()), so it needs an id that no map entry can ever be
+  // given: drawn from the same counter so it cannot collide, but drawn only
+  // once for the life of the recording and never recycled, since
+  // cleanupUnreferencedMethods() only ever erases -- and frees the ids of --
+  // actual map entries.
+  u32 unknownMethodId() {
+    if (_unknown_method_id == 0) {
+      _unknown_method_id = allocId();
+    }
+    return _unknown_method_id;
+}
+
 private:
   u32 _id_high_water = 0;
+  u32 _unknown_method_id = 0;
   std::vector<u32> _free_ids;
 };
 
 class Recording {
+  friend class FlightRecorder;
   friend ObjectSampler;
   friend Profiler;
   friend Lookup;
-  // Grants gtest access to the private countSerializableChildren() helper below,
-  // since Recording itself can't be constructed in a plain gtest binary (its
-  // constructor needs a live JVMTI environment). Same pattern as
-  // VMTestAccessor/ProfilerTestAccessor in the test sources.
+  // Gtest access to private serializer invariants; the production constructor
+  // requires a live JVMTI environment.
   friend class RecordingTestAccessor;
 
 private:
@@ -199,6 +280,18 @@ private:
   // the encoded count can never diverge from what actually gets serialized.
   static size_t countSerializableChildren(
       const std::vector<const Element *> &children, int depth);
+#ifdef DEBUG
+  static void writeUnwindFailureEvent(Buffer *buf, u64 ticks, const char *kind,
+                                     const char *name, u64 count);
+#endif
+
+  // Encodes the stack-pool record header. A Java entry root can establish
+  // completeness only when the walker has not already reported missing frames.
+  static void writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
+                                u64 correlation_id, ExecutionEvent *event);
+
+  static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
+                                   const MethodInfo *root);
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention
@@ -207,6 +300,15 @@ private:
   std::atomic<int> _active_index{0};  // 0 or 1 globally
 
   int _fd;
+  RecordingOutput _output;
+  struct OutputFailure {};
+  bool _cold_io = true;
+  bool _chunk_open = true;
+  u64 _chunk_sequence = 1;
+  u64 _first_retained_chunk = 1;
+  off_t finishChunkContents(bool end_recording, bool do_cleanup);
+  void patch(Buffer* buf, size_t size, off_t offset);
+  RecordingOutput::Delivery closeOutput();
   off_t _chunk_start;
   MethodMap _method_map;
 
@@ -228,19 +330,48 @@ private:
   Buffer _cpu_monitor_buf;
   CpuTimes _last_times;
 
+  // Per-category NativeMem state captured immediately AFTER writeCpool(), and
+  // emitted by the following chunk.
+  //
+  // The chunk's own counters are necessarily sampled before serialization: the
+  // chunk header records cpool_offset as the boundary between the event section
+  // and the constant pool, so no event may be appended once writeCpool() has
+  // run. But writeCpool() is where the method map is built and the dictionary
+  // grows -- by two orders of magnitude in a large recording -- so a consumer
+  // reading only the in-chunk values never sees the cost of serialization.
+  //
+  // The post-flush live values are the genuinely new signal here. The
+  // post-flush max is NativeMem::max(cat), a lifetime monotonic high-water
+  // mark that nothing resets in production, so it carries the same
+  // cross-flush attribution ambiguity as native_mem_max_bytes -- a per-flush
+  // peak can only be recovered by a consumer differencing
+  // post_flush_max[N] against the in-chunk native_mem_max_bytes emitted in
+  // chunk N.
+  bool _has_post_flush;
+  long long _post_flush_live[NM_NUM_CATEGORIES];
+  long long _post_flush_max[NM_NUM_CATEGORIES];
+  void capturePostFlushNativeMem();
+
   static float ratio(float value) {
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }
 
 public:
   Recording(int fd, Arguments &args);
+#ifdef UNIT_TEST
+  // Buffer/table-only serializer fixture; the caller owns its real output fd.
+  explicit Recording(int fd) : _fd(-1), _output(fd), _bytes_written(0) {}
+#endif
   ~Recording();
 
-  void copyTo(int target_fd);
+  bool copyTo(int target_fd);
   off_t finishChunk();
 
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
-  void switchChunk(int fd);
+  // Consumes fd, retaining sealed source chunks on failed delivery.
+  RecordingOutput::Delivery switchChunk(int fd);
+  bool outputGood() const { return _output.good(); }
+  bool prepareDumpTarget(int fd) const { return _output.prepareTarget(fd); }
 
   void cpuMonitorCycle();
   void appendRecording(const char *target_file, size_t size);
@@ -250,7 +381,7 @@ public:
   bool parseAgentProperties();
 
   void flush(Buffer *buf);
-  void flushIfNeeded(Buffer *buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
+  bool flushIfNeeded(Buffer *buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
   void writeHeader(Buffer *buf);
 
   void writeMetadata(Buffer *buf);
@@ -324,17 +455,30 @@ public:
   void writeCounters(Buffer *buf);
 
   void updateNativeMemStats();
+  // True unless a replacement allocator (tcmalloc/jemalloc) has been
+  // LD_PRELOAD'd over glibc's malloc/free, or this is an ASan/TSan build
+  // (whose runtime allocator replaces glibc's). __GLIBC__ alone cannot tell: it
+  // reflects the headers the binary was compiled against, not which
+  // allocator is actually serving malloc()/free() at runtime. See
+  // updateMallocArenaStats() for why this matters. Exposed for
+  // RecordingTestAccessor.
+  static bool glibcMallocActive();
+  // Process-wide malloc arena state (glibc mallinfo2). Flush path only --
+  // takes every arena lock, so not async-signal-safe. No-op off glibc 2.33+,
+  // and also when glibcMallocActive() reports a replacement allocator.
+  void updateMallocArenaStats();
   void writeNativeMem(Buffer *buf);
 
   void writeUnwindFailures(Buffer *buf);
 
-  void writeContextSnapshot(Buffer *buf, Context &context);
+  void writeContextSnapshot(Buffer *buf, const Context &context);
   void writeCurrentContext(Buffer *buf);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                              u64 correlation_id, ExecutionEvent *event);
   void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
-                          u64 correlation_id, ExecutionEvent *event);
+                          u64 correlation_id, ExecutionEvent *event,
+                          const Context *context = nullptr);
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
@@ -347,6 +491,9 @@ public:
                                 NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
+  void recordReferenceChain(Buffer *buf, ReferenceChainEvent *event);
+  void recordReferenceChainAbandoned(Buffer *buf,
+                                     ReferenceChainAbandonedEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                             LockEvent *event);
   void recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
@@ -354,12 +501,14 @@ public:
   void recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
                      float machine_total);
 
-  void addThread(int lock_index, int tid);
+  bool addThread(int lock_index, int tid);
 
 private:
   void cleanupUnreferencedMethods();
 };
 
+class ResolveMethodState;
+class ResolvedMethod;
 class Lookup {
 public:
   Recording *_rec;
@@ -374,15 +523,69 @@ public:
   std::unordered_map<void*, u32, std::hash<void*>, std::equal_to<void*>,
                       CountingAllocator<std::pair<void* const, u32>, NM_JFR_BUFFERS>>
       _vtable_receiver_cache;
+
+  // Per-dump cache of raw Method* frame resolutions (HotSpot cstack=vm frames
+  // whose class had no jmethodID when sampled): the filled row, or nullptr if
+  // the frame was refused. The same raw method recurs in many traces, and
+  // each resolution sets up crash protection, checks the class against the
+  // dump's pinned classes and its redefinition mark, and reads names and line
+  // numbers. Keyed by the
+  // untagged Method* and the frame's full tag, so occurrences that differ
+  // only in bci or frame type share one entry. A cached result stays right
+  // for the whole dump: an accepted frame was sampled from that method, and a
+  // refused one stays refused. Recording::writeCpool() constructs a Lookup
+  // for each dump, so the cache never outlives one. MethodMap nodes are not
+  // erased while a Lookup exists, so the row pointers stay valid.
+  struct RawMethodKey {
+    const void* method;
+    uint32_t tag;
+    bool operator==(const RawMethodKey& o) const { return method == o.method && tag == o.tag; }
+  };
+  struct RawMethodKeyHash {
+    size_t operator()(const RawMethodKey& k) const {
+      return std::hash<const void*>()(k.method) ^ ((size_t)k.tag * KNUTH_MULTIPLICATIVE_CONSTANT);
+    }
+  };
+  std::unordered_map<RawMethodKey, MethodInfo*, RawMethodKeyHash, std::equal_to<RawMethodKey>,
+                     CountingAllocator<std::pair<const RawMethodKey, MethodInfo*>, NM_JFR_BUFFERS>>
+      _raw_method_cache;
+
   Dictionary _packages;
   Dictionary _symbols;
 
+  // The single row every frame that could not be resolved collapses onto.
+  //
+  // Deliberately NOT a MethodMap entry: resolveMethod()'s siglongjmp landing pad
+  // hands this row back with crash protection already disarmed, so it must be
+  // reachable without touching the map, whose operator[] allocates a node and
+  // can throw std::bad_alloc.
+  //
+  // Because it is outside the map, the map walk in writeMethods() cannot see it,
+  // so writeMethods() emits it separately. It has to reach the method pool:
+  // writeStackTraces() writes its _key for every frame that resolved to it, and
+  // a _key with no matching pool entry is a dangling reference in the chunk.
+  // Public for that reason, matching _method_map/_symbols above.
+  MethodInfo _unknown_method;
+
 private:
   void fillNativeMethodInfo(MethodInfo *mi, const char *name,
-                            const char *lib_name);
+                            const char *lib_name, ResolveMethodState& state);
   void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
-  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
+  // Returns false without writing any of mi's fields when there was nothing
+  // to fill (JNI PushLocalFrame failed, or the JVM isn't in JVMTI_PHASE_START/
+  // JVMTI_PHASE_LIVE) -- callers must not mark/allocate a key for mi in that
+  // case. Every other path (including the "<unloaded>" stale-jmethodID
+  // sentinel) fully populates mi and returns true.
+  bool fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
+  // Fills mi from a raw Method* already resolved by HotspotSupport::resolve(),
+  // taking ownership of its line number table. No JNI/JVMTI.
+  void fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod& resolved);
+  // Sets mi's class/name/signature ids, applying the synthetic-accessor and
+  // LambdaForm class name normalisation. class_name is an internal name
+  // ("java/lang/Object"), not necessarily NUL-terminated at class_name_len.
+  void fillJavaMethodNames(MethodInfo *mi, const char *class_name, size_t class_name_len,
+                           const char *method_name, const char *method_sig);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
@@ -410,6 +613,31 @@ private:
   // increments VTABLE_RECEIVER_RESOLVE_FAILED.
   u32 resolveVTableReceiverCached(void *sym);
 
+  // The MethodMap entry `frame` belongs to. Factored out so resolveMethod()'s
+  // unprotected fast path and fillMethod()'s protected slow path can never
+  // disagree about which entry a frame maps to -- ASGCT_CallFrame's method_id /
+  // native_function_name / packed_remote_frame / method fields are a union, so
+  // the bci branching below is the only thing that gives the payload a meaning.
+  //
+  // Reads the union's *value* only: MethodMap::makeKey() hashes a pointer, it
+  // never dereferences it. So for every bci except BCI_VTABLE_RECEIVER -- whose
+  // class_id the caller must resolve from a VMSymbol* first -- computing a key
+  // touches no VM metadata and cannot fault.
+  unsigned long methodKey(const ASGCT_CallFrame &frame, jmethodID method_id,
+                          jint bci, u32 vtable_class_id);
+  // Resolves and fills in the MethodInfo for `frame`. This is the part that
+  // reads VM metadata and may therefore fault; resolveMethod() wraps it in the
+  // sigsetjmp/siglongjmp window.
+  MethodInfo *fillMethod(ASGCT_CallFrame &frame, jmethodID method_id, jint bci,
+                         ProfiledThread* const prof_thread);
+  // The row for a raw Method* frame, resolved and filled at most once per
+  // distinct method and tag per dump, or the unknown row if it is refused.
+  MethodInfo *fillRawMethod(const ASGCT_CallFrame &frame);
+
+  // Materializes _unknown_method for this dump (filling it on first use) and
+  // returns it.
+  MethodInfo *unknownMethod();
+
 public:
   Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
@@ -421,7 +649,11 @@ public:
 };
 
 class FlightRecorder {
+  friend class FlightRecorderTestAccessor;
   friend Profiler;
+#ifdef UNIT_TEST
+  friend class FlightRecorderTestAccessor;
+#endif
 
 private:
   std::string _filename;
@@ -429,15 +661,15 @@ private:
 
   SpinLock _rec_lock;
   Recording* _rec;
+  int _uncertain_create_fd = -1;
 
   Error newRecording(bool reset);
 
 public:
   FlightRecorder() : _rec(NULL) {}
   Error start(Arguments &args, bool reset);
-  void stop();
-  Error prepareDump(const char *filename, const int length, int *fd);
-  Error dump(int fd);
+  Error stop();
+  Error dump(const char *filename, const int length);
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
@@ -447,6 +679,8 @@ public:
 
   bool recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
+  bool recordWallSample(int lock_index, int tid, u64 call_trace_id,
+                       ExecutionEvent *event, const Context &context);
 
   // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
   // recording. `correlation_id` is the same jlong passed to the HotSpot
@@ -461,6 +695,25 @@ public:
                             const char *value, const char *unit);
 
   void recordHeapUsage(int lock_index, long value, bool live);
+
+  // Mirrors recordHeapUsage()'s shape exactly - ReferenceChainAbandonedEvent
+  // is not stack-sample-shaped (no tid/call_trace_id), same as HeapUsage.
+  // Called from the profiler's dump-time abandoned-event drain,
+  // wired from Profiler::dump() the same way LivenessTracker::flush() is.
+  void recordReferenceChainAbandoned(int lock_index,
+                                     ReferenceChainAbandonedEvent *event);
+
+  // Mirrors recordReferenceChainAbandoned() above exactly, for
+  // ReferenceChainEvent instead. Called from the profiler's dump()-time
+  // writer, itself called from Profiler::dump()'s drain loop over
+  // the engine's resolved-chain cache snapshot: the BFS
+  // scheduling thread only caches resolved chains and each dump re-emits
+  // the cache, so chain events
+  // are written on dump()'s own thread, not from the tracker thread, and
+  // unlike recordReferenceChainAbandoned() (unbounded retry budget per
+  // event) the batch shares one deadline (see the writer's contract in
+  // Profiler - the drain batch, not each event, owns the retry budget).
+  void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 
 #endif // _FLIGHTRECORDER_H

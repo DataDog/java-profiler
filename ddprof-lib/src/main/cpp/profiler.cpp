@@ -5,15 +5,17 @@
  */
 
 #include <cassert>
+#include <climits>
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
-#include "nativeSocketInterposer.h"
 #include "nativeSocketSampler.h"
+#include "nativeSocketInterposer.h"
 #include "context.h"
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
+#include "context_api.h"
 #include "nativeMem.h"
 #include "ctimer.h"
 #include "signalInflight.h"
@@ -25,6 +27,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
+#include "jniHelper.h"
 #include "jvmSupport.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
@@ -32,9 +35,12 @@
 #include "objectSampler.h"
 #include "os.h"
 #include "perfEvents.h"
+#include "referenceChains.h"
 #include "safeAccess.h"
+#include "samplerPerf.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
+#include "stackWalker.inline.h"
 #include "symbols.h"
 #include "taskBlockRecorder.h"
 #include "threadLocalData.inline.h"
@@ -47,6 +53,7 @@
 
 #include <algorithm>
 #include <dlfcn.h>
+#include <errno.h>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -54,6 +61,8 @@
 #include <thread>
 #include <vector>
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -63,9 +72,14 @@
 #include <time.h>
 #include <unistd.h>
 
+// Budget for waitForHookCalls(). Hook calls do a few syscalls per engine, so
+// a full second means a call is stuck (or the in-flight count leaked).
+static const long HOOK_CALLS_DRAIN_TIMEOUT_NS = 1000000000L;
+
 // The instance is not deleted on purpose, since profiler structures
 // can be still accessed concurrently during VM termination
 Profiler *const Profiler::_instance = new Profiler();
+long long Profiler::_hook_drain_timeout_ns = HOOK_CALLS_DRAIN_TIMEOUT_NS;
 volatile bool Profiler::_signals_initialized = false;
 volatile bool Profiler::_need_JDK_8313796_workaround = true;
 
@@ -116,21 +130,32 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   current->setJavaThread(true);
-  current->setJvmInternalThread(thread != NULL && isJvmInternalThread(jvmti, jni, thread));
+  current->setJvmInternalThread(thread != nullptr && jvmti != nullptr && jni != nullptr &&
+                                isJvmInternalThread(jvmti, jni, thread));
   int tid = current->tid();
-  // Java lifecycle callbacks own registry allocation. The wall timer only
-  // looks up these entries and must never allocate slots for arbitrary OS
-  // threads returned by OS::listThreads().
-  if (_thread_filter.registryActive()) {
-    int slot_id = _thread_filter.registerThread(tid);
+  // Context-filtered recordings pre-register Java threads. Unfiltered wall
+  // tracking binds lazily in context/block/park hooks, so an idle thread that
+  // never uses those hooks does not reserve one of the bounded registry slots.
+  // The wall timer only looks up entries; it never allocates them.
+  if (_thread_filter.enabled()) {
+    int slot_id = _thread_filter.registerThread(tid, current->logicalContextWindowState());
     current->setFilterSlotId(slot_id);
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
+    if (_reference_chains_active) {
+      // Register this thread's live java.lang.Thread object so a leak
+      // candidate whose tid belongs to a thread started after recording
+      // start still has a _thread_objects entry for
+      // walkCandidateThreadLocals() to walk (see referenceChains.h's
+      // _thread_objects comment).
+      ReferenceChainTracker::instance()->registerThreadObject(jni, tid, thread);
+    }
   }
 
-  _cpu_engine->registerThread(tid);
-  _wall_engine->registerThread(tid);
+  // Through the same gate and in-flight count as the pthread hook: disabling
+  // the JVMTI event in stop() does not wait for callbacks already running.
+  registerThread(tid);
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
@@ -151,13 +176,19 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     }
 
     updateThreadName(jvmti, jni, thread, false);
+    if (_reference_chains_active) {
+      // Queue this thread's global ref for deferred deletion so a dead
+      // thread's ref doesn't pin the Thread object or anchor a reused tid
+      // (see referenceChains.h's _thread_objects/_thread_refs_pending_delete
+      // comments).
+      ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
+    }
     // Block profiling signals around engine unregistration + TLS release to
     // close the window where a wall-clock/CPU signal could sample a
     // partially-torn-down thread (PROF-14674).
     {
       blockProfilingForExit();
-      _cpu_engine->unregisterThread(tid);
-      _wall_engine->unregisterThread(tid);
+      unregisterThread(tid);
       LivenessTracker::instance()->releaseThreadLocalState();
       ProfiledThread::release();
     }
@@ -173,21 +204,163 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   updateThreadName(jvmti, jni, thread, false);
   _thread_filter.unregisterThreadByTid(tid);
-  _cpu_engine->unregisterThread(tid);
-  _wall_engine->unregisterThread(tid);
+  if (_reference_chains_active) {
+    ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
+  }
+  unregisterThread(tid);
   LivenessTracker::instance()->releaseThreadLocalState();
 }
 
+// Skipped unregistrations: see Profiler::recordSkippedUnregistration().
+static const int SKIPPED_UNREGISTRATIONS_CAPACITY = 256;
+static std::atomic<int> g_skipped_tids[SKIPPED_UNREGISTRATIONS_CAPACITY];
+static std::atomic<int> g_skipped_count;
+static std::atomic<int> g_skipped_dropped;
+
+void Profiler::recordSkippedUnregistration(int tid) {
+  int index = g_skipped_count.fetch_add(1, std::memory_order_relaxed);
+  if (index < SKIPPED_UNREGISTRATIONS_CAPACITY) {
+    g_skipped_tids[index].store(tid, std::memory_order_release);
+  } else {
+    g_skipped_dropped.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+int Profiler::skippedUnregistrationCount() {
+  int count = g_skipped_count.load(std::memory_order_acquire);
+  return count < SKIPPED_UNREGISTRATIONS_CAPACITY ? count : SKIPPED_UNREGISTRATIONS_CAPACITY;
+}
+
+int Profiler::skippedUnregistration(int index) {
+  return g_skipped_tids[index].load(std::memory_order_acquire);
+}
+
+void Profiler::clearSkippedUnregistrations() {
+  int dropped = g_skipped_dropped.exchange(0, std::memory_order_relaxed);
+  if (dropped > 0) {
+    Log::warn("Profiler: %d skipped thread unregistration(s) did not fit the "
+              "record; their timers or fds may stay until stop()", dropped);
+  }
+  g_skipped_count.store(0, std::memory_order_relaxed);
+}
+
+// Marks a hook call as in flight on its gate's counter. Either the call sees the
+// gate closed, or the closer sees the call and waits for it; both sides are
+// seq_cst.
+class HookCallScope {
+public:
+  explicit HookCallScope(std::atomic<int> &inflight) : _inflight(inflight) {
+    _inflight.fetch_add(1, std::memory_order_seq_cst);
+  }
+  ~HookCallScope() { _inflight.fetch_sub(1, std::memory_order_release); }
+  HookCallScope(const HookCallScope &) = delete;
+  HookCallScope &operator=(const HookCallScope &) = delete;
+
+private:
+  std::atomic<int> &_inflight;
+};
+
+void Profiler::openThreadRegistration() {
+  _thread_tables_stable.store(true, std::memory_order_seq_cst);
+  _engines_ready.store(true, std::memory_order_seq_cst);
+}
+
+bool Profiler::closeThreadRegistration() {
+  _engines_ready.store(false, std::memory_order_seq_cst);
+  return waitForHookCalls(/*include_unregistration=*/false);
+}
+
+bool Profiler::waitForHookCalls(bool include_unregistration) {
+  // Hook calls only do a few syscalls per engine, so the wait is short. It is
+  // bounded so that a call that never leaves (or a leaked in-flight count)
+  // fails the caller instead of wedging it under _state_lock.
+  // clock_gettime() rather than OS::nanotime(): see SamplerPerf::primeClock()
+  // in start().
+  auto inflight = [this, include_unregistration]() {
+    int calls = _register_calls_inflight.load(std::memory_order_seq_cst);
+    if (include_unregistration) {
+      calls += _unregister_calls_inflight.load(std::memory_order_seq_cst);
+    }
+    return calls;
+  };
+  if (inflight() == 0) {
+    return true;
+  }
+  long long budget = _hook_drain_timeout_ns;
+  struct timespec deadline;
+  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+    Log::warn("Profiler: clock_gettime(CLOCK_MONOTONIC) failed (errno=%d) "
+              "waiting for thread hook calls", errno);
+    return false;
+  }
+  // Division/modulo rather than a single carry: the budget may exceed 2 s.
+  long long nsec = (long long)deadline.tv_nsec + budget;
+  deadline.tv_sec += (time_t)(nsec / 1000000000LL);
+  deadline.tv_nsec = (long)(nsec % 1000000000LL);
+
+  while (inflight() != 0) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      Log::warn("Profiler: clock_gettime(CLOCK_MONOTONIC) failed (errno=%d) "
+                "waiting for thread hook calls", errno);
+      return false;
+    }
+    if (now.tv_sec > deadline.tv_sec ||
+        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+      int remaining = inflight();
+      Log::warn("Profiler: timed out after %ldms waiting for %d in-flight "
+                "thread hook call(s)", (long)(budget / 1000000LL), remaining);
+      return false;
+    }
+    sched_yield();
+  }
+  return true;
+}
+
+// Cancellation is disabled for the whole hook call: the engine calls reach
+// cancellation points, and acting on one there would unwind through
+// ~HookCallScope() or leave the in-flight count raised. The restore is a plain
+// call, not a guard: glibc acts on a pending request as soon as it is
+// re-enabled, and a destructor is implicitly noexcept.
 int Profiler::registerThread(int tid) {
-  return _instance->_cpu_engine->registerThread(tid) |
-         _instance->_wall_engine->registerThread(tid);
+  int cancel_state;
+  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
+  int result = registerThreadInEngines(tid);
+  pthread_setcancelstate(cancel_state, nullptr);
+  return result;
+}
+
+void Profiler::unregisterThread(int tid) {
+  int cancel_state;
+  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
+  unregisterThreadInEngines(tid);
+  pthread_setcancelstate(cancel_state, nullptr);
+}
+
+int Profiler::registerThreadInEngines(int tid) {
+  // The counter is raised before the gate is read, both seq_cst, so the
+  // closing side either sees this call in flight or this call sees the gate
+  // closed. A thread created before the gate opens is covered by the CPU
+  // engine's start(), which lists threads after opening it.
+  HookCallScope scope(_instance->_register_calls_inflight);
+  if (!_instance->_engines_ready.load(std::memory_order_seq_cst)) {
+    return -1; // not registered, as Engine::registerThread() reports it
+  }
+  // The gate admits only the CPU engine (see _engines_ready).
+  Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
+  return cpu->registerThread(tid);
 }
 #ifdef UNIT_TEST
+u32 Profiler::exchangeNumContextAttributesForTest(u32 count) {
+  assert(count <= DD_TAGS_CAPACITY);
+  u32 previous = _num_context_attributes;
+  _num_context_attributes = count;
+  return previous;
+}
+
 static std::atomic<int> g_test_last_unregistered_tid{-1};
 static std::atomic<Profiler::TaskBlockRecordOverride>
     g_test_task_block_record_override{nullptr};
-static std::atomic<Profiler::TaskBlockCompletionObserver>
-    g_test_task_block_completion_observer{nullptr};
 
 int Profiler::lastUnregisteredTidForTest() {
     return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
@@ -201,25 +374,42 @@ void Profiler::setTaskBlockRecordOverrideForTest(
   g_test_task_block_record_override.store(override, std::memory_order_release);
 }
 
-void Profiler::setTaskBlockCompletionObserverForTest(
-    TaskBlockCompletionObserver observer) {
-  g_test_task_block_completion_observer.store(observer, std::memory_order_release);
+static std::atomic<Profiler::TaskBlockActivityHook> g_test_task_block_activity_hook{nullptr};
+
+void Profiler::setTaskBlockActivityHookForTest(TaskBlockActivityHook hook) {
+  g_test_task_block_activity_hook.store(hook, std::memory_order_release);
+}
+
+void Profiler::runTaskBlockActivityHookForTest(TaskBlockActivityStage stage) {
+  TaskBlockActivityHook hook = g_test_task_block_activity_hook.load(std::memory_order_acquire);
+  if (hook != nullptr) hook(stage);
 }
 #endif
 
-void Profiler::unregisterThread(int tid) {
+void Profiler::unregisterThreadInEngines(int tid) {
+  HookCallScope scope(_instance->_unregister_calls_inflight);
+  // Closed only inside a ThreadTablesFreeze (see _thread_tables_stable). The
+  // engine that owns the freeze replays the tid after it lists the threads.
+  if (!_instance->_thread_tables_stable.load(std::memory_order_seq_cst)) {
+    recordSkippedUnregistration(tid);
+    return;
+  }
 #ifdef UNIT_TEST
     // In gtest, _cpu_engine/_wall_engine are null (profiler not started).
-    // Record the tid so integration tests can verify the call happened without
-    // crashing on the null engine dereference.  This bypasses the real engine
-    // unregister path entirely, so that path is covered only by JVM-level tests,
+    // Record the tid so integration tests can verify the call passed the gate
+    // without crashing on the null engine dereference.  This bypasses the real
+    // engine unregister path, so that path is covered only by JVM-level tests,
     // not by these gtests.  UNIT_TEST is defined solely for the gtest binaries
     // (see GtestTaskBuilder); the shipped library never compiles this branch.
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
     return;
 #endif
-  _instance->_cpu_engine->unregisterThread(tid);
-  _instance->_wall_engine->unregisterThread(tid);
+  // start() may replace the engine slots concurrently. Either engine is safe
+  // to call: unregisterThread() releases only the exiting thread's own slot.
+  __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE)
+      ->unregisterThread(tid);
+  __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE)
+      ->unregisterThread(tid);
 }
 
 const char *Profiler::asgctError(int code) {
@@ -254,7 +444,7 @@ const char *Profiler::asgctError(int code) {
   }
 }
 
-inline u32 Profiler::getLockIndex(int tid) {
+u32 Profiler::getLockIndex(int tid) {
   u32 lock_index = tid;
   lock_index ^= lock_index >> 8;
   lock_index ^= lock_index >> 4;
@@ -393,6 +583,12 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
  * symbol lookups to post-processing while still capturing marks needed for
  * correct stack walk termination.
  *
+ * The emitted pc_offset is the attribution address (see the convention note
+ * on StackWalker in stackWalker.h): every walker already hands over an
+ * address inside the call instruction for frames loaded from a return-address
+ * slot, and the exact pc otherwise. An off-process symbolizer must therefore
+ * not apply its own return-address adjustment.
+ *
  * @param frame The ASGCT_CallFrame to populate
  * @param pc The program counter address
  * @param lib The CodeCache library containing build-ID information
@@ -428,14 +624,22 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
  * - Checks marks after symbol resolution (same O(log n) + O(1) cost)
  * - If no symbol found but PC is in a known library, packs as
  *   BCI_NATIVE_FRAME_REMOTE for library-relative rendering ([lib+0xoffset])
+ *
+ * Range-based lookups (findLibraryByAddress, binarySearch) key off the
+ * attribution address, so a call that is the last instruction of its caller
+ * still selects the caller rather than whatever follows it. The emitted
+ * pc_offset is derived from that same address, which is what makes every
+ * frame in a trace mean the same thing: see the convention note on
+ * StackWalker in stackWalker.h.
  */
-Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
-  CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, bool pc_is_return_address, int lock_index) {
+  const void* lookup_pc = attributionPC((const void*)pc, pc_is_return_address);
+  CodeCache* lib = _libs->findLibraryByAddress(lookup_pc);
 
   if (_remote_symbolication && lib != nullptr && lib->hasBuildId()) {
     // Get symbol name and check mark
     const char *method_name = nullptr;
-    lib->binarySearch((void*)pc, &method_name);
+    lib->binarySearch(lookup_pc, &method_name);
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
@@ -443,7 +647,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     }
 
     // Pack remote symbolication data using utility struct
-    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uintptr_t pc_offset = (uintptr_t)lookup_pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
@@ -453,7 +657,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   // Traditional symbol resolution
   const char *method_name = nullptr;
   if (lib != nullptr) {
-    lib->binarySearch((void*)pc, &method_name);
+    lib->binarySearch(lookup_pc, &method_name);
   }
   if (method_name != nullptr) {
     char mark = NativeFunc::read_mark(method_name);
@@ -466,7 +670,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   // Reuses BCI_NATIVE_FRAME_REMOTE encoding; resolveMethod() in flightRecorder.cpp
   // distinguishes remote vs local rendering via hasBuildId() && isRemoteSymbolication().
   if (method_name == nullptr && lib != nullptr) {
-    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uintptr_t pc_offset = (uintptr_t)lookup_pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
     return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
@@ -581,20 +785,22 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 }
 
 int Profiler::captureJVMTIFrames(jthread thread, int start_depth,
-                                 CallTraceBuffer* buffer) {
+                                 CallTraceBuffer* buffer, bool& truncated) {
+  truncated = false;
   ASGCT_CallFrame *frames = buffer->_asgct_frames;
   jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
   jint num_frames = 0;
-  if (VM::jvmti()->GetStackTrace(thread, start_depth, _max_stack_depth,
+  int limit = _max_stack_depth + (_max_stack_depth < INT_MAX);
+  if (VM::jvmti()->GetStackTrace(thread, start_depth, limit,
                                  jvmti_frames, &num_frames) != JVMTI_ERROR_NONE ||
       num_frames <= 0) {
     return 0;
   }
+  truncated = num_frames > _max_stack_depth;
+  if (truncated) num_frames = _max_stack_depth;
   copyJvmtiFrames(frames, jvmti_frames, num_frames);
-  // See recordJVMTISample's original comment: GetStackTrace on a JDK21+ virtual
-  // thread returns only the VT's logical stack, stopping at the continuation
-  // boundary. Append a synthetic root frame so the UI doesn't report it as
-  // "Missing Frames".
+  // A VT's logical stack omits carrier frames. Mark a detected continuation
+  // boundary when there is room, rather than reporting it as missing frames.
   if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
       num_frames < _max_stack_depth) {
     VMThread* carrier = VMThread::current();
@@ -606,6 +812,37 @@ int Profiler::captureJVMTIFrames(jthread thread, int start_depth,
     }
   }
   return num_frames;
+}
+
+// allocstack=verify: checks a VM-walked allocation stack against JVMTI
+// GetStackTrace on the same thread, frame by frame (method and bci), counting
+// ALLOC_STACK_VERIFIED / ALLOC_STACK_MISMATCH. Diagnostics and tests only:
+// GetStackTrace allocates, which is what the VM walker avoids.
+void Profiler::verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread,
+                             int max_depth, jvmtiFrameInfo* expected) {
+  jint depth = CallTraceBuffer::verificationDepth(max_depth);
+  jint expected_count = 0;
+  if (VM::jvmti()->GetStackTrace(thread, 0, depth, expected, &expected_count) != JVMTI_ERROR_NONE) {
+    return;
+  }
+  int walked = num_frames;
+  int compared = walked < expected_count ? walked : expected_count;
+  int first_diff = (walked == expected_count || compared == depth) ? -1 : compared;
+  for (int i = 0; i < compared; i++) {
+    int expected_bci = expected[i].location < 0 ? 0 : (int)expected[i].location;
+    // With fjmethodid=false the walker may record a raw Method* instead of a
+    // jmethodID; such a frame is compared by bci only.
+    bool same_method = FrameType::isRawPointer(frames[i].bci) || frames[i].method_id == expected[i].method;
+    if (!same_method || FrameType::bci(frames[i].bci) != expected_bci) {
+      first_diff = i;
+      break;
+    }
+  }
+  Counters::increment(ALLOC_STACK_VERIFIED);
+  if (first_diff >= 0) {
+    Counters::increment(ALLOC_STACK_MISMATCH);
+    TEST_LOG("allocstack mismatch: vm frames=%d jvmti frames=%d first difference at %d", walked, expected_count, first_diff);
+  }
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
@@ -643,8 +880,46 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 #ifdef COUNTERS
     u64 startTime = TSC::ticks();
 #endif // COUNTERS
-    int num_frames = captureJVMTIFrames(thread, 0, buf);
-    call_trace_id = _call_trace_storage.put(num_frames, buf->_asgct_frames, false, counter);
+    ASGCT_CallFrame *frames = buf->_asgct_frames;
+
+    int num_frames = 0;
+    bool truncated = false;
+
+    // The VM walker reads the stack in place. GetStackTrace builds a vframe
+    // per frame in this thread's resource area, which deep stacks grow by
+    // malloc'd chunks: on the allocating application threads, across all
+    // their glibc arenas.
+    int walked = 0;
+    if (_alloc_stack != ALLOCSTACK_JVMTI) {
+      if (jniIsVirtualThread(VM::jni(), thread, VM::java_version())) {
+        Counters::increment(ALLOC_STACK_VIRTUAL_THREAD);
+      } else {
+        StackWalkRequest request = {event_type, lock_index, nullptr,
+                                    frames, _max_stack_depth, nullptr, &truncated};
+        walked = JVMSupport::walkCurrentJavaStack(request);
+        if (walked == 0) {
+          Counters::increment(ALLOC_STACK_VM_FALLBACK);
+          truncated = false;
+        }
+      }
+    }
+    if (walked > 0) {
+      num_frames = walked;
+      Counters::increment(ALLOC_STACK_VM);
+      if (_alloc_stack == ALLOCSTACK_VERIFY) {
+        // Buffer replacement and mode publication happen separately at restart.
+        // A late callback must not verify against a stripe without scratch space.
+        jvmtiFrameInfo* expected = buf->verificationFrames(
+            _max_stack_depth, _calltrace_buffer_capacity[lock_index]);
+        if (expected != nullptr) {
+          verifyAllocStack(frames, num_frames, thread, _max_stack_depth, expected);
+        }
+      }
+    } else {
+      num_frames = captureJVMTIFrames(thread, 0, buf, truncated);
+    }
+
+    call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
 #ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
     if (duration > 0) {
@@ -672,20 +947,165 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
     return;
   }
 
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  writeSampleEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
 }
 
+bool Profiler::writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
+                                const Context* context) {
+#ifdef UNIT_TEST
+  if (sampleWriteHookForTest != nullptr) {
+    return sampleWriteHookForTest(lock_index, trace_id, event, context, sampleWriteHookArgForTest);
+  }
+#endif
+  if (type == BCI_WALL && context != nullptr) {
+    return _jfr.recordWallSample(lock_index, tid, trace_id, static_cast<ExecutionEvent*>(event), *context);
+  }
+  return _jfr.recordEvent(lock_index, tid, trace_id, type, event);
+}
+
+WallClockBlockTracker::BlockState* Profiler::wallSampleSlot(const WallSampleRequest& request) {
+  auto* identity = _thread_filter.activeSlotForId(request.slot_id, request.tid);
+  if (identity == nullptr || identity->lifecycleGeneration() != request.lifecycle_generation ||
+      _thread_filter.recordingEpoch() != request.registry_epoch) return nullptr;
+  return _block_tracker.slotForId(request.slot_id);
+}
+
+// Caller owns the recording stripe. Commit only successful epoch segments so
+// retries preserve the original context and never replay already-delivered units.
+bool Profiler::writeUnownedBlockedTail(u32 lock_index, const WallSampleRequest& request,
+                                      WallClockBlockTracker::BlockState* block) {
+  Context origin{};
+  u64 publication = 0, tail_id = 0, tail_weight = 0;
+  OSThreadState tail_state = OSThreadState::UNKNOWN;
+  if (!_block_tracker.readUnownedContext(request.slot_id, origin, publication) ||
+      !block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state)) return false;
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  size_t count = _block_tracker.copyUnownedWeightSegments(request.slot_id, segments);
+  bool all_recorded = count != 0;
+  for (size_t i = 0; i < count; ++i) {
+    ExecutionEvent deferred;
+    deferred._thread_state = tail_state;
+    deferred._execution_mode = ExecutionMode::UNKNOWN;
+    deferred._weight = segments[i].weight;
+    deferred._sample_ticks = segments[i].epoch_start;
+    atomicIncRelaxed(_total_samples);
+    bool recorded = writeSampleEvent(lock_index, request.tid, tail_id,
+                                    BCI_WALL, &deferred, &origin);
+    if (wallSampleSlot(request) != block) return false;
+    if (recorded) {
+      _block_tracker.commitUnownedWeightSegment(request.slot_id, segments[i]);
+      Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+    } else {
+      all_recorded = false;
+    }
+  }
+  return all_recorded &&
+      block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+}
+
+bool Profiler::recordUnownedBlockedTail(int tid, ThreadFilter::SlotID slot_id) {
+  auto* identity = _thread_filter.activeSlotForId(slot_id, tid);
+  if (identity == nullptr) return false;
+  WallSampleRequest request{};
+  request.tid = tid;
+  request.slot_id = slot_id;
+  request.lifecycle_generation = identity->lifecycleGeneration();
+  request.registry_epoch = identity->recordingEpoch();
+  RecordingStripe stripe(_locks, getLockIndex(tid));
+  if (!stripe.owned()) return false;
+  auto* block = wallSampleSlot(request);
+  if (block == nullptr || !writeUnownedBlockedTail(stripe.index(), request, block)) return false;
+  block->resetUnownedBlockedSampling();
+  return true;
+}
+
+WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
+                                           ExecutionEvent* event, const WallSampleRequest& request) {
+  WallSampleResult result;
+  atomicIncRelaxed(_total_samples);
+  RecordingStripe stripe(_locks, getLockIndex(request.tid));
+  if (!stripe.owned()) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    return result;
+  }
+
+  auto* block = wallSampleSlot(request);
+  Context origin{};
+  u64 publication = 0;
+  bool origin_readable = block != nullptr && request.context_captured &&
+      _block_tracker.readUnownedContext(request.slot_id, origin, publication);
+  bool publishable = block != nullptr && request.context_captured &&
+      _block_tracker.canPublishUnownedContext(request.slot_id);
+  bool matching_periodic = request.unowned_sample && origin_readable && publishable &&
+      !request.force_unowned_ordinary && publication == request.context_publication &&
+      origin.equals(request.context) &&
+      _block_tracker.unownedWeightMatchesEpoch(request.slot_id, request.sampling_epoch_start);
+  if (block != nullptr && request.unowned_sample) {
+    event->_weight = matching_periodic
+        ? block->unowned_blocked_pending_weight.load(std::memory_order_acquire) + 1 : 1;
+    if (matching_periodic) event->_sample_ticks = request.sampling_epoch_start;
+  }
+  // A dump can invalidate the ordinary collapsing cache before this stripe
+  // is acquired. Preserved unowned roots, unlike that cache, survive a dump.
+  if (recordingEpoch() != request.trace_epoch) {
+    call_trace_id = 0;
+  }
+  u64 recorded_id = 0;
+  result.ordinary_recorded = recordSampleLocked(stripe.index(), ucontext, counter,
+      request.tid, BCI_WALL, call_trace_id, event, &recorded_id,
+      request.context_captured ? &request.context : nullptr);
+  if (block == nullptr || wallSampleSlot(request) != block) {
+    return result;
+  }
+  if (matching_periodic && result.ordinary_recorded) {
+    // Pending provenance remains intact until the weighted write succeeds.
+    block->unowned_blocked_pending_weight.store(0, std::memory_order_release);
+    _block_tracker.clearUnownedWeightSegments(request.slot_id);
+  }
+  if (result.ordinary_recorded && request.arm_state != OSThreadState::UNKNOWN &&
+      block->blockGeneration() == request.block_generation &&
+      block->activeBlockState() == request.arm_state) {
+    block->markBlockGenerationSampled(request.block_generation);
+  }
+
+  u64 tail_id = 0, tail_weight = 0;
+  OSThreadState tail_state = OSThreadState::UNKNOWN;
+  bool has_tail = block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state);
+  if (!matching_periodic && origin_readable && has_tail &&
+      (request.flush_tail || request.unowned_sample)) {
+    result.tail_recorded = writeUnownedBlockedTail(stripe.index(), request, block);
+    if (wallSampleSlot(request) != block) return result;
+    if (result.tail_recorded) {
+      if (request.unowned_sample) {
+        block->clearUnownedBlockedTailKeepingCadence();
+      } else {
+        block->resetUnownedBlockedSampling();
+      }
+    }
+  }
+  if (request.unowned_sample && result.ordinary_recorded) {
+    // Never replace A's positive tail merely because B's ordinary write worked.
+    // Missing metadata also retains A rather than recapturing live TLS for it.
+    bool no_origin = block->unowned_blocked_call_trace_id.load(std::memory_order_acquire) == 0 &&
+        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+    if (publishable && (matching_periodic || no_origin ||
+        (origin_readable && (!has_tail || result.tail_recorded)))) {
+      _block_tracker.publishUnownedTrace(request.slot_id, recorded_id,
+                                        request.observed_state, request.context);
+    }
+    Counters::increment(WC_UNOWNED_BLOCKED_RECORDED);
+  }
+  return result;
+}
+
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
-                            jint event_type, u64 call_trace_id, Event *event,
-                            u64 *recorded_call_trace_id) {
+                            jint event_type, u64 call_trace_id, Event *event) {
   atomicIncRelaxed(_total_samples);
 
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+  RecordingStripe stripe(_locks, getLockIndex(tid));
+  if (!stripe.owned()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
 
@@ -697,6 +1117,13 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     return false;
   }
 
+  return recordSampleLocked(stripe.index(), ucontext, counter, tid, event_type,
+                            call_trace_id, event, nullptr);
+}
+
+bool Profiler::recordSampleLocked(u32 lock_index, void* ucontext, u64 counter, int tid,
+                                  jint event_type, u64 call_trace_id, Event* event,
+                                  u64* recorded_call_trace_id, const Context* context) {
   bool truncated = false;
   // in lightweight mode we're just sampling the the context associated with the
   // passage of CPU or wall time, we use the same event definitions but we
@@ -741,18 +1168,16 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     }
 #endif // COUNTERS
   }
-  bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  bool recorded = writeSampleEvent(lock_index, tid, call_trace_id, event_type, event, context);
   if (recorded && recorded_call_trace_id != nullptr) {
     *recorded_call_trace_id = call_trace_id;
   }
 
-  _locks[lock_index].unlock();
   return recorded;
 }
 
 bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
-                                     jint event_type, Event *event,
-                                     u64 *recorded_correlation_id) {
+                                     jint event_type, Event *event) {
   if (!VM::canRequestStackTrace()) {
     return false;
   }
@@ -761,9 +1186,11 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   // JVM (as user_data) and to our own event.
   u64 correlation_id = atomicIncRelaxed(_sample_seq);
 
-  Counters::increment(JVMTI_STACKS_REQUESTED);
   jvmtiError rc = VM::requestStackTrace(ucontext, (jlong)correlation_id);
   if (rc != JVMTI_ERROR_NONE) {
+    if (rc == JVMTI_ERROR_INVALID_THREAD) {
+      return false; // The admission drop is counted by VM::requestStackTrace.
+    }
     if (rc == JVMTI_ERROR_WRONG_PHASE) {
       Counters::increment(JVMTI_STACKS_FAILED_WRONG_PHASE);
     } else {
@@ -787,9 +1214,6 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
 
   bool recorded =
       _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
-  if (recorded && recorded_correlation_id != nullptr) {
-    *recorded_correlation_id = correlation_id;
-  }
   _locks[lock_index].unlock();
   return recorded;
 }
@@ -856,14 +1280,15 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
 #ifdef COUNTERS
     u64 stack_start = TSC::ticks();
 #endif
-    int num_frames = captureJVMTIFrames(thread, start_depth, buffer);
+    bool truncated = false;
+    int num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
     if (num_frames <= 0) {
       _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
     u64 call_trace_id =
-        _call_trace_storage.put(num_frames, buffer->_asgct_frames, false, 1);
+        _call_trace_storage.put(num_frames, buffer->_asgct_frames, truncated, 1);
 #ifdef COUNTERS
     u64 stack_duration = TSC::ticks() - stack_start;
     if (stack_duration > 0) {
@@ -884,36 +1309,48 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
 }
 
 bool Profiler::tryEnterTaskBlockActivity() {
-  if (_task_block_rotation.load(std::memory_order_acquire)) return false;
-  _task_block_inflight.fetch_add(1, std::memory_order_acq_rel);
-  if (_task_block_rotation.load(std::memory_order_acquire)) {
-    _task_block_inflight.fetch_sub(1, std::memory_order_acq_rel);
-    return false;
+  u64 state = _task_block_activity_state.load(std::memory_order_acquire);
+  if (state & TASK_BLOCK_CLOSED) return false;
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION);
+#endif
+  // Admission and closure share one atomic modification order. A successful
+  // CAS before closure contributes to the count rotation drains; a CAS after
+  // closure fails and cannot add a reservation while the closed bit is set.
+  bool admitted = false;
+  while (!(state & TASK_BLOCK_CLOSED)) {
+    if (_task_block_activity_state.compare_exchange_weak(
+            state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      admitted = true;
+      break;
+    }
   }
-  return true;
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);
+#endif
+  return admitted;
 }
 
 void Profiler::leaveTaskBlockActivity() {
-  _task_block_inflight.fetch_sub(1, std::memory_order_release);
+  _task_block_activity_state.fetch_sub(1, std::memory_order_release);
 }
 
-u64 Profiler::beginTaskBlockRotation() {
+bool Profiler::beginTaskBlockRotation() {
   static const long TASK_BLOCK_ROTATION_TIMEOUT_NS = 200000000L; // 200ms, matches SignalInflight::drain()
-  // Establish the cut before rejecting exits. An exit that observes the
-  // rotation flag can then publish a completion timestamp that is guaranteed
-  // to belong to the next segment.
-  u64 boundary_ticks = TSC::ticks();
-  _task_block_rotation.store(true, std::memory_order_release);
-  if (_task_block_inflight.load(std::memory_order_acquire) == 0) {
-    return boundary_ticks; // fast path: nothing in flight
+  u64 state = _task_block_activity_state.fetch_or(TASK_BLOCK_CLOSED, std::memory_order_acq_rel);
+#ifdef UNIT_TEST
+  runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_CLOSURE);
+#endif
+  if ((state & ~TASK_BLOCK_CLOSED) == 0) {
+    return true; // fast path: nothing in flight
   }
 
   struct timespec deadline;
   if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
     Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
                "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
-    _task_block_rotation.store(false, std::memory_order_release);
-    return 0;
+    _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
+    return false;
   }
   deadline.tv_nsec += TASK_BLOCK_ROTATION_TIMEOUT_NS;
   if (deadline.tv_nsec >= 1000000000L) {
@@ -921,238 +1358,35 @@ u64 Profiler::beginTaskBlockRotation() {
     deadline.tv_nsec -= 1000000000L;
   }
 
-  while (_task_block_inflight.load(std::memory_order_acquire) != 0) {
+  // The acquire load of the drained count observes the recorders' release
+  // decrements before teardown. Timeout reopens admission without losing count.
+  while ((_task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED) != 0) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
       Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
                  "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
-      _task_block_rotation.store(false, std::memory_order_release);
-      return 0;
+      _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
+      return false;
     }
     if (now.tv_sec > deadline.tv_sec ||
         (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
-      u64 remaining = _task_block_inflight.load(std::memory_order_acquire);
+      u64 remaining = _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
       Log::error("Profiler::beginTaskBlockRotation: timed out after %ldms waiting for "
                  "%llu in-flight TaskBlock recording(s). Skipping task-block rotation; "
                  "this indicates a stuck TaskBlock record path.",
                  TASK_BLOCK_ROTATION_TIMEOUT_NS / 1000000L,
                  (unsigned long long)remaining);
       Counters::increment(TASK_BLOCK_ROTATION_TIMEOUT);
-      _task_block_rotation.store(false, std::memory_order_release);
-      return 0;
+      _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
+      return false;
     }
     std::this_thread::yield();
-  }
-  return boundary_ticks;
-}
-
-void Profiler::endTaskBlockRotation() {
-  _task_block_rotation.store(false, std::memory_order_release);
-}
-
-bool Profiler::registerTaskBlockRun(ThreadFilter::SlotID slot_id,
-                                    u64 generation, int tid, u64 start_ticks,
-                                    const Context &context, u64 blocker,
-                                    OSThreadState state) {
-  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads || generation == 0 ||
-      !taskBlockEnabled() || taskBlockRotationActive()) {
-    return false;
-  }
-  TaskBlockRun &run = _task_block_runs[slot_id];
-  u64 expected = 0;
-  if (!run.generation.compare_exchange_strong(
-          expected, UINT64_MAX, std::memory_order_acq_rel,
-          std::memory_order_acquire)) {
-    return false;
-  }
-  run.start_ticks = start_ticks;
-  run.segment_start_ticks.store(start_ticks, std::memory_order_relaxed);
-  run.entry_blocker = blocker;
-  run.tid = tid;
-  run.context = context;
-  run.state = state;
-  run.end_ticks.store(0, std::memory_order_relaxed);
-  run.call_trace_id.store(0, std::memory_order_relaxed);
-  run.correlation_id.store(0, std::memory_order_relaxed);
-  run.final_blocker.store(0, std::memory_order_relaxed);
-  run.unblocking_span_id.store(0, std::memory_order_relaxed);
-  run.generation.store(generation, std::memory_order_release);
-  if (taskBlockRotationActive()) {
-    clearTaskBlockRun(slot_id, generation);
-    return false;
   }
   return true;
 }
 
-void Profiler::recordTaskBlockAnchor(ThreadFilter::SlotID slot_id,
-                                     u64 generation, u64 call_trace_id,
-                                     u64 correlation_id) {
-  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads ||
-      (call_trace_id == 0 && correlation_id == 0)) {
-    return;
-  }
-  TaskBlockRun &run = _task_block_runs[slot_id];
-  if (run.generation.load(std::memory_order_acquire) != generation) return;
-  if (call_trace_id != 0) {
-    if (run.correlation_id.load(std::memory_order_acquire) != 0) return;
-    u64 expected = 0;
-    run.call_trace_id.compare_exchange_strong(
-        expected, call_trace_id, std::memory_order_release,
-        std::memory_order_relaxed);
-  } else {
-    if (run.call_trace_id.load(std::memory_order_acquire) != 0) return;
-    u64 expected = 0;
-    run.correlation_id.compare_exchange_strong(
-        expected, correlation_id, std::memory_order_release,
-        std::memory_order_relaxed);
-  }
-}
-
-void Profiler::completeTaskBlockRun(ThreadFilter::SlotID slot_id,
-                                    u64 generation, u64 end_ticks,
-                                    u64 blocker, u64 unblocking_span_id) {
-  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return;
-  TaskBlockRun &run = _task_block_runs[slot_id];
-  if (run.generation.load(std::memory_order_acquire) != generation) return;
-  run.final_blocker.store(blocker, std::memory_order_relaxed);
-  run.unblocking_span_id.store(unblocking_span_id, std::memory_order_relaxed);
-  run.end_ticks.store(end_ticks, std::memory_order_release);
-#ifdef UNIT_TEST
-  TaskBlockCompletionObserver observer =
-      g_test_task_block_completion_observer.load(std::memory_order_acquire);
-  if (observer != nullptr) observer(slot_id, generation);
-#endif
-}
-
-u64 Profiler::taskBlockSegmentStart(ThreadFilter::SlotID slot_id,
-                                    u64 generation) const {
-  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return 0;
-  const TaskBlockRun &run = _task_block_runs[slot_id];
-  if (run.generation.load(std::memory_order_acquire) != generation) return 0;
-  return run.segment_start_ticks.load(std::memory_order_acquire);
-}
-
-void Profiler::clearTaskBlockRun(ThreadFilter::SlotID slot_id,
-                                 u64 generation) {
-  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return;
-  TaskBlockRun &run = _task_block_runs[slot_id];
-  u64 expected = generation;
-  run.generation.compare_exchange_strong(
-      expected, 0, std::memory_order_acq_rel, std::memory_order_acquire);
-}
-
-bool Profiler::recordTaskBlockSegmentLocked(int tid, TaskBlockEvent *event) {
-  return _jfr.recordTaskBlock(getLockIndex(tid), tid, event);
-}
-
-bool Profiler::recordTaskBlockSegment(int tid, TaskBlockEvent *event) {
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    return false;
-  }
-  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
-  _locks[lock_index].unlock();
-  return recorded;
-}
-
-void Profiler::emitTaskBlockBoundary(u64 boundary_ticks) {
-  for (int slot_id = 0; slot_id < ThreadFilter::kMaxThreads; slot_id++) {
-    TaskBlockRun &run = _task_block_runs[slot_id];
-    u64 generation = run.generation.load(std::memory_order_acquire);
-    if (generation == 0 || generation == UINT64_MAX) continue;
-    u64 segment_start = run.segment_start_ticks.load(std::memory_order_acquire);
-    u64 end_ticks = run.end_ticks.load(std::memory_order_acquire);
-    u64 segment_end = end_ticks != 0 && end_ticks < boundary_ticks
-        ? end_ticks
-        : boundary_ticks;
-    if (segment_end <= segment_start) continue;
-    if (!taskBlockPassesBasicEligibility(segment_start, segment_end, run.context)) {
-      continue;
-    }
-    TaskBlockEvent event{};
-    event._start = segment_start;
-    event._end = segment_end;
-    u64 final_blocker = run.final_blocker.load(std::memory_order_acquire);
-    event._blocker = final_blocker != 0 ? final_blocker : run.entry_blocker;
-    event._unblockingSpanId =
-        run.unblocking_span_id.load(std::memory_order_acquire);
-    event._ctx = run.context;
-    event._callTraceId = run.call_trace_id.load(std::memory_order_acquire);
-    event._correlationId = run.correlation_id.load(std::memory_order_acquire);
-    event._observedBlockingState = run.state;
-    if (event._callTraceId == 0 && event._correlationId == 0) {
-      Counters::increment(TASK_BLOCK_SEGMENT_STACKLESS);
-    }
-    if (recordTaskBlockSegmentLocked(run.tid, &event)) {
-      Counters::increment(TASK_BLOCK_EMITTED);
-    } else {
-      Counters::increment(TASK_BLOCK_RECORD_FAILED);
-    }
-  }
-}
-
-void Profiler::commitTaskBlockBoundary(u64 boundary_ticks) {
-  for (int slot_id = 0; slot_id < ThreadFilter::kMaxThreads; slot_id++) {
-    TaskBlockRun &run = _task_block_runs[slot_id];
-    u64 generation = run.generation.load(std::memory_order_acquire);
-    if (generation == 0 || generation == UINT64_MAX) continue;
-    u64 end_ticks = run.end_ticks.load(std::memory_order_acquire);
-    if (end_ticks != 0 && end_ticks <= boundary_ticks) {
-      clearTaskBlockRun(slot_id, generation);
-      continue;
-    }
-    run.segment_start_ticks.store(boundary_ticks, std::memory_order_release);
-    run.call_trace_id.store(0, std::memory_order_release);
-    run.correlation_id.store(0, std::memory_order_release);
-    ThreadFilter::Slot *slot = _thread_filter.slotForId(slot_id);
-    if (slot != nullptr && slot->blockGeneration() == generation) {
-      slot->resetSampledBlockGeneration();
-    }
-  }
-}
-
-void Profiler::flushCompletedTaskBlockRuns() {
-  for (int slot_id = 0; slot_id < ThreadFilter::kMaxThreads; slot_id++) {
-    TaskBlockRun &run = _task_block_runs[slot_id];
-    u64 generation = run.generation.load(std::memory_order_acquire);
-    if (generation == 0 || generation == UINT64_MAX) continue;
-    u64 end_ticks = run.end_ticks.load(std::memory_order_acquire);
-    u64 segment_start = run.segment_start_ticks.load(std::memory_order_acquire);
-    if (end_ticks == 0) continue;
-    if (end_ticks <= segment_start) {
-      // Completed runs still need reclamation when boundary commit left no tail.
-      clearTaskBlockRun(slot_id, generation);
-      continue;
-    }
-    if (!taskBlockPassesBasicEligibility(segment_start, end_ticks, run.context)) {
-      clearTaskBlockRun(slot_id, generation);
-      continue;
-    }
-    TaskBlockEvent event{};
-    event._start = segment_start;
-    event._end = end_ticks;
-    u64 final_blocker = run.final_blocker.load(std::memory_order_acquire);
-    event._blocker = final_blocker != 0 ? final_blocker : run.entry_blocker;
-    event._unblockingSpanId =
-        run.unblocking_span_id.load(std::memory_order_acquire);
-    event._ctx = run.context;
-    event._observedBlockingState = run.state;
-    Counters::increment(TASK_BLOCK_SEGMENT_STACKLESS);
-    if (recordTaskBlockSegment(run.tid, &event)) {
-      Counters::increment(TASK_BLOCK_EMITTED);
-      clearTaskBlockRun(slot_id, generation);
-    } else {
-      Counters::increment(TASK_BLOCK_RECORD_FAILED);
-    }
-  }
-}
-
-void Profiler::clearAllTaskBlockRuns() {
-  for (TaskBlockRun &run : _task_block_runs) {
-    run.generation.store(0, std::memory_order_release);
-  }
+void Profiler::endTaskBlockRotation() {
+  _task_block_activity_state.fetch_and(~TASK_BLOCK_CLOSED, std::memory_order_release);
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
@@ -1344,6 +1578,86 @@ void Profiler::disableEngines() {
   _wall_engine->enableEvents(false);
 }
 
+// Keeps the registration gate open iff the CPU engine started (see
+// _engines_ready): an engine that failed must never see the hook. Opening it
+// here is a no-op for engines that opened it in their start() (CTimer,
+// PerfEvents), and opens it for the table-less ones (ITimer, ITimerJvmti, J9).
+bool Profiler::startCpuEngine(Arguments &args) {
+  Error error = _cpu_engine->start(args);
+  if (error) {
+    Log::warn("%s", error.message());
+    // The engine may have opened the gate before failing. If a registration
+    // call is still inside it after the wait budget, only an engine whose
+    // table outlives stop() can have that table replaced under the call, so
+    // only that engine puts the profiler in ERROR.
+    if (!closeThreadRegistration()) {
+      Log::error("Profiler: a thread registration call did not leave the CPU "
+                 "engine");
+      if (_cpu_engine->keepsThreadStateAcrossStop()) {
+        _state.store(ERROR, std::memory_order_release);
+      }
+    }
+    return false;
+  }
+  openThreadRegistration();
+  return true;
+}
+
+// Undoes what start() set up once _jfr.start() succeeded, when start() then
+// fails without a running recording: engine events, the library trap and the
+// refresher, the JFR recording, and the library patches. The patches are
+// restored after JFR stops, as in stop(); a later start() patches again from
+// Libraries::updateSymbols(). Without this, a start() that left the profiler
+// in ERROR would leave the hooks patched for the rest of the process.
+//
+// Unlike stop(), this runs _jfr.stop() WITHOUT SignalInflight::drain().
+// The registration-failure and nativemem-only paths precede every
+// enableEvents(true). The no-activated-engine path can follow the wall
+// enable cycle, but wall start() fails only before creating its timer
+// thread, so no SIGVTALRM can be in flight; CPU events enable only on
+// the success path, which never rolls back. A new call site that can
+// leave signal handlers in flight MUST drain before _jfr.stop().
+void Profiler::rollBackStart() {
+  _thread_filter.deactivateRecording();
+  disableEngines();
+  switchLibraryTrap(false);
+  _libs->stopRefresher();
+  lockAll();
+  _jfr.stop();
+  unlockAll();
+  LibraryPatcher::unpatch_libraries();
+}
+
+// stop() leaves an engine's per-thread resources in place (PerfEvents keeps
+// its fds so that unregisterThread() closes them when threads exit). Once the
+// slot points at another engine, thread exits no longer reach the previous
+// one, so it releases them first. The freeze keeps registerThread() and
+// unregisterThread() off both engines meanwhile.
+bool Profiler::replaceCpuEngine(Engine *next) {
+  Engine *previous = _cpu_engine;
+  if (previous != NULL && previous != next) {
+    ThreadTablesFreeze freeze(this);
+    if (!freeze.drained()) {
+      return false;
+    }
+    previous->releaseThreads();
+    __atomic_store_n(&_cpu_engine, next, __ATOMIC_RELEASE);
+    return true;
+  }
+  __atomic_store_n(&_cpu_engine, next, __ATOMIC_RELEASE);
+  return true;
+}
+
+void Profiler::enableCpuEngine(int activated) {
+  // Only when the CPU engine itself started: another mode may have activated
+  // after it failed, and fds or timers left armed by an earlier recording
+  // (PerfEvents keeps its fds across stop()) would otherwise emit CPU samples
+  // into this recording.
+  if (activated & EM_CPU) {
+    _cpu_engine->enableEvents(true);
+  }
+}
+
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
   // null-pointer-check faults during normal Java execution.  When we chain to
@@ -1479,8 +1793,8 @@ void Profiler::setupSignalHandlers() {
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
-      // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // STACKWALK* counters. The first touch of the singleton lazily runs
+      // SAFEFETCH_FAILED / SAFESTORE_FAILED / SAFECOPY_FAILED, and other async
+      // handlers bump the STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
@@ -1792,9 +2106,7 @@ void Profiler::setTaskBlockEnabled(bool enabled) {
   if (enabled) {
     // Keep callback admission closed until native setup has either completed
     // or rolled back, so partial event enablement cannot create paired state.
-    bool monitor_events_enabled =
-        VM::nativeMonitorEventsAvailable() &&
-        VM::setNativeMonitorEventsEnabled(true);
+    bool monitor_events_enabled = setNativeMonitorTaskBlockEventsEnabled(true);
     _task_block_monitor_events_enabled.store(monitor_events_enabled,
                                              std::memory_order_release);
     _task_block_enabled.store(true, std::memory_order_release);
@@ -1802,13 +2114,10 @@ void Profiler::setTaskBlockEnabled(bool enabled) {
   }
 
   _task_block_enabled.store(false, std::memory_order_release);
-  // Clear the admission flag first so no consumer can observe enabled events, then
-  // always attempt teardown. A previous enable whose setup AND rollback both failed
-  // left the flag false while JVMTI events stayed on; retrying unconditionally is the
-  // only way that leak is ever reclaimed. setNativeMonitorEventsEnabled(false) is
-  // documented as a no-op when the capability was never enabled.
+  // Clear callback admission before teardown. Failed setup and rollback can leave
+  // JVMTI events enabled while this flag is false, so teardown is unconditional.
   _task_block_monitor_events_enabled.exchange(false, std::memory_order_acq_rel);
-  VM::setNativeMonitorEventsEnabled(false);
+  setNativeMonitorTaskBlockEventsEnabled(false);
 }
 
 Error Profiler::start(Arguments &args, bool reset) {
@@ -1817,7 +2126,14 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
+  // Reject before resetRecordingState() can clear roots retained by failed output.
+  if (_jfr._rec != nullptr || _jfr._uncertain_create_fd >= 0) {
+    return Error("Previous recording output is still owned");
+  }
   _task_block_enabled.store(false, std::memory_order_release);
+  // A previous mixed-success or failed start must not leave a stale mask that a
+  // later stop() would act on; success publishes `activated` below.
+  _activated_mask = 0;
 
   // Sanity checks run at most once per process, across start and stop cycles.
   // Profiler::start() sets sanity_checked to true before it checks
@@ -1866,6 +2182,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("No profiling events specified");
   }
 
+  // Recording-scoped liveness and allocation metadata must not survive when the new recording
+  // does not activate the optional allocation engine.
+  LivenessTracker::instance()->resetSession();
+  ObjectSampler::instance()->resetSession();
+
   // Commit _features before the reset block so any signal-handler code that
   // reads _features.* observes the correct enabled state once profiling
   // engines start.
@@ -1888,26 +2209,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries. StringDictionary::clearAll() manages its own
-    // synchronisation (RefCountGuard drain) internally; _class_map_lock is
-    // held exclusively here for the duration of the reset.
-    {
-      ExclusiveLockGuard guard(&_class_map_lock);
-      _class_map.clearAll();
-    }
-    _string_label_map.clearAll();
-    _context_value_map.clearAll();
-    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
-    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
-    _context_value_dict_reset.store(true, std::memory_order_release);
-
-    // Reset call trace storage
-    if (!_omit_stacktraces) {
-      lockAll();
-      _call_trace_storage.clear();
-      unlockAll();
-    }
-    Counters::reset();
+    resetRecordingState();
     WallClockCounters::reset();
 
     // Reset thread names and IDs
@@ -1915,9 +2217,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   // (Re-)allocate calltrace buffers
-  if (_max_stack_depth != args._jstackdepth) {
-    size_t prev_nelem = _max_stack_depth + RESERVED_FRAMES;
-    size_t nelem = (size_t)args._jstackdepth + RESERVED_FRAMES;
+  size_t nelem = CallTraceBuffer::capacity(args._jstackdepth, args._alloc_stack);
+  if (_max_stack_depth != args._jstackdepth || _calltrace_buffer_capacity[0] != nelem) {
+    size_t prev_nelem = _calltrace_buffer_capacity[0];
 
     // Phase 1: allocate all replacements up front. If any allocation fails,
     // roll back the ones already made and leave the profiler unchanged — old
@@ -1946,6 +2248,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh[i];
+      _calltrace_buffer_capacity[i] = nelem;
       _locks[i].unlock();
       free(prev);
       if (prev != NULL) {
@@ -1964,39 +2267,65 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  _cpu_engine = selectCpuEngine(args);
-  _wall_engine = selectWallEngine(args);
+  // Registration stays closed until the CPU engine starts; unregistration
+  // stays open (see _engines_ready). No wait here: only replaceCpuEngine() and
+  // the CPU engine's table sizing touch per-thread tables, each behind its own
+  // ThreadTablesFreeze.
+  _engines_ready.store(false, std::memory_order_seq_cst);
+  // Records left by an earlier recording's freezes must not be replayed now.
+  clearSkippedUnregistrations();
+  if (!replaceCpuEngine(selectCpuEngine(args))) {
+    // Nothing replaced or released yet. Retryable, like the earlier error
+    // returns in this function.
+    return Error("thread hook calls did not drain; retry start()");
+  }
+  __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
+
+  // Java API starts opt in after the bridge's startup-argument probe has run.
+  // Enable the extension before a selected delegated engine can request stacks.
+  if (args._jvmtistacks &&
+      (((_event_mask & EM_CPU) &&
+        (_cpu_engine == &ctimer_jvmti || _cpu_engine == &itimer_jvmti)) ||
+       ((_event_mask & EM_WALL) && _wall_engine == &wall_jvmti_engine)) &&
+      !VM::initializeRequestStackTrace()) {
+    return Error("Failed to initialize JVM delegated stack traces");
+  }
 
   const char *filter = args._filter != nullptr ? args._filter : "0";
+  _block_tracker.setUnownedContextSnapshotsNeeded(
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
+      _wall_engine == &wall_asgct_engine && !_omit_stacktraces);
   const bool track_unfiltered_wall =
       (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
       args._filter != nullptr && args._filter[0] == '\0' &&
-      _wall_engine->supportsUnfilteredWallPrecheck();
+      _wall_engine->supportsUnfilteredThreadRegistryTracking();
   _thread_filter.init(filter, track_unfiltered_wall);
 
-  // Unfiltered init resets registrations before publishing registry admission.
-  // Context-filtered recordings retain identities but must clear membership.
+  // Both modes retain native identities across recordings. Unfiltered owners
+  // refresh payload lazily against the new recording epoch; context-filtered
+  // recordings must clear membership before threads opt in again.
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
   }
 
-  // Preserve the context-filter fast path, and extend it to unfiltered
-  // wall-precheck tracking: the calling thread must have a slot immediately,
-  // not only lazily via block/park/filterThreadAdd0 hooks. Other pre-existing
-  // Java threads are still registered lazily via those hooks or ThreadStart
-  // callbacks (both filter modes) - proactive registration here is only for
-  // the one thread that cannot update its own TLS from another thread's start().
+  // Set up the sampled thread's TLS in both modes. Only context-filtered
+  // recordings (enabled()) eagerly register the calling thread. In
+  // unfiltered-wall-precheck mode the caller binds lazily through
+  // ThreadFilter::ensureOwnerSlot() on its first hook, like every other thread.
+  // Retained unfiltered slots stay ineligible until their owner refreshes
+  // against the new recording epoch.
   if (_thread_filter.registryActive()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
-    int slot_id = current->filterSlotId();
-    if (slot_id < 0) {
-      slot_id = _thread_filter.registerThread(current->tid());
-      current->setFilterSlotId(slot_id);
+    int tid = current->tid();
+    if (_thread_filter.enabled() &&
+        _thread_filter.activeSlotForId(current->filterSlotId(), tid) == nullptr) {
+      current->setFilterSlotId(_thread_filter.registerThread(tid, current->logicalContextWindowState()));
     }
   }
 
   _cstack = args._cstack;
+  _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
     if (VMStructs::hasStackStructs() && OS::isLinux()) {
       _cstack = CSTACK_VM;
@@ -2019,7 +2348,19 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   args._cstack = _cstack;
-  // Prepare JVMSupport for execution
+
+  // Allocation/live-heap stacks: the VM walker needs the VMStructs stack walking
+  // cstack=vm uses, so by default it follows cstack.
+  _alloc_stack = args._alloc_stack;
+  if (_alloc_stack == ALLOCSTACK_AUTO) {
+    _alloc_stack = VM::isHotspot() && _cstack == CSTACK_VM ? ALLOCSTACK_VM : ALLOCSTACK_JVMTI;
+  } else if (_alloc_stack != ALLOCSTACK_JVMTI && !(VM::isHotspot() && VMStructs::hasStackStructs())) {
+    Log::warn("allocstack=vm/verify needs HotSpot VMStructs stack walking; using allocstack=jvmti");
+    _alloc_stack = ALLOCSTACK_JVMTI;
+  }
+
+  // Prepare JVMSupport for execution. Must follow the _cstack resolution
+  // above: initExecution() picks the jmethodID mode from cstackMode().
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
   // Must precede the first updateSymbols(): it is what allows LibraryPatcher to
@@ -2042,6 +2383,11 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
 
+  if (args._context_attributes.size() > DD_TAGS_CAPACITY) {
+    Log::warn("attributes: %zu attributes requested but capacity is %u; extra attributes will be ignored",
+               args._context_attributes.size(), DD_TAGS_CAPACITY);
+    args._context_attributes.resize(DD_TAGS_CAPACITY);
+  }
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
@@ -2054,15 +2400,25 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
   initializeTaskBlockDurationThreshold();
 
+  // Must precede every signal-based engine's start() below: SamplerPerfProbe
+  // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
+  // on macOS that can be the lazy, non-atomic first-call init of
+  // mach_timebase_info (os_macos.cpp). Priming it here, synchronously on this
+  // thread, means it is already initialized by the time any SIGPROF/SIGALRM
+  // can fire.
+  SamplerPerf::primeClock();
+
+  // A CPU engine failure is recoverable and logged by startCpuEngine().
   int activated = 0;
-  if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
-    error = _cpu_engine->start(args);
-    if (error) {
-      Log::warn("%s", error.message());
-      error = Error::OK; // recoverable
-    } else {
-      activated |= EM_CPU;
-    }
+  if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine &&
+      startCpuEngine(args)) {
+    activated |= EM_CPU;
+  }
+  if (state() == ERROR) {
+    // startCpuEngine() could not close the registration gate after the CPU
+    // engine failed. Nothing else has started; undo the setup above.
+    rollBackStart();
+    return Error("thread hook calls did not drain; the profiler is disabled");
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
     // Enable wall clock BEFORE starting its pthread: timerLoopCommon() checks
@@ -2092,19 +2448,40 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
+  if (args._reference_chains) {
+    // Reference-chain tracking chases LivenessTracker's leak-tagged
+    // candidates, so it only runs when allocation sampling actually
+    // activated. Must run AFTER ObjectSampler::start() ->
+    // LivenessTracker::start() (ordering noted in referenceChains.cpp) -
+    // the block above is that ordering point.
+    bool chains_active = false;
+    if (activated & EM_ALLOC) {
+      error = ReferenceChainTracker::instance()->start(args);
+      if (error) {
+        Log::warn("%s", error.message());
+        error = Error::OK; // recoverable - recording continues without chains
+      } else {
+        ReferenceChainTracker::instance()->startThread();
+        // Pre-existing threads are registered below, once thread events are on.
+        _reference_chains_active = true;
+        chains_active = true;
+      }
+    }
+    if (!chains_active) {
+      // initialize() may have armed the leak signal (and stamped burn-in) for the
+      // (liveness && reference_chains) leg; with chains not active - alloc engine did not
+      // activate, or the tracker failed to start - that leg has no consumer. Clear it
+      // (generations keeps its own leg).
+      LivenessTracker::instance()->disableChainOnlyLeakSignal();
+    }
+  }
   if (_event_mask & EM_NATIVEMEM) {
     error = malloc_tracer.start(args);
     if (error) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
-        _thread_filter.deactivateRecording();
-        disableEngines();
-        switchLibraryTrap(false);
-        _libs->stopRefresher();
-        lockAll();
-        _jfr.stop();
-        unlockAll();
+        rollBackStart();
         return error;
       }
       error = Error::OK; // recoverable when other modes are also active
@@ -2128,8 +2505,22 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.deactivateRecording();
   }
 
+  _activated_mask = activated;
+
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
+
+    if (_reference_chains_active) {
+      // Pre-existing threads must be registered from the profiler lifecycle
+      // (registerExistingThreads()'s own comment): onThreadStart() only sees
+      // threads started after the recording began. Runs after thread events
+      // are enabled so a thread started after the GetAllThreads() snapshot is
+      // registered by onThreadStart() and a snapshot thread that exits is
+      // unregistered by onThreadEnd(); a thread seen by both is re-registered
+      // under the same tid, which registerThreadObject() handles.
+      ReferenceChainTracker::instance()->registerExistingThreads(VM::jvmti(),
+                                                                 VM::jni());
+    }
 
     // Initialize this thread
     // Note: passing all nullptrs results in not able to resolve the thread name here.
@@ -2143,16 +2534,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     // ever sees finds the engine fully wired. Unlike wall clock, CPU handlers
     // re-check _enabled on every signal, so enabling here (rather than before
     // start()) does not lose samples.
-    // Paired with drainInflight() on the stop side.
-    _cpu_engine->enableEvents(true);
+    // Paired with SignalInflight::drain() on the stop side. enableCpuEngine() enables
+    // it only if the CPU engine itself started.
+    enableCpuEngine(activated);
 
     setTaskBlockEnabled(
         (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
     if (taskBlockEnabled()) {
       Error native_io_error = NativeSocketInterposer::instance()->start();
-      if (native_io_error) {
-        Log::warn("%s", native_io_error.message());
-      }
+      if (native_io_error) Log::warn("%s", native_io_error.message());
     }
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
@@ -2160,14 +2550,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
-  _thread_filter.deactivateRecording();
-  disableEngines();
-  switchLibraryTrap(false);
-  _libs->stopRefresher();
-
-  lockAll();
-  _jfr.stop();
-  unlockAll();
+  rollBackStart();
 
   return Error(
       "Neither CPU, wallclock nor allocation profiling could be started");
@@ -2199,13 +2582,67 @@ Error Profiler::stop() {
   // Prevent existing paired intervals from recording during teardown. New
   // intervals were disabled above; this also drains endTaskBlock calls that
   // already entered their snapshot-and-record activity.
-  if (beginTaskBlockRotation() == 0) {
+  if (!beginTaskBlockRotation()) {
     return Error("task-block rotation did not drain; teardown skipped, retry stop()");
   }
 
-  if (_event_mask & EM_ALLOC)
+  // Close the registration gate and wait for the calls already past it, so no
+  // thread arms a timer or opens an fd after the engines below stop.
+  // Unregistration stays open (see _thread_tables_stable). The engine stops
+  // below tolerate a concurrent unregisterThread() because none of them frees
+  // a per-thread table: CTimer releases slots with a per-slot CAS, and
+  // PerfEvents::stop() is a no-op. For the same reason the stop still
+  // completes if a registration call is stuck inside an engine after the wait
+  // budget. Only an engine whose table outlives stop() can have that table
+  // replaced under the call, so the profiler goes to ERROR for it alone (see
+  // the end of stop()). Unregistration calls are not waited for here: they may
+  // keep arriving during stop() under thread churn.
+  bool hooks_drained = closeThreadRegistration();
+
+  // A requested engine may fail while another starts; stop only activated engines.
+  if (_activated_mask & EM_ALLOC)
     _alloc_engine->stop();
-  if (_event_mask & EM_NATIVEMEM)
+  if (_reference_chains_active) {
+    // Cleared first so new onThreadStart()/onThreadEnd() calls skip the
+    // thread-object registry; a call that already read the flag is handled
+    // by releaseAllThreadObjects() closing the registry.
+    _reference_chains_active = false;
+    // Join the BFS thread and clear the recording-boundary state before the
+    // rest of the teardown (stopThread() wakes and joins; stop() resets the
+    // per-recording caches). Matches the Profiler::stop() order documented
+    // in referenceChains.cpp's stopThread()/stop() comments.
+    ReferenceChainTracker::instance()->stopThread();
+    // Write the tracker's still-undrained events into the final chunk before stop() clears
+    // the queues - otherwise abandonment events queued since the last dump() are dropped for
+    // good, and the final chunk's live-object/leak-tag events (written by
+    // LivenessTracker::stop() via _alloc_engine->stop() above) have no ReferenceChain events
+    // to match. Same writer shape as dump(): per-lock lock, drain, record, unlock; runs after
+    // SignalInflight::drain() so no signal-path writer can contend, and the BFS thread is
+    // already joined by stopThread() above so no new events can appear mid-drain.
+    {
+      int dump_tid = ProfiledThread::currentTid();
+      u32 lock_index = getLockIndex(dump_tid >= 0 ? dump_tid : 0);
+      _locks[lock_index].lock();
+      std::vector<ReferenceChainEvent> chain_events;
+      ReferenceChainTracker::instance()->drainPendingChainEvents(&chain_events);
+      for (auto &event : chain_events) {
+        _jfr.recordReferenceChain(lock_index, &event);
+      }
+      std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+      ReferenceChainTracker::instance()->drainPendingAbandonedEvents(
+          &abandoned_events);
+      for (auto &event : abandoned_events) {
+        _jfr.recordReferenceChainAbandoned(lock_index, &event);
+      }
+      _locks[lock_index].unlock();
+    }
+    ReferenceChainTracker::instance()->stop();
+    // BFS thread is joined by stopThread() above, so no walk can be holding a
+    // copied ref: every registered/pending Thread global ref can be deleted
+    // now instead of leaking until (and across) the next recording.
+    ReferenceChainTracker::instance()->releaseAllThreadObjects(VM::jni());
+  }
+  if (_activated_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
   // Stop the refresher BEFORE socket unpatch: the refresher calls
   // install_socket_hooks() which re-reads _socket_active before acquiring the
@@ -2214,11 +2651,11 @@ Error Profiler::stop() {
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
   NativeSocketInterposer::instance()->stop();
-  if (_event_mask & EM_NATIVESOCKET)
+  if (_activated_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
-  if (_event_mask & EM_WALL)
+  if (_activated_mask & EM_WALL)
     _wall_engine->stop();
-  if (_event_mask & EM_CPU)
+  if (_activated_mask & EM_CPU)
     _cpu_engine->stop();
 
   _thread_filter.deactivateRecording();
@@ -2270,23 +2707,32 @@ Error Profiler::stop() {
     }
   }
 
+  // Per-sampler timing report. A no-op unless built with -PenableSamplerPerf.
+  // Emitted before _jfr.stop() so the same counters are also correct in the
+  // final JFR chunk.
+  SamplerPerf::report();
+
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  // Unlike a dump rotation, a full stop discards paired intervals that have
-  // not completed. Their exits may race with teardown after recording ends.
-  rotateDictsAndRun([&]{ _jfr.stop(); });
-  clearAllTaskBlockRuns();
+  Error output_error = rotateDictsAndRun([&]{ return _jfr.stop(); });
   endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
-  LibraryPatcher::unpatch_libraries();
+  if (!output_error) LibraryPatcher::unpatch_libraries();
 
-  _state.store(IDLE, std::memory_order_release);
-  return Error::OK;
+  if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
+    _state.store(ERROR, std::memory_order_release);
+  } else {
+    _state.store(IDLE, std::memory_order_release);
+  }
+  if (!hooks_drained) {
+    return Error("thread hook calls did not drain; the profiler is stopped");
+  }
+  return output_error;
 }
 
 Error Profiler::check(Arguments &args) {
@@ -2298,17 +2744,21 @@ Error Profiler::check(Arguments &args) {
 
   error = checkJvmCapabilities();
 
+  // check() runs while the profiler is IDLE, after stop(): unregistration is
+  // still open then, and the previous recording's engine may hold fds that
+  // only its unregisterThread() closes. Selecting into the slots here would
+  // route those exits to the new engine and leak the fds, so check() selects
+  // into locals. checkState() rejects a RUNNING profiler before this point.
+  Engine *cpu_engine = NULL;
   if (!error && (args._event != NULL || args._cpu >= 0)) {
-    _cpu_engine = selectCpuEngine(args);
-    error = _cpu_engine->check(args);
+    cpu_engine = selectCpuEngine(args);
+    error = cpu_engine->check(args);
   }
   if (!error && args._wall >= 0) {
-    _wall_engine = selectWallEngine(args);
-    error = _wall_engine->check(args);
+    error = selectWallEngine(args)->check(args);
   }
   if (!error && args._memory >= 0) {
-    _alloc_engine = selectAllocEngine(args);
-    error = _alloc_engine->check(args);
+    error = selectAllocEngine(args)->check(args);
   }
   if (!error && args._nativemem >= 0) {
     error = malloc_tracer.check(args);
@@ -2319,7 +2769,7 @@ Error Profiler::check(Arguments &args) {
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
       return Error("DWARF unwinding is not supported on this platform");
-    } else if (args._cstack == CSTACK_LBR && _cpu_engine != &perf_events) {
+    } else if (args._cstack == CSTACK_LBR && cpu_engine != &perf_events) {
       return Error("Branch stack is supported only with PMU events");
     } else if (_cstack >= CSTACK_VM && !(VMStructs::hasStackStructs() && OS::isLinux())) {
       return Error(
@@ -2332,8 +2782,19 @@ Error Profiler::check(Arguments &args) {
 
 void Profiler::updateNativeLibMemStats() {
   // CodeCache here is the profiler's native-symbol tables (not the JVM code
-  // cache). memoryUsage() is a recomputed gauge; read it once and publish the
-  // counters plus the NativeMem gauge (NATIVE_SYMBOLS) as absolutes.
+  // cache). memoryUsage() is now an O(1) read of each library's running
+  // total (see CodeCache::_memory_usage), not a rescan, so reading it here
+  // for the Counters:: mirrors below is cheap even though this itself is
+  // only called from stop()/dump().
+  //
+  // Deliberately does NOT also write NM_NATIVE_SYMBOLS, or its allocator
+  // overhead, here: both are maintained incrementally at publish time
+  // (CodeCacheArray::add(), an atomic add per library). Overwriting either with
+  // a fresh recompute from this
+  // function -- which can run concurrently with the background refresher
+  // thread publishing a new library, since neither takes a common lock --
+  // would reintroduce exactly the stale-overwrite race the publish-time
+  // accounting was built to avoid.
   const CodeCacheArray& native_libs = _libs->native_libs();
   long long usage = (long long)native_libs.memoryUsage();
   Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
@@ -2343,7 +2804,6 @@ void Profiler::updateNativeLibMemStats() {
   // behind the VM abstraction (0 on J9/Zing).
   Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                 JVMSupport::runtimeStubsMemoryUsage());
-  NativeMem::setLive(NM_NATIVE_SYMBOLS, usage);
 }
 
 Error Profiler::dump(const char *path, const int length) {
@@ -2354,14 +2814,39 @@ Error Profiler::dump(const char *path, const int length) {
   }
 
   if (cur_state == RUNNING) {
-    int dump_fd = -1;
-    Error err = _jfr.prepareDump(path, length, &dump_fd);
-    if (err) return err;
-
     std::set<int> thread_ids;
     // flush the liveness tracker instance and note all the threads referenced
     // by the live objects
     LivenessTracker::instance()->flush(thread_ids);
+
+    // Emit the reference-chain tracker's pending events into this dumping
+    // chunk: chain events are snapshot-and-kept (re-emitted into every chunk
+    // while the sample stays live), abandonment events are a true drain.
+    // Runs before rotateDictsAndRun() so the events land inside the chunk
+    // being written, and under a profiler lock like every other
+    // recording-buffer writer (dump runs on a normal thread holding only
+    // _state_lock; the _state_lock -> _locks order is the codebase's).
+    if (_reference_chains_active) {
+      // Guarded so a recording that did not activate reference chains (flag
+      // off, or allocation sampling off) never re-emits a prior recording's
+      // cached chains/abandonments; stop() also clears both queues, so this
+      // is a belt-and-braces check against emitting a stale cache.
+      int dump_tid = ProfiledThread::currentTid();
+      u32 lock_index = getLockIndex(dump_tid >= 0 ? dump_tid : 0);
+      _locks[lock_index].lock();
+      std::vector<ReferenceChainEvent> chain_events;
+      ReferenceChainTracker::instance()->drainPendingChainEvents(&chain_events);
+      for (auto &event : chain_events) {
+        _jfr.recordReferenceChain(lock_index, &event);
+      }
+      std::vector<ReferenceChainAbandonedEvent> abandoned_events;
+      ReferenceChainTracker::instance()->drainPendingAbandonedEvents(
+          &abandoned_events);
+      for (auto &event : abandoned_events) {
+        _jfr.recordReferenceChainAbandoned(lock_index, &event);
+      }
+      _locks[lock_index].unlock();
+    }
 
     Libraries::instance()->refresh();
     updateJavaThreadNames();
@@ -2369,36 +2854,24 @@ Error Profiler::dump(const char *path, const int length) {
 
     updateNativeLibMemStats();
 
-    // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
-    // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
-    // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination; #527's classMapSharedGuard readers
-    // (deferred vtable receiver resolution) are coordinated through
-    // _class_map_lock.
-    u64 task_block_boundary = beginTaskBlockRotation();
-    if (task_block_boundary == 0) {
-      close(dump_fd);
-      err = Error("task-block rotation did not drain; dump skipped");
-    } else {
-      rotateDictsAndRun([&]{
-        emitTaskBlockBoundary(task_block_boundary);
-        err = _jfr.dump(dump_fd);
-        if (!err) {
-          commitTaskBlockBoundary(task_block_boundary);
-          __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
-        }
+    Error err = Error::OK;
+    // rotateDictsAndRun fences ASGCT/JNI CallTraceStorage writers with lockAll().
+    // StringDictionary coordinates its own readers and writers with RefCountGuard.
+    if (beginTaskBlockRotation()) {
+      err = rotateDictsAndRun([&]{
+        Error delivered = _jfr.dump(path, length);
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+        return delivered;
       });
-      close(dump_fd);
       endTaskBlockRotation();
-      // Run unconditionally: TaskBlockRuns completed while this dump's rotation
-      // was in flight (TASK_BLOCK_DROPPED_ROTATION) have end_ticks set but no
-      // clearTaskBlockRun() call of their own, so a failed dump must not skip
-      // reclamation or their slot stays stranded, blocking that thread's next
-      // registerTaskBlockRun() indefinitely.
-      flushCompletedTaskBlockRuns();
+    } else {
+      err = Error("task-block rotation did not drain; dump skipped");
+    }
+    if (err) {
+      TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
     }
 
-    _thread_info.clearAll(thread_ids);
+    if (!err) _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
 
     // reset unwinding counters
@@ -2524,6 +2997,62 @@ void Profiler::shutdown(Arguments &args) {
   }
 
   _state.store(TERMINATED, std::memory_order_release);
+}
+
+int Profiler::resetRecordingState() {
+  // StringDictionary::clearAll() manages its own synchronisation (RefCountGuard
+  // drain) internally; no external lock is needed.  A dictionary whose drain
+  // times out is left unchanged rather than reset under an accessor that may
+  // still be using it; it stays consistent and keeps its ids.
+  bool class_map_reset = _class_map.clearAll();
+  bool string_label_map_reset = _string_label_map.clearAll();
+  bool context_value_map_reset = _context_value_map.clearAll();
+  if (context_value_map_reset) {
+    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
+    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
+    _context_value_dict_reset.store(true, std::memory_order_release);
+  }
+
+  {
+    RecordingLocks locks(this);
+    // Fresh-start clearing invalidates every cached root, including context-
+    // filtered slots whose registry epoch is zero. stop() has drained handlers;
+    // a repeated start is rejected before reaching this reset.
+    _block_tracker.resetAll();
+    if (!_omit_stacktraces) {
+      _call_trace_storage.clear();
+    }
+  }
+
+  Counters::reset();
+  // Counters::reset() zeroes the dictionary memory gauges, but the dictionaries
+  // keep their root tables and first arena chunks, and all of their storage if
+  // a reset was skipped; without this, freeing that storage later would drive
+  // the gauges negative.
+  _class_map.reseedCounters();
+  _string_label_map.reseedCounters();
+  _context_value_map.reseedCounters();
+
+  // Reported only now, so Counters::reset() cannot erase the timeouts.
+  int failed = 0;
+  if (!class_map_reset) {
+    reportDrainTimeout("Class map not reset");
+    failed++;
+  }
+  if (!string_label_map_reset) {
+    reportDrainTimeout("String label map not reset");
+    failed++;
+  }
+  if (!context_value_map_reset) {
+    reportDrainTimeout("Context value map not reset");
+    failed++;
+  }
+  return failed;
+}
+
+void Profiler::reportDrainTimeout(const char *what) {
+  Counters::increment(DICTIONARY_DRAIN_TIMEOUTS);
+  Log::warn("%s: still in use after drain timeout", what);
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {

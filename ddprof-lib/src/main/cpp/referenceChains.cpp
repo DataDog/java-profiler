@@ -1,0 +1,1387 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "referenceChains.h"
+#include "referenceChainInternal.h"
+#include "common.h"
+#include "counters.h"
+#include "jniHelper.h"
+#include "jvmThread.h"
+#include "livenessTracker.h"
+#include "log.h"
+#include "objectSampler.h"
+#include "os.h"
+#include "profiler.h"
+#include "rcDebugLevel.h"
+#include "tsc.h"
+#include "vmEntry.h"
+#include <algorithm>
+#include <cassert>
+#include <climits>
+#include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <unordered_set>
+
+// Reference-chains debug-log level (see rcDebugLevel.h). Level 0 silent
+namespace {
+constexpr const char *kRcDebugLevelEnv = "DD_PROFILING_REFERENCE_CHAINS_DEBUG";
+constexpr const char *kRcDebugLevelFile = "/tmp/ddprof_root/refchains_debug_level";
+constexpr u64 kRcDebugLevelRefreshTtlNs = 1000000000ULL; // 1s
+std::atomic<int> g_rc_debug_level{-1}; // -1 = not yet resolved from env
+std::atomic<u64> g_rc_debug_level_last_refresh_ns{0};
+
+int envRcDebugLevel() {
+  int lvl = parseRcDebugLevel(getenv(kRcDebugLevelEnv));
+  return lvl < 0 ? 0 : lvl; // invalid/unset env means silent
+}
+} // namespace
+
+int rcDebugLevel() {
+  int lvl = g_rc_debug_level.load(std::memory_order_relaxed);
+  if (lvl >= 0) {
+    return lvl;
+  }
+  // Lazy one-time env resolve; may fire from a heap callback on the very first log line, which is
+  // still strictly cheaper than the fprintf the same line performs in a DEBUG build.
+  lvl = envRcDebugLevel();
+  g_rc_debug_level.store(lvl, std::memory_order_relaxed);
+  return lvl;
+}
+
+int parseRcDebugLevel(const char *value) {
+  if (value == nullptr || *value == '\0') {
+    return -1;
+  }
+  // Trim surrounding whitespace (files written via `echo N >` end with \n).
+  while (*value == ' ' || *value == '\t' || *value == '\n' || *value == '\r') {
+    ++value;
+  }
+  const char *end = value + strlen(value);
+  while (end > value && (end[-1] == ' ' || end[-1] == '\t' ||
+                         end[-1] == '\n' || end[-1] == '\r')) {
+    --end;
+  }
+  if (end == value || end - value != 1) {
+    return -1; // exactly one digit
+  }
+  if (*value < '0' || *value > '2') {
+    return -1;
+  }
+  return *value - '0';
+}
+
+int readRcDebugLevelFile(const char *path) {
+  if (path == nullptr) {
+    return -1;
+  }
+  // The knob file lives under the world-writable /tmp (see kRcDebugLevelFile's
+  // comment): refuse anything that is not a regular file owned by root or the
+  // current user, so a local user cannot plant a symlink or a pre-created
+  // file of their own and force the DEBUG-build diagnostics on. The worst
+  // impact of a forged file is log-volume/CPU from enabled TEST_LOG in a
+  // DEBUG build, but the check is cheap and keeps the knob owner-scoped.
+  // Open first (O_NOFOLLOW rejects a symlink swap outright) and fstat the
+  // resulting descriptor: a stat-then-open sequence would re-resolve the path
+  // after the check, leaving a TOCTOU window where the checked file is
+  // swapped for another one before the read.
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) {
+    return -1;
+  }
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+      (st.st_uid != 0 && st.st_uid != geteuid())) {
+    close(fd);
+    return -1;
+  }
+  char buf[16];
+  size_t n = 0;
+  while (n < sizeof(buf) - 1) {
+    ssize_t r = read(fd, buf + n, sizeof(buf) - 1 - n);
+    if (r < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      close(fd);
+      return -1;
+    }
+    if (r == 0) {
+      break;
+    }
+    n += static_cast<size_t>(r);
+  }
+  close(fd);
+  buf[n] = '\0';
+  return parseRcDebugLevel(buf);
+}
+
+void rcDebugLevelRefresh(bool force) {
+  u64 now = OS::nanotime();
+  u64 last = g_rc_debug_level_last_refresh_ns.load(std::memory_order_relaxed);
+  if (!force && last != 0 && now >= last &&
+      now - last < kRcDebugLevelRefreshTtlNs) {
+    return;
+  }
+  g_rc_debug_level_last_refresh_ns.store(now, std::memory_order_relaxed);
+  int lvl = readRcDebugLevelFile(kRcDebugLevelFile);
+  if (lvl < 0) {
+    lvl = envRcDebugLevel(); // file absent/invalid -> fall back to env
+  }
+  g_rc_debug_level.store(lvl, std::memory_order_relaxed);
+}
+
+// ReferenceChainTracker
+
+// Marks the calling thread as executing inside the GarbageCollectionStart/ Finish JVMTI callback
+// for the duration of the guard's lifetime. Only read by assert(), so it compiles out with it.
+ASSERT_ONLY(thread_local bool t_inGCCallback = false;)
+
+namespace {
+class GCCallbackGuard {
+public:
+  GCCallbackGuard() { ASSERT_ONLY(t_inGCCallback = true;) }
+  ~GCCallbackGuard() { ASSERT_ONLY(t_inGCCallback = false;) }
+};
+} // namespace
+
+void ReferenceChainTracker::autoTuneDefaults(Arguments &args) {
+  // Only tune defaults the operator did not set explicitly.
+  const u8 tuned = args._reference_chains_tuned_mask;
+
+  // Max heap is resolved by LivenessTracker::initialize_table() at this point
+  // (ObjectSampler::start() -> LivenessTracker::start() runs before ReferenceChainTracker::start()
+  // in Profiler::start()).
+  jlong max_heap = LivenessTracker::instance()->maxHeapBytes();
+  if (max_heap <= 0) {
+    return; // can't tune without heap size
+  }
+
+  // Available processors from JVMTI (cached by FlightRecorder, but we can query JVMTI directly
+  // here).
+  jint nprocs = 1;
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti != nullptr) {
+    jvmti->GetAvailableProcessors(&nprocs);
+  }
+  if (nprocs < 1) nprocs = 1;
+
+  // Heap size in MiB.
+  double heap_mib = (double)max_heap / (1024.0 * 1024.0);
+
+  // --- Budget (edges per BFS pass) --- Scale with sqrt(heap_mib): a 4 GiB heap gets 2x, a 16 GiB
+  // heap gets 4x, a 64 GiB heap gets 8x the default 1000.
+  if (!(tuned & REF_CHAINS_TUNED_BUDGET)) {
+    int scaled = (int)(DEFAULT_REFERENCE_CHAINS_BUDGET * std::sqrt(heap_mib / 512.0));
+    args._reference_chains_budget = std::max(DEFAULT_REFERENCE_CHAINS_BUDGET,
+        std::min(scaled, MAX_REFERENCE_CHAINS_BUDGET));
+  }
+
+  // --- First-pass budget --- The root enumeration pass is one-shot per search and can afford a
+  // much larger budget.
+  if (!(tuned & REF_CHAINS_TUNED_FIRST_PASS_BUDGET)) {
+    int fpb = args._reference_chains_budget * 10;
+    args._reference_chains_first_pass_budget = std::min(fpb,
+        MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET);
+  }
+
+  // --- TTL (per-search wall-clock lifetime) --- The search needs enough time to cover the heap at
+  // the tuned budget.
+  if (!(tuned & REF_CHAINS_TUNED_TTL)) {
+    long scaled_ttl = (long)(DEFAULT_REFERENCE_CHAINS_TTL_MS * (heap_mib / 512.0));
+    scaled_ttl = std::max(DEFAULT_REFERENCE_CHAINS_TTL_MS, std::min(scaled_ttl,
+        (long)(30 * 60 * 1000))); // 30 min max
+    args._reference_chains_ttl_ms = scaled_ttl;
+  }
+
+  // --- Frontier cap --- The frontier grows with the number of edges admitted per pass.
+  if (!(tuned & REF_CHAINS_TUNED_FRONTIER_CAP)) {
+    int scaled_cap = (int)(DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP *
+        ((double)args._reference_chains_budget / DEFAULT_REFERENCE_CHAINS_BUDGET));
+    args._reference_chains_frontier_cap = std::max(
+        DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP,
+        std::min(scaled_cap, MAX_REFERENCE_CHAINS_FRONTIER_CAP));
+  }
+
+  // --- Pause target --- More available processors = the JVM can afford a slightly longer per-pass
+  // safepoint without impacting application throughput.
+  if (!(tuned & REF_CHAINS_TUNED_PAUSE_TARGET)) {
+    long scaled_pause = DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS *
+        (1 + (nprocs - 1) / 3);
+    args._reference_chains_pause_target_ms = std::min(scaled_pause, (long)50);
+  }
+
+  // --- Pain budget percent --- More cores = more spare capacity for background work.
+  if (!(tuned & REF_CHAINS_TUNED_PAIN_BUDGET)) {
+    int scaled_pain = DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT *
+        (1 + (nprocs - 1) / 4);
+    args._reference_chains_pain_budget_percent = std::min(scaled_pain, 5);
+  }
+
+  Log::info("Reference chain auto-tuner: heap=%.0f MiB nprocs=%d -> "
+      "budget=%d ttl=%ldms framecap=%d pausetarget=%ldms painbudget=%d%% firstpassbudget=%d",
+      heap_mib, (int)nprocs,
+      args._reference_chains_budget, args._reference_chains_ttl_ms,
+      args._reference_chains_frontier_cap,
+      args._reference_chains_pause_target_ms,
+      args._reference_chains_pain_budget_percent,
+      args._reference_chains_first_pass_budget);
+}
+
+Error ReferenceChainTracker::start(Arguments &args) {
+  storeRelease(_enabled, args._reference_chains);
+
+  if (!args._reference_chains) {
+    Log::info("Reference chain tracking is disabled");
+    return Error::OK;
+  }
+
+  // Recording-boundary hygiene: Profiler::start() clears the class dictionary (restart its id
+  // namespace) right before this runs, so cached chain events and queued abandonment events from a
+  // prior recording carry StringDictionary ids from a wiped generation - re-emitting them into the
+  // new recording would write missing or newly-reassigned class ids for chains that describe the
+  // previous recording's objects.
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _resolved_chains.clear();
+  }
+  clearPendingChainInvalidations();
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    _pending_abandoned_events.clear();
+  }
+  {
+    MutexLocker ml(_thread_objects_lock);
+    _thread_objects_open = true;
+  }
+  _urgency_budget_boosted = false;
+
+  // Auto-tune defaults that the operator did not set explicitly, based on max heap size and
+  // available processors.
+  autoTuneDefaults(args);
+
+  Log::info("Reference chain tracking is enabled (hops=%d, budget=%d, "
+            "ttl=%ldms, framecap=%d, pausetarget=%ldms, painbudget=%d%%)",
+            args._reference_chains_hop_cap, args._reference_chains_budget,
+            args._reference_chains_ttl_ms, args._reference_chains_frontier_cap,
+            args._reference_chains_pause_target_ms,
+            args._reference_chains_pain_budget_percent);
+
+  // Like LivenessTracker's own table, construct the frontier table once and keep it across repeated
+  // start()/stop() cycles - do not reallocate on a second start() with a possibly different cap,
+  // for the same reason LivenessTracker keeps its first-initialize() result.
+  _configured_frontier_cap = args._reference_chains_frontier_cap;
+  if (_frontier == nullptr) {
+    _frontier = new FrontierTable(_configured_frontier_cap);
+  }
+  // The configured budget is what the urgency ramp restores when urgency clears (see the urgency
+  // block in threadLoop()) - the live _budget must not be snapshotted for that, it may already be
+  // boosted.
+  _configured_budget = args._reference_chains_budget;
+
+  _hop_cap = args._reference_chains_hop_cap;
+  _budget = args._reference_chains_budget;
+  // 0 (unset) auto-scales from _budget instead of falling back to it plainly - see this field's own
+  // comment (referenceChains.h) for why a steady-state per-pass budget is the wrong size for the
+  // first pass.
+  _first_pass_budget = args._reference_chains_first_pass_budget > 0
+                            ? args._reference_chains_first_pass_budget
+                            : std::min(_budget * AUTO_FIRST_PASS_BUDGET_MULTIPLIER,
+                                       AUTO_FIRST_PASS_BUDGET_CAP);
+  _ttl_ms = args._reference_chains_ttl_ms;
+
+  // Pause-time pacing controller: (re)seed the controller's ceiling and the adaptive values it
+  // drives.
+  _pause_target_ms = args._reference_chains_pause_target_ms;
+  _effective_pause_target_ms = _pause_target_ms;
+  _effective_budget = _budget;
+  _effective_cadence_ns = PASS_CADENCE_NS; // plain: the BFS thread is not running yet
+  _candidate_count = 0;
+  _candidate_found_bits = 0;
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  memset(_candidate_qualifying_tid_count, 0,
+         sizeof(_candidate_qualifying_tid_count));
+  _passes_since_last_candidate_progress = 0;
+  _last_candidate_progress_mark = 0;
+  // Fresh chase gets a fresh back-to-back spacing allowance (see _canary_backoff_mult's own
+  // comment).
+  _canary_backoff_mult = 1;
+  _canary_pass_ema_ms = 0;
+  _last_canary_pass_ns = 0;
+  _canary_stuck_restart_count = 0;
+  // Budget-borrowing (referenceChains.h's _borrowed_budget comment): reset alongside the rest of
+  // the pacing controller's state, so a restarted search never inherits headroom earned by a
+  // previous one.
+  _borrowed_budget = 0;
+  _consecutive_under_target_passes = 0;
+  _pause_pid = PidController((u64)std::max(_pause_target_ms, 0L),
+                              10,  // proportional gain: reacts to a single
+                                   // pass's over/under-ceiling error without needing many passes to
+                                   // notice - a duration-ms error is typically single/
+                                   // low-double-digit in magnitude (unlike the shared triple's
+                                   // event-count scale), so a smaller P keeps a one-pass overshoot
+                                   // from.
+                              1,   // integral gain: small and round -
+                                   // pidController.cpp's `_integral_value` has no built-in clamp,
+                                   // and this controller is invoked once per BFS pass rather than
+                                   // on the other three usages' roughly-periodic
+                                   // one-call-per-second cadence, so windup accumulates faster per
+                                   // wall-clock.
+                              2,   // derivative gain: small, matching the
+                                   // shared triple's own "the derivational gain is rather small"
+                                   // rationale (objectSampler.cpp) - a single slow/ fast pass
+                                   // should not itself trigger a large swing
+                              1,   // sampling_window=1: one compute() call
+                                   // *is* one pass, not a fixed real-time window like the other
+                                   // three usages assume (see _pause_pid's own comment)
+                              5.0  // cutoff_secs: a round value, halved from
+                                   // the shared triple's own "15" since a pass-scoped signal is
+                                   // naturally noisier per-call than a roughly-1s- cadence one
+  );
+
+  // (re)seed _safepoint_pain_budget from the configured refill rate, mirroring _pause_pid's own
+  // reconstruct-in-start() pattern above.
+  _safepoint_pain_budget = PainBudget(
+      std::max(args._reference_chains_pain_budget_percent, 0) / 100.0);
+  _pain_budget_refill_rate = std::max(args._reference_chains_pain_budget_percent, 0) / 100.0;
+  // Same refill rate as _safepoint_pain_budget above - one operator-facing "how much background
+  // cost is acceptable" percentage covers both leaky buckets (see _cpu_pain_budget's own comment,
+  // referenceChains.h).
+  _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
+
+  // Lazy-enable, matching LivenessTracker::start(): the GC callbacks are wired unconditionally in
+  // vmEntry.cpp, but the events themselves are only turned on for this JVMTI env when the flag is
+  // on.
+  jvmtiEnv *jvmti = VM::jvmti();
+  jvmti->SetEventNotificationMode(
+      JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_START, nullptr);
+  jvmti->SetEventNotificationMode(
+      JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_FINISH, nullptr);
+
+  // Deliberately does NOT create the BFS thread (threadEntry()/threadLoop() below) here -
+  // threadLoop()'s VM::attachThread() call dereferences VM::_vm unconditionally (vmEntry.h:191-195)
+  // and crashes if the VM is not yet attached, which is exactly the case in this file's own gtest
+  // binary (referenceChains_ut.cpp calls start() directly with no live JVM).
+
+  return Error::OK;
+}
+
+void ReferenceChainTracker::stop() {
+  if (!enabled()) {
+    return;
+  }
+  Log::info("Reference chain tracking stopped");
+
+  // Recording-boundary search teardown: stopThread() has already joined the BFS thread, so no
+  // pass can be in flight here, but a search may still be RUNNING. Nothing about it survives the
+  // boundary intact - the stale _search_start_ns clock would count the stopped gap toward the new
+  // recording's TTL, the urgency/admission state (resetUrgencyState() below, including the
+  // freshness pair: an emergency-band entry seeds the baseline without touching it, so a leaked
+  // pair would return the old recording's retained admission) and an open episode's boosted
+  // _budget/ramped cadence (closeUrgencyEpisode() below) would carry into the new recording, and
+  // the frontier's referrer_klass slots hold StringDictionary ids from a _class_map that
+  // Profiler::start() is about to wipe (ids restart at 1) - unremappable, so a surviving entry
+  // would name whichever class the new recording assigned that id to.
+  // Forcing the terminal state here routes the next recording through the existing
+  // release-then-restart sequence: its first BFS pass hits shouldRunPass()'s terminal gate
+  // (tags are deliberately NOT released in stop() - the next start()'s search does it via that
+  // gate, before pollWatchedTargets() runs in the same iteration) and the restartSearch() that
+  // follows it resets the frontier content and _next_tag, so every chain built afterwards uses
+  // fresh-admission ids from the new _class_map generation.
+  if (_search_started &&
+      load(_search_state) == (u8)SearchState::RUNNING) {
+    // Terminal WITHOUT an abandonment event: the recording ended, which is not a search-level
+    // outcome the JFR stream should report (and the pending-event queue is cleared right below
+    // anyway).
+    store(_abandon_reason, (u8)SearchAbandonReason::RECORDING_END);
+    storeRelease(_search_state, (u8)SearchState::ABANDONED);
+  }
+  // Written in production only by the BFS thread (isUrgent(),
+  // updateUrgentAdmission(), restartSearch()) as plain stores; safe to reset
+  // from this thread only because stopThread() has joined that thread.
+  store(_search_start_ns, (u64)0);
+  resetUrgencyState();
+  // A mid-episode stop() must not leak the boosted budget/ramped cadence past the recording
+  // boundary (buildAbandonedEvent() reads _budget after this point); stopThread() has already
+  // joined the BFS thread, so these writes are as safe as the urgency resets above.
+  closeUrgencyEpisode();
+  // Same per-search candidate/discovered canary state runPass()'s terminal branch and
+  // restartSearch() clear - zeroing the counts here closes the stale-chain windows in
+  // pollWatchedTargets() (dead-representative canary path, discovered-instances path) for the
+  // gap before the next recording's search restarts. The payload arrays (_candidate_klass_ids,
+  // _candidate_frontier_tags, _candidate_discovered_tags, _candidate_qualifying_tids) are
+  // unreachable once the counts are zero, so they need no memset.
+  _candidate_count = 0;
+  _candidate_found_bits = 0;
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  memset(_candidate_qualifying_tid_count, 0,
+         sizeof(_candidate_qualifying_tid_count));
+
+  // Clear the resolved-chain cache and any queued-but-undrained abandonment
+  // events now, not just on the next start(): a later recording that does
+  // not activate reference chains (or has allocation sampling off) would
+  // otherwise have dump()'s drain re-emit this recording's cached chains
+  // against a _class_map that Profiler::start() has since reset, naming
+  // missing or unrelated classes. Same clear as start()'s own hygiene block.
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _resolved_chains.clear();
+  }
+  clearPendingChainInvalidations();
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    _pending_abandoned_events.clear();
+  }
+
+  // Do not disable GC notifications here - LivenessTracker follows the same rule since the JVMTI
+  // env and its tracker singletons are expected to survive across multiple start/stop recording
+  // cycles.
+}
+
+void ReferenceChainTracker::startThread() {
+  if (!enabled() || _running.load(std::memory_order_acquire)) {
+    return;
+  }
+  // Reset from any previous stopThread() call - a dynamic-attach profiler can go through multiple
+  // start()/stop() cycles in one JVM lifetime (this class's own start()/stop() header comments),
+  // and a stale abort request left set from the prior cycle would make heapReferenceCallback()
+  // abort this new cycle's very first pass instantly.
+  _abort_pass_requested.store(false, std::memory_order_relaxed);
+
+  // Publish _running=true *before* creating the thread, not after.
+  _running.store(true, std::memory_order_release);
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, threadEntry, this) != 0) {
+    Log::warn("Unable to create ReferenceChains BFS thread");
+    _running.store(false, std::memory_order_release);
+    return;
+  }
+  _thread = thread;
+}
+
+void ReferenceChainTracker::stopThread() {
+  if (!_running.load(std::memory_order_acquire)) {
+    return;
+  }
+  _running.store(false, std::memory_order_release);
+  // Ask any in-flight JVMTI FollowReferences walk (heapReferenceCallback()) to abort at its next
+  // callback invocation - set before pthread_kill() below, since that signal alone cannot interrupt
+  // a call already inside the JVM/JVMTI implementation.
+  _abort_pass_requested.store(true, std::memory_order_relaxed);
+  // Same wake-then-join shape as BaseWallClock::stop() (wallClock.cpp:324-333):
+  // pthread_kill(WAKEUP_SIGNAL) interrupts threadLoop()'s OS::sleep() early (WAKEUP_SIGNAL/SIGIO is
+  // installed with a no-op handler unconditionally in vmEntry.cpp, so this signal never terminates
+  // the thread) so it re-checks _running and exits promptly rather than waiting out the rest of the
+  // current sleep interval.
+  pthread_kill(_thread, WAKEUP_SIGNAL);
+  int res = pthread_join(_thread, NULL);
+  if (res != 0) {
+    Log::warn("Unable to join ReferenceChains BFS thread on stop %d", res);
+  }
+}
+
+// threadLoop()'s per-iteration OOM ramp: pause target, cadence and the urgency budget
+// boost/restore, keyed on the raw band comparison (never the latch). Returns the raw `urgent`.
+bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
+  bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
+  long target_ms = _pause_target_ms;
+  u64 cadence_ns = load(_effective_cadence_ns);
+  if (urgent) {
+    double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
+    target_ms = std::lround(_pause_target_ms *
+        std::pow((double)URGENT_PAUSE_TARGET_MS / std::max(_pause_target_ms, 1L), x));
+    // The cadence ramp applies only while a search is running: it paces passes. With no search
+    // running (not started, or terminal awaiting a restart) a wake does no pass, only the restart
+    // gate's selectLeakCandidates() probe under the shared _table_lock - ramping that idle wake
+    // toward URGENT_CADENCE_NS would spend up to ~100 probes/s for at most 1s faster candidate
+    // discovery against a 30-minute horizon. Such iterations hold PASS_CADENCE_NS; a search
+    // started by the restart gate runs its first pass without sleeping, and the next iteration
+    // sees it running and ramps.
+    bool search_running = _search_started && load(_search_state) == (u8)SearchState::RUNNING;
+    if (search_running) {
+      // Ramp from the fixed configured cadence, not the currently-adaptive _effective_cadence_ns -
+      // using the live value as the ramp's own moving anchor would compound the exponent across
+      // iterations instead of tracking urgency directly from a stable baseline.
+      cadence_ns = (u64)std::llround((double)PASS_CADENCE_NS *
+          std::pow((double)URGENT_CADENCE_NS / (double)PASS_CADENCE_NS, x));
+    } else {
+      cadence_ns = PASS_CADENCE_NS;
+    }
+    // Cadence ownership on every branch: urgent iterations set it here, the episode's end (or
+    // stop()) restores PASS_CADENCE_NS, and otherwise updatePacing() owns it.
+    store(_effective_cadence_ns, cadence_ns);
+  }
+  if (target_ms != _effective_pause_target_ms) {
+    _effective_pause_target_ms = target_ms;
+    _pause_pid = PidController((u64)std::max(_effective_pause_target_ms, 0L),
+                                10, 1, 2, 1, 5.0);
+  }
+  // Hold the budget ceiling raised for the episode's entire duration, not only right before OOM:
+  // the process is likely to die anyway, so spend what it takes to collect good diagnostics.
+  if (urgent && !_urgency_budget_boosted) {
+    _urgency_budget_boosted = true;
+    _budget = std::min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
+    TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget boost "
+             "budget=%d configured=%d",
+             _budget, _configured_budget);
+  } else if (!urgent && _urgency_budget_boosted) {
+    closeUrgencyEpisode();
+    // The episode owned the cadence while it ran; hand it back at the fallback in the same
+    // iteration so the idle loop stops waking at the ramped rate.
+
+    TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget restore "
+             "budget=%d", _budget);
+  }
+  return urgent;
+}
+
+// Runs scheduled passes on an attached agent thread.
+void ReferenceChainTracker::threadLoop() {
+  struct Cleanup {
+    ReferenceChainTracker *tracker;
+    ~Cleanup() {
+      // No cached-class cleanup needed before detaching: _cached_object_class is a global ref,
+      // deliberately valid across attach/detach cycles (see its own comment in referenceChains.h) -
+      // unlike the per-attach local ref it replaced, which this destructor used to have to clear
+      // here.
+      VM::detachThread();
+    }
+  } cleanup{this};
+  JNIEnv *jni = VM::attachThread("java-profiler ReferenceChains");
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jni == nullptr) {
+    // AttachCurrentThreadAsDaemon() failed - mirror pollWatchedTargets()'s own jni==nullptr early
+    // return rather than letting a null JNIEnv flow into
+    // runPass()/resolveLoadedClasses()/expandFrontier()/ releaseSearchTags() below: those only
+    // guard their DeleteLocalRef() calls on `jni != nullptr`, so without this check every
+    // GetLoadedClasses()/GetObjectsWithTags() local ref returned on this (permanently un-attached)
+    // thread would leak for the rest of the process's lifetime.
+    Log::warn("ReferenceChains: VM::attachThread failed; BFS thread exiting");
+    return;
+  }
+  DEBUG_ONLY(rcDebugLevelRefresh(true)); // apply the override file before the first log line
+  TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop started, cadence=%lluns rc_debug_level=%d", (unsigned long long)load(_effective_cadence_ns), rcDebugLevel());
+
+  int iteration = 0;
+  while (_running.load(std::memory_order_acquire)) {
+    // Fixed ~1s cadence, no early wake on GC (see onGCFinish()'s own comment) - stopThread() still
+    // interrupts this via its own pthread_kill so shutdown stays prompt.
+    // The iteration's only projection read - consumed by the ramp below, publishUrgencyState() and
+    // shouldRunPass() (restart gate / isUrgent() latch), so every decision sees one sample.
+    double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
+    bool urgent = applyOomRamp(seconds_to_oom);
+    // applyOomRamp() keeps _effective_cadence_ns current, so the sleep below and
+    // shouldRunPass()'s cadence gate always agree on the same value.
+    u64 cadence_ns = load(_effective_cadence_ns);
+    // Third trigger for LivenessTracker::cleanup_table() (see
+    // LivenessTracker::maybeForceCleanup()'s own comment): track()'s table-overflow branch and
+    // flush_table()'s JFR cadence can both starve under ObjectSampler's PID-controlled sampling
+    // interval, leaving hasLeakSignal() below stuck on a stale population history no matter how
+    // long a real leak keeps growing.
+    u64 wake_now_ns = OS::nanotime();
+    LivenessTracker::instance()->maybeForceCleanup(wake_now_ns);
+
+    // No fast-path skip here: shouldRunPass() below already returns false cheaply (a couple of
+    // atomic loads/comparisons, no JVMTI call) for a RUNNING search with no new GC and cadence not
+    // yet elapsed.
+    u64 now_ns = OS::nanotime();
+
+    // Re-check the runtime debug-level override file (~1s TTL; see rcDebugLevel.h) - never in heap
+    // callbacks, which only read the cached atomic.
+    DEBUG_ONLY(rcDebugLevelRefresh());
+
+    // Hand the ramp state to shouldRunPass() before it decides: _oom_ramp_active bypasses the
+    // canary-backoff gate, and the growth-gated admission (held between heap-floor samples)
+    // follows the same hand-off.
+    publishUrgencyState(seconds_to_oom, urgent);
+
+    // shouldRunPass()'s restart branch (restartSearch()) clears _pending_expand/_priority_expand
+    // the same way a pass does - take _engine_lock around the call so that mutation is serialized
+    // with runPassSerialized()/finishLoopIterationSerialized() and with the pendingExpand*ForTest()
+    // read seams, instead of racing them.
+    bool should_run;
+    {
+      MutexLocker engine_guard(_engine_lock);
+      should_run = shouldRunPass(now_ns, seconds_to_oom);
+    }
+    // Only sleep when idle (no pass will run). When a canary search is active or a pass is about to
+    // run, skip the sleep to run passes back-to-back.
+    if (!should_run && cadence_ns > 0) {
+      OS::sleep(cadence_ns);
+      if (!_running.load(std::memory_order_acquire)) {
+        break;
+      }
+      now_ns = OS::nanotime();
+    }
+    // Log the loop state only when a pass is actually going to run - the idle wakes (should_run ==
+    // false) are the common steady state and logging them every second is pure noise.
+    if (should_run) {
+      TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop iteration=%d shouldRunPass=%d searchState=%d "
+               "passesRun=%d effectiveCadenceNs=%llu effectiveBudget=%d gcFinishEpoch=%llu "
+               "nowMinusLastPassNs=%llu",
+               ++iteration, should_run, (int)_search_state, _passes_run,
+               (unsigned long long)load(_effective_cadence_ns), _effective_budget,
+               (unsigned long long)gcFinishEpoch(),
+               (unsigned long long)(now_ns - load(_last_pass_ns)));
+      runPassSerialized(jvmti, jni);
+    }
+    finishLoopIterationSerialized(jvmti, jni);
+  }
+}
+
+void JNICALL ReferenceChainTracker::GarbageCollectionStart(jvmtiEnv *jvmti_env) {
+  ReferenceChainTracker::instance()->onGCStart();
+}
+
+void JNICALL ReferenceChainTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+  ReferenceChainTracker::instance()->onGCFinish();
+}
+
+void ReferenceChainTracker::onGCStart() {
+  if (!enabled()) {
+    return;
+  }
+  // JVMTI spec: only Memory Management category calls (Allocate/Deallocate) are allowed from inside
+  // this callback - nothing else may run here.
+  GCCallbackGuard guard;
+  atomicIncRelaxed(_gc_start_epoch, (u64)1);
+}
+
+void ReferenceChainTracker::onGCFinish() {
+  if (!enabled()) {
+    return;
+  }
+  GCCallbackGuard guard;
+  // Heap-category JVMTI calls are forbidden from GC callbacks.
+  atomicIncRelaxed(_gc_finish_epoch, (u64)1);
+}
+
+bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
+  return shouldRunPass(now_ns, LivenessTracker::instance()->secondsToOOM());
+}
+
+bool ReferenceChainTracker::shouldRunPass(u64 now_ns, double seconds_to_oom) {
+  if (!_search_started) {
+    // Same gate as a restart (canAffordNewSearch() below) - a brand-new tracker must not pay for
+    // the first whole-heap walk/tagging pass either when there is no leak candidate to justify it.
+    bool afford = canAffordNewSearch(now_ns, seconds_to_oom);
+    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass search_not_started "
+             "canAffordNewSearch=%d", (int)afford);
+    if (!afford) {
+      return false;
+    }
+    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (search not started yet)");
+    return true; // nothing has run yet - always worth taking the first pass
+  }
+  if (_search_state != SearchState::RUNNING) {
+    // Terminal outcome already reached (runPass()'s Termination section).
+    if (!_tags_released) {
+      // releaseSearchTags() failed to confirm every live tag this search owned was actually cleared
+      // - restartSearch() must never run until that is confirmed (see _tags_released's own
+      // comment), so return true unconditionally here: that drives threadLoop() to call runPass()
+      // again, whose terminal-state branch retries the release, rather than letting
+      // canAffordNewSearch()/restartSearch() below run ahead of it.
+      TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (retrying tag "
+               "release before restart is allowed)");
+      return true;
+    }
+    // Charge the finished search's accumulated safepoint cost BEFORE the restart gate -
+    // canAffordNewSearch() must see the cost of the search that just ended, otherwise an expensive
+    // search earns one free immediate successor (the accumulator is spent here, once per search;
+    // repeated terminal visits spend a zeroed accumulator).
+    _safepoint_pain_budget.spend(_search_pain_ms);
+    _search_pain_ms = 0;
+    // Restart (this class's own header comment) if the pain budget has drained and there is still
+    // (or again) a leak indication to chase - canAffordNewSearch() is always false when no
+    // leak-signal source (generations or liveheap tracking) is active at all, so a misconfigured
+    // tracker stays idle instead of searching without a signal.
+    if (canAffordNewSearch(now_ns, seconds_to_oom)) {
+      restartSearch();
+      TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (restarting search)");
+      return true;
+    }
+    // No log here: a terminal search waiting for a restart to become warranted is the common idle
+    // state, re-evaluated every second, so logging it is pure per-second noise (see threadLoop()).
+    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass terminal_blocked "
+             "tags_released=%d safepoint_pain=%d search_state=%d",
+             (int)_tags_released,
+             (int)_safepoint_pain_budget.canStartNow(now_ns),
+             (int)_search_state);
+    return false;
+  }
+  // Canary search active with candidates still to find - computed ahead of the pain-budget check
+  // below so the refill-rate raise and the backoff gate further down agree on the same snapshot of
+  // _candidate_found_bits.
+  bool canary_active = _candidate_count > 0 &&
+      __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count;
+  // Adaptive CPU budget: 100x refill while a canary chase is open - NOT a rate control (the canary
+  // lane's rate is bounded by _canary_backoff_ns's progress-driven exponential backoff, see its own
+  // comment) but a double-throttle guard: the base refill rate is tuned for the ordinary ~1 pass/s
+  // whole-graph cadence and would otherwise starve a chase the backoff has already paced. Applied
+  // before the minimum-pass-spacing gate so the wait it induces drains at the current rate, not
+  // the previous episode's.
+  double multiplier =
+      canary_active ? CANARY_PAIN_BUDGET_REFILL_MULTIPLIER : 1.0;
+  _cpu_pain_budget.setRefillRate(
+      std::min(_pain_budget_refill_rate * multiplier, 1.0),
+      now_ns);
+  // Minimum pass spacing on every authorization lane: bounds safepointing pass frequency via the
+  // FIXED floor MIN_PASS_SPACING_NS - updatePacing() paces each pass's pause length, not the pass
+  // rate. The OOM ramp is the only exemption (while urgent it owns _effective_cadence_ns outright).
+  u64 cadence_ns = load(_effective_cadence_ns);
+  u64 min_spacing_ns =
+      _oom_ramp_active ? cadence_ns : std::max(cadence_ns, MIN_PASS_SPACING_NS);
+  if (now_ns - load(_last_pass_ns) < min_spacing_ns) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass held off by minimum pass spacing "
+             "since_last_pass_ms=%llu effective_cadence_ns=%llu min_spacing_ns=%llu",
+             (unsigned long long)((now_ns - load(_last_pass_ns)) / 1000000ULL),
+             (unsigned long long)cadence_ns,
+             (unsigned long long)min_spacing_ns);
+    return false;
+  }
+  if (!_cpu_pain_budget.canStartNow(now_ns)) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass blocked by cpu_pain_budget "
+             "balance=%.1fms refill_rate=%.4f canary_active=%d "
+             "multiplier=%.1f",
+             _cpu_pain_budget.balanceMs(now_ns),
+             std::min(_pain_budget_refill_rate * multiplier, 1.0),
+             (int)canary_active, multiplier);
+    return false;
+  }
+  if (canary_active) {
+    // Canary-lane pacing: the chase's rate bound - work-scaled spacing (_canary_backoff_mult's own
+    // comment for the law and the live burn it bounds).
+    u64 spacing_ns =
+        (u64)_canary_backoff_mult * _canary_pass_ema_ms * 1000000ULL;
+    // mult == 1 (fresh chase, or last pass made progress) means the gate is OFF - the chase runs at
+    // its natural pass rate, one pass starting as soon as the last ended.
+    if (!_oom_ramp_active && _canary_backoff_mult > 1 &&
+        now_ns - _last_canary_pass_ns < spacing_ns) {
+      TEST_LOG("ReferenceChainTracker::shouldRunPass held off by canary "
+               "backoff mult=%d ema_ms=%llu since_last_pass=%llums",
+               _canary_backoff_mult,
+               (unsigned long long)_canary_pass_ema_ms,
+               (unsigned long long)((now_ns - _last_canary_pass_ns) /
+                                   1000000ULL));
+      return false;
+    }
+    TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (canary search, "
+             "%d/%d candidates found, backoff_mult=%d ema_ms=%llu)",
+             (int)__builtin_popcountll(_candidate_found_bits),
+             (int)_candidate_count, _canary_backoff_mult,
+             (unsigned long long)_canary_pass_ema_ms);
+    return true;
+  }
+  // Passes run on a pure cadence: the spacing gate above (max of the controller's cadence and
+  // the fixed MIN_PASS_SPACING_NS floor) is the only pacing law - a completed GC neither bypasses
+  // it nor earns an earlier pass. updatePacing() widens or relaxes _effective_cadence_ns from the
+  // measured pause-time signal - see its own comment.
+  TEST_LOG_SUMMARY("ReferenceChainTracker::shouldRunPass -> true (now_ns=%llu last_pass_ns=%llu "
+           "delta=%llu effectiveCadenceNs=%llu)",
+           (unsigned long long)now_ns, (unsigned long long)load(_last_pass_ns),
+           (unsigned long long)(now_ns - load(_last_pass_ns)),
+           (unsigned long long)cadence_ns);
+  return true;
+}
+
+// Wall-clock interval the next root/stack-ref enumeration attempt must wait out - see the
+// ROOT_ENUM_* constants' comments (referenceChains.h) for why the floor extends with the last
+// attempt's measured in-safepoint cost and why it is capped.
+u64 ReferenceChainTracker::rootEnumIntervalFloorNs() const {
+  u64 interval_ns = ROOT_ENUM_MIN_INTERVAL_NS;
+  if (_last_root_enum_safepoint_ms > 0) {
+    u64 scaled_ns = std::min(
+        _last_root_enum_safepoint_ms * ROOT_ENUM_INTERVAL_NS_PER_COST_MS,
+        ROOT_ENUM_MAX_INTERVAL_NS);
+    interval_ns = std::max(interval_ns, scaled_ns);
+  }
+  return interval_ns;
+}
+
+// See the declaration's comment (referenceChains.h).
+bool ReferenceChainTracker::shouldRunRootEnum(u64 now_ns,
+                                              bool manual_first_pass) const {
+  // manual_first_pass is checked ahead of the interval: _last_root_enum_ns is 0 before the first
+  // attempt, and an agent starting early in the JVM's lifetime would otherwise see
+  // now_ns - 0 fall below the interval floor and skip the search's only mandatory enumeration.
+  if (manual_first_pass) {
+    return true;
+  }
+  return now_ns - _last_root_enum_ns >= rootEnumIntervalFloorNs();
+}
+
+// Search restart gate (this class's own header comment). Deliberately a probe (max=1) rather than
+// reusing pollWatchedTargets()'s own selectLeakCandidates() call - that one runs after runPass() in
+// threadLoop()'s own iteration and needs the *list* to poll each candidate's tag; this only needs
+// to know whether at least one exists.
+// Test-driving form of the latch machine: evaluates the live projection (what the zero-arg form
+// used to read) so tests advance the same machine publishUrgencyState() runs per iteration.
+bool ReferenceChainTracker::isUrgentForTest() const {
+  return isUrgent(LivenessTracker::instance()->secondsToOOM());
+}
+
+bool ReferenceChainTracker::isUrgent(double seconds_to_oom) const {
+  static_assert(LivenessTracker::OOM_PROJECTION_BURN_IN_NS / 1e9 >= OOM_URGENT_THRESHOLD_S,
+                "burn-in must cover the urgent horizon");
+  // Warmup is filtered inside secondsToOOM(), which produced the caller's projection: no
+  // projection (-1) until the burn-in passes (see OOM_PROJECTION_BURN_IN_NS for why it is
+  // age-based).
+  if (seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
+    _urgent_release_ticks = 0;
+    if (!_urgent_latched) {
+      _urgent_latched = true;
+      TEST_LOG_SUMMARY("ReferenceChainTracker::isUrgent latching urgency "
+               "(secondsToOOM=%.1f < OOM_URGENT_THRESHOLD_S=%.1f)",
+               seconds_to_oom, OOM_URGENT_THRESHOLD_S);
+    }
+    return true;
+  }
+  if (_urgent_latched) {
+    // Negative means "no projection" (secondsToOOM()'s own unknown/NOT_RISING/BURN_IN
+    // encoding), which counts toward release just like a comfortably distant projection does.
+    if (seconds_to_oom < 0 || seconds_to_oom >= OOM_URGENT_RELEASE_S) {
+      if (++_urgent_release_ticks >= URGENT_RELEASE_CONSECUTIVE) {
+        _urgent_latched = false;
+        _urgent_release_ticks = 0;
+        TEST_LOG_SUMMARY("ReferenceChainTracker::isUrgent releasing urgency "
+                 "(secondsToOOM=%.1f clear of OOM_URGENT_RELEASE_S=%.1f for "
+                 "%d consecutive observations)",
+                 seconds_to_oom, OOM_URGENT_RELEASE_S,
+                 URGENT_RELEASE_CONSECUTIVE);
+        return false;
+      }
+    } else {
+      // Between the two bars, or a single noisy reading past the release bar followed by one that
+      // is not - neither releases the latch.
+      _urgent_release_ticks = 0;
+    }
+    return true;
+  }
+  return false;
+}
+
+bool ReferenceChainTracker::updateUrgentAdmission(double seconds_to_oom, bool urgent) {
+  if (!urgent) {
+    // Cleared when the episode ends so the next episode re-snapshots against
+    // its own entry state instead of inheriting a stale baseline. The
+    // freshness state goes with it so a retained decision never carries into
+    // the next episode.
+    _admission_growth_baseline = 0;
+    _admission_sample_seq = 0;
+    _admission_decision = false;
+    return false;
+  }
+  // Emergency band: the projection says minutes at most - capture what the
+  // last chapter can before the process dies, without waiting for growth
+  // evidence. OOM_URGENT_THRESHOLD_S is isUrgent()'s own latch threshold, so
+  // the emergency band and the hysteretic urgent episode cover the same range.
+  // A negative projection is secondsToOOM()'s "no projection" encoding
+  // (burn-in, not rising, underfilled ring) - the same lower bound isUrgent()
+  // applies - so it is never an emergency: it falls through to the
+  // growth-gated path below.
+  if (seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
+    if (_admission_growth_baseline == 0) {
+      // Seed at emergency-band entry: the burn-in can hide the projection
+      // until it is already short, and without a seed the first ramp-band
+      // sample would re-snapshot and drop the boost mid-growth.
+      // An unstable read returns 0 and skips the seed - the baseline stays 0,
+      // so the next emergency-band iteration retries.
+      u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample();
+      if (newest_used != 0) {
+        _admission_growth_baseline = newest_used;
+      }
+    }
+    // Emergency admission is not growth evidence: _admission_sample_seq /
+    // _admission_decision stay untouched, so a later ramp-band observation
+    // still evaluates the newest sample against the (seeded) baseline.
+    return true;
+  }
+  u64 newest_seq = 0;
+  u64 newest_used = LivenessTracker::instance()->newestHeapFloorSample(&newest_seq);
+  if (newest_seq == LivenessTracker::HEAP_FLOOR_SEQ_UNSTABLE) {
+    // The reader exhausted its retry bound against a wrapping GC writer: hold
+    // the decision without consuming a seq, so the next iteration re-reads.
+    return _admission_decision;
+  }
+  if (newest_used == 0) {
+    // No sample to reason about (the ring cannot be empty while a projection
+    // exists - secondsToOOM() requires MIN_FILL samples - so this is purely
+    // defensive). Hold admission rather than admit on nothing.
+    return false;
+  }
+  if (_admission_growth_baseline == 0) {
+    // First observation of the episode: establish the entry baseline. Admit
+    // only once a newer sample has grown past it - one GC away for a real
+    // leak, never for a heap that has stopped growing.
+    _admission_growth_baseline = newest_used;
+    _admission_sample_seq = newest_seq;
+    _admission_decision = false;
+    return false;
+  }
+  if (newest_seq == _admission_sample_seq) {
+    // No GC has recorded a new sample since the last evaluation: hold the
+    // decision. Re-comparing this sample against the baseline it may just
+    // have raised would always read "no growth" and drop the boost after a
+    // single iteration.
+    return _admission_decision;
+  }
+  _admission_sample_seq = newest_seq;
+  // High-water mark: every admitted sample raises the baseline, so a heap
+  // that plateaus above the entry level loses the boost until growth resumes
+  // past the previous peak - a frozen entry snapshot would keep admitting it.
+  _admission_decision = newest_used > _admission_growth_baseline;
+  if (_admission_decision) {
+    _admission_growth_baseline = newest_used;
+  }
+  return _admission_decision;
+}
+
+// The urgency/admission reset shared by stop(), resetSearchStateForTest() and resetUrgencyForTest():
+// latch/release machine, episode baseline, and the freshness pair - the pair needs its own reset
+// because an emergency-band re-entry seeds the baseline without touching it, so a leaked pair would
+// make the next ramp-band call with no new GC sample return the previous recording's retained
+// admission decision.
+void ReferenceChainTracker::resetUrgencyState() {
+  _urgent_latched = false;
+  _urgent_release_ticks = 0;
+  _admission_growth_baseline = 0;
+  _admission_sample_seq = 0;
+  _admission_decision = false;
+}
+
+// Closes an urgency episode: restores the boosted budget ceiling and the ramped cadence. Guarded on
+// the boost flag because outside an episode updatePacing() owns _effective_cadence_ns. Production
+// callers: applyOomRamp(), and stop() (safe only because stopThread() has joined the BFS thread).
+void ReferenceChainTracker::closeUrgencyEpisode() {
+  if (_urgency_budget_boosted) {
+    _urgency_budget_boosted = false;
+    _budget = _configured_budget;
+    _effective_cadence_ns = PASS_CADENCE_NS;
+  }
+}
+
+void ReferenceChainTracker::publishUrgencyState(double seconds_to_oom, bool urgent) {
+  _oom_ramp_active = urgent;
+  // The latch machine runs here - once per iteration on threadLoop()'s single projection. It must
+  // not run in hasLeakSignal(): that gate sits behind canAffordNewSearch()'s cooldown, and the
+  // latch would stay frozen (possibly stale-latched after the heap recovered) for the cooldown's
+  // duration, suppressing runPass()'s no-progress abandonment on a search the stale latch starts.
+  isUrgent(seconds_to_oom);
+  LivenessTracker::instance()->setUrgentTracking(updateUrgentAdmission(seconds_to_oom, urgent));
+}
+
+// Contract: the decision depends only on leakSignalEnabled(), selectLeakCandidates() and the
+// latch this iteration's publishUrgencyState() already published (read here, never advanced).
+// seconds_to_oom is used only for logging and does not affect the decision: it is never compared
+// and never forwarded to isUrgent() or updateUrgentAdmission() - it reaches only the
+// TEST_LOG_SUMMARY diagnostic below, staying in the signature so the iteration's projection
+// appears in the gate's log next to the latch it produced.
+bool ReferenceChainTracker::hasLeakSignal(double seconds_to_oom) {
+  if (!LivenessTracker::instance()->leakSignalEnabled()) {
+    // No population-trend signal can be constructed - generations tracking
+    // and liveheap tracking are both off, so the per-klass population table
+    // and the heap-floor ring never fill (LivenessTracker gates them on the
+    // same effective flag). Stay idle: without a signal there is nothing to
+    // chase, and running whole-heap searches with zero candidates "just in
+    // case" burns safepoint time and frontier-table memory for zero
+    // diagnostic value.
+    return false;
+  }
+  // Reads the latch published by this iteration's publishUrgencyState() call - never a fresh
+  // secondsToOOM(), and never an update: this gate sits behind canAffordNewSearch()'s cooldown,
+  // so advancing the latch here would freeze it for the cooldown's duration. The OOM ramp's
+  // budget/cadence effects follow the raw band comparison and the 100% tracking admission follows
+  // updateUrgentAdmission()'s growth gate; neither waits for this latch.
+  bool urgent = _urgent_latched;
+  KlassCandidate probe[1];
+  int n = LivenessTracker::instance()->selectLeakCandidates(probe, 1);
+  // The urgent latch does NOT entitle a candidate-less search. With nothing
+  // tagged the search can never emit a chain, and while urgent the 30-pass
+  // no-progress abandonment is suppressed (runPass()'s terminal gate), so a
+  // candidate-less search would run to the full auto-tuned TTL doing whole-heap
+  // BFS - pure cost. A warmup heap-floor rise can trip the 5-minute projection
+  // with no tagged klass, so the refusal is unconditional, not a heuristic.
+  // Urgency drives the ramp and the admission boost on every iteration, but
+  // never authorizes a search.
+  TEST_LOG_SUMMARY("ReferenceChainTracker::hasLeakSignal -> %s (secondsToOOM=%.1f, "
+           "candidates=%d, urgent=%d)",
+           n > 0 ? "true" : "false", seconds_to_oom, n, urgent);
+  if (urgent && n == 0) {
+    // Observability for the candidate-only gate (TEST_LOG_SUMMARY above is debug/test-only):
+    // urgency is latched but no klass explains the growth, so no search starts and no chain is
+    // produced. One increment per refused evaluation (see counters.h).
+    Counters::increment(REFERENCE_CHAIN_URGENT_NO_CANDIDATE);
+  }
+  return n > 0;
+}
+
+bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
+  return canAffordNewSearch(now_ns, LivenessTracker::instance()->secondsToOOM());
+}
+
+bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns, double seconds_to_oom) {
+  if (!_safepoint_pain_budget.canStartNow(now_ns)) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::canAffordNewSearch blocked by "
+             "safepoint_pain_budget balance=%.1fms refill_rate=%.4f",
+             _safepoint_pain_budget.balanceMs(now_ns),
+             _pain_budget_refill_rate);
+    return false; // still cooling down from the last search's own cost
+  }
+  // Root-enum interval floor also gates a restarted search's first enumeration: restartSearch()
+  // deliberately keeps _last_root_enum_ns, closing the enumerate -> early-terminate -> restart ->
+  // enumerate loop. The != 0 guard preserves the brand-new-tracker exemption.
+  if (_last_root_enum_ns != 0 &&
+      now_ns - _last_root_enum_ns < rootEnumIntervalFloorNs()) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::canAffordNewSearch blocked by "
+             "root_enum_interval_floor since_last_enum_ms=%llu floor_ns=%llu",
+             (unsigned long long)((now_ns - _last_root_enum_ns) / 1000000ULL),
+             (unsigned long long)rootEnumIntervalFloorNs());
+    return false;
+  }
+  return hasLeakSignal(seconds_to_oom);
+}
+
+// Search restart (this class's own header comment). Called only from shouldRunPass() once
+// canAffordNewSearch() has approved it, immediately before returning true for this same iteration -
+// runPass() then sees _search_started == false and takes the first-pass branch, exactly like a
+// brand-new tracker.
+void ReferenceChainTracker::restartSearch() {
+  // Only called once shouldRunPass() has confirmed _tags_released - never while a prior search's
+  // release might still be pending (see _tags_released's own comment): resetting _next_tag to 1 /
+  // the frontier table below while some object could still hold this search's now- ambiguous tag
+  // would let the restarted search's fresh tags collide with it.
+  assert(_tags_released &&
+         "restartSearch() must not run before releaseSearchTags() has "
+         "confirmed every live tag was cleared");
+
+  // The finishing search's accumulated safepoint cost is spent by the terminal restart gate in
+  // shouldRunPass() BEFORE it calls this (see the gate's comment: the gate must see the finished
+  // search's cost), so no spend happens here.
+
+  if (_frontier != nullptr) {
+    _frontier->resetForRestart();
+  }
+  clearPendingChainInvalidations();
+  _next_tag = 1;
+  // Hop-edge label cache: keyed by raw class tags, which survive a restart (the shared class-tag
+  // allocator is deliberately not reset - see this method's own declaration comment) - but the
+  // frontier entries referencing them do not, and a restart is the natural bounded clear point for
+  // a cache capped by HOP_LABEL_CLASS_CACHE_CAP wholesale.
+  _hop_label_cache.clear();
+  // The shared class-tag counter (classTagAllocator.h)/_class_tags intentionally untouched - see
+  // this method's own declaration comment (referenceChains.h).
+
+  _search_started = false;
+  store(_search_state, (u8)SearchState::RUNNING);
+  store(_abandon_reason, (u8)SearchAbandonReason::NONE);
+  store(_search_start_ns, (u64)0);
+  _pending_expand.clear();
+  _priority_expand.clear();
+  _priority_expand_set.clear();
+  _static_anchor_fifo.clear();
+  _static_anchor_fifo_set.clear();
+  _static_anchor_fifo_klass_counts.clear();
+  _static_anchor_index.clear();
+  _static_anchor_own_class_tags.clear();
+  _static_anchor_index_tags.clear();
+  _anchor_container_cursor = 0;
+  _anchor_other_cursor = 0;
+  // Fresh lane: nothing admits before the search does, so nothing can have a pending first look
+  // either.
+  _static_anchor_fresh_queue.clear();
+  // Discovered-instance tags are FRONTIER tags - the reset above just invalidated every one of them
+  // (fresh tags restart from 1).
+  memset(_candidate_discovered_tags, 0, sizeof(_candidate_discovered_tags));
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  // Both keyed by frontier tags this restart is about to invalidate (fresh tags start again from 1)
+  // - a stale entry surviving past a restart would be compared against whatever unrelated object
+  // the new search has since reassigned that tag to.
+  _leak_signature_totals.clear();
+  _leak_signature_prev_totals.clear();
+  _leak_parent_fanout.clear();
+  _leak_tags_assigned = 0;
+  _leak_tags_resolved = 0;
+  _root_enum_incomplete = false;
+  _consecutive_enum_errors = 0;
+  store(_last_pass_ns, (u64)0);
+  store(_passes_run, 0);
+  // Reset back to their just-constructed values (0 / -1) like every other per-search field this
+  // method touches: resolveLoadedClasses() and admitStaticFieldRoots() must both run
+  // unconditionally on the restarted search's first pass, exactly as they do for a brand-new
+  // tracker.
+  _last_resolved_class_count = 0;
+  _last_static_field_class_count = -1;
+  // _resolved_chains is intentionally left intact: a chain resolved by the finishing search stays
+  // cached (and keeps being re-emitted on every dump) across the restart, since it describes a
+  // sample that is still live.
+}
+
+void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
+                                                     JNIEnv *jni) {
+  // Every field touched below is otherwise only ever mutated by the BFS thread itself
+  // (threadLoop()/runPass()/pollWatchedTargets()) - without stopping it first, a pass already in
+  // flight on that thread can observe this reset only partially, or overwrite it right back (e.g.
+  // finish a pass that was already headed for SearchState::ABANDONED after this method has just
+  // forced SearchState::RUNNING below), a race found in practice, not just in theory.
+  stopThread();
+
+  // Clear every live tag this search still holds before resetting - the same ordering
+  // restartSearch() itself requires (its own assert), so a stale tag from whatever search a
+  // previous test left running cannot collide with the fresh search's own tags once _next_tag is
+  // rewound below.
+  if (jvmti != nullptr && jni != nullptr) {
+    releaseSearchTags(jvmti, jni);
+  }
+  _tags_released = true;
+
+  _safepoint_pain_budget.spend(_search_pain_ms);
+  _search_pain_ms = 0;
+  // Reset the pain budget entirely so a fresh test starts from zero debt, independent of how much
+  // wall-clock time has elapsed since the last test's spend().
+  _safepoint_pain_budget = PainBudget(_pain_budget_refill_rate);
+  // Mirror the reset for the non-safepoint budget - same test-isolation rationale as
+  // _safepoint_pain_budget above.
+  _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
+  // Same test-isolation rationale: a latched episode left behind by an earlier test would ramp this
+  // one from a stale projection, and a boosted _budget/_effective_cadence_ns the old reset missed
+  // would leak into it - hence both helpers.
+  resetUrgencyState();
+  closeUrgencyEpisode();
+
+  if (_frontier != nullptr) {
+    // Rebuilds the table at this test's own _configured_frontier_cap, undoing any smaller framecap=
+    // an earlier test left it permanently sized at (this class's own header comment on
+    // @TestMethodOrder) - restartSearch()'s production path only calls the cheaper
+    // resetForRestart() since it never needs to change the cap mid-JVM.
+    _frontier->resetCapacityForTest(_configured_frontier_cap);
+  }
+  _next_tag = 1;
+
+  _search_started = false;
+  store(_search_state, (u8)SearchState::RUNNING);
+  store(_abandon_reason, (u8)SearchAbandonReason::NONE);
+  store(_search_start_ns, (u64)0);
+  _pending_expand.clear();
+  _priority_expand.clear();
+  _priority_expand_set.clear();
+  _static_anchor_fifo.clear();
+  _static_anchor_fifo_set.clear();
+  _static_anchor_fifo_klass_counts.clear();
+  _static_anchor_index.clear();
+  _static_anchor_own_class_tags.clear();
+  _static_anchor_index_tags.clear();
+  _anchor_container_cursor = 0;
+  _anchor_other_cursor = 0;
+  _static_anchor_fresh_queue.clear();
+  // Same stale-frontier-tag hygiene as restartSearch() (see its comment): discovered tags are
+  // frontier tags, invalid across the test reset just as across a restart.
+  memset(_candidate_discovered_tags, 0, sizeof(_candidate_discovered_tags));
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  // Test-only extra: production restartSearch() keeps _class_shape_cache (class tags are
+  // JVM-lifetime-stable there), but test scenarios script class-tag values directly and a later
+  // test can reuse an earlier one for a different mock class - clear the cache between tests.
+  _class_shape_cache.clear();
+  // Same reset rationale as restartSearch()'s own comment.
+  _leak_signature_totals.clear();
+  _leak_signature_prev_totals.clear();
+  _leak_parent_fanout.clear();
+  _leak_tags_assigned = 0;
+  _leak_tags_resolved = 0;
+  store(_last_pass_ns, (u64)0);
+  store(_passes_run, 0);
+  _passes_since_last_progress = 0;
+  _passes_since_last_candidate_progress = 0;
+  _last_candidate_progress_mark = 0;
+  _canary_backoff_mult = 1;
+  _canary_pass_ema_ms = 0;
+  _last_canary_pass_ns = 0;
+  _canary_stuck_restart_count = 0;
+  // Same "just-constructed values" contract resetForRestart() already documents for these two
+  // fields - without it, a prior test's fully-swept (or partially-swept) state survives in this
+  // process-wide singleton (ReferenceChainTracker::instance()) and can wrongly skip
+  // admitStaticFieldRoots() entirely on this test's first pass if its resolved class count happens
+  // to match whatever an earlier test last left behind (found via a real gtest-suite-order failure,
+  // not hypothetical).
+  _last_resolved_class_count = 0;
+  _last_static_field_class_count = -1;
+  _static_field_sweep_cursor = 0;
+  // Reset the pacing/enumeration state the scheduling gates read: an earlier test's seeded
+  // cadence or root-enum cost would otherwise throttle every later test's BFS thread; _last_pass_ns
+  // is already zeroed above, so the spacing gate is open. Plain write: the BFS thread is stopped.
+  _effective_cadence_ns = PASS_CADENCE_NS;
+  _last_root_enum_ns = 0;
+  _last_root_enum_safepoint_ms = 0;
+  _root_enum_incomplete = false;
+  _consecutive_enum_errors = 0;
+  _static_field_sweep_cycle_truncated = false;
+  _candidate_count = 0;
+  _candidate_found_bits = 0;
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  memset(_candidate_qualifying_tid_count, 0,
+         sizeof(_candidate_qualifying_tid_count));
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    _resolved_chains.clear();
+  }
+  clearPendingChainInvalidations();
+  {
+    ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
+    _pending_abandoned_events.clear();
+  }
+
+  // Restart the BFS thread against this freshly reset state - startThread() itself clears
+  // _abort_pass_requested, so the new thread's very first pass is not instantly aborted by the flag
+  // stopThread() just set above.
+  startThread();
+}
+
+long ReferenceChainTracker::pendingExpandPositionForTest(jlong tag) const {
+  if (tag == 0) {
+    return -2;
+  }
+  // _pending_expand/_priority_expand are otherwise only touched by the BFS thread under
+  // _engine_lock (runPass()/expandFrontier(), and shouldRunPass()'s restart branch) - take the
+  // same lock here so this read-only snapshot cannot observe either deque mid-mutation.
+  MutexLocker engine_guard(_engine_lock);
+  // _priority_expand drains first (expandFrontier()'s own comment), so its entries are reported as
+  // coming before _pending_expand's.
+  long pos = 0;
+  for (jlong queued : _priority_expand) {
+    if (queued == tag) {
+      return pos;
+    }
+    pos++;
+  }
+  for (jlong queued : _pending_expand) {
+    if (queued == tag) {
+      return pos;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+int ReferenceChainTracker::frontierStateForTest(jlong object_tag) {
+  if (object_tag <= 0 || isLeakTag(object_tag)) {
+    return -1;
+  }
+  // Same lock as the pendingExpand*ForTest() seams above: the BFS thread mutates the frontier
+  // (insert/expand/abandon in runPass(), resetForRestart() via shouldRunPass()'s restart branch)
+  // only under _engine_lock, so this snapshot never observes a pass or restart mid-flight.
+  MutexLocker engine_guard(_engine_lock);
+  if (_frontier == nullptr) {
+    return -1;
+  }
+  FrontierEntry entry{};
+  if (!_frontier->lookup(object_tag, &entry)) {
+    return -1;
+  }
+  return (int)entry.state;
+}
+
+size_t ReferenceChainTracker::pendingExpandSizeForTest() const {
+  MutexLocker engine_guard(_engine_lock);
+  return _pending_expand.size() + _priority_expand.size();
+}
+
+jlong ReferenceChainTracker::tagObject(jvmtiEnv *jvmti, jobject obj) {
+  assert(!t_inGCCallback &&
+         "SetTag is a JVMTI Heap-category call and must not be made from "
+         "GarbageCollectionStart/Finish");
+  jlong tag = nextTag();
+  jvmtiError err = jvmti->SetTag(obj, tag);
+  if (err != JVMTI_ERROR_NONE) {
+    return 0;
+  }
+  return tag;
+}
+
+jlong ReferenceChainTracker::getTag(jvmtiEnv *jvmti, jobject obj) {
+  assert(!t_inGCCallback &&
+         "GetTag is a JVMTI Heap-category call and must not be made from "
+         "GarbageCollectionStart/Finish");
+  jlong tag = 0;
+  jvmtiError err = jvmti->GetTag(obj, &tag);
+  if (err != JVMTI_ERROR_NONE) {
+    return 0;
+  }
+  return tag;
+}
+
+void ReferenceChainTracker::clearTag(jvmtiEnv *jvmti, jobject obj) {
+  assert(!t_inGCCallback &&
+         "SetTag is a JVMTI Heap-category call and must not be made from "
+         "GarbageCollectionStart/Finish");
+  jvmti->SetTag(obj, 0);
+}
+
+jlong ReferenceChainTracker::tagAsRootForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                               jobject obj) {
+  if (_frontier == nullptr || jvmti == nullptr || jni == nullptr ||
+      obj == nullptr) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::tagAsRootForTest refused: "
+             "frontier=%p jvmti=%p jni=%p obj=%p",
+             (void *)_frontier, (void *)jvmti, (void *)jni, (void *)obj);
+    return 0;
+  }
+  // Resolves the klass_id via the same GetClassSignature + normalizeClassSignature +
+  // Profiler::lookupClass sequence every consumer in this subsystem uses
+  // (ObjectSampler::recordAllocation(), LivenessTracker::resolveKlassId(), resolveClassMap() above)
+  // - the id space is load-bearing here: pollWatchedTargets() matches frontier entries against leak
+  // candidates by klass_id, and the candidate ids come from that signature-notation space
+  // (Class.getName()'s dot form is a DIFFERENT StringDictionary key - see
+  // find-klass-id-notation-mismatch).
+  u32 klass_id = 0;
+  jclass klass = jni->GetObjectClass(obj);
+  char *class_name = nullptr;
+  if (jvmti->GetClassSignature(klass, &class_name, nullptr) ==
+          JVMTI_ERROR_NONE &&
+      class_name != nullptr) {
+    const char *name_slice = nullptr;
+    size_t name_len = 0;
+    if (ObjectSampler::normalizeClassSignature(class_name, &name_slice,
+                                                &name_len)) {
+      int id = Profiler::instance()->lookupClass(name_slice, name_len);
+      if (id != -1) {
+        klass_id = (u32)id;
+      }
+    }
+    jvmti->Deallocate((unsigned char *)class_name);
+  }
+  jni->DeleteLocalRef(klass);
+
+  // Tags `obj` and inserts it as a frontier root (parent_tag=0, depth=0), exactly the convention
+  // runPass()'s heap-root callback path already uses (referenceChains.cpp's
+  // heapReferenceCallback(), referrer_tag_ptr == nullptr branch) - this lets a test drive the real
+  // BFS/chain- reconstruction logic (runPass()/pollWatchedTargets()/buildChainEvent()) against a
+  // known, caller-chosen live object, decoupled from whether the real root-seeded walk or
+  // LivenessTracker's probabilistic sampler happens to reach/select it on its own.
+  jlong tag = tagObject(jvmti, obj);
+  if (tag == 0) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::tagAsRootForTest refused: "
+             "tagObject (SetTag) failed");
+    return 0;
+  }
+  if (!_frontier->insert(tag, 0, klass_id, 0)) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::tagAsRootForTest refused: "
+             "frontier insert failed tag=%lld klass_id=%u",
+             (long long)tag, klass_id);
+    clearTag(jvmti, obj);
+    return 0;
+  }
+  // Discovery recording for this seam's decoupling contract.
+  if (_candidate_count > 0) {
+    recordDiscoveredInstance(klass_id, tag, false,
+                             CacheInvalidationMode::SYNCHRONOUS, nullptr, 0);
+  }
+  return tag;
+}

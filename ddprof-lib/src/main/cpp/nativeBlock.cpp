@@ -61,34 +61,26 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
     return;
   }
 
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (slot_id < 0) {
-    return;
-  }
-
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return;
   }
 
-  u64 token = thread_filter->enterBlockedRun(slot_id, state, BlockRunOwner::NATIVE);
-  if (token == 0) {
-    return;
-  }
+  TaskBlockActivity activity;
+  if (!activity.active()) return;
+  ThreadFilter::SlotID slot_id = thread_filter->ensureOwnerSlot(*current);
+  if (slot_id < 0) return;
+  current->refreshBlockState(thread_filter->slotForId(slot_id)->recordingEpoch());
+  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::NATIVE);
+  if (token == 0) return;
 
   _active = true;
   _tid = current->tid();
   _slot_id = slot_id;
-  _generation = ThreadFilter::tokenGeneration(token);
+  _generation = WallClockBlockTracker::tokenGeneration(token);
   _start_ticks = TSC::ticks();
   _context = context;
-  if (!profiler->registerTaskBlockRun(_slot_id, _generation, _tid,
-                                      _start_ticks, _context, _blocker,
-                                      _state)) {
-    thread_filter->exitBlockedRun(_slot_id, _generation);
-    _active = false;
-  }
 }
 
 NativeBlockScope::~NativeBlockScope() {
@@ -109,41 +101,13 @@ void NativeBlockScope::finish(u64 end_ticks) {
   }
   _active = false;
 
+  ProfiledThread* current = ProfiledThread::current();
+  if (current == nullptr || current->tid() != _tid) return;
   Profiler* profiler = Profiler::instance();
-  ThreadFilter* thread_filter = profiler->threadFilter();
-  bool recording_enabled =
-      profiler->taskBlockEnabled() && thread_filter->registryActive();
-  bool activity = profiler->tryEnterTaskBlockActivity();
-  if (!activity) {
-    // The rotation boundary is captured before new exits are rejected, so a
-    // fresh timestamp places this completion unambiguously in the next chunk.
-    end_ticks = TSC::ticks();
-  }
-  BlockRunSnapshot snapshot{};
-  bool exited = thread_filter->snapshotAndExitBlockedRun(
-      _slot_id, _generation, &snapshot);
-  u64 segment_start = activity
-      ? profiler->taskBlockSegmentStart(_slot_id, _generation)
-      : 0;
-  profiler->completeTaskBlockRun(_slot_id, _generation, end_ticks, _blocker, 0);
-
-  if (!activity) {
-    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-    return;
-  }
-
-  if (!recording_enabled || !exited) {
-    profiler->clearTaskBlockRun(_slot_id, _generation);
-    profiler->leaveTaskBlockActivity();
-    return;
-  }
-
-  if (segment_start == 0) segment_start = _start_ticks;
-  recordTaskBlockIfEligible(_tid, nullptr, 0, segment_start, end_ticks,
-                            _context, _blocker, 0,
-                            snapshot.active_state, true);
-  profiler->clearTaskBlockRun(_slot_id, _generation);
-  profiler->leaveTaskBlockActivity();
+  finishTaskBlockAtExit(current, profiler->threadFilter(), profiler->blockTracker(),
+                        nullptr, 0,
+                        WallClockBlockTracker::encodeBlockRunToken(_slot_id, _generation),
+                        _start_ticks, _context, _blocker, 0, end_ticks);
 }
 
 #endif // __linux__

@@ -15,43 +15,46 @@
  */
 package com.datadoghq.profiler.memleak;
 
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Regression test for PROF-14545: SIGSEGV in Recording::cleanupUnreferencedMethods.
  *
  * <p>The bug: cleanupUnreferencedMethods() was called after finishChunk() released its
- * GetLoadedClasses pins. ~SharedLineNumberTable() called jvmti-&gt;Deallocate() on
- * JVMTI-allocated line-number-table memory that the JVM had already freed on class
- * unload → SIGSEGV.
+ * GetLoadedClasses pins. ~SharedLineNumberTable() called jvmti-&gt;Deallocate() on JVMTI-allocated
+ * line-number-table memory that the JVM had already freed on class unload → SIGSEGV.
  *
  * <p>The fix: two complementary changes:
+ *
  * <ol>
- *   <li>cleanupUnreferencedMethods() is now called inside finishChunk(), before
- *       DeleteLocalRef releases the GetLoadedClasses pins.</li>
- *   <li>fillJavaMethodInfo() copies the JVMTI line-number-table into a malloc'd buffer
- *       and immediately calls jvmti-&gt;Deallocate() on the original; cleanup calls free()
- *       on the malloc'd copy, which is safe regardless of class-unload state.</li>
+ *   <li>cleanupUnreferencedMethods() is now called inside finishChunk(), before DeleteLocalRef
+ *       releases the GetLoadedClasses pins.
+ *   <li>fillJavaMethodInfo() validates the JVMTI-returned (pointer, size) pair once, at capture
+ *       time (a sanity bound on the size plus a SafeAccess readability probe), then holds that
+ *       exact buffer directly in SharedLineNumberTable -- no private copy. Per the JVMTI spec,
+ *       GetLineNumberTable()'s returned array is a fresh, caller-owned allocation decoupled from
+ *       the Method's lifetime, so once validated it stays safe to free with jvmti-&gt;Deallocate()
+ *       (not free()) regardless of class-unload state, whenever cleanup finally evicts the row.
  * </ol>
  *
  * <p>This test reproduces the crash scenario:
+ *
  * <ol>
- *   <li>A dynamically-loaded class with line number tables appears in profiling stack traces</li>
- *   <li>All references to the class and its class loader are dropped</li>
- *   <li>The JVM is encouraged to GC and unload the class (System.gc())</li>
- *   <li>AGE_THRESHOLD+1 dump cycles are triggered to age the method out of the method_map</li>
- *   <li>cleanupUnreferencedMethods() must not SIGSEGV when freeing the line number table</li>
+ *   <li>A dynamically-loaded class with line number tables appears in profiling stack traces
+ *   <li>All references to the class and its class loader are dropped
+ *   <li>The JVM is encouraged to GC and unload the class (System.gc())
+ *   <li>AGE_THRESHOLD+1 dump cycles are triggered to age the method out of the method_map
+ *   <li>cleanupUnreferencedMethods() must not SIGSEGV when freeing the line number table
  * </ol>
  */
 @Tag("slow")
@@ -74,8 +77,7 @@ public class CleanupAfterClassUnloadTest extends AbstractDynamicClassTest {
     Path dumpFile = tempFile("prof14545-dump");
 
     try {
-      profiler.execute(
-          "start,cpu=1ms,jfr,mcleanup=true,file=" + baseFile.toAbsolutePath());
+      profiler.execute("start,cpu=1ms,jfr,mcleanup=true,file=" + baseFile.toAbsolutePath());
       Thread.sleep(200); // Let the profiler stabilize
 
       // 1. Load a class, execute its methods to appear in CPU profiling stack traces,
@@ -93,7 +95,8 @@ public class CleanupAfterClassUnloadTest extends AbstractDynamicClassTest {
         System.gc();
         Thread.sleep(30);
       }
-      assumeTrue(loaderRef.get() == null,
+      assumeTrue(
+          loaderRef.get() == null,
           "Skipping: class loader not GC'd within 8 s — class unloading is required for this test to be meaningful");
 
       // 4. Run AGE_THRESHOLD+1 dump cycles so the method ages out and cleanup fires.
@@ -110,21 +113,31 @@ public class CleanupAfterClassUnloadTest extends AbstractDynamicClassTest {
       //    process would have died and this line would never be reached.
       profiler.stop();
 
-      assertTrue(Files.size(dumpFile) > 0,
+      assertTrue(
+          Files.size(dumpFile) > 0,
           "Profiler produced no output — it may have crashed during method_map cleanup");
 
     } finally {
-      try { profiler.stop(); } catch (Exception ignored) {}
-      try { Files.deleteIfExists(baseFile); } catch (IOException ignored) {}
-      try { Files.deleteIfExists(dumpFile); } catch (IOException ignored) {}
+      try {
+        profiler.stop();
+      } catch (Exception ignored) {
+      }
+      try {
+        Files.deleteIfExists(baseFile);
+      } catch (IOException ignored) {
+      }
+      try {
+        Files.deleteIfExists(dumpFile);
+      } catch (IOException ignored) {
+      }
     }
   }
 
   /**
-   * Loads a dynamically-generated class with line number tables in a fresh ClassLoader,
-   * invokes its methods on the current thread while CPU profiling is active so that
-   * the profiler calls GetLineNumberTable and stores it in method_map, then returns a
-   * WeakReference to the ClassLoader so callers can detect unloading.
+   * Loads a dynamically-generated class with line number tables in a fresh ClassLoader, invokes its
+   * methods on the current thread while CPU profiling is active so that the profiler calls
+   * GetLineNumberTable and stores it in method_map, then returns a WeakReference to the ClassLoader
+   * so callers can detect unloading.
    */
   private WeakReference<ClassLoader> loadAndProfileDynamicClass() throws Exception {
     String className = "com/datadoghq/profiler/generated/Prof14545Class" + (classCounter++);

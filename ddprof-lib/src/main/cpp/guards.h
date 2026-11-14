@@ -19,10 +19,14 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <setjmp.h>
+#include <cerrno>
 #include <signal.h>
 #include <pthread.h>
 
+#include "common.h"
 #include "counters.h"
+#include "debugSupport.h"
 
 class ProfiledThread;
 
@@ -94,25 +98,26 @@ public:
 private:
     ProfiledThread* _current;
     bool _active;
+    DEBUG_ONLY(int _signal_depth;)
 };
 
-// Shared drop-path body for the SIGNAL_HANDLER_GUARD_OR_DROP* macros below.
-// extra_stmt runs after the dropped-sample counter increment and before the
-// return, so both macros stay in lockstep as the drop-accounting logic
-// evolves.
-#define SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(extra_stmt)       \
+// Declare a scope guard local that increments the depth on entry and
+// decrements on scope exit.  In the common case, use as the first statement
+// after any foreign-signal-origin rejection check, before any profiling-owned
+// work. If the handler also needs to preserve errno across its early
+// returns, declare an ErrnoPreserver before this macro -- it must be the
+// first-declared local in the handler so it destructs last, after every
+// other guard (including this one) has had a chance to touch errno. The same
+// ordering applies to any other guard whose cleanup must still run on the
+// drop path below (e.g. PerfEvents::signalHandler's PerfFdRearmGuard):
+// declare it before this macro too, so its destructor still fires when
+// SIGNAL_HANDLER_GUARD_OR_DROP() returns early.
+#define SIGNAL_HANDLER_GUARD_OR_DROP()                      \
       SignalHandlerScope _signal_handler_scope(true);       \
       if (!_signal_handler_scope.isActive()) {              \
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
-        extra_stmt;                                         \
         return;                                             \
       }
-
-// Declare a scope guard local that increments the depth on entry and
-// decrements on scope exit.  Use as the first statement after any 
-// foreign-signal-origin rejection check, before any profiling-owned work
-#define SIGNAL_HANDLER_GUARD_OR_DROP() SIGNAL_HANDLER_GUARD_OR_DROP_IMPL((void)0)
-#define SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(err) SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(errno = err)
 
 
 // Declare a scope guard local that increments the depth on entry and
@@ -192,6 +197,61 @@ public:
     bool entered() const { return _entered; }
 };
 
+// RAII for the per-thread siglongjmp landing pad (ProfiledThread::_jmp_buf)
+// that Profiler::checkFault() jumps through.
+//
+// The previous landing pad must be reinstated on *every* exit from the frame
+// that owns the sigjmp_buf -- normal return, a siglongjmp back into it, or an
+// exception unwinding out of it -- because checkFault() will happily jump into
+// a landing pad whose stack frame has already been popped. Hand-rolled
+// "setJmpCtx(prev) before each return" only covers the returns the author
+// remembered.
+//
+// Both members are const and initialised before the owning frame calls
+// sigsetjmp(), and install()/restore() mutate only the ProfiledThread, so the
+// guard's own state is never modified between sigsetjmp() and siglongjmp().
+// Reading it from the landing pad is therefore well defined -- unlike a plain
+// non-volatile local, whose value after siglongjmp is indeterminate if it was
+// assigned in the meantime.
+//
+// Usage:
+//   sigjmp_buf ctx;
+//   JmpCtxScope jmp_scope(prof_thread);       // pt must be non-null
+//   if (sigsetjmp(ctx, 1) != 0) {             // savemask=1: see note below
+//     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+//     jmp_scope.restore();                    // disarm before anything else
+//     return recovery_value;
+//   }
+//   jmp_scope.install(&ctx);
+//   ... risky work ...
+//
+// The one unsupported pattern: calling restore() and then installing a
+// different sigjmp_buf in the same frame without a fresh JmpCtxScope. The
+// guard only ever reinstates the context that was live when it was
+// constructed, so use one scope per sigjmp_buf.
+//
+// savemask must be 1: the siglongjmp originates inside the SIGSEGV handler,
+// where the kernel has SIGSEGV blocked, so without restoring the saved mask the
+// signal would stay blocked and the next fault on this thread would be fatal.
+class JmpCtxScope {
+public:
+    // `pt` must be non-null.
+    explicit JmpCtxScope(ProfiledThread* pt);
+    ~JmpCtxScope();
+    // Publish `ctx` as this thread's landing pad; call after sigsetjmp()
+    // returns 0.
+    void install(sigjmp_buf* ctx);
+    // Reinstate the previous landing pad now. Idempotent with the destructor,
+    // so it is safe (and required) to call from the sigsetjmp landing pad
+    // before touching anything that could fault again.
+    void restore();
+    JmpCtxScope(const JmpCtxScope&)            = delete;
+    JmpCtxScope& operator=(const JmpCtxScope&) = delete;
+private:
+    ProfiledThread* const _pt;
+    sigjmp_buf* const _prev;
+};
+
 /**
  * RAII guard to block profiling signals during critical operations.
  *
@@ -248,6 +308,62 @@ public:
   // Non-copyable
   SignalBlocker(const SignalBlocker&) = delete;
   SignalBlocker& operator=(const SignalBlocker&) = delete;
+};
+
+/**
+ * RAII guard around the span of a signal handler during which the current
+ * thread is the one being sampled. Sets Shims::instance().setSighandlerTid(tid)
+ * on construction and resets it to -1 on destruction, so the reset happens on
+ * every normal return path out of the guarded scope. A siglongjmp that unwinds
+ * past this frame (see the chained-handler note in Profiler::segvHandler)
+ * bypasses the destructor and leaves the tid pinned, matching the behaviour of
+ * the manual set/reset statements this guard replaces.
+ *
+ * Not nesting-safe: the destructor restores a hardcoded -1 rather than the
+ * previous tid. Every current call site sits inside a CriticalSection, which
+ * rules out a second live guard on the same thread.
+ *
+ * Must be scoped narrowly around the recordSample call rather than wrapped
+ * around the whole handler: widening the scope would change the window during
+ * which the sighandler tid is observably set for other consumers of Shims
+ * (e.g. crash-handler / re-entrant stack-walking code).
+ */
+class SighandlerTidScope {
+public:
+  explicit SighandlerTidScope(int tid) {
+    Shims::instance().setSighandlerTid(tid);
+  }
+  ~SighandlerTidScope() {
+    Shims::instance().setSighandlerTid(-1);
+  }
+
+  // Non-copyable
+  SighandlerTidScope(const SighandlerTidScope&) = delete;
+  SighandlerTidScope& operator=(const SighandlerTidScope&) = delete;
+};
+
+/**
+ * RAII guard that saves errno on construction and restores it on
+ * destruction, regardless of which normal return path is taken in between.
+ * (A siglongjmp past this frame bypasses the destructor, as it does for any
+ * RAII guard here.)
+ *
+ * Declare it as the *first* local in the guarded function, ahead of every
+ * other guard whose cleanup may touch errno: C++ destroys locals in reverse
+ * declaration order, so it then destructs last and its restore is the final
+ * word on errno.
+ */
+class ErrnoPreserver {
+public:
+  ErrnoPreserver() : _errno(errno) { }
+  ~ErrnoPreserver() { errno = _errno; }
+
+  // Non-copyable
+  ErrnoPreserver(const ErrnoPreserver&) = delete;
+  ErrnoPreserver& operator=(const ErrnoPreserver&) = delete;
+
+private:
+  int _errno;
 };
 
 #endif // _GUARDS_H

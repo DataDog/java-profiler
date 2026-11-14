@@ -1,5 +1,5 @@
 /*
- * Copyright 2021, 2022 Datadog, Inc
+ * Copyright 2021, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #define _CONTEXT_H
 
 #include "arch.h"
+#include <cassert>
 
 static const u32 DD_TAGS_CAPACITY = 10;
 
@@ -29,9 +30,32 @@ class alignas(DEFAULT_CACHE_LINE_SIZE) Context {
 public:
   u64 spanId;
   u64 rootSpanId;
+private:
   Tag tags[DD_TAGS_CAPACITY];
 
-  Tag get_tag(int i) { return tags[i]; }
+  static bool isValidIndex(int i) {
+    return i >= 0 && (u32)i < DD_TAGS_CAPACITY;
+  }
+public:
+  u32 getTag(int i) const {
+    assert(isValidIndex(i));
+    return isValidIndex(i) ? tags[i].value : 0;
+  }
+  
+  bool equals(const Context& other) const {
+    if (spanId != other.spanId || rootSpanId != other.rootSpanId) return false;
+    for (int i = 0; i < static_cast<int>(DD_TAGS_CAPACITY); ++i) {
+      if (getTag(i) != other.getTag(i)) return false;
+    }
+    return true;
+  }
+
+  void setTag(int i, u32 value) {
+    assert(isValidIndex(i));
+    if (isValidIndex(i)) {
+      tags[i].value = value;
+    }
+  }
 };
 
 #endif /* _CONTEXT_H */

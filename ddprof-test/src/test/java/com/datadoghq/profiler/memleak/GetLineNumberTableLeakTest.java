@@ -15,39 +15,41 @@
  */
 package com.datadoghq.profiler.memleak;
 
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 /**
- * Test to validate that method_map cleanup prevents unbounded memory growth in continuous profiling.
+ * Test to validate that method_map cleanup prevents unbounded memory growth in continuous
+ * profiling.
  *
- * <p>This test focuses on the production scenario where the profiler runs continuously for
- * extended periods without stop/restart cycles. In production, Recording objects live for the
- * entire application lifetime (days/weeks), and without cleanup, _method_map would accumulate
- * ALL methods encountered, causing unbounded growth (observed: 1.2 GB line number table leak).
+ * <p>This test focuses on the production scenario where the profiler runs continuously for extended
+ * periods without stop/restart cycles. In production, Recording objects live for the entire
+ * application lifetime (days/weeks), and without cleanup, _method_map would accumulate ALL methods
+ * encountered, causing unbounded growth (observed: 1.2 GB line number table leak).
  *
  * <p><b>What This Test Validates:</b>
+ *
  * <ul>
- *   <li>Age-based cleanup removes methods unused for 3+ consecutive chunks</li>
- *   <li>method_map size stays bounded (~200-400 methods) with cleanup vs unbounded without</li>
- *   <li>Cleanup runs during switchChunk() triggered by dump() to different file</li>
- *   <li>Line number table count tracked via Counters infrastructure</li>
- *   <li>Class unloading frees SharedLineNumberTable memory naturally</li>
+ *   <li>Age-based cleanup removes methods unused for 3+ consecutive chunks
+ *   <li>method_map size stays bounded (~200-400 methods) with cleanup vs unbounded without
+ *   <li>Cleanup runs during switchChunk() triggered by dump() to different file
+ *   <li>Line number table count tracked via Counters infrastructure
+ *   <li>Class unloading frees SharedLineNumberTable memory naturally
  * </ul>
  *
  * <p><b>Test Strategy:</b>
+ *
  * <ul>
- *   <li>Continuous profiling (NO stop/restart cycles)</li>
- *   <li>Generate transient methods across multiple chunk boundaries</li>
- *   <li>Dump to different file from startup file to trigger switchChunk()</li>
- *   <li>Validate cleanup via TEST_LOG output showing bounded method_map</li>
- *   <li>Allow natural class unloading (no strong references held)</li>
- *   <li>Combined cleanup: method_map cleanup + class unloading</li>
+ *   <li>Continuous profiling (NO stop/restart cycles)
+ *   <li>Generate transient methods across multiple chunk boundaries
+ *   <li>Dump to different file from startup file to trigger switchChunk()
+ *   <li>Validate cleanup via TEST_LOG output showing bounded method_map
+ *   <li>Allow natural class unloading (no strong references held)
+ *   <li>Combined cleanup: method_map cleanup + class unloading
  * </ul>
  */
 @Tag("slow")
@@ -60,8 +62,8 @@ public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
   }
 
   /**
-   * Generates and loads truly unique classes using ASM bytecode generation.
-   * Each class has multiple methods with line number tables to trigger GetLineNumberTable calls.
+   * Generates and loads truly unique classes using ASM bytecode generation. Each class has multiple
+   * methods with line number tables to trigger GetLineNumberTable calls.
    *
    * @return array of generated classes for later reuse
    */
@@ -117,6 +119,7 @@ public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
    * does NOT trigger switchChunk.
    *
    * <p><b>Expected results (validated via TEST_LOG):</b>
+   *
    * <ul>
    *   <li>WITHOUT cleanup: method_map grows unbounded (~10k methods generated)
    *   <li>WITH cleanup: method_map stays bounded at ~200-400 methods (age-based removal)
@@ -144,10 +147,7 @@ public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
       System.out.println("\n=== Phase 1: WITHOUT cleanup (mcleanup=false) ===");
 
       profiler.execute(
-          "start,"
-              + getProfilerCommand()
-              + ",jfr,mcleanup=false,file="
-              + noCleanupBaseFile);
+          "start," + getProfilerCommand() + ",jfr,mcleanup=false,file=" + noCleanupBaseFile);
 
       Thread.sleep(300); // Stabilize
 
@@ -239,5 +239,4 @@ public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
       }
     }
   }
-
 }

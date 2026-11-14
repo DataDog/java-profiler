@@ -1527,6 +1527,97 @@ protected:
 
 } // namespace
 
+TEST_F(LibraryPatcherSocketTransactionTest,
+       NonSocketLiveWalkRestoresOnlyItsImportsWhileSocketOwnerStaysActive) {
+  ASSERT_EXIT({
+    initializeFixture();
+    if (HasFatalFailure()) _exit(1);
+    ScopedNativeSocketInterposerActive interposer_active(true);
+    ScopedHookOwnerPid owner(getpid());
+    ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+    expectImports(true, 1);
+    ASSERT_NE(nullptr, libraries[0]->peekImport(im_pthread_create));
+    void** thread_slot = libraries[0]->peekImport(im_pthread_create);
+    void* thread_original = __atomic_load_n(thread_slot, __ATOMIC_ACQUIRE);
+    u64 fingerprint = libraries[0]->imageFingerprint();
+    ASSERT_NE(0ULL, fingerprint);
+
+    LibraryPatcher::initialize();
+    LibraryPatcher::patch_libraries();
+    EXPECT_NE(thread_original, __atomic_load_n(thread_slot, __ATOMIC_ACQUIRE));
+    expectImports(true, 1);
+    EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+    LibraryPatcher::unpatch_libraries();
+    EXPECT_EQ(thread_original, __atomic_load_n(thread_slot, __ATOMIC_ACQUIRE));
+    EXPECT_EQ(fingerprint, libraries[0]->imageFingerprint());
+    expectImports(true, 1);
+    EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+    EXPECT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
+    expectPublishedForwarders();
+    NativeSocketInterposer::instance()->stop();
+    expectImports(false, 1);
+    _exit(HasFailure() ? 1 : 0);
+  }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(LibraryPatcherSocketTransactionTest,
+       OwnerRestartMakesReloadedFullRelroImportsWritable) {
+  if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
+  ASSERT_EXIT({
+    initializeFixture();
+    if (HasFatalFailure()) _exit(1);
+    NativeSocketInterposer* interposer = NativeSocketInterposer::instance();
+    CodeCache* cache = libraries[0];
+    const void* original_base = cache->imageBase();
+    void* original_symbol = symbols[0];
+    ASSERT_FALSE(interposer->start());
+    expectImports(true, 1);
+    interposer->stop();
+    expectImports(false, 1);
+    ASSERT_EQ(0, LibraryPatcher::socket_library_count_for_test());
+
+    ASSERT_EQ(0, dlclose(handles[1]));
+    handles[1] = nullptr;
+    Dl_info info;
+    ASSERT_EQ(0, dladdr(original_symbol, &info));
+    handles[1] = openLibrary("libnet.so");
+    ASSERT_NE(nullptr, handles[1]) << dlerror();
+    ASSERT_EQ(original_symbol, dlsym(handles[1], "socket_patch_read"));
+    Libraries::instance()->updateSymbols(false);
+    ASSERT_EQ(cache, Libraries::instance()->findLibraryByAddress(original_symbol));
+    ASSERT_EQ(original_base, cache->imageBase());
+
+    // A cached prepareImportsForPatch() would still return true, but this
+    // reloaded full-RELRO mapping is read-only. Inspect it without findImport().
+    FILE* maps = std::fopen("/proc/self/maps", "r");
+    ASSERT_NE(nullptr, maps);
+    char line[256];
+    bool found_readonly = false;
+    uintptr_t slot = reinterpret_cast<uintptr_t>(cache->peekImport(im_write));
+    while (std::fgets(line, sizeof(line), maps) != nullptr) {
+      unsigned long begin;
+      unsigned long end;
+      char permissions[5];
+      if (std::sscanf(line, "%lx-%lx %4s", &begin, &end, permissions) == 3 &&
+          slot >= begin && slot < end) {
+        found_readonly = permissions[1] != 'w';
+        break;
+      }
+    }
+    ASSERT_EQ(0, std::fclose(maps));
+    ASSERT_TRUE(found_readonly);
+    ASSERT_FALSE(interposer->start());
+    expectImports(true, 1);
+    EXPECT_TRUE(interposer->active());
+    EXPECT_EQ(2, LibraryPatcher::socket_patch_count_for_test());
+    expectPublishedForwarders();
+    interposer->stop();
+    expectImports(false, 1);
+    TearDown();
+    _exit(HasFailure() ? 1 : 0);
+  }, ::testing::ExitedWithCode(0), "");
+}
+
 // Unlike patch_socket_import_for_test, this enters real admission, retention,
 // original publication, writes and rollback through the production refresh path.
 TEST_F(LibraryPatcherSocketTransactionTest,

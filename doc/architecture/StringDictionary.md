@@ -18,23 +18,29 @@ These are independent. Neither implies the other.
 
 ### Key string ownership — the arena
 
-Each `StringDictionaryBuffer` owns a `StringArena`: a lock-free bump allocator backed by a
-single `malloc`'d block. All key strings are allocated from this arena instead of
-individual `malloc` calls. Overflow `SBTable` chain nodes remain heap-allocated.
+Each `StringDictionaryBuffer` owns a `StringArena`: an auto-growing bump allocator made of
+a linked list of 512 KB `calloc`'d chunks. `alloc()` is one atomic `fetch_add` on the
+current chunk; when it fills, `grow()` creates the next chunk under a CAS spinlock. All
+key strings are allocated from this arena instead of individual `malloc` calls. Overflow
+`SBTable` chain nodes remain heap-allocated (`calloc`).
 
 Consequences:
 
-- **`clear()` is O(number-of-overflow-nodes)** rather than O(number-of-entries). The arena
-  is reset with a single atomic store; no per-key `free()` is needed.
-- **The TOCTOU gap between the `_accepting` acquire-load and `RefCountGuard::count++` is
-  benign.** Even if `clearAll()`'s drain misses a racing caller on a weakly-ordered CPU,
-  that caller reads from the memset-zeroed root table and returns 0 — the arena memory
-  is still valid, just logically reclaimed. No UAF is possible. The seq_cst recheck
-  that previously closed this window has therefore been removed from the hot path.
-- **Arena capacity is sized per dictionary** (configured in `Profiler`):
-  `_class_map` 4 MB per buffer (class names accumulate across rotations);
-  `_string_label_map` and `_context_value_map` 512 KB per buffer (bounded by `size_limit`).
-  On exhaustion `insert_with_id` returns 0, the same behaviour as a `malloc` failure.
+- **`clear()` is O(overflow nodes + extra arena chunks)** rather than O(number-of-entries).
+  It frees the overflow nodes, `memset`s the root table and resets the arena, which frees
+  every chunk after the first and rewinds the first; no per-key `free()` is needed.
+- **A lost insert CAS wastes its arena allocation** until the next `clear()`; the waste is
+  counted in `DICTIONARY_ARENA_WASTE_BYTES`.
+- **The arena does not make a stale reader safe.** `clear()` keeps only the root table
+  and the first arena chunk; overflow nodes and further chunks are freed. A caller whose
+  guard `clearAll()`'s drain missed (the TOCTOU gap between the `_accepting` acquire-load
+  and `RefCountGuard::count++`) is stopped by the seq_cst `_accepting` recheck after guard
+  creation, before it touches buffer data; and if the drain times out, `clearAll()`
+  resets nothing (see "The seq_cst recheck after guard creation" and "clearAll() Protocol").
+- **The arena has no fixed capacity**; growth is bounded by the callers' size limits
+  (see Caller Map). If a chunk allocation fails, `alloc()` returns `nullptr` and
+  `insert_with_id` returns 0 (one warning per arena until the next `reset()`); a later
+  `clear()` makes the arena usable again.
 
 ---
 
@@ -68,24 +74,34 @@ Different callers reach the dictionary under different locking contexts:
                         ┌────────────────────────────────────────┐
                         │           StringDictionary             │
                         │                                        │
-  Signal handler ───────┼──→ bounded_lookup(key, len)           │
-  (SIGPROF/SIGVTALRM)   │    read-only, signal-safe              │
-                        │                                        │
   JNI: recordTrace0 ────┼──→ bounded_lookup(key, len, limit)    │
   JNI: registerConst0 ──┼──→ bounded_lookup(key, len, limit)    │
-  (no shard lock held)  │    insert-capable, NOT signal-safe     │
+  Profiler::lookupClass ┼──→ bounded_lookup(key, len,           │
+  (no shard lock held)  │        MAX_CLASS_MAP_SIZE)             │
+                        │    insert-capable, NOT signal-safe     │
                         │                                        │
-  JNI: lookupClass ─────┼──→ lookup(key, len)                   │
-  (no shard lock held)  │    insert + malloc, NOT signal-safe    │
-                        │                                        │
-  Dump thread ──────────┼──→ lookupDuringDump(key, len)         │
+  Dump thread ──────────┼──→ lookupDuringDump(key, len, limit)  │
   (inside jfr_op,       │    reads dump then active; may insert  │
    lockAll() held)      │    NOT signal-safe, single-threaded    │
                         │                                        │
+  writeCpool() ─────────┼──→ standby()->collect()               │
+                        │    reads the dump buffer               │
+                        │                                        │
   Profiler::start() ────┼──→ clearAll()                         │
-  (no lock held)        │    resets all three buffers            │
+  (_state_lock held)    │    resets all three buffers            │
                         └────────────────────────────────────────┘
 ```
+
+Size limits per dictionary:
+
+| Dictionary | Writers | Limit |
+|------------|---------|-------|
+| `_class_map` | `Profiler::lookupClass()` (JNI `dictionarizeClassName`, `ObjectSampler`, `LivenessTracker`, reference chains); `lookupDuringDump()` from `FlightRecorder` | `MAX_CLASS_MAP_SIZE` = 2^18 entries; a drop at capacity counts `CLASS_MAP_AT_CAPACITY` |
+| `_string_label_map` | JNI `recordTrace0` (endpoint) | `sizeLimit` passed from Java |
+| `_context_value_map` | JNI `recordTrace0` (operation), `ContextValueCache.registerConstant0` | 2^16 entries |
+
+The unbounded `lookup(key, len)` and the signal-safe, read-only
+`bounded_lookup(key, len)` exist but have no production caller.
 
 **Key point**: `lockAll()` gates `CallTraceStorage` writers, not dictionary writers.
 `recordTrace0` and `registerConstant0` reach `bounded_lookup` before any shard lock
@@ -116,104 +132,181 @@ Caller                        clearAll() / rotate()
 4. guard.isActive()? → probe
    slot failure? return 0
 
-5. _rot.active() == active?
+5. load _accepting (seq_cst)
+   → false? return 0            ← see below
+
+6. _rot.active() == active?
    → changed? continue loop
 
-6. ... read/write buffer ...
+7. ... read/write buffer ...
 
-7. ~RefCountGuard()
+8. ~RefCountGuard()
    → count-- (release)
    → clear active_ptr (release)
 
-                              waitForAllRefCountsToClear():
-                              scan all slots; block until
-                              every count == 0 or active_ptr
-                              does not match target buffer
+                              tryWaitForRefCountsToClear(_a,_b,_c):
+                              scan all slots; block until no
+                              slot references any of this
+                              dictionary's buffers (~500ms cap)
 
-                              → then arena.reset() + memset root table
+                              → drained: free overflow nodes and
+                                extra arena chunks, memset root table
+                              → timed out: touch nothing, return false
 ```
 
-### Why there is no seq_cst recheck
+### The seq_cst recheck after guard creation
 
 On weakly-ordered CPUs (ARM64) there is a TOCTOU window between step 1 and step 3:
+a caller can load `_accepting == true`, and its guard can become visible only after
+`clearAll()`'s drain has scanned its slot.  The caller therefore re-loads `_accepting`
+(seq_cst) after creating the guard and returns 0 if it is false, before touching any
+buffer data:
 
 ```
 Thread A (caller)          Thread B (clearAll)
 ─────────────────          ───────────────────
-load _accepting → true     (not yet)
+load _accepting → true
 active = _rot.active()
                            _accepting.store(false, seq_cst)
-                           waitForAllRefCountsToClear()
-                           → sees count = 0 for A (count++ not yet visible)
-                           → returns
-                           arena.reset() + memset root table
+                           drain → sees no guard for A → returns
+                           free overflow nodes / extra arena chunks
 RefCountGuard guard(...)
-count++ (release)
-active->lookup(...)
-  → reads zeroed root table slot → null key → returns 0
+load _accepting (seq_cst) → false → return 0   ← never reads the buffer
 ```
 
-With the arena, Thread A's read after the memset lands on the zeroed root table and
-returns 0 — no UAF because the arena memory is still physically valid. A seq_cst
-recheck after step 3 would close the window more tightly (guaranteeing the drain sees
-the guard), but at the cost of a barrier on every signal-handler lookup. Since
-`clearAll()` is called only at profiler restart (virtually never in production), the
-benign-miss trade-off is correct: the recheck was removed.
-
----
+Without the recheck Thread A could read freed overflow nodes or arena chunks: only
+the root table and the first arena chunk survive `clear()`.
 
 ## clearAll() Protocol
 
 ```
-clearAll()
+clearAll() -> bool
   1. _accepting.store(false, seq_cst)
        ↳ subsequent lookup() / bounded_lookup() callers fail their
          _accepting acquire-load and return 0 immediately
-  2. RefCountGuard::waitForAllRefCountsToClear()
-       ↳ drains every caller already past the _accepting load.  The
-         drain is best-effort: a racing caller may slip through, but
-         it then reads from the memset-zeroed root table (step 3) and
-         returns 0 — no UAF because the arena memory is still valid
-         (see "Why there is no seq_cst recheck" above).
+  2. RefCountGuard::tryWaitForRefCountsToClear({&_a, &_b, &_c})
+       ↳ drains every caller already past the _accepting load.  Only
+         guards on this dictionary's buffers count, so traffic on other
+         dictionaries (Profiler::start() resets three back to back) can
+         neither delay nor fail it.  A caller whose guard the drain
+         missed is caught by the seq_cst recheck (see above).
+       ↳ timeout (~500ms): _accepting.store(true), return false.
+         Nothing is reset - a guarded caller may still be using the
+         storage.  The reset is all-or-nothing: restarting _next_id
+         without clearing would reissue ids existing entries use.
   3. _a.clear(); _b.clear(); _c.clear()
-       ↳ freeTable() on each buffer — safe because no guard is live
-  4. _rot.reset()
+       ↳ frees overflow nodes and extra arena chunks, memsets root table
+  4. _rot.reset(); forget any uncleared standby buffer
   5. _next_id.store(1, relaxed)
-  6. reset counters
+  6. reset DICTIONARY_KEYS counters, bump generation()
   7. _accepting.store(true, release)
        ↳ callers can create new guards again
+  8. return true
 ```
 
-`clearAll()` is self-contained: no external lock is required. `Profiler::start()`
-calls it without `lockAll()`.
+`clearAll()` needs no lock against `lookup` / `bounded_lookup` callers, but it must not
+run concurrently with `rotate()` or `clearStandby()` on the same dictionary; `Profiler`
+serialises all three with `_state_lock`. It only reports the result:
+`Profiler::start()` calls it through `resetRecordingState()` (on a reset or the first
+start) without `lockAll()`, and for a dictionary that was not reset increments `DICTIONARY_DRAIN_TIMEOUTS` and
+logs a warning after `Counters::reset()`, then continues. An unreset dictionary stays
+consistent (ids valid, generation unchanged), and the Java `ContextValueCache` is only
+invalidated when the context-value dictionary was actually reset.
 
 ---
 
 ## rotate() Protocol
 
 `rotate()` is called inside `rotateDictsAndRun()` under a `SignalBlocker` but
-**before** `lockAll()`. It is safe without an external lock.
+**before** `lockAll()`. It needs no lock against dictionary readers and writers; it
+must not run concurrently with another `rotate()`, `clearStandby()` or `clearAll()`
+on the same dictionary, which callers ensure with `_state_lock`. It returns `false`
+when it had to reuse an uncleared standby buffer (see below).
 
 ```
-rotate()  [SignalBlocker active, no external mutex]
+rotate()  [SignalBlocker active, _state_lock held by caller]
+
+Retry:
+  retryUnclearedTarget()
+       ↳ if the last clearStandby() skipped the clear target, retry the
+         clear with a short non-waiting scan
 
 Phase 1:
   old_active = _rot.active()
   _rot.clearTarget()->copyFrom(*old_active)
        ↳ pre-populate the future active buffer with all current entries
+  _transitioning = true
   _rot.rotate()
        ↳ old_active becomes the dump buffer; clearTarget becomes new active
+  SEQ_CST fence
 
 Drain:
   RefCountGuard::waitForRefCountToClear(old_active)
        ↳ wait for any JNI thread still holding a guard on old_active
          (signal handlers on THIS thread cannot fire: SignalBlocker)
+       ↳ timeout (~500ms): counts DICTIONARY_DRAIN_TIMEOUTS and logs;
+         aborts in debug builds, continues in release builds
 
 Phase 2:
   _rot.active()->copyFrom(*old_active)
        ↳ copy any entries inserted into old_active between Phase 1 and the drain
-         (late inserts from other threads are captured here)
+         (late inserts from other threads are captured here); a key found here
+         under a different id counts DICTIONARY_ID_CONFLICTS
+  _transitioning = false   (release)
 ```
+
+### Transition
+
+A key inserted into `old_active` after Phase 1 reaches the new active only in
+Phase 2. If a lookup that misses in the new active in between assigned the key
+a fresh id, Phase 2 would find the key present and keep that id, while callers
+already hold both.
+
+So while `_transitioning` is set, `lookup()` and the size-limited
+`bounded_lookup()` do not assign an id on their own after a miss. They issue a
+SEQ_CST fence, re-check that their buffer is still the active one (retrying if
+not), apply the size limit, and then let `old_active` - now the dump buffer -
+decide: `insert_with_id(key, nextId())` on it returns the id it already holds
+for the key, or stores the fresh one. The writer then inserts the key into the
+new active under that id, which is the id Phase 2 copies, and returns whatever
+the new active holds. Nothing waits for `rotate()`.
+
+- A writer that loaded the **new** active also sees the flag: it is stored
+  before the release CAS in `_rot.rotate()` that publishes the new active.
+- A writer still on **old_active**: the two SEQ_CST fences guarantee that either
+  its post-fence re-check sees the new active and it retries there, or the
+  drain sees its guard and Phase 2 copies its insert. The re-check made before
+  the probe does not count: it precedes the writer's fence. Such a writer may
+  see the flag set before the new active is published and then go through the
+  previous dump buffer; that only leaves an unused entry there.
+- A writer that sees the flag set while another, arriving after Phase 2, sees
+  it clear, may find the key already in the new active under a fresh id. It
+  returns that id, so all callers agree, but the dump buffer keeps the key
+  under the id it put there. No `lookup()` caller holds that id;
+  `lookupDuringDump()`, which probes the dump buffer first, returns it to the
+  dump thread. That is consistent within the dump: the id is in the dump
+  buffer the chunk's constant pool is written from, and the dump thread
+  resolves class ids afresh in every chunk.
+
+The same straggler can race `lookupDuringDump()` itself: the dump thread's
+dump probe may miss the straggler's not-yet-done dump insert while its active
+probe finds the key under the post-Phase-2 writer's id, and the straggler's
+dump insert then wins the dump slot. `addToDump()` detects this (its insert
+returns the straggler's id) and `lookupDuringDump()` returns that id - the one
+the dump snapshot actually contains - instead of the active buffer's id,
+which the snapshot may not hold. Returning the active id there would emit an
+id this chunk's constant pool lacks, and would make two resolutions of the
+same key in one dump disagree. The conflict is counted in
+`DICTIONARY_ID_CONFLICTS`.
+
+The writer guards the dump buffer for one insert, re-checking after a SEQ_CST
+fence that it is still the dump buffer (otherwise `clearStandby()` may be
+clearing it, and the writer assigns the id itself). These guards are on the
+buffer `rotate()` is draining, so a high rate of first-time keys during the
+drain can delay it.
+
+If the drain times out, a straggler can still insert into `old_active` after
+Phase 2; that id lives only in the dump buffer.
 
 `SignalBlocker` is needed to bound the Phase 1→Phase 2 window: without it, a
 profiling signal on the dump thread could keep inserting into `old_active` and
@@ -239,9 +332,30 @@ rotateDictsAndRun(jfr_op):
   unlockAll()
 
   _class_map.clearStandby()      ┐
-  _string_label_map.clearStandby()├ clears scratch; resets per-dump counters
+  _string_label_map.clearStandby()├ drains + clears scratch; resets per-dump counters
   _context_value_map.clearStandby()┘
 ```
+
+`clearStandby()` drains its target buffer before clearing it: a caller whose guard
+on the then-active buffer outlived `rotate()`'s drain may still be using it two
+rotations later.  If that drain times out the clear is skipped, `clearStandby()`
+returns `false` and `rotateDictsAndRun()` reports it (`DICTIONARY_DRAIN_TIMEOUTS`
+and a warning).
+
+Reusing such a buffer as-is would not be harmless: the straggler may have inserted
+a key after both copies of the earlier `rotate()`, with an id the active buffer has
+since assigned differently, and Phase 1's `copyFrom()` keeps an existing entry's id.
+So the dictionary remembers the skipped buffer, and the next `rotate()` - which
+makes it the active buffer - retries the drain and clear before Phase 1.  Only if
+the straggler still holds its guard then (a stall longer than a whole dump cycle)
+is the buffer reused uncleared; `rotate()` returns `false` and `rotateDictsAndRun()`
+reports it.  The retry is a short series of non-waiting scans, not a full drain,
+so a stuck thread does not cost a second ~500 ms timeout per cycle.
+
+If the buffer is reused uncleared, the straggler's stale id wins over the current
+one until the next `clearAll()`. Overwriting it with the current id instead would
+orphan whatever the straggler recorded under the stale id, so neither choice is
+lossless; both require a thread stuck in a guarded insert for a whole dump cycle.
 
 `rotate()` and `lockAll()` are deliberately separated:
 
@@ -252,12 +366,32 @@ rotateDictsAndRun(jfr_op):
 
 ---
 
+## Ids, Generation and Counters
+
+- Ids start at 1; 0 means "no entry" (miss, size limit reached, allocation failure,
+  or `_accepting` false). `nextId()` skips 0 when the `u32` counter wraps.
+- `generation()` is bumped only by a successful `clearAll()`. Caches keyed by class-map
+  ids (`LivenessTracker`, `ReferenceChainTracker`) compare it to detect that the id
+  namespace was reset.
+- The constructor argument (1, 2, 3 for the class, string-label and context-value maps)
+  is an offset into the per-dictionary `DICTIONARY_*` counter rows (`counters.h`):
+  `DICTIONARY_BYTES` / `DICTIONARY_PAGES` track storage, `DICTIONARY_KEYS` /
+  `DICTIONARY_KEYS_BYTES` count keys newly assigned an id since the last
+  `clearStandby()`. `DICTIONARY_DRAIN_TIMEOUTS` and `DICTIONARY_ID_CONFLICTS` are
+  shared. After `Counters::reset()`, `resetRecordingState()` calls `reseedCounters()`
+  so the storage gauges do not go negative.
+
+---
+
 ## Invariants Summary
 
 | Invariant | Enforced by |
 |-----------|-------------|
-| No UAF during `clearAll()` reset | Arena keeps key memory valid; drain ensures no reader is mid-table when memset runs |
-| No entry lost during `rotate()` | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors |
+| No UAF during `clearAll()` reset | Per-dictionary drain + seq_cst `_accepting` recheck; on drain timeout nothing is reset |
+| No UAF during `clearStandby()` | Drain of the clear target; on timeout the clear is skipped |
+| No entry lost during `rotate()`, unless its drain times out | Two-phase copy + `waitForRefCountToClear(old_active)` drains late JNI insertors; after a release-build timeout an insert by a straggler may miss the dump snapshot (it stays memory-safe: `clearStandby()` drains before clearing) |
+| One id per key across `rotate()`, unless its drain times out | Mid-rotation misses take their id from `old_active`, the id Phase 2 copies |
+| `lookupDuringDump()` returns an id the dump snapshot contains, even racing a transition straggler | `addToDump()` returns the id the dump buffer holds, not the active buffer's |
 | No profiling signal inserts into `old_active` between Phase 1 and 2 (dump thread) | `SignalBlocker` in `rotateDictsAndRun()` |
 | `writeCpool()` sees a stable dump snapshot | `rotate()` completes (including drain) before `jfr_op()` starts |
 | `CallTraceStorage` writers excluded during dump | `lockAll()` around `jfr_op()` |

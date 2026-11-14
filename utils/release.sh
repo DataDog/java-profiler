@@ -36,6 +36,8 @@ SKIP_TESTS="false"
 BRANCH=""
 RELEASE_TYPE=""
 COMMIT_SHA=""
+RETRY_RUN_ID=""
+MONITOR_TIMEOUT_SECONDS=${RELEASE_MONITOR_TIMEOUT_SECONDS:-3600}
 
 # Function to print colored output
 print_error() {
@@ -55,6 +57,41 @@ print_info() {
 }
 
 trap 'echo ""; print_warning "Interrupted"; exit 130' INT
+
+# Bound a local CLI command without requiring GNU timeout on macOS. The
+# subshell keeps its child-cleanup traps separate from the caller's traps.
+run_before_deadline() (
+    local deadline=$1 command_pid="" result=0
+    shift
+
+    cleanup_deadline_command() {
+        if [ -n "$command_pid" ]; then
+            kill -KILL "$command_pid" 2>/dev/null || true
+            wait "$command_pid" 2>/dev/null || true
+            # A killed gh run watch cannot leave its alternate screen itself.
+            if [ -t 1 ]; then
+                printf '\033[?1049l'
+            fi
+        fi
+    }
+    trap cleanup_deadline_command EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    [ "$SECONDS" -lt "$deadline" ] || return 124
+    "$@" &
+    command_pid=$!
+    while kill -0 "$command_pid" 2>/dev/null; do
+        # $$ still identifies the release script inside this subshell.
+        # Stop its CLI child if the release script itself was terminated.
+        kill -0 "$$" 2>/dev/null || return 143
+        [ "$SECONDS" -lt "$deadline" ] || return 124
+        sleep 1
+    done
+    wait "$command_pid" || result=$?
+    command_pid=""
+    return "$result"
+)
 
 # Read a single keypress (arrow keys, enter, q) from /dev/tty
 read_key() {
@@ -248,10 +285,47 @@ select_commit() {
     done
 }
 
+# Function to verify GitHub CLI installation, authentication, and repo permissions.
+# Sets globals: REPO, REPO_URL, ACTOR.
+check_gh_auth() {
+    print_info "Checking GitHub CLI installation..."
+    if ! command -v gh &> /dev/null; then
+        print_error "GitHub CLI (gh) is not installed"
+        echo "Install it from: https://cli.github.com/"
+        exit 1
+    fi
+
+    print_info "Checking GitHub authentication..."
+    # Note: gh auth status may return non-zero even when authenticated, so check the output
+    AUTH_STATUS=$(gh auth status 2>&1 || true)
+    if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
+        print_error "Not authenticated with GitHub CLI"
+        echo "Run: gh auth login"
+        echo ""
+        echo "Current auth status:"
+        echo "$AUTH_STATUS"
+        exit 1
+    fi
+    print_info "GitHub authentication verified"
+
+    REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+    REPO_URL=$(gh repo view --json url --jq '.url')
+    VIEWER_PERMISSION=$(gh repo view --json viewerPermission --jq '.viewerPermission')
+    case "$VIEWER_PERMISSION" in
+        WRITE|MAINTAIN|ADMIN) ;;
+        *)
+            print_error "Release execution requires write, maintain, or admin access to $REPO"
+            exit 1
+            ;;
+    esac
+    ACTOR=$(gh api user --jq '.login')
+}
+
 # Function to show usage
 show_usage() {
     cat << EOF
 Usage: $0 <release_type> [options]
+       $0 --retry <run_id>
 
 Arguments:
   release_type       Type of release: major, minor, or patch
@@ -261,6 +335,9 @@ Options:
   --skip-tests       Skip pre-release tests (emergency releases only)
   --branch <name>    Specify branch to release from (default: current branch)
   --commit <sha>     Specify commit SHA to release (default: interactive selection)
+  --retry <run_id>   Retry a failed release run by re-dispatching with the same
+                     parameters (release_type, dry_run, skip_tests, source_sha)
+                     extracted from the original workflow run
   --help             Show this help message
 
 Examples:
@@ -272,6 +349,7 @@ Examples:
   $0 patch --skip-tests           # Emergency patch without tests (dry-run)
   $0 patch --no-dry-run --skip-tests  # Emergency patch without tests (real)
   $0 major --branch main          # Specify branch explicitly
+  $0 --retry 33177365160          # Retry failed release run 33177365160
 
 Release Flow:
   1. Validates inputs and branch rules
@@ -304,6 +382,67 @@ for arg in "$@"; do
         exit 0
     fi
 done
+
+if [[ "$1" == "--retry" ]]; then
+    if [ -z "$2" ]; then
+        print_error "--retry requires a run ID"
+        exit 1
+    fi
+    RETRY_RUN_ID="$2"
+    shift 2
+
+    check_gh_auth
+
+    print_info "Fetching original run $RETRY_RUN_ID..."
+    RUN_JSON=$(gh run view "$RETRY_RUN_ID" --repo "$REPO" --json displayTitle,headBranch,headSha 2>&1) || {
+        print_error "Could not fetch run $RETRY_RUN_ID"
+        echo "$RUN_JSON"
+        exit 1
+    }
+
+    BRANCH=$(echo "$RUN_JSON" | jq -r '.headBranch')
+    COMMIT_SHA=$(echo "$RUN_JSON" | jq -r '.headSha')
+    DISPLAY_TITLE=$(echo "$RUN_JSON" | jq -r '.displayTitle')
+    SHORT_SHA="${COMMIT_SHA:0:8}"
+
+    # Infer release_type from the display title (the workflow embeds it)
+    if echo "$DISPLAY_TITLE" | grep -qi 'major'; then
+        RELEASE_TYPE="major"
+    elif echo "$DISPLAY_TITLE" | grep -qi 'patch'; then
+        RELEASE_TYPE="patch"
+    else
+        RELEASE_TYPE="minor"
+    fi
+
+    # Infer dry_run from the display title
+    if echo "$DISPLAY_TITLE" | grep -qi 'dry-run'; then
+        DRY_RUN="true"
+    else
+        DRY_RUN="false"
+    fi
+
+    echo ""
+    print_info "═══════════════════════════════════════════════════════"
+    print_info "  Retry Configuration (from run $RETRY_RUN_ID)"
+    print_info "═══════════════════════════════════════════════════════"
+    echo "  Release Type: $RELEASE_TYPE (inferred from title)"
+    echo "  Branch: $BRANCH"
+    echo "  Commit: $SHORT_SHA"
+    echo "  Dry Run: $DRY_RUN"
+    echo "  Skip Tests: $SKIP_TESTS"
+    echo "  Original: $DISPLAY_TITLE"
+    print_info "═══════════════════════════════════════════════════════"
+    echo ""
+
+    if [ "$DRY_RUN" == "false" ]; then
+        print_warning "This will perform an ACTUAL release (retry)!"
+        read -p "Are you sure you want to continue? (yes/no): " -r </dev/tty
+        if [[ ! $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
+            print_info "Retry cancelled"
+            exit 0
+        fi
+    fi
+else
 
 RELEASE_TYPE=$1
 shift
@@ -341,6 +480,10 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+goto_trigger=false
+
+if [ "$goto_trigger" != "true" ]; then
 
 # Validate release type
 if [[ ! "$RELEASE_TYPE" =~ ^(major|minor|patch)$ ]]; then
@@ -497,39 +640,7 @@ COMMIT_DATE=$(git log -1 --pretty=format:"%ar" "$COMMIT_SHA" 2>&1) || {
 }
 
 # NOW check GitHub CLI authentication (after commit selection)
-# Check if gh CLI is installed
-print_info "Checking GitHub CLI installation..."
-if ! command -v gh &> /dev/null; then
-    print_error "GitHub CLI (gh) is not installed"
-    echo "Install it from: https://cli.github.com/"
-    exit 1
-fi
-
-# Check if user is authenticated
-print_info "Checking GitHub authentication..."
-# Note: gh auth status may return non-zero even when authenticated, so check the output
-AUTH_STATUS=$(gh auth status 2>&1 || true)
-if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
-    print_error "Not authenticated with GitHub CLI"
-    echo "Run: gh auth login"
-    echo ""
-    echo "Current auth status:"
-    echo "$AUTH_STATUS"
-    exit 1
-fi
-print_info "GitHub authentication verified"
-
-REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-REPO_URL=$(gh repo view --json url --jq '.url')
-VIEWER_PERMISSION=$(gh repo view --json viewerPermission --jq '.viewerPermission')
-case "$VIEWER_PERMISSION" in
-    WRITE|MAINTAIN|ADMIN) ;;
-    *)
-        print_error "Release execution requires write, maintain, or admin access to $REPO"
-        exit 1
-        ;;
-esac
-ACTOR=$(gh api user --jq '.login')
+check_gh_auth
 
 # Branch validation already done earlier (before commit selection)
 
@@ -563,9 +674,32 @@ else
     print_info "Running in DRY-RUN mode (no changes will be made)"
 fi
 
+fi  # end of normal-mode block (goto_trigger != true)
+
+fi  # end of else from --retry intercept
+
+if ! [[ "$MONITOR_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+   [ "${#MONITOR_TIMEOUT_SECONDS}" -gt 10 ] ||
+   [ "$MONITOR_TIMEOUT_SECONDS" -gt 2147483647 ]; then
+    print_error "RELEASE_MONITOR_TIMEOUT_SECONDS must be a positive integer no greater than 2147483647"
+    exit 1
+fi
+
 echo ""
 print_info "Triggering GitHub Actions workflow..."
 REQUEST_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+
+# In retry mode, don't pass source_sha — the branch HEAD may have moved since
+# the original run, and the workflow rejects SHA mismatches.
+#
+# This must stay an array. A quoted scalar collapses "--field" and its
+# key=value argument into one argv token, which gh rejects with
+# "unknown flag: --field source_sha"; an unquoted scalar would silently
+# word-split and also emit a stray empty argument in retry mode.
+SOURCE_SHA_ARGS=()
+if [ -z "$RETRY_RUN_ID" ]; then
+    SOURCE_SHA_ARGS=(--field "source_sha=$COMMIT_SHA")
+fi
 
 # Trigger the workflow
 WORKFLOW_OUTPUT=$(mktemp)
@@ -577,7 +711,7 @@ if gh workflow run release-validated.yml \
     --field dry_run="$DRY_RUN" \
     --field skip_tests="$SKIP_TESTS" \
     --field request_id="$REQUEST_ID" \
-    --field source_sha="$COMMIT_SHA" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
+    "${SOURCE_SHA_ARGS[@]}" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
 
     WORKFLOW_SUCCESS=true
     echo ""
@@ -594,8 +728,7 @@ if gh workflow run release-validated.yml \
                 | map(select(
                     (.display_title | contains(\"$REQUEST_ID\")) and
                     .actor.login == \"$ACTOR\" and
-                    .head_branch == \"$BRANCH\" and
-                    .head_sha == \"$COMMIT_SHA\"
+                    .head_branch == \"$BRANCH\"
                 ))
                 | if length == 1 then .[0].id else empty end")
         if [ -n "$RUN_ID" ]; then
@@ -608,13 +741,78 @@ if gh workflow run release-validated.yml \
         print_info "Watching workflow run ${RUN_ID}..."
         echo "  ${REPO_URL}/actions/runs/${RUN_ID}"
         echo ""
-        if gh run watch "$RUN_ID" --exit-status; then
-            WORKFLOW_CONCLUSION="success"
+        WORKFLOW_CONCLUSION="unknown"
+        MONITOR_DEADLINE=$((SECONDS + MONITOR_TIMEOUT_SECONDS))
+        WATCH_ATTEMPT=1
+        while [ "$WATCH_ATTEMPT" -le 3 ]; do
+            if run_before_deadline "$MONITOR_DEADLINE" \
+                gh run watch "$RUN_ID" --repo "$REPO" --exit-status; then
+                WORKFLOW_CONCLUSION="success"
+                break
+            fi
+
+            # A failed watch can mean an API connection error. Check the run
+            # itself before deciding that the remote workflow failed.
+            print_warning "Workflow monitoring stopped; checking GitHub for the run's status..."
+            STATUS_DEADLINE=$MONITOR_DEADLINE
+            while true; do
+                if [ "$SECONDS" -ge "$MONITOR_DEADLINE" ]; then
+                    # Bound the final query too so an API outage cannot hang the script.
+                    STATUS_DEADLINE=$((SECONDS + 10))
+                fi
+                if REMOTE_CONCLUSION=$(run_before_deadline "$STATUS_DEADLINE" \
+                    gh run view "$RUN_ID" --repo "$REPO" \
+                    --json status,conclusion \
+                    --jq 'if .status == "completed" then (.conclusion // "unknown") else "unknown" end'); then
+                    case "$REMOTE_CONCLUSION" in
+                        success|failure|cancelled|timed_out|action_required|startup_failure|stale|neutral|skipped)
+                            WORKFLOW_CONCLUSION="$REMOTE_CONCLUSION"
+                            ;;
+                    esac
+                    break
+                fi
+                # If the shared deadline expired during this query, retry once
+                # with the full final-query allowance before prompting or stopping.
+                if [ "$STATUS_DEADLINE" -ne "$MONITOR_DEADLINE" ] ||
+                   [ "$SECONDS" -lt "$MONITOR_DEADLINE" ]; then
+                    break
+                fi
+            done
+            if [ "$WORKFLOW_CONCLUSION" != "unknown" ]; then
+                break
+            fi
+
+            if [ "$SECONDS" -ge "$MONITOR_DEADLINE" ]; then
+                print_warning "Monitoring timed out after ${MONITOR_TIMEOUT_SECONDS} seconds. The remote workflow has not been cancelled."
+                if [ -t 0 ] &&
+                   read -r -p "Continue monitoring the same workflow run for another ${MONITOR_TIMEOUT_SECONDS} seconds? [y/N]: " REPLY </dev/tty &&
+                   [[ "$REPLY" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+                    print_info "Continuing to monitor the same workflow run for another ${MONITOR_TIMEOUT_SECONDS} seconds."
+                    MONITOR_DEADLINE=$((SECONDS + MONITOR_TIMEOUT_SECONDS))
+                    WATCH_ATTEMPT=1
+                    continue
+                fi
+                break
+            fi
+
+            if [ "$WATCH_ATTEMPT" -lt 3 ]; then
+                print_warning "Reconnecting to the same workflow run ($((WATCH_ATTEMPT + 1))/3)..."
+                sleep 2
+            fi
+            WATCH_ATTEMPT=$((WATCH_ATTEMPT + 1))
+        done
+
+        if [ "$WORKFLOW_CONCLUSION" = "success" ]; then
             print_success "✓ Workflow completed successfully!"
+        elif [ "$WORKFLOW_CONCLUSION" = "failure" ] || [ "$WORKFLOW_CONCLUSION" = "startup_failure" ]; then
+            print_error "✗ Workflow failed! (conclusion: $WORKFLOW_CONCLUSION)"
+            echo "  View logs: gh run view $RUN_ID --repo $REPO --log-failed"
+        elif [ "$WORKFLOW_CONCLUSION" != "unknown" ]; then
+            print_warning "Workflow completed with conclusion: $WORKFLOW_CONCLUSION"
+            echo "  Inspect the run: gh run view $RUN_ID --repo $REPO --json status,conclusion,url"
         else
-            WORKFLOW_CONCLUSION="failure"
-            print_error "✗ Workflow failed!"
-            echo "  View logs: gh run view $RUN_ID --log-failed"
+            print_warning "Monitoring could not confirm the workflow result. The remote run may still be running."
+            echo "  Inspect the existing run: ${REPO_URL}/actions/runs/${RUN_ID}"
         fi
     else
         WORKFLOW_CONCLUSION="unknown"
@@ -627,7 +825,7 @@ if gh workflow run release-validated.yml \
         print_info "Next Steps:"
         echo "  1. Verify Maven:  https://repo1.maven.org/maven2/com/datadoghq/ddprof/"
         echo "  2. Check release: ${REPO_URL}/releases"
-    else
+    elif [ "${WORKFLOW_CONCLUSION:-unknown}" = "success" ]; then
         print_info "This was a dry-run. Review the output and run again with --no-dry-run"
     fi
 else
@@ -674,17 +872,21 @@ echo ""
 if [ "$WORKFLOW_SUCCESS" = true ]; then
     if [ "${WORKFLOW_CONCLUSION:-}" = "success" ]; then
         print_success "Status: WORKFLOW SUCCEEDED"
-    elif [ "${WORKFLOW_CONCLUSION:-}" = "failure" ]; then
+    elif [ "${WORKFLOW_CONCLUSION:-}" = "failure" ] || [ "${WORKFLOW_CONCLUSION:-}" = "startup_failure" ]; then
         print_error "Status: WORKFLOW FAILED"
-        echo "  View logs: gh run view $RUN_ID --log-failed"
-    elif [ "$DRY_RUN" == "true" ]; then
-        print_success "Status: DRY-RUN COMPLETED"
-        echo ""
-        echo "  → No actual changes were made."
-        echo "  → To perform the release, run: $0 $RELEASE_TYPE --no-dry-run --commit $SHORT_SHA"
+        echo "  Workflow conclusion: $WORKFLOW_CONCLUSION"
+        echo "  View logs: gh run view $RUN_ID --repo $REPO --log-failed"
+    elif [ "${WORKFLOW_CONCLUSION:-unknown}" != "unknown" ]; then
+        print_warning "Status: WORKFLOW COMPLETED"
+        echo "  Workflow conclusion: $WORKFLOW_CONCLUSION"
+        echo "  Inspect the run: gh run view $RUN_ID --repo $REPO --json status,conclusion,url"
     else
         print_warning "Status: WORKFLOW STATUS UNKNOWN"
-        echo "  Check manually: gh run list --workflow=release-validated.yml --limit 1"
+        if [ -n "$RUN_ID" ]; then
+            echo "  Check the existing run: gh run view $RUN_ID --repo $REPO --json status,conclusion,url"
+        else
+            echo "  Check manually: gh run list --repo $REPO --workflow=release-validated.yml"
+        fi
     fi
 else
     print_error "Status: FAILED TO TRIGGER WORKFLOW"

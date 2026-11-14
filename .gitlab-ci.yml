@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
 
 variables:
@@ -141,6 +143,9 @@ shell-unit-tests:
   image: ${PREPARE_IMAGE}
   script:
     - bash .gitlab/scripts/tests/includes_test.sh
+    - bash .gitlab/scripts/tests/test_check_stack_top.sh
+    - bash .gitlab/jdk-integration/tests/select_test_jdk_test.sh
+    - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
 
 # Shared version detection used by benchmarks and reliability pipelines
 get-versions:
@@ -181,6 +186,13 @@ generate-reliability-child-pipeline:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - when: on_success
+  # Replaces the default before_script: its CANCELLED guard would exit before
+  # generated-reliability.yml is written, and run-reliability-tests (a bridge
+  # job, so not skipped by that guard) then fails to create its child pipeline
+  # from the missing artifact. Merge-queue branches (mq-working-branch-*) have
+  # no open PR, so prepare.sh always sets CANCELLED=true there. RUN_RELIABILITY
+  # is never set when CANCELLED is, so the noop child pipeline is generated.
+  before_script: []
   script:
     - |
       if [ "${RUN_RELIABILITY:-}" = "true" ]; then

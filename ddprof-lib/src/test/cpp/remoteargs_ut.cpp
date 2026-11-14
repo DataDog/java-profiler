@@ -129,8 +129,8 @@ TEST_F(RemoteArgsTest, RemoteSymbolicationNoVariant) {
 TEST_F(RemoteArgsTest, RemoteSymbolicationInvalidValue) {
     Arguments args;
 
-    // Test invalid value that starts with unrecognized char (should enable due to default)
+    // An unrecognized value must be a hard parse error, not silently coerced to
+    // enabled - a typo here used to silently enable remote symbolication.
     Error error = args.parse("remotesym=invalid");
-    EXPECT_FALSE(error);
-    EXPECT_TRUE(args._remote_symbolication);
+    EXPECT_TRUE(error);
 }

@@ -133,8 +133,8 @@ void CallTraceHashTable::decrementCounters() {
   // Safe to call when (a) this is a standby/scratch table (never _active_storage,
   // so no signal-handler put() can target it), or (b) the active-table path is
   // guarded by lockAll() — both conditions are enforced by the only caller,
-  // clearTableOnly().  The _prev traversal is safe because waitForRefCountToClear(this)
-  // in clearTableOnly() has already drained any in-flight put() operations.
+  // resetTable().  The _prev traversal is safe because resetTable() calls this
+  // only after a successful drain of this table, so no put() is still in flight.
   // Use a set to deduplicate: put() may store the same CallTrace* pointer in
   // both a newer and an older table (when findCallTrace finds it in prev()),
   // but the counter was only incremented once, so we must only count it once.
@@ -169,17 +169,31 @@ void CallTraceHashTable::decrementCounters() {
 }
 
 ChunkList CallTraceHashTable::clearTableOnly() {
-  // Wait only for in-flight put() operations that hold a RefCountGuard on THIS
-  // table.  Waiting globally (waitForAllRefCountsToClear) would block on
-  // unrelated puts to the currently-active table, causing 500 ms timeouts under
-  // sustained wall-clock profiling and leaving collect() racing with a still-
-  // running put().  Since standby and scratch tables never appear as the
-  // _active_storage, this wait returns instantly for them; for the active table
-  // (called from clear() -> clearTableOnly()) the protection comes from the caller
-  // holding lockAll() (which blocks signal-handler puts) and from this in-function
-  // targeted wait — there is no prior caller-side drain.
-  RefCountGuard::waitForRefCountToClear(this);
-  decrementCounters();
+  // Drain the put() operations still holding a RefCountGuard on THIS table.
+  // processTraces() calls this only for tables already swapped out of
+  // _active_storage, which no new put() can enter; for the active table
+  // (CallTraceStorage::clear()) the caller must exclude put() itself.  In
+  // Profiler every caller also holds lockAll(), so the drain returns on its
+  // first scan.  It waits only for guards on this table: a global wait would
+  // also count guards on unrelated resources, such as StringDictionary lookups
+  // that lockAll() does not exclude, and could time out on them.
+  //
+  // On a timeout a put() may still be writing into this table's chunks.
+  // waitForRefCountToClear() aborts debug builds; otherwise resetTable()
+  // leaks the detached chunks instead of handing them back for freeing.
+  return resetTable(RefCountGuard::waitForRefCountToClear(this));
+}
+
+void CallTraceHashTable::clearAfterFailedDrain() {
+  resetTable(false);
+}
+
+ChunkList CallTraceHashTable::resetTable(bool drained) {
+  // Leaked memory stays allocated, so it stays counted; a stalled put() could
+  // also still change the table while decrementCounters() walked it.
+  if (drained) {
+    decrementCounters();
+  }
 
   // Disconnect the full _prev chain before freeing chunks.  The advance step
   // must use a pre-saved pointer because setPrev(nullptr) clears the link that
@@ -207,6 +221,9 @@ ChunkList CallTraceHashTable::clearTableOnly() {
       __ATOMIC_RELEASE);
   _overflow = 0;
 
+  if (!drained) {
+    return ChunkList();
+  }
   return detached_chunks;
 }
 
@@ -503,13 +520,21 @@ void CallTraceHashTable::collect(CallTraceSet &traces, std::function<void(CallTr
 }
 
 
-void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) {
+#ifdef UNIT_TEST
+u64 CallTraceHashTable::failedPreservationIdForTest = 0;
+#endif
+
+bool CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) {
   // Trace preservation for standby tables (no contention with new puts)
   // This is safe because new put() operations go to the new active table
   
-  u64 hash = calcHash(source_trace->num_frames, source_trace->frames, source_trace->truncated);
+  // Preserved entries are keyed by exact ID, not stack hash: identical stacks
+  // from different active tenures can have distinct IDs still held by live objects.
+  // processTraces() clears a preservation table before making it active again,
+  // so these ID keys never mix with put()'s stack-hash keys.
+  u64 hash = source_trace->trace_id;
   
-  // First check if trace already exists in any table in the chain.
+  // First check if this exact ID already exists in any table in the chain.
   // Use ACQUIRE to match the RELEASE store in clearTableOnly(); putWithExistingId()
   // is only called on scratch/standby tables with no concurrent writers, so the
   // load is safe, but consistent ordering prevents latent issues if callers change.
@@ -517,13 +542,13 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
        search_table != nullptr; search_table = search_table->prev()) {
     CallTrace *existing_trace = findCallTrace(search_table, hash);
     if (existing_trace != nullptr) {
-      return;
+      return existing_trace->trace_id == source_trace->trace_id;
     }
   }
 
   LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
   if (table == nullptr) {
-    return; // Table allocation failed
+    return false; // Table allocation failed
   }
   
   u64 *keys = table->keys();
@@ -543,7 +568,11 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
         // Create a copy of the source trace preserving its exact ID
         const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
         const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
-        void *memory = _allocator.alloc(total_size);
+        void *memory = nullptr;
+#ifdef UNIT_TEST
+        if (source_trace->trace_id != failedPreservationIdForTest)
+#endif
+        memory = _allocator.alloc(total_size);
         if (memory != nullptr) {
           // Use placement new to invoke constructor in-place
           CallTrace* copied_trace = new (memory) CallTrace(source_trace->truncated, source_trace->num_frames, source_trace->trace_id);
@@ -553,8 +582,10 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
           Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
           Counters::increment(CALLTRACE_STORAGE_TRACES);
 
-          // Increment table size
-          table->incSize();
+          // Grow like put(): one entry per live trace ID can exceed the
+          // initial capacity (LivenessTracker tracks up to 262,144 objects).
+          expandTableIfNeeded(table, table->incSize());
+          return true;
         } else {
           // Allocation failure - clear the key we claimed
           __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
@@ -570,4 +601,5 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       break;
     }
   }
+  return false;
 }

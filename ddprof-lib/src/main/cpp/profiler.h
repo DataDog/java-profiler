@@ -13,6 +13,7 @@
 #include "codeCache.h"
 #include "common.h"
 #include "dictionary.h"
+#include "faultInjection.h"
 #include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
@@ -28,8 +29,8 @@
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include "wallClockBlockTracker.h"
 #include <atomic>
-#include <array>
 #include <iostream>
 #include <map>
 #include <time.h>
@@ -66,6 +67,25 @@ const int RESERVED_FRAMES   = 10;  // for synthetic frames
 union CallTraceBuffer {
   ASGCT_CallFrame _asgct_frames[1];
   jvmtiFrameInfo _jvmti_frames[1];
+
+  static constexpr int MAX_VERIFICATION_DEPTH = 1024;
+
+  static int verificationDepth(int max_depth) {
+    return max_depth < MAX_VERIFICATION_DEPTH ? max_depth : MAX_VERIFICATION_DEPTH;
+  }
+
+  static size_t capacity(int max_depth, AllocStack mode) {
+    return static_cast<size_t>(max_depth) + RESERVED_FRAMES +
+           (mode == ALLOCSTACK_VERIFY ? verificationDepth(max_depth) : 0);
+  }
+
+  // The union's Java and JVMTI arrays overlap; verification needs a separate tail.
+  jvmtiFrameInfo* verificationFrames(int max_depth, size_t available_frames) {
+    if (available_frames < capacity(max_depth, ALLOCSTACK_VERIFY)) {
+      return nullptr;
+    }
+    return reinterpret_cast<jvmtiFrameInfo*>(this + max_depth + RESERVED_FRAMES);
+  }
 };
 
 class FrameName;
@@ -74,28 +94,45 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
 
+struct WallSampleRequest {
+  ThreadFilter::SlotID slot_id = -1;
+  int tid = -1;
+  u64 lifecycle_generation = 0;
+  ThreadFilter::RecordingEpoch registry_epoch = 0;
+  u32 trace_epoch = 0;
+  u64 sampling_epoch_start = 0;
+  u64 block_generation = 0;
+  OSThreadState observed_state = OSThreadState::UNKNOWN;
+  OSThreadState arm_state = OSThreadState::UNKNOWN;
+  bool unowned_sample = false;
+  bool flush_tail = false;
+  bool context_captured = false;
+  bool force_unowned_ordinary = false;
+  u64 context_publication = 0;
+  Context context{};
+};
+
+struct WallSampleResult {
+  bool ordinary_recorded = false;
+  bool tail_recorded = false;
+};
+
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)
 // Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
   friend class ProfilerTestAccessor;
+  friend class CTimer;
 
 private:
-  struct TaskBlockRun {
-    std::atomic<u64> generation{0};
-    std::atomic<u64> end_ticks{0};
-    std::atomic<u64> call_trace_id{0};
-    std::atomic<u64> correlation_id{0};
-    std::atomic<u64> final_blocker{0};
-    std::atomic<u64> unblocking_span_id{0};
-    u64 start_ticks{0};
-    std::atomic<u64> segment_start_ticks{0};
-    u64 entry_blocker{0};
-    int tid{-1};
-    Context context{};
-    OSThreadState state{OSThreadState::UNKNOWN};
-  };
-
+  // Unregistrations that arrived while a ThreadTablesFreeze was closed, in the
+  // order they were skipped. Written only inside a freeze, which waits for every
+  // unregistration call to leave before its owner continues. CTimer replays the
+  // record after listing threads. 256 entries; cleared at each start().
+  static void recordSkippedUnregistration(int tid);
+  static int skippedUnregistrationCount();
+  static int skippedUnregistration(int index);
+  static void clearSkippedUnregistrations();
   // signal handlers
   static volatile bool _signals_initialized;
 
@@ -104,6 +141,40 @@ private:
 
   Mutex _state_lock;
   std::atomic<State> _state;
+  // Thread-registration gates; the contract is in ProfilingEngines.md.
+  // Registration gate: open iff the CPU engine started, and it admits only that
+  // engine. Set by openThreadRegistration() and cleared by start(),
+  // closeThreadRegistration() and ThreadTablesFreeze.
+  std::atomic<bool> _engines_ready;
+  // Unregistration gate: open except inside a ThreadTablesFreeze, so PerfEvents'
+  // fds survive stop(). An exit that arrives while it is closed is recorded
+  // (recordSkippedUnregistration()) and replayed by CTimer.
+  std::atomic<bool> _thread_tables_stable;
+  // In-flight hook calls per gate. closeThreadRegistration() waits for
+  // registration calls only; ThreadTablesFreeze waits for both. Kept on its own
+  // cache line: every native thread start and exit writes these.
+  alignas(DEFAULT_CACHE_LINE_SIZE) std::atomic<int> _register_calls_inflight;
+  std::atomic<int> _unregister_calls_inflight;
+  // Wait budget of waitForHookCalls(); HOOK_CALLS_DRAIN_TIMEOUT_NS (1 s) in
+  // profiler.cpp. Written only by the friend test accessor. long long: test
+  // budgets of several seconds must not overflow a 32-bit long.
+  static long long _hook_drain_timeout_ns;
+
+  // Closes the registration gate and waits for the registration calls already
+  // past it to leave the engines. Returns false if one is still in flight
+  // after the wait budget (logged); the caller must not free or replace any
+  // table then. stop() and startCpuEngine() put the profiler in ERROR on that
+  // result only for an engine whose table outlives stop().
+  bool closeThreadRegistration();
+  // Waits until no registration call (and, with include_unregistration, no
+  // unregistration call) is inside an engine, for at most
+  // _hook_drain_timeout_ns. Returns false on timeout (logged); the caller
+  // must not free or replace any table then.
+  bool waitForHookCalls(bool include_unregistration);
+  // Gate checks and engine calls behind registerThread()/unregisterThread(),
+  // run with thread cancellation disabled.
+  static int registerThreadInEngines(int tid);
+  static void unregisterThreadInEngines(int tid);
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
@@ -128,12 +199,23 @@ private:
   // JavaProfiler.execute / ContextValueCache.
   std::atomic<bool> _context_value_dict_reset{false};
   ThreadFilter _thread_filter;
+  WallClockBlockTracker _block_tracker;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
+  // CPU engine is only replaced by start(), while thread unregistration is open, so the
+  // hook paths (registerThreadInEngines(), unregisterThreadInEngines()) load
+  // them with acquire and start() stores them with release. check() selects
+  // into locals and runs only while IDLE, where the slots still route exits
+  // to the previous recording's engine.
   Engine *_cpu_engine;
   Engine *_wall_engine = NULL;
   Engine *_alloc_engine;
   int _event_mask;
+  // Subset of _event_mask whose engine actually activated on the last
+  // start() (mixed-success starts leave some requested engines never
+  // started). stop() must gate teardown on this, not on _event_mask,
+  // or it calls stop() on an engine whose start() never ran.
+  int _activated_mask;
 
   time_t _start_time;
   time_t _stop_time;
@@ -148,25 +230,76 @@ private:
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
   bool _wall_precheck = false;
+  // True between a Profiler::start() that activated the reference-chain
+  // tracker and the matching stop(): gates stopThread()/stop() in
+  // Profiler::stop() so a recording started without the tracker never tears
+  // it down (the tracker is only started when allocation sampling activated
+  // AND referencechains=true - see Profiler::start()). Atomic: also read by
+  // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
+  std::atomic<bool> _reference_chains_active{false};
   std::atomic<bool> _task_block_enabled{false};
   std::atomic<bool> _task_block_monitor_events_enabled{false};
-  std::atomic<bool> _task_block_rotation{false};
-  std::atomic<u64> _task_block_inflight{0};
-  std::array<TaskBlockRun, ThreadFilter::kMaxThreads> _task_block_runs{};
+  static constexpr u64 TASK_BLOCK_CLOSED = 1ULL << 63;
+  std::atomic<u64> _task_block_activity_state{0};
 
-  SpinLock _class_map_lock;
+  // The walkers' sigsetjmp scopes are inside recordSampleLocked(), so their
+  // recovery returns through this owner rather than jumping past its destructor.
+  class RecordingStripe {
+    SpinLock* _locks;
+    u32 _index;
+    bool _owned;
+
+  public:
+    RecordingStripe(SpinLock* locks, u32 index) : _locks(locks), _index(index) {
+      _owned = _locks[_index].tryLock() ||
+          _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
+          _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+    }
+    ~RecordingStripe() { if (_owned) _locks[_index].unlock(); }
+    RecordingStripe(const RecordingStripe&) = delete;
+    RecordingStripe& operator=(const RecordingStripe&) = delete;
+    bool owned() const { return _owned; }
+    u32 index() const { return _index; }
+  };
+
+  class RecordingLocks {
+    Profiler* _profiler;
+
+  public:
+    explicit RecordingLocks(Profiler* profiler) : _profiler(profiler) {
+      _profiler->lockAll();
+    }
+    ~RecordingLocks() { _profiler->unlockAll(); }
+    RecordingLocks(const RecordingLocks&) = delete;
+    RecordingLocks& operator=(const RecordingLocks&) = delete;
+  };
+
+  bool recordSampleLocked(u32 lock_index, void* ucontext, u64 counter, int tid,
+                          jint event_type, u64 call_trace_id, Event* event,
+                          u64* recorded_call_trace_id, const Context* context = nullptr);
+  bool writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
+                        const Context* context = nullptr);
+  WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
+  bool writeUnownedBlockedTail(u32 lock_index, const WallSampleRequest& request,
+                               WallClockBlockTracker::BlockState* block);
+
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
   int _max_stack_depth;
+  size_t _calltrace_buffer_capacity[CONCURRENCY_LEVEL];
   StackWalkFeatures _features;
   int _safe_mode;
   CStack _cstack;
+  bool _force_jmethodID;
 
   volatile jvmtiEventMode _thread_events_state;
 
   Libraries* _libs;
   u32 _num_context_attributes;
   bool _omit_stacktraces;
+  // How allocation/live-heap samples capture their stack (allocstack), resolved
+  // at start: never ALLOCSTACK_AUTO.
+  AllocStack _alloc_stack;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _sanity_check_failed;
   // _sanity_check_message points into SanityChecker's static error buffer.
@@ -178,8 +311,25 @@ private:
   static void *dlopen_hook(const char *filename, int flags);
   void switchLibraryTrap(bool enable);
   static bool prewarmUnwinder();
+  static void verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, jthread thread,
+                               int max_depth, jvmtiFrameInfo* expected);
 
   void disableEngines();
+  // Starts _cpu_engine. On success opens thread registration (idempotent for
+  // engines that already opened it); on failure closes it again and logs the
+  // error. If closing times out, an engine whose table outlives stop() also
+  // puts the profiler in ERROR. Returns
+  // whether the engine started.
+  bool startCpuEngine(Arguments &args);
+  // Installs next as _cpu_engine. When it replaces another engine, the
+  // previous one releases the per-thread resources it keeps across stop()
+  // (Engine::releaseThreads()) under a ThreadTablesFreeze. Returns false,
+  // replacing nothing, if hook calls do not drain.
+  bool replaceCpuEngine(Engine *next);
+  // Undoes start()'s setup after _jfr.start() when start() then fails.
+  void rollBackStart();
+  // Enables the CPU engine's events iff EM_CPU is in activated.
+  void enableCpuEngine(int activated);
 
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
@@ -202,40 +352,58 @@ private:
   Error checkJvmCapabilities();
 
   void lockAll();
+  // Resets the dictionaries, the call trace storage and the counters for a
+  // fresh recording; returns how many dictionaries were left unchanged because
+  // their drain timed out.
+  int resetRecordingState();
+  // Counts and logs a dictionary reset or standby clear skipped on a drain
+  // timeout.  The dictionaries only report the result; this is the one place
+  // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
+  void reportDrainTimeout(const char *what);
   void unlockAll();
   void setTaskBlockEnabled(bool enabled);
-  u64 beginTaskBlockRotation();
+  bool beginTaskBlockRotation();
   void endTaskBlockRotation();
-  bool recordTaskBlockSegment(int tid, TaskBlockEvent *event);
-  bool recordTaskBlockSegmentLocked(int tid, TaskBlockEvent *event);
-  void emitTaskBlockBoundary(u64 boundary_ticks);
-  void commitTaskBlockBoundary(u64 boundary_ticks);
-  void flushCompletedTaskBlockRuns();
-  void clearAllTaskBlockRuns();
 
-  // Rotate all three dictionaries, then run jfr_op under lockAll().
+  // Rotate dictionaries and run jfr_op under lockAll(); failed output retains roots.
   //
-  // rotate() is self-contained: it uses _accepting + RefCountGuard to drain
-  // concurrent JNI readers, and SignalBlocker prevents profiling signals on
-  // this thread from inserting into old_active between Phase 1 and Phase 2.
-  // No external lock is required for rotation.
+  // rotate() drains concurrent JNI readers itself (RefCountGuard), and
+  // SignalBlocker prevents profiling signals on this thread from inserting
+  // into old_active between Phase 1 and Phase 2.  It must not run concurrently
+  // with another rotate(), clearStandby() or clearAll() on the same
+  // dictionary: they share the dictionary's record of a buffer whose clear
+  // was skipped.  Callers serialise them with _state_lock.
   //
   // lockAll() wraps jfr_op only — to gate call-trace writers (signal handlers
   // and JNI paths that write to CallTraceStorage) from racing with the dump.
   // Dictionary writers that bypass lockAll() (e.g. recordTrace0) are handled
   // by the dictionary's own RefCountGuard protocol, not by lockAll().
   template<typename F>
-  void rotateDictsAndRun(F jfr_op) {
+  Error rotateDictsAndRun(F jfr_op) {
     SignalBlocker blocker;
-    _class_map.rotate();
-    _string_label_map.rotate();
-    _context_value_map.rotate();
+    if (!_class_map.rotate()) {
+      reportDrainTimeout("Class map reused a standby buffer it could not clear");
+    }
+    if (!_string_label_map.rotate()) {
+      reportDrainTimeout("String label map reused a standby buffer it could not clear");
+    }
+    if (!_context_value_map.rotate()) {
+      reportDrainTimeout("Context value map reused a standby buffer it could not clear");
+    }
     lockAll();
-    jfr_op();
+    Error error = jfr_op();
     unlockAll();
-    _class_map.clearStandby();
-    _string_label_map.clearStandby();
-    _context_value_map.clearStandby();
+    if (error) return error;
+    if (!_class_map.clearStandby()) {
+      reportDrainTimeout("Class map standby buffer not cleared");
+    }
+    if (!_string_label_map.clearStandby()) {
+      reportDrainTimeout("String label map standby buffer not cleared");
+    }
+    if (!_context_value_map.clearStandby()) {
+      reportDrainTimeout("Context value map standby buffer not cleared");
+    }
+    return Error::OK;
   }
 
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
@@ -248,37 +416,76 @@ private:
   }
 
 public:
+  // Closes both thread-registration gates (see _engines_ready) and waits for
+  // the hook calls already past them. Construct it only around an actual
+  // table replacement (CTimer::sizeTimerTable()) or a CPU engine change
+  // (replaceCpuEngine()), never for a whole start(): exits that arrive while
+  // it is alive are recorded, not delivered (recordSkippedUnregistration()).
+  // The destructor reopens unregistration; registration reopens only when the
+  // CPU engine starts.
+  class ThreadTablesFreeze {
+  public:
+    explicit ThreadTablesFreeze(Profiler *profiler)
+        : _profiler(profiler), _drained(false) {
+      // Both gates: registerThread() must not reach a table being replaced
+      // or released either.
+      _profiler->_engines_ready.store(false, std::memory_order_seq_cst);
+      _profiler->_thread_tables_stable.store(false, std::memory_order_seq_cst);
+      _drained = _profiler->waitForHookCalls(/*include_unregistration=*/true);
+    }
+    ~ThreadTablesFreeze() {
+      _profiler->_thread_tables_stable.store(true, std::memory_order_seq_cst);
+    }
+    // false if hook calls were still in flight after the wait budget; the
+    // caller must then fail without replacing any table.
+    bool drained() const { return _drained; }
+    ThreadTablesFreeze(const ThreadTablesFreeze &) = delete;
+    ThreadTablesFreeze &operator=(const ThreadTablesFreeze &) = delete;
+
+  private:
+    Profiler *_profiler;
+    bool _drained;
+  };
+
   Profiler()
-      : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
+      : _state_lock(), _state(State::NEW), _engines_ready(false),
+        _thread_tables_stable(true), _register_calls_inflight(0),
+        _unregister_calls_inflight(0),
+        _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
-        _alloc_engine(NULL), _event_mask(0),
+        _alloc_engine(NULL), _event_mask(0), _activated_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
-        _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
-        _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
+        _total_samples(0), _sample_seq(0), _failures(),
+        _max_stack_depth(0), _calltrace_buffer_capacity(), _features(), _safe_mode(0), _cstack(CSTACK_NO),
+        _force_jmethodID(true),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
-        _num_context_attributes(0), _omit_stacktraces(false),
+        _num_context_attributes(0), _omit_stacktraces(false), _alloc_stack(ALLOCSTACK_JVMTI),
         _remote_symbolication(false), _sanity_check_failed(false),
         _sanity_check_message(NULL), _dlopen_entry(NULL) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
     }
-
-    // Protects wall-clock unowned-block fallback tail traces (cached in
-    // ThreadFilter::Slot) from being dropped by a chunk rotation before
-    // flushUnownedBlockedTail() emits them. ThreadFilter is process-lifetime,
-    // so this is registered once rather than per-recording.
-    registerLivenessChecker([this](CallTraceIdSet& buffer) {
-      _thread_filter.collectUnownedBlockedTraceIds(
-          [&buffer](u64 call_trace_id) { buffer.insert(call_trace_id); });
-    });
+    _thread_filter.setBlockTracker(&_block_tracker);
+    _call_trace_storage.registerLivenessChecker(
+        [this](CallTraceIdSet& live) { _block_tracker.collectLiveTraceIds(live); },
+        [this](const CallTraceIdSet& failed) { _block_tracker.onUnpreservedTraceIds(failed); });
   }
 
   static inline Profiler *instance() {
     return _instance;
   }
+
+#ifdef UNIT_TEST
+  CallTraceStorage* callTraceStorageForTest() { return &_call_trace_storage; }
+  using SampleWriteHook = bool (*)(u32, u64, Event*, const Context*, void*);
+  SampleWriteHook sampleWriteHookForTest = nullptr;
+  void* sampleWriteHookArgForTest = nullptr;
+  RecordingLocks recordingLocksForTest() { return RecordingLocks(this); }
+  u32 exchangeNumContextAttributesForTest(u32 count);
+#endif
 
   // Resolve names of native (non-Java) threads from /proc. Idempotent and
   // allocation-light (no-op for already-named tids), so it is safe to call
@@ -316,6 +523,10 @@ public:
     return _cstack;
   }
 
+  inline bool forceJmethodID() const {
+    return _force_jmethodID;
+  }
+
   inline const StackWalkFeatures& stackWalkFeatures() const {
     return _features;
   }
@@ -343,6 +554,7 @@ public:
   }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
+  WallClockBlockTracker *blockTracker() { return &_block_tracker; }
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
@@ -377,6 +589,14 @@ public:
   Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
+  /**
+   * Opens both thread-registration gates (see _engines_ready). A CPU engine
+   * with a per-thread table calls it from its start() once the table is sized
+   * and before it lists the existing threads, so the hook covers a thread
+   * that starts or exits while start() registers the existing ones.
+   * startCpuEngine() calls it again once the CPU engine started. Idempotent.
+   */
+  void openThreadRegistration();
 
   /**
    * Remote symbolication packed data layout (BCI_NATIVE_FRAME_REMOTE):
@@ -468,31 +688,30 @@ public:
   };
 
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);
-  NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
+  NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, bool pc_is_return_address, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index,
                          bool skip_hook_prefix);
+  WallSampleResult recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
+                                    ExecutionEvent* event, const WallSampleRequest& request);
+
+  // Producer-side tail flush; the caller holds TaskBlockActivity and pauses fallback.
+  bool recordUnownedBlockedTail(int tid, ThreadFilter::SlotID slot_id);
+
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u64 call_trace_id, Event *event,
-                    u64 *recorded_call_trace_id = nullptr);
+                    u64 call_trace_id, Event *event);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no
   // stack-trace reference, tagged by the correlation ID we passed to
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
-                             jint event_type, Event *event,
-                             u64 *recorded_correlation_id = nullptr);
-  // Shared by recordJVMTISample()/recordTaskBlock(): performs the JVMTI stack walk for
-  // `thread` starting at `start_depth`, converts to ASGCT format, and applies the
-  // JDK21+ virtual-thread continuation-boundary fixup (a real stack, from a carrier's
-  // perspective, that GetStackTrace on a VT truncates at the continuation boundary).
-  // Caller must already hold _locks[lock_index] and pass a buffer sized for
-  // _max_stack_depth frames. Returns the number of frames written into
-  // buffer->_asgct_frames, or 0 if JVMTI failed to produce any frame — callers differ
-  // on whether that is a hard failure or a valid empty trace, so this function does
-  // not decide that, and does not call _call_trace_storage.put() itself.
-  int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer);
+                             jint event_type, Event *event);
+  // Caller holds its stripe lock and supplies CallTraceBuffer::capacity() space,
+  // including the one-extra-frame truncation probe. Converts to ASGCT format and
+  // marks detected continuation roots; returns 0 on error/empty capture.
+  int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer,
+                         bool& truncated);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
@@ -512,34 +731,22 @@ public:
 #ifdef UNIT_TEST
   using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
-  static void setTaskBlockRecordOverrideForTest(
-      TaskBlockRecordOverride override);
-  using TaskBlockCompletionObserver = void (*)(
-      ThreadFilter::SlotID slot_id, u64 generation);
-  static void setTaskBlockCompletionObserverForTest(
-      TaskBlockCompletionObserver observer);
   bool setTaskBlockEnabledForTest(bool enabled) {
     return _task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
   }
+  static void setTaskBlockRecordOverrideForTest(
+      TaskBlockRecordOverride override);
+  enum class TaskBlockActivityStage {
+    BEFORE_RESERVATION, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
+  };
+  using TaskBlockActivityHook = void (*)(TaskBlockActivityStage stage);
+  static void setTaskBlockActivityHookForTest(TaskBlockActivityHook hook);
+  static void runTaskBlockActivityHookForTest(TaskBlockActivityStage stage);
 #endif
   bool tryEnterTaskBlockActivity();
   void leaveTaskBlockActivity();
-  bool registerTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation,
-                            int tid, u64 start_ticks, const Context &context,
-                            u64 blocker, OSThreadState state);
-  void recordTaskBlockAnchor(ThreadFilter::SlotID slot_id, u64 generation,
-                             u64 call_trace_id, u64 correlation_id);
-  void completeTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation,
-                            u64 end_ticks, u64 blocker,
-                            u64 unblocking_span_id);
-  // Admitted finishers must capture this before publishing completion: the
-  // post-rotation flusher can clear the generation even while activity is held.
-  u64 taskBlockSegmentStart(ThreadFilter::SlotID slot_id,
-                            u64 generation) const;
-  void clearTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation);
-  bool taskBlockRotationActive() const {
-    return _task_block_rotation.load(std::memory_order_acquire);
-  }
+  bool omitStacktraces() const { return _omit_stacktraces; }
+
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
   }
@@ -569,34 +776,17 @@ public:
   static void unregisterThread(int tid);
 
 #ifdef UNIT_TEST
-  u64 beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
+  // Runs the reset steps of a fresh start() in isolation.  Compiled only into
+  // gtest binaries.
+  int resetRecordingStateForTest() { return resetRecordingState(); }
+
+  bool beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
   void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
   bool taskBlockRotationActiveForTest() const {
-    return _task_block_rotation.load(std::memory_order_acquire);
+    return (_task_block_activity_state.load(std::memory_order_acquire) & TASK_BLOCK_CLOSED) != 0;
   }
-  u64 taskBlockInflightForTest() const {
-    return _task_block_inflight.load(std::memory_order_acquire);
-  }
-  u64 taskBlockRunGenerationForTest(ThreadFilter::SlotID slot_id) const {
-    return _task_block_runs[slot_id].generation.load(std::memory_order_acquire);
-  }
-  u64 taskBlockRunEndForTest(ThreadFilter::SlotID slot_id) const {
-    return _task_block_runs[slot_id].end_ticks.load(std::memory_order_acquire);
-  }
-  u64 taskBlockRunCallTraceForTest(ThreadFilter::SlotID slot_id) const {
-    return _task_block_runs[slot_id].call_trace_id.load(std::memory_order_acquire);
-  }
-  u64 taskBlockRunCorrelationForTest(ThreadFilter::SlotID slot_id) const {
-    return _task_block_runs[slot_id].correlation_id.load(std::memory_order_acquire);
-  }
-  u64 taskBlockRunSegmentStartForTest(ThreadFilter::SlotID slot_id) const {
-    return _task_block_runs[slot_id].segment_start_ticks.load(std::memory_order_acquire);
-  }
-  void commitTaskBlockBoundaryForTest(u64 boundary_ticks) {
-    commitTaskBlockBoundary(boundary_ticks);
-  }
-  void flushCompletedTaskBlockRunsForTest() {
-    flushCompletedTaskBlockRuns();
+  int taskBlockInflightForTest() const {
+    return _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
   }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
@@ -643,8 +833,7 @@ public:
     // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
     if (force_stackwalk_crash_env) {
       TEST_LOG("FORCE_SIGSEGV");
-      int* p = nullptr;
-      *p = 1;
+      crashNow();
     }
 #endif
     return Libraries::instance()->findLibraryByAddress(address);
