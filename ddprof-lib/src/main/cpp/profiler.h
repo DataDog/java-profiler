@@ -699,7 +699,10 @@ public:
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,
                             jint event_type, Event *event);
-  void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
+  // Bounded signal-side publication; dump excludes it with all recording stripes.
+  bool deferUnownedWallSample(WallSampleRequest& request);
+  // Normal timer only: metadata and the successor start publish under one stripe.
+  void recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   void writeLog(LogLevel level, const char *message);

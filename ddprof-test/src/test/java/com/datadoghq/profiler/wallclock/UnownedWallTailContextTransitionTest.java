@@ -18,6 +18,7 @@ import com.datadoghq.profiler.Platform;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -243,7 +244,9 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter traced B");
       assertNull(workerFailure.get(), "Worker failed before traced B");
       Map<String, Long> inSpan = profiler.getDebugCounters();
-      Thread.sleep(100);
+      // The timer closes unchanged epochs after one second. Close A before extraction,
+      // otherwise its statistics can first appear after the last dump and mask metadata loss.
+      Thread.sleep(1200);
       for (int i = 0; i < snapshots.length; i++) {
         snapshots[i] = Files.createTempFile("unowned-span-context-dump-" + i, ".jfr");
         System.out.println("===> attribution recording: " + snapshots[i]);
@@ -275,6 +278,13 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     System.out.println("Attribution clear start: " + clearStart.get());
     stopProfiler();
     recordings[3] = verifyEvents("datadog.MethodSample", true);
+    Map<Long, JfrEvent> retainedEpochs = new HashMap<>();
+    for (JfrEvent epoch : verifyEvents("datadog.WallClockSamplingEpoch", false)) {
+      assertNotNull(epoch.getLong("startTime"), "Epoch start is required");
+      assertNotNull(epoch.getLong("samplePoolSize"), "Epoch population is required");
+      assertNotNull(epoch.getLong("numSuccessfulSamples"), "Epoch denominator is required");
+      retainedEpochs.put(epoch.getLong("startTime"), epoch);
+    }
     Set<Long> tracedTimes = new HashSet<>();
     Set<Long> clearedTimes = new HashSet<>();
     int originalTails = 0;
@@ -308,6 +318,9 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
             && "PARKED".equals(state)
             && weight > 1) {
           originalTails++;
+          JfrEvent epoch = retainedEpochs.get(time);
+          assertNotNull(epoch, "Standalone dump lost the retained tail's originating epoch");
+          assertTrue(epoch.getLong("numSuccessfulSamples") > 0, "Origin scale must be usable");
           assertTrue(time < clearStart.get(), "Deferred A must keep its original epoch timestamp");
           assertTags(sample, tagsA);
           assertEquals(0L, sample.getLong(SPAN_ID, -1));

@@ -436,7 +436,12 @@ probability. `samplePoolSize` includes all collected candidates, and
 Retained blocked units keep each epoch window's start tick and serialize at that
 tick. This requires consumers to scale by the sample timestamp's epoch, not flush
 time. Mixed-window tails serialize separately; same-window periodic weights can
-compact. See [TLSContext](TLSContext.md#retained-unowned-wall-context).
+compact. Closed epoch metadata follows pending segments across dumps; see
+[JfrIntegration](JfrIntegration.md#event-encoding).
+
+Deferred weight publication tries a recording stripe and reads the epoch start
+again while holding it. Contention records normally instead of suppressing.
+The timer publishes closed metadata and its successor start under one stripe.
 
 A changed population closes the preceding window before dispatch. Changed send
 results close it with its prior statistics before installing the new counts.

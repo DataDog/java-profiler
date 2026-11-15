@@ -46,6 +46,7 @@
 #include "utils.h"
 #include "wallClock.h"
 #include "wallClockCounters.h"
+#include "signalSafety.h"
 #include "frames.h"
 #include "sanityCheck.h"
 
@@ -1134,15 +1135,22 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   return recorded;
 }
 
-void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    return;
-  }
-  _jfr.wallClockEpoch(lock_index, event);
-  _locks[lock_index].unlock();
+bool Profiler::deferUnownedWallSample(WallSampleRequest& request) {
+  RecordingStripe stripe(_locks, getLockIndex(request.tid));
+  if (!stripe.owned() || wallSampleSlot(request) == nullptr) return false;
+  // Dump pruning holds every stripe. Re-read after acquisition so a paused
+  // precheck cannot publish a segment whose closed metadata was already pruned.
+  request.sampling_epoch_start = WallClockCounters::samplingEpochStart();
+  return _block_tracker.deferUnownedWeight(request.slot_id, request.sampling_epoch_start);
+}
+
+void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  SignalBlocker signals;
+  ExclusiveLockGuard stripe(&_locks[getLockIndex(tid)]);
+  _jfr.wallClockEpoch(getLockIndex(tid), event);
+  // Publish the successor before dump can prune this epoch without pending units.
+  WallClockCounters::beginSamplingEpoch(next_epoch_start);
 }
 
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {

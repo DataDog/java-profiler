@@ -207,8 +207,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   }
   if (isPrecheckSuppressionState(result.observed_state)) {
     bool record = block_slot->shouldRecordUnownedBlockedSample(force_ordinary, !transactional);
-    if (!record && (!transactional || tracker->deferUnownedWeight(
-            slot_id, result.transaction.sampling_epoch_start))) {
+    if (!record && (!transactional || Profiler::instance()->deferUnownedWallSample(result.transaction))) {
       Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
       result.suppress = true;
       return result;

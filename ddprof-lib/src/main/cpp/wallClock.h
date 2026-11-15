@@ -126,9 +126,8 @@ class BaseWallClock : public Engine {
 #ifdef UNIT_TEST
         observeClosedEpochForTest(epoch);
 #endif
-        Profiler::instance()->recordWallClockEpoch(self, &epoch);
+        Profiler::instance()->recordWallClockEpoch(self, &epoch, end);
         epoch.newEpoch(end);
-        WallClockCounters::beginSamplingEpoch(end);
         startTime = end;
       };
 

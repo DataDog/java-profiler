@@ -2199,3 +2199,82 @@ TEST(UnownedWallAttributionTest, MissingSamplingEpochCannotAccumulateUnscaledWei
     });
     worker.get();
 }
+
+TEST(UnownedWallAttributionTest, StripeContentionFailsOpenWithoutDeferringWeight) {
+    auto worker = std::async(std::launch::async, [] {
+        ScopedUnownedAttributionOwner scoped;
+        u64 id = 0;
+        ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id));
+        auto* block = scoped.profiler->blockTracker()->slotForId(scoped.owner->filterSlotId());
+        const u64 pending = block->unowned_blocked_pending_weight.load();
+        bool suppressed = true;
+        {
+            auto locks = scoped.profiler->recordingLocksForTest();
+            auto request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+            EXPECT_FALSE(suppressed);
+            EXPECT_TRUE(request.unowned_sample);
+            EXPECT_EQ(pending, block->unowned_blocked_pending_weight.load());
+        }
+        scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        EXPECT_TRUE(suppressed);
+        EXPECT_EQ(pending + 1, block->unowned_blocked_pending_weight.load());
+    });
+    worker.get();
+}
+
+TEST(UnownedWallAttributionTest, PreStripeEpochSnapshotCannotResurrectPrunedMetadata) {
+    auto worker = std::async(std::launch::async, [] {
+        ScopedUnownedAttributionOwner scoped;
+        u64 id = 0;
+        ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id, 1));
+        struct Rotation {
+            Profiler* profiler;
+            u64 old_epoch;
+            u64 next_epoch;
+            bool reached = false;
+        } rotation{scoped.profiler, WallClockCounters::samplingEpochStart(), TSC::ticks()};
+        ASSERT_GT(rotation.next_epoch, rotation.old_epoch);
+        BaseWallClock::setUnownedContextProbeHookForTest(+[](void* arg) {
+            auto* rotation = static_cast<Rotation*>(arg);
+            auto locks = rotation->profiler->recordingLocksForTest();
+            std::unordered_set<u64> pending;
+            rotation->profiler->blockTracker()->collectUnownedEpochStarts(pending);
+            EXPECT_EQ(0U, pending.count(rotation->old_epoch));
+            // The precheck has already captured old_epoch. Rotation may prune it
+            // because this owner has not published any deferred segment yet.
+            WallClockCounters::beginSamplingEpoch(rotation->next_epoch);
+            rotation->reached = true;
+        }, &rotation);
+        bool suppressed = false;
+        auto request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        BaseWallClock::setUnownedContextProbeHookForTest(nullptr, nullptr);
+        ASSERT_TRUE(rotation.reached);
+        ASSERT_TRUE(suppressed);
+        EXPECT_EQ(rotation.next_epoch, request.sampling_epoch_start);
+        WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+        ASSERT_EQ(1U, scoped.profiler->blockTracker()->copyUnownedWeightSegments(
+            scoped.owner->filterSlotId(), segments));
+        EXPECT_EQ(rotation.next_epoch, segments[0].epoch_start);
+        EXPECT_EQ(1ULL, segments[0].weight);
+    });
+    worker.get();
+}
+
+TEST(WallClockEpochRootsTest, EmptyBackingDoesNotInventEpochs) {
+    WallClockBlockTracker tracker;
+    std::unordered_set<u64> epochs;
+    tracker.collectUnownedEpochStarts(epochs);
+    EXPECT_TRUE(epochs.empty());
+}
+
+TEST_F(WallClockSampleTransactionTest, StaleIdentityCannotDeferWeight) {
+    auto* retained = block();
+    const u64 pending = retained->unowned_blocked_pending_weight.load();
+    auto stale = request;
+    stale.lifecycle_generation++;
+    EXPECT_FALSE(profiler->deferUnownedWallSample(stale));
+    EXPECT_EQ(pending, retained->unowned_blocked_pending_weight.load());
+    stale.slot_id = -1;
+    EXPECT_FALSE(profiler->deferUnownedWallSample(stale));
+    EXPECT_EQ(pending, retained->unowned_blocked_pending_weight.load());
+}
