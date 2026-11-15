@@ -384,7 +384,7 @@ WallClockCandidateOutcome BaseWallClock::sampleThreadCommon(
     registry_lookups++;
     ThreadFilter::SlotID slot_id = -1;
     ThreadFilter::Slot* slot =
-        thread_filter->lookupByTid(entry.tid, recording_epoch, &slot_id);
+        thread_filter->lookupForWallPrecheck(entry.tid, recording_epoch, &slot_id);
     if (slot != nullptr) {
       entry.slot = slot;
       entry.slot_id = slot_id;

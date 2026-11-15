@@ -895,6 +895,146 @@ static std::array<int, ThreadFilter::kTidIndexSize> tidsByIndexBucket() {
     return tids;
 }
 
+TEST_F(ThreadRegistryTest, WallPrecheckBoundsRealWrappedCollisionChain) {
+    auto counter_names = Counters::describeCounters();
+    ASSERT_LT(static_cast<size_t>(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED), counter_names.size());
+    EXPECT_STREQ("wc_precheck_registry_probe_exhausted",
+                 counter_names[WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED]);
+    auto tids = tidsByIndexBucket();
+    int base = tids[ThreadFilter::kTidIndexSize - 2];
+    int last_slot = -1;
+    for (int i = 0; i < 513; ++i) {
+        last_slot = registry.registerThread(base + i * ThreadFilter::kTidIndexSize);
+        ASSERT_GE(last_slot, 0);
+    }
+    int last_tid = base + 512 * ThreadFilter::kTidIndexSize;
+    ASSERT_EQ(registry.slotForId(last_slot), registry.lookupByTid(last_tid));
+    unsigned probes = registry.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = last_slot;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(last_tid, registry.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted + 1, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+
+    probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(registry.slotForId(last_slot), registry.lookupByTid(last_tid, registry.recordingEpoch()));
+    EXPECT_EQ(513u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(last_slot, registry.registerThread(last_tid));
+    registry.unregisterThreadByTid(last_tid);
+    EXPECT_EQ(nullptr, registry.lookupByTid(last_tid));
+    EXPECT_NE(nullptr, registry.lookupByTid(base + 511 * ThreadFilter::kTidIndexSize));
+    EXPECT_EQ(exhausted + 1, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckIncludesFinalBudgetBucketAndCountsTombstones) {
+    auto tids = tidsByIndexBucket();
+    int base = tids[ThreadFilter::kTidIndexSize - 2];
+    std::array<int, 257> slots{};
+    for (int i = 0; i < 257; ++i) {
+        slots[i] = registry.registerThread(base + i * ThreadFilter::kTidIndexSize);
+        ASSERT_GE(slots[i], 0);
+    }
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    for (int position : {1, 255, 256, 257}) {
+        unsigned probes = registry.tidIndexProbesForTest();
+        ThreadFilter::SlotID found = 99;
+        int tid = base + (position - 1) * ThreadFilter::kTidIndexSize;
+        auto* slot = registry.lookupForWallPrecheck(tid, registry.recordingEpoch(), &found);
+        EXPECT_EQ(position <= 256 ? registry.slotForId(slots[position - 1]) : nullptr, slot);
+        EXPECT_EQ(position <= 256 ? slots[position - 1] : -1, found);
+        EXPECT_EQ(static_cast<unsigned>(std::min(position, 256)),
+                  registry.tidIndexProbesForTest() - probes);
+    }
+    EXPECT_EQ(exhausted + 1, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+    for (int i = 0; i < 255; ++i) registry.unregisterThread(slots[i]);
+    ASSERT_EQ(-1, registry.tidIndexEntryForTest(ThreadFilter::kTidIndexSize - 2));
+    unsigned probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(registry.slotForId(slots[255]), registry.lookupForWallPrecheck(
+        base + 255 * ThreadFilter::kTidIndexSize, registry.recordingEpoch()));
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(
+        base + 256 * ThreadFilter::kTidIndexSize, registry.recordingEpoch()));
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted + 2, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+    probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(
+        base + 300 * ThreadFilter::kTidIndexSize, registry.recordingEpoch()));
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted + 3, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckEmptyFinalBucketIsNotExhaustion) {
+    auto tids = tidsByIndexBucket();
+    int base = tids.back();
+    for (int i = 0; i < 255; ++i) {
+        ASSERT_GE(registry.registerThread(base + i * ThreadFilter::kTidIndexSize), 0);
+    }
+    unsigned probes = registry.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = 99;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(
+        base + 255 * ThreadFilter::kTidIndexSize, registry.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckRejectsAbsentIndexInvalidTidAndEpochWithoutExhaustion) {
+    ThreadFilter inactive;
+    unsigned probes = inactive.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, 1, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    inactive.init("", true);
+    probes = inactive.tidIndexProbesForTest();
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(-1, inactive.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, 0, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, inactive.recordingEpoch() + 1, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, inactive.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes + 1, inactive.tidIndexProbesForTest());
+    EXPECT_EQ(exhausted, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckPreservesLazyRecordingRefresh) {
+    constexpr int tid = 12345;
+    int slot_id = registry.registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+    auto epoch = registry.recordingEpoch();
+    ASSERT_NE(nullptr, registry.lookupForWallPrecheck(tid, epoch));
+    registry.deactivateRecording();
+    registry.init("", true);
+    ASSERT_NE(epoch, registry.recordingEpoch());
+    unsigned probes = registry.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = 99;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(tid, epoch, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, registry.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(tid, registry.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes + 1, registry.tidIndexProbesForTest());
+    EXPECT_EQ(slot_id, registry.registerThread(tid));
+    EXPECT_EQ(registry.slotForId(slot_id),
+              registry.lookupForWallPrecheck(tid, registry.recordingEpoch(), &found));
+    EXPECT_EQ(slot_id, found);
+    EXPECT_EQ(exhausted, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
 static int emptyIndexBuckets(const ThreadFilter& registry) {
     int empty = 0;
     for (int bucket = 0; bucket < ThreadFilter::kTidIndexSize; ++bucket) {
