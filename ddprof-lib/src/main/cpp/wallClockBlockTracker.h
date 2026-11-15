@@ -21,6 +21,7 @@
 #include <cassert>
 #include <cstdint>
 #include <functional>
+#include <utility>
 
 #include "arch.h"
 #include "counters.h"
@@ -355,6 +356,13 @@ public:
     // captures the run's state and context eligibility before clearing it.
     bool snapshotAndExitBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                                    u64 generation, BlockRunSnapshot* snapshot);
+    using TailFlush = std::function<bool(ThreadFilter::SlotID, int)>;
+    // Wired once before registry use; lock contention must retain the tail, not wait.
+    // Profiler wires this during static initialization, before TLS keys are guaranteed ready.
+    void setTailFlush(TailFlush flush) { _tail_flush = std::move(flush); }
+    // Teardown retains failed writes; registry reclamation must wait for success.
+    bool flushUnownedTail(ThreadFilter::SlotID slot_id, int tid);
+    bool retireSlot(ThreadFilter::SlotID slot_id, int tid);
     // Generation-checked exits preserve retained unowned context and epoch segments.
     // Clears stale suppression state so a new/reused slot cannot inherit a
     // predecessor's active block or sampled generation. Called by ThreadFilter
@@ -424,6 +432,8 @@ public:
 #endif
 
 private:
+    TailFlush _tail_flush;
+
     bool ownedBlockGeneration(ThreadFilter* registry, const ThreadEntry& entry,
                               u64& generation, bool& already_sampled) const;
 

@@ -25,6 +25,11 @@ public final class ProfilerOwnedBlockHooks {
     profiler.blockExit(token);
   }
 
+  /** Returns the runtime capability used by the synchronous success-test classes. */
+  public static boolean taskBlockSupported(JavaProfiler profiler) {
+    return profiler.taskBlockSupportedForTest();
+  }
+
   public static long beginTaskBlockForThread(JavaProfiler profiler, Thread thread) {
     return profiler.beginTaskBlockForThread(thread);
   }

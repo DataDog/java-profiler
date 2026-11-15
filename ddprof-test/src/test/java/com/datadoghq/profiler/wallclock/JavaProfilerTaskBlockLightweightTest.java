@@ -80,6 +80,11 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
   }
 
   @Override
+  protected boolean isPlatformSupported() {
+    return TaskBlockAssertions.isSupported();
+  }
+
+  @Override
   protected String getProfilerCommand() {
     return "wall=1ms,filter=,wallprecheck=true,lightweight=yes";
   }

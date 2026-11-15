@@ -675,8 +675,10 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     }
     slot->recording_epoch.store(0, std::memory_order_release);
     slot->context_window_state.store(0, std::memory_order_release);
-    if (_block_tracker != nullptr) {
-        _block_tracker->resetSlot(slot_id);
+    if (_block_tracker != nullptr && !_block_tracker->retireSlot(slot_id, tid)) {
+        slot->retiring_tid.store(tid, std::memory_order_release);
+        enqueueRetired(slot_id, slot);
+        return;
     }
     pushToFreeList(slot_id);
 }
@@ -711,14 +713,16 @@ void ThreadFilter::retireThreadByTid(int tid) {
                                            std::memory_order_acquire)) {
         return;  // already retired/unregistered/reassigned
     }
-    slot->retiring_tid.store(tid, std::memory_order_relaxed);
+    slot->retiring_tid.store(tid, std::memory_order_release);
     slot->recording_epoch.store(0, std::memory_order_release);
     slot->context_window_state.store(0, std::memory_order_release);
     if (_block_tracker != nullptr) {
-        // Synchronous: keeps owner NONE/state UNKNOWN observable as soon as the
-        // exiting thread is joined (lock-free; null-safe with lazy storage).
-        _block_tracker->resetSlot(slot_id);
+        _block_tracker->retireSlot(slot_id, tid);
     }
+    enqueueRetired(slot_id, slot);
+}
+
+void ThreadFilter::enqueueRetired(SlotID slot_id, Slot* slot) {
     // Count before the push (R-A3): over-reporting only sends registrations to
     // the locked (exact) path; see capacityExhausted().
     _retired_count.fetch_add(1, std::memory_order_release);
@@ -742,15 +746,14 @@ void ThreadFilter::drainRetiredLocked() {
         SlotID next = slot->retire_next.load(std::memory_order_relaxed);
         int retiring_tid = slot->retiring_tid.load(std::memory_order_relaxed);
         unindexSlot(slot_id, retiring_tid);
-        slot->retire_next.store(-1, std::memory_order_relaxed);
-        slot->retiring_tid.store(-1, std::memory_order_relaxed);
-        if (_block_tracker != nullptr) {
-            // Defensive second reset right before the slot becomes reusable:
-            // clears anything a late signal wrote after the retire-time reset.
-            _block_tracker->resetSlot(slot_id);
+        if (_block_tracker != nullptr && !_block_tracker->retireSlot(slot_id, retiring_tid)) {
+            enqueueRetired(slot_id, slot);
+        } else {
+            slot->retire_next.store(-1, std::memory_order_relaxed);
+            slot->retiring_tid.store(-1, std::memory_order_release);
+            pushToFreeList(slot_id);
         }
-        pushToFreeList(slot_id);
-        _retired_count.fetch_sub(1, std::memory_order_release);  // after the push (R-A3)
+        _retired_count.fetch_sub(1, std::memory_order_release);  // after free or requeue
         slot_id = next;
     }
 }
@@ -941,6 +944,23 @@ bool ThreadFilter::unfilteredWallTrackingActive() const {
 
 ThreadFilter::RecordingEpoch ThreadFilter::recordingEpoch() const {
     return _recording_epoch.load(std::memory_order_acquire);
+}
+
+bool ThreadFilter::flushUnownedTails() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    std::lock_guard<std::mutex> lock(_registry_lock);
+    if (_block_tracker == nullptr) return true;
+    bool flushed = true;
+    int count = std::min(_next_index.load(std::memory_order_acquire), kMaxThreads);
+    for (SlotID id = 0; id < count; ++id) {
+        Slot* slot = slotForId(id);
+        if (slot == nullptr) continue;
+        int tid = slot->nativeTid();
+        if (tid < 0) tid = slot->retiring_tid.load(std::memory_order_acquire);
+        if (!_block_tracker->flushUnownedTail(id, tid)) flushed = false;
+    }
+    drainRetiredLocked();
+    return flushed;
 }
 
 void ThreadFilter::deactivateRecording() {

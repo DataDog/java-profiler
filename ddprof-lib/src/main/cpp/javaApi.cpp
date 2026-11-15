@@ -464,6 +464,12 @@ static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
   return same;
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_taskBlockSupportedForTest0(
+    JNIEnv* env, jclass unused, jthread thread) {
+  return Profiler::instance()->taskBlockSupportedForTest(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {

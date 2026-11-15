@@ -1045,14 +1045,17 @@ public:
     ~ScopedUnownedAttributionOwner() {
         WallClockCounters::beginSamplingEpoch(previous_sampling_epoch);
         BaseWallClock::setUnownedContextProbeHookForTest(nullptr, nullptr);
-        profiler->sampleWriteHookForTest = previous_write;
-        profiler->sampleWriteHookArgForTest = previous_write_arg;
+        // Cleanup emits retained fixture tails before restoring the external writer.
+        profiler->sampleWriteHookForTest = acceptWrite;
+        profiler->sampleWriteHookArgForTest = nullptr;
         BaseWallClock::exchangeThreadStateReaderForTest(previous_reader);
         profiler->exchangeNumContextAttributesForTest(previous_attributes);
         if (owner != nullptr) {
             profiler->threadFilter()->unregisterThread(owner->filterSlotId(), owner->tid());
         }
         profiler->threadFilter()->deactivateRecording();
+        profiler->sampleWriteHookForTest = previous_write;
+        profiler->sampleWriteHookArgForTest = previous_write_arg;
         profiler->blockTracker()->setUnownedContextSnapshotsNeeded(false);
         ProfiledThread::release();
     }
@@ -1930,16 +1933,22 @@ TEST_F(WallClockSampleTransactionTest, StaleIdentityCannotConsumeOrPublish) {
     EXPECT_EQ(id, block()->unowned_blocked_call_trace_id.load());
 }
 
-TEST_F(WallClockSampleTransactionTest, ResetDuringFailedWriteDoesNotRestorePredecessorWeight) {
+TEST_F(WallClockSampleTransactionTest, TeardownDuringFailedWriteRetainsPredecessorUntilFlushed) {
     request.flush_tail = false;
     request.unowned_sample = true;
     ordinary_ok = false;
     during_write = +[](WallClockSampleTransactionTest* self) {
         auto* registry = self->profiler->threadFilter();
         registry->unregisterThread(self->request.slot_id, self->request.tid);
-        EXPECT_EQ(self->request.slot_id, registry->registerThread(self->request.tid + 1));
+        EXPECT_NE(self->request.slot_id, registry->registerThread(self->request.tid + 1));
     };
     EXPECT_FALSE(sample().ordinary_recorded);
+    expectTailRetained();
+    EXPECT_EQ(0ULL, emitted_weight);
+    during_write = nullptr;
+    ASSERT_TRUE(profiler->threadFilter()->flushUnownedTails());
+    EXPECT_EQ(2ULL, emitted_weight);
+    ASSERT_EQ(request.slot_id, profiler->threadFilter()->registerThread(request.tid + 2));
     EXPECT_EQ(0ULL, block()->unowned_blocked_pending_weight.load());
     EXPECT_EQ(0ULL, block()->unowned_blocked_call_trace_id.load());
     EXPECT_EQ(0ULL, block()->unowned_blocked_decision_count.load());

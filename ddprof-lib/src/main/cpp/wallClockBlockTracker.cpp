@@ -118,6 +118,23 @@ bool WallClockBlockTracker::snapshotAndExitBlockedRun(ThreadFilter* registry,
     return true;
 }
 
+bool WallClockBlockTracker::flushUnownedTail(ThreadFilter::SlotID slot_id, int tid) {
+    auto* block = slotForId(slot_id);
+    if (block == nullptr ||
+        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
+    // Standalone trackers have no recorder; their synthetic state needs no emission.
+    return !_tail_flush || _tail_flush(slot_id, tid);
+}
+
+bool WallClockBlockTracker::retireSlot(ThreadFilter::SlotID slot_id, int tid) {
+    auto* block = slotForId(slot_id);
+    if (block == nullptr) return true;
+    block->clearActiveBlockRun();
+    if (!flushUnownedTail(slot_id, tid)) return false;
+    resetSlot(slot_id);
+    return true;
+}
+
 void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
     if (s != nullptr) {

@@ -178,12 +178,9 @@ public:
     // Clears per-recording membership and suppression state while keeping
     // native slot ownership intact. Threads must opt in again with add().
     void clearActive();
-    // Non-owning; wired up once by Profiler so ThreadFilter's own
-    // registry-lifecycle resets (registerThread/unregisterThread/
-    // refreshSlotForRecording/clearActive) also clear the tracker's
-    // parallel per-slot state. See wallClockBlockTracker.h. Must be wired
-    // before the first registerThread(); the tracker's storage is allocated
-    // lazily by registerThread().
+    // Non-owning, wired before registration so registry lifecycle decisions
+    // also update the parallel wall state. Failed teardown writes retain
+    // unowned tails and defer slot reuse until a successful flush.
     void setBlockTracker(WallClockBlockTracker* tracker) { _block_tracker = tracker; }
 
 #ifdef UNIT_TEST
@@ -234,9 +231,9 @@ public:
     // An expected TID re-resolves a stale slot cache before retiring ownership.
     void unregisterThread(SlotID slot_id, int expected_tid = -1);
     void unregisterThreadByTid(int tid);
-    // Lock-free retirement for the pthread-key TLS destructor (never blocks).
-    // Unknown/already-retired tid is a no-op. Locked bookkeeping is deferred to
-    // the next _registry_lock holder (drainRetiredLocked()).
+    // TLS teardown never waits for the registry mutex or a recording stripe.
+    // Tail writes may flush JFR output; failed writes defer reclamation.
+    // Unknown/already-retired tids are inert; drains finish locked bookkeeping.
     void retireThreadByTid(int tid);
     Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;
     Slot* lookupByTid(int tid, RecordingEpoch epoch, SlotID* out_slot_id = nullptr) const;
@@ -244,6 +241,9 @@ public:
     // Populates lifecycle metadata from an existing mapping without registering
     // the TID. Timer-side observation must remain read-only.
     bool lookupThreadEntry(ThreadEntry& entry, RecordingEpoch epoch) const;
+    // Stop calls this after draining sampling signals, before JFR teardown.
+    // Failed writes retain both live and retired tail custody for a retry.
+    bool flushUnownedTails();
     void deactivateRecording();
     SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
 
@@ -296,9 +296,9 @@ private:
     // Pushed lock-free by retireThreadByTid(); consumed whole (exchange) by
     // drainRetiredLocked() under _registry_lock, so there is no ABA.
     std::atomic<SlotID> _retired_head{-1};
-    // Retired-but-undrained slots; incremented BEFORE the push, decremented
-    // AFTER pushToFreeList(), so a completed retirement is always counted in
-    // _retired_count or _free_count (see capacityExhausted()).
+    // Retired slots count before queue publication; drains remove detached
+    // entries only after freeing or re-enqueueing them. Capacity checks thus
+    // cannot miss a completed retirement, including a retained failed tail.
     std::atomic<int> _retired_count{0};
     // Entries contain slot_id + 1. Zero terminates a lookup probe; -1 is a
     // tombstone left by unregister. The slot's published TID is the key.
@@ -338,10 +338,10 @@ private:
     // i.e. a new registration cannot succeed.
     // 1. _next_index only changes under _registry_lock and never drops below
     //    kMaxThreads once reached (an overshoot is reverted, never reset).
-    // 2. Load order matters: _retired_count before _free_count. Drain removes
-    //    a slot from _retired_count only after pushToFreeList() has counted it
-    //    in _free_count, so every completed retirement is visible in at least
-    //    one of the two reads.
+    // 2. Load order matters: _retired_count before _free_count. A drain keeps
+    //    failed tails counted; reclaimed slots reach _free_count before their
+    //    retirement count is removed, so every completed retirement is visible
+    //    in at least one of the two reads.
     // 3. A free whose pushToFreeList() has not yet incremented _free_count is
     //    an in-progress operation ordered after this rejection - the same
     //    outcome as the locked path.
@@ -362,8 +362,8 @@ private:
                _retired_count.load(std::memory_order_acquire) == 0 &&
                _free_count.load(std::memory_order_acquire) == 0;
     }
-    // Caller holds _registry_lock. Moves every retired-pending slot to the
-    // free list (unindex, reset, push).
+    // Caller holds _registry_lock. Failed tail writes stay retired; only
+    // successfully flushed slots are reset and moved to the free list.
     void drainRetiredLocked();
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
@@ -372,6 +372,7 @@ private:
     void refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch,
                                   u64 logical_window_state);
     void ensureTidIndexLocked();
+    void enqueueRetired(SlotID slot_id, Slot* slot);
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
     SlotID lookupSlotIdByTid(int tid) const;
     static inline unsigned hashTid(int tid) {

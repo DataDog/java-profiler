@@ -474,6 +474,14 @@ Context boundaries skip clean owned-run writes and retain unowned context and ep
 in both filtered and unfiltered stackful ASGCT recordings. Paired TaskBlock runs survive
 context crossings so their exits can reject context-ineligible durations.
 
+Thread teardown tries to emit each retained unowned segment before slot reuse.
+A contended stripe or failed write keeps the slot retired with its original trace,
+context, state and epoch weights. Registry drains retry these bounded retained slots.
+
+Recording stop flushes live and retired tails after signal and TaskBlock drains,
+before engine teardown. A failed flush leaves teardown retryable and retains only
+uncommitted segments; it does not synthesize an owned TaskBlock duration.
+
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.
 

@@ -7,6 +7,7 @@
 #include <cassert>
 #include <climits>
 #include "profiler.h"
+#include "signalSafety.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
@@ -944,6 +945,50 @@ WallClockBlockTracker::BlockState* Profiler::wallSampleSlot(const WallSampleRequ
   return _block_tracker.slotForId(request.slot_id);
 }
 
+bool Profiler::flushWallTail(ThreadFilter::SlotID slot_id, int tid) {
+  if (tid < 0) return false;
+  // Stop and owner teardown can race; the same TID must use one exact stripe.
+  // Signal writers have drained at stop, or lost registry visibility at retirement.
+  RecordingStripe stripe(_locks, getLockIndex(tid), false);
+  return stripe.owned() && flushWallTailLocked(stripe.index(), tid, slot_id, false);
+}
+
+bool Profiler::flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                                  bool preserve_cadence) {
+  auto* block = _block_tracker.slotForId(slot_id);
+  if (block == nullptr ||
+      block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
+  u64 trace_id = 0, weight = 0, publication = 0;
+  OSThreadState state = OSThreadState::UNKNOWN;
+  Context origin{};
+  if (!block->peekUnownedBlockedTail(trace_id, weight, state) ||
+      !_block_tracker.readUnownedContext(slot_id, origin, publication)) return false;
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  size_t count = _block_tracker.copyUnownedWeightSegments(slot_id, segments);
+  bool all_recorded = count != 0;
+  for (size_t i = 0; i < count; ++i) {
+    ExecutionEvent deferred;
+    deferred._thread_state = state;
+    deferred._execution_mode = ExecutionMode::UNKNOWN;
+    deferred._weight = segments[i].weight;
+    deferred._sample_ticks = segments[i].epoch_start;
+    atomicIncRelaxed(_total_samples);
+    if (writeSampleEvent(lock_index, tid, trace_id, BCI_WALL, &deferred, &origin)) {
+      _block_tracker.commitUnownedWeightSegment(slot_id, segments[i]);
+      Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+    } else {
+      all_recorded = false;
+    }
+  }
+  bool complete = all_recorded &&
+      block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+  if (complete) {
+    if (preserve_cadence) block->clearUnownedBlockedTailKeepingCadence();
+    else block->resetUnownedBlockedSampling();
+  }
+  return complete;
+}
+
 WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
                                            ExecutionEvent* event, const WallSampleRequest& request) {
   WallSampleResult result;
@@ -998,35 +1043,9 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   bool has_tail = block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state);
   if (!matching_periodic && origin_readable && has_tail &&
       (request.flush_tail || request.unowned_sample)) {
-    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
-    size_t count = _block_tracker.copyUnownedWeightSegments(request.slot_id, segments);
-    bool all_recorded = count != 0;
-    for (size_t i = 0; i < count; ++i) {
-      ExecutionEvent deferred;
-      deferred._thread_state = tail_state;
-      deferred._execution_mode = ExecutionMode::UNKNOWN;
-      deferred._weight = segments[i].weight;
-      deferred._sample_ticks = segments[i].epoch_start;
-      atomicIncRelaxed(_total_samples);
-      bool recorded = writeSampleEvent(stripe.index(), request.tid, tail_id,
-                                      BCI_WALL, &deferred, &origin);
-      if (wallSampleSlot(request) != block) return result;
-      if (recorded) {
-        _block_tracker.commitUnownedWeightSegment(request.slot_id, segments[i]);
-        Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
-      } else {
-        all_recorded = false;
-      }
-    }
-    result.tail_recorded = all_recorded &&
-        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
-    if (result.tail_recorded) {
-      if (request.unowned_sample) {
-        block->clearUnownedBlockedTailKeepingCadence();
-      } else {
-        block->resetUnownedBlockedSampling();
-      }
-    }
+    result.tail_recorded = flushWallTailLocked(stripe.index(), request.tid,
+                                              request.slot_id, request.unowned_sample);
+    if (wallSampleSlot(request) != block) return result;
   }
   if (request.unowned_sample && result.ordinary_recorded) {
     // Never replace A's positive tail merely because B's ordinary write worked.
@@ -1923,6 +1942,14 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
+bool Profiler::taskBlockSupportedForTest(JNIEnv* env, jthread thread) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  Arguments args;
+  args._wall = 1000000;
+  return selectWallEngine(args)->supportsUnfilteredThreadRegistryTracking() &&
+      JVMSupport::isPlatformThread(env, thread);
+}
+
 Engine *Profiler::selectWallEngine(Arguments &args) {
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
@@ -2507,6 +2534,11 @@ Error Profiler::stop() {
   // already entered their snapshot-and-record activity.
   if (!beginTaskBlockRotation()) {
     return Error("task-block rotation did not drain; teardown skipped, retry stop()");
+  }
+
+  if (!_thread_filter.flushUnownedTails()) {
+    endTaskBlockRotation();
+    return Error("pending wall-clock tails could not be written; teardown skipped");
   }
 
   // Close the registration gate and wait for the calls already past it, so no

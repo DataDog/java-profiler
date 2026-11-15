@@ -481,6 +481,11 @@ public final class JavaProfiler {
     return endTaskBlock0(Thread.currentThread(), token, blocker, unblockingSpanId);
   }
 
+  /** Test-only probe of default wall-engine and current platform-thread support. */
+  boolean taskBlockSupportedForTest() {
+    return taskBlockSupportedForTest0(Thread.currentThread());
+  }
+
   /**
    * Test-only hook exercising {@link #beginTaskBlock0} with an explicit {@code thread}, to cover
    * the rejection path when it does not identify the calling thread.
@@ -575,6 +580,8 @@ public final class JavaProfiler {
   private static native long blockEnter0(int state);
 
   private static native void blockExit0(long token);
+
+  private static native boolean taskBlockSupportedForTest0(Thread thread);
 
   private static native long beginTaskBlock0(Thread thread);
 

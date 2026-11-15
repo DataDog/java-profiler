@@ -249,10 +249,13 @@ private:
     bool _owned;
 
   public:
-    RecordingStripe(SpinLock* locks, u32 index) : _locks(locks), _index(index) {
-      _owned = _locks[_index].tryLock() ||
-          _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
-          _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+    RecordingStripe(SpinLock* locks, u32 index, bool allow_fallback = true)
+        : _locks(locks), _index(index) {
+      _owned = _locks[_index].tryLock();
+      if (!_owned && allow_fallback) {
+        _owned = _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
+            _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+      }
     }
     ~RecordingStripe() { if (_owned) _locks[_index].unlock(); }
     RecordingStripe(const RecordingStripe&) = delete;
@@ -278,6 +281,10 @@ private:
                           u64* recorded_call_trace_id, const Context* context = nullptr);
   bool writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
                         const Context* context = nullptr);
+  // Partial writes consume only accepted segments, retaining the original payload for retries.
+  bool flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                           bool preserve_cadence);
+  bool flushWallTail(ThreadFilter::SlotID slot_id, int tid);
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -463,10 +470,16 @@ public:
       _calltrace_buffer[i] = NULL;
     }
     _thread_filter.setBlockTracker(&_block_tracker);
+    _block_tracker.setTailFlush([this](ThreadFilter::SlotID slot_id, int tid) {
+      return flushWallTail(slot_id, tid);
+    });
     _call_trace_storage.registerLivenessChecker(
         [this](CallTraceIdSet& live) { _block_tracker.collectLiveTraceIds(live); },
         [this](const CallTraceIdSet& failed) { _block_tracker.onUnpreservedTraceIds(failed); });
   }
+
+  // Test-only capability probe for the default synchronous wall-clock API tests.
+  bool taskBlockSupportedForTest(JNIEnv* env, jthread thread);
 
   static inline Profiler *instance() {
     return _instance;
