@@ -8,3 +8,6 @@ all:
 	gcc -fPIC -shared -DFIXTURE_DIRECTORY_ANCHOR -o $(TARGET_DIR)/libjava.so socket_patch_transaction.c
 	gcc -fPIC -shared $(LDFLAGS) -o $(TARGET_DIR)/libnet.so socket_patch_transaction.c
 	gcc -fPIC -shared $(LDFLAGS) -o $(TARGET_DIR)/libnio.so socket_patch_transaction.c
+	mkdir -p $(TARGET_DIR)/poll-adapter
+	cp $(TARGET_DIR)/libjava.so $(TARGET_DIR)/poll-adapter/libjava.so
+	gcc -fPIC -shared $(LDFLAGS) -DFIXTURE_POLL_ADAPTER -o $(TARGET_DIR)/poll-adapter/libnet.so socket_patch_transaction.c

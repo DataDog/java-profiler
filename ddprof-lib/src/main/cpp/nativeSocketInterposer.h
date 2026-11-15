@@ -132,6 +132,7 @@ public:
   static int epoll_pwait2_hook(int epfd, struct epoll_event* events, int maxevents,
                                const struct timespec* timeout, const sigset_t* sigmask);
   static int poll_hook(struct pollfd* fds, nfds_t nfds, int timeout);
+  static int restartable_poll_hook(struct pollfd* fds, nfds_t nfds, int timeout);
   static int ppoll_hook(struct pollfd* fds, nfds_t nfds,
                         const struct timespec* timeout_ts, const sigset_t* sigmask);
   static int select_hook(int nfds, fd_set* readfds, fd_set* writefds,

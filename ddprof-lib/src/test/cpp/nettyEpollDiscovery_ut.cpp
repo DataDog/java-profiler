@@ -73,6 +73,8 @@ class NettyEpollDiscoveryTest : public ::testing::TestWithParam<bool> {
 protected:
   using FixtureFile = std::unique_ptr<FILE, decltype(&fclose)>;
 
+  virtual bool loadThroughAlias() const { return false; }
+
   void SetUp() override {
     ASSERT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
     ASSERT_NE(nullptr, mkdtemp(temporary_directory));
@@ -96,7 +98,13 @@ protected:
     ASSERT_FALSE(HasFatalFailure());
     pinFixtureInode(loaded_path);
     ASSERT_FALSE(HasFatalFailure());
-    handle = dlopen(loaded_path, RTLD_NOW | RTLD_LOCAL);
+    const char* load_path = loaded_path;
+    if (loadThroughAlias()) {
+      snprintf(alias_path, sizeof(alias_path), "%s/loader-alias.so", temporary_directory);
+      ASSERT_EQ(0, symlink(loaded_path, alias_path));
+      load_path = alias_path;
+    }
+    handle = dlopen(load_path, RTLD_NOW | RTLD_LOCAL);
     ASSERT_NE(nullptr, handle) << dlerror();
     symbol = dlsym(handle, "netty_fixture_read");
     ASSERT_NE(nullptr, symbol);
@@ -152,6 +160,7 @@ protected:
     LibraryPatcher::unpatch_socket_functions();
     if (handle != nullptr) EXPECT_EQ(0, dlclose(handle));
     if (java_handle != nullptr) EXPECT_EQ(0, dlclose(java_handle));
+    if (alias_path[0] != '\0') unlink(alias_path);
     if (loaded_path[0] != '\0') unlink(loaded_path);
     if (inode_pin_fd >= 0) {
       struct stat identity;
@@ -190,6 +199,7 @@ protected:
   int existing_libraries = 0;
   char temporary_directory[PATH_MAX] = "/tmp/ddprof-netty-discovery-XXXXXX";
   char loaded_path[PATH_MAX] = {};
+  char alias_path[PATH_MAX] = {};
   void* java_handle = nullptr;
   void* handle = nullptr;
   void* symbol = nullptr;
@@ -307,9 +317,20 @@ TEST_P(NettyEpollDiscoveryTest, RejectsCacheWithoutImageFingerprint) {
   Libraries::instance()->updateSymbols(false);
   CodeCache* lib = loadedCache();
   ASSERT_NE(nullptr, lib);
-  ASSERT_NE(0ULL, lib->imageFingerprint());
-  lib->setImageFingerprint(0);
+  u64 fingerprint = lib->imageFingerprint();
+  ASSERT_NE(0ULL, fingerprint);
   if (GetParam()) ASSERT_EQ(0, unlink(loaded_path));
+  // Identical fixture copies can reuse a base in the append-only cache.
+  // Remove every equivalent identity so none can validate this mapping.
+  const CodeCacheArray& libraries = Libraries::instance()->native_libs();
+  for (int index = 0; index < libraries.count(); index++) {
+    CodeCache* cached = libraries.at(index);
+    if (cached != nullptr && cached->imageBase() == lib->imageBase() &&
+        cached->imageFingerprint() == fingerprint) {
+      cached->setImageFingerprint(0);
+    }
+  }
+  ASSERT_EQ(0ULL, lib->imageFingerprint());
   ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
   EXPECT_EQ(existing_patches, LibraryPatcher::socket_patch_count_for_test());
   EXPECT_EQ(existing_libraries, LibraryPatcher::socket_library_count_for_test());
@@ -395,6 +416,81 @@ TEST_P(NettyEpollDiscoveryTest, PreservesNullOptionalSlotWithAvailableProvider) 
     __atomic_store_n(slots[index], originals[index], __ATOMIC_RELEASE);
   }
 }
+
+class NettyEpollAliasDiscoveryTest : public NettyEpollDiscoveryTest {
+protected:
+  bool loadThroughAlias() const override { return true; }
+};
+
+TEST_P(NettyEpollAliasDiscoveryTest, PatchesRemovedLoaderAliasAndRetainsImage) {
+  Libraries::instance()->updateSymbols(false);
+  CodeCache* lib = loadedCache();
+  ASSERT_NE(nullptr, lib);
+  ASSERT_NE(nullptr, lib->findSymbol("JNI_OnLoad_netty_transport_native_epoll"));
+  ASSERT_NE(nullptr, lib->findSymbol("JNI_OnUnload_netty_transport_native_epoll"));
+  ASSERT_NE(0ULL, lib->imageFingerprint());
+  Dl_info info;
+  ASSERT_NE(0, dladdr(symbol, &info));
+  ASSERT_STREQ(alias_path, info.dli_fname);
+  ASSERT_EQ(0, unlink(alias_path));
+  if (GetParam()) ASSERT_EQ(0, unlink(loaded_path));
+  char path[PATH_MAX];
+  ASSERT_EQ(nullptr, realpath(alias_path, path));
+  ASSERT_EQ(ENOENT, errno);
+  void** slot = lib->findImport(im_read);
+  ASSERT_NE(nullptr, slot);
+  void* original = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+  auto read_fixture = reinterpret_cast<NativeSocketInterposer::read_fn>(symbol);
+  auto expect_forwarding = [&]() {
+    char byte;
+    errno = 0;
+    EXPECT_EQ(-1, read_fixture(-1, &byte, 1));
+    EXPECT_EQ(EBADF, errno);
+  };
+  expect_forwarding();
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(existing_libraries + 1, LibraryPatcher::socket_library_count_for_test());
+  EXPECT_EQ(reinterpret_cast<void*>(NativeSocketInterposer::read_hook),
+            __atomic_load_n(slot, __ATOMIC_ACQUIRE));
+  expect_forwarding();
+  LibraryPatcher::unpatch_socket_functions();
+  EXPECT_EQ(original, __atomic_load_n(slot, __ATOMIC_ACQUIRE));
+  expect_forwarding();
+  UnloadAtMappingLookup unload(handle, symbol);
+  // Discovery's pin must survive the caller's final close before installation.
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  ASSERT_TRUE(unload.reached);
+  ASSERT_TRUE(unload.retained);
+  ASSERT_NE(0, dladdr(symbol, &info));
+  expect_forwarding();
+  LibraryPatcher::unpatch_socket_functions();
+  if (!OS::isMusl()) EXPECT_EQ(0, dladdr(symbol, &info));
+}
+
+TEST_P(NettyEpollAliasDiscoveryTest, SkipsImageUnloadedBeforeLoaderAliasPin) {
+  if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
+  Libraries::instance()->updateSymbols(false);
+  ASSERT_NE(nullptr, loadedCache());
+  ASSERT_EQ(0, unlink(alias_path));
+  // Both deletion and rename invalidate the cached pathname before fallback.
+  if (GetParam()) {
+    ASSERT_EQ(0, unlink(loaded_path));
+  } else {
+    char moved_path[PATH_MAX];
+    snprintf(moved_path, sizeof(moved_path), "%s/retained-file.so", temporary_directory);
+    ASSERT_EQ(0, rename(loaded_path, moved_path));
+    strcpy(loaded_path, moved_path);
+  }
+  UnloadAtMappingLookup unload(handle, symbol, "loader_name_lookup");
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  ASSERT_TRUE(unload.reached);
+  EXPECT_FALSE(unload.retained);
+  EXPECT_EQ(existing_libraries, LibraryPatcher::socket_library_count_for_test());
+  EXPECT_EQ(existing_patches, LibraryPatcher::socket_patch_count_for_test());
+}
+
+INSTANTIATE_TEST_SUITE_P(BackingFileDeleted, NettyEpollAliasDiscoveryTest,
+                         ::testing::Bool());
 
 INSTANTIATE_TEST_SUITE_P(ParsedBeforeUnlink, NettyEpollDiscoveryTest,
                          ::testing::Bool());

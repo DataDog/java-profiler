@@ -6,7 +6,7 @@ The Linux native I/O interposer and native socket bytes sampler share imported
 function patches. `NativeSocketInterposer` produces synchronous TaskBlock events;
 `NativeSocketSampler` samples stream-socket bytes and elapsed time. Patching is
 restricted to selected JDK networking libraries and validated Netty native epoll
-images, including shaded and already-unlinked images. Non-Linux implementations
+images, including shaded images with cached markers. Non-Linux implementations
 do not install these hooks.
 
 ## Ownership and forwarding
@@ -27,6 +27,10 @@ recording or NativeBlockScope construction. With only the bytes sampler active,
 the wrappers use its existing hooks. With both active, the underlying I/O call
 runs once and bytes recording follows the TaskBlock scope. Hook forwarding
 preserves arguments, return values and errno.
+
+The JDK 8 libnet poll-to-ppoll adapter remains the forwarding target when a
+shared hook displaces it. Both owners preserve that policy, including sampler-only
+operation. Other poll imports keep their globally resolved original.
 
 ## Interval and patch domains
 
@@ -162,6 +166,10 @@ new hook fault or of successful EFAULT recovery.
 - `LibraryPatcherSocketTransactionTest.OwnerRestartMakesReloadedFullRelroImportsWritable`:
   production owner start/stop, actual unmap/reload at the same base, read-only GOT
   precondition, restarted installation/forwarding and restored originals.
+- `NettyEpollAliasDiscoveryTest`: removed loader symlinks with live/deleted backing
+  files, forwarding/restoration, final-close retention and unload before fallback pin.
+- `LibraryPatcherSocketTransactionTest.OwnersPreserveDisplacedJdk8PollAdapterForwardingAndRestoration`:
+  both owner modes retain the ppoll adapter, without redirecting ordinary poll calls.
 - `libraryPatcherUnload_ut.cpp`: pin/restore socket safety, pthread live-walk
   fingerprint identity, foreign-loader-lock order and same-layout replacement.
 
@@ -206,9 +214,14 @@ or release-performance qualification.
 ## Netty epoll
 
 Netty images are selected by the exact epoll JNI load/unload markers cached during
-symbol ingestion, including shaded and already-unlinked mappings. Discovery pins
-the mapped image and validates its live fingerprint before reading cached imports.
-It retains the pin until restoration.
+symbol ingestion. Discovery validates the mapped base and fingerprint, not pathname
+equality. It pins each image before reading cached imports and retains the pin until restoration.
+
+If the cached maps pathname cannot pin an image, discovery copies its loader-owned
+name outside the patch lock. It pins by that name and revalidates the fingerprint.
+This supports deleted backing files and removed symlinks after marker ingestion.
+
+Initial ingestion is not guaranteed when neither pathname can retain the image.
 A NULL weak `epoll_pwait2` import stays NULL; supported imports use the same
 errno-preserving scope as the other epoll waits.
 

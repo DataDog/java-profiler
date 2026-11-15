@@ -14,6 +14,7 @@
 #include "log.h"
 #include "nativeSocketSampler.h"
 #include "safeAccess.h"
+#include "symbols.h"
 #include "tsc.h"
 #include "vmEntry.h"
 
@@ -218,6 +219,7 @@ bool NativeSocketInterposer::markProfilerHooks() {
   hooks_marked &=
       markJavaProfilerHook(reinterpret_cast<void*>(NativeSocketSampler::read_hook));
 
+  hooks_marked &= markJavaProfilerHook(reinterpret_cast<void*>(restartable_poll_hook));
   const NativeIoHookSpec* specs = hookSpecs();
   for (int hook_index = HOOK_SEND; hook_index <= HOOK_READ; hook_index++) {
     hooks_marked &= markJavaProfilerHook(specs[hook_index].hook);
@@ -582,6 +584,14 @@ int NativeSocketInterposer::poll_hook(struct pollfd* fds, nfds_t nfds, int timeo
   bool eligible = fds != nullptr && nfds > 0 && timeout != 0;
   return runNativeIoHook<int>(eligible, NativeBlockKind::POLL, 0,
                               _orig_poll.load(std::memory_order_acquire),
+                              [&](poll_fn fn) { return fn(fds, nfds, timeout); });
+}
+
+int NativeSocketInterposer::restartable_poll_hook(struct pollfd* fds, nfds_t nfds,
+                                                  int timeout) {
+  bool eligible = fds != nullptr && nfds > 0 && timeout != 0;
+  return runNativeIoHook<int>(eligible, NativeBlockKind::POLL, 0,
+                              Symbols::restartablePoll,
                               [&](poll_fn fn) { return fn(fds, nfds, timeout); });
 }
 

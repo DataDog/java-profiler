@@ -27,6 +27,7 @@
 #include "nativeTestResources_linux.h"
 #include "os.h"
 #include "profiler.h"
+#include "symbols.h"
 #include "vmEntry.h"
 
 #include <atomic>
@@ -232,6 +233,7 @@ TEST(NativeSocketInterposerMarkTest, MarksEverySampledSocketHookLayer) {
     expectJavaProfilerMark(hook);
   }
 
+  expectJavaProfilerMark(reinterpret_cast<void*>(NativeSocketInterposer::restartable_poll_hook));
   const NativeSocketInterposer::NativeIoHookSpec* specs =
       NativeSocketInterposer::hookSpecs();
   for (int hook_index = NativeSocketInterposer::HOOK_SEND;
@@ -1460,7 +1462,7 @@ class LibraryPatcherSocketTransactionTest : public ::testing::Test {
 protected:
   // The parser caches inodes in an append-only library array. Run each unload/
   // reload scenario in a child so a prior test's CodeCache cannot alias a DSO.
-  void initializeFixture() {
+  void initializeFixture(const char* resource = "socket-patch-transaction-lib") {
     // Bound a broken barrier/lock interleaving to this child, not the CI job.
     alarm(30);
     ASSERT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
@@ -1471,7 +1473,7 @@ protected:
                                                saved_sampler_write, saved_sampler_read);
     originals_saved = true;
 
-    ASSERT_TRUE(nativeTestResourcePath("socket-patch-transaction-lib", directory, sizeof(directory)));
+    ASSERT_TRUE(nativeTestResourcePath(resource, directory, sizeof(directory)));
     handles[0] = openLibrary("libjava.so");
     ASSERT_NE(nullptr, handles[0]) << dlerror();
     loadNetworkLibrary(0, "libnet.so");
@@ -1609,6 +1611,72 @@ protected:
 };
 
 } // namespace
+
+TEST_F(LibraryPatcherSocketTransactionTest,
+       OwnersPreserveDisplacedJdk8PollAdapterForwardingAndRestoration) {
+  for (bool start_sampler : {false, true}) {
+    SCOPED_TRACE(start_sampler ? "sampler only" : "TaskBlock only");
+    EXPECT_EXIT({
+      initializeFixture("socket-patch-transaction-lib/poll-adapter");
+      if (HasFatalFailure()) _exit(1);
+      CodeCache* lib = libraries[0];
+      ASSERT_EQ(1u, lib->importCount(im_poll));
+      void** slot = lib->findImport(im_poll);
+      ASSERT_NE(nullptr, slot);
+      ASSERT_TRUE(lib->makeImportsWritable());
+      void* adapter = reinterpret_cast<void*>(Symbols::restartablePoll);
+      __atomic_store_n(slot, adapter, __ATOMIC_RELEASE);
+      auto wait = reinterpret_cast<NativeSocketInterposer::poll_fn>(
+          dlsym(handles[1], "socket_patch_poll"));
+      ASSERT_NE(nullptr, wait);
+      int descriptors[2];
+      ASSERT_EQ(0, pipe(descriptors));
+      ASSERT_EQ(1, ::write(descriptors[1], "x", 1));
+      auto expect_adapter_forwarding = [&]() {
+        for (int timeout = -1; timeout <= 1; timeout++) {
+          struct pollfd fd = {};
+          fd.fd = descriptors[0];
+          fd.events = POLLIN;
+          errno = E2BIG;
+          int result = wait(&fd, 1, timeout);
+          int result_errno = errno;
+          if (result != 1) {
+            fprintf(stderr, "poll adapter owner=%s timeout=%d result=%d global_poll_calls=%d\n",
+                    start_sampler ? "sampler" : "TaskBlock", timeout, result, g_poll_calls.load());
+          }
+          EXPECT_EQ(1, result);
+          EXPECT_EQ(POLLIN, fd.revents);
+          EXPECT_EQ(E2BIG, result_errno);
+        }
+      };
+      expect_adapter_forwarding();
+      Arguments args;
+      ASSERT_FALSE(start_sampler ? NativeSocketSampler::instance()->start(args)
+                                : NativeSocketInterposer::instance()->start());
+      ASSERT_NE(adapter, __atomic_load_n(slot, __ATOMIC_ACQUIRE));
+      ASSERT_EQ(start_sampler, NativeSocketSampler::active());
+      ASSERT_EQ(!start_sampler, NativeSocketInterposer::instance()->active());
+      // A real ppoll-ready pipe must win over the ordinary global poll target.
+      g_poll_calls = 0;
+      g_poll_ret = 91;
+      ASSERT_TRUE(NativeSocketInterposer::setOriginalFunction(
+          NativeSocketInterposer::HOOK_POLL, reinterpret_cast<void*>(stub_poll)));
+      expect_adapter_forwarding();
+      EXPECT_EQ(0, g_poll_calls.load());
+      EXPECT_EQ(91, NativeSocketInterposer::poll_hook(nullptr, 0, 0));
+      EXPECT_EQ(1, g_poll_calls.load());
+      NativeSocketInterposer::instance()->stop();
+      NativeSocketSampler::instance()->stop();
+      EXPECT_EQ(adapter, __atomic_load_n(slot, __ATOMIC_ACQUIRE));
+      expect_adapter_forwarding();
+      EXPECT_EQ(0, ::close(descriptors[0]));
+      EXPECT_EQ(0, ::close(descriptors[1]));
+      TearDown();
+      fflush(stdout);
+      _exit(HasFailure() ? 1 : 0);
+    }, ::testing::ExitedWithCode(0), "");
+  }
+}
 
 TEST_F(LibraryPatcherSocketTransactionTest,
        NonSocketLiveWalkRestoresOnlyItsImportsWhileSocketOwnerStaysActive) {

@@ -899,11 +899,16 @@ static void observeSocketPatchForTest(const char* phase) {
 }
 #endif
 
-// The loader walk owns the live pathname and headers, even on failed-pin paths.
-static bool mappingMatches(const CodeCache* lib) {
+// The loader walk owns the headers and pathname until the callback returns.
+static bool mappingMatches(const CodeCache* lib, char* loader_name = nullptr) {
   if (lib->imageBase() == nullptr || lib->imageFingerprint() == 0) return false;
+  struct Query {
+    const CodeCache* lib;
+    char* loader_name;
+  } query{lib, loader_name};
   return dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) {
-    const CodeCache* lib = static_cast<const CodeCache*>(data);
+    Query* query = static_cast<Query*>(data);
+    const CodeCache* lib = query->lib;
     uintptr_t min_vaddr = UINTPTR_MAX;
     for (int i = 0; i < info->dlpi_phnum; i++) {
       if (info->dlpi_phdr[i].p_type == PT_LOAD) {
@@ -913,26 +918,16 @@ static bool mappingMatches(const CodeCache* lib) {
     if (min_vaddr == UINTPTR_MAX ||
         ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) !=
             reinterpret_cast<uintptr_t>(lib->imageBase())) return 0;
-    // Nonzero ends the walk; only 1 means this base has the cached identity.
-    if (info->dlpi_name == nullptr) return 2;
-    char name[PATH_MAX];
-    size_t length = strlen(lib->name());
-    if (length >= 10 && strcmp(lib->name() + length - 10, " (deleted)") == 0) length -= 10;
-    if (length >= sizeof(name)) return 2;
-    memcpy(name, lib->name(), length);
-    name[length] = '\0';
-    if (strcmp(name, info->dlpi_name) != 0) {
-      char cached_path[PATH_MAX];
-      char loaded_path[PATH_MAX];
-      if (realpath(name, cached_path) == nullptr ||
-          realpath(info->dlpi_name, loaded_path) == nullptr ||
-          strcmp(cached_path, loaded_path) != 0) return 2;
-    }
-    // A reused base/path cannot establish the cached relocation addresses.
+    // A loader alias may no longer exist; base plus layout identifies the slots.
     u64 fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum,
                                                  info->dlpi_addr);
-    return fingerprint == lib->imageFingerprint() ? 1 : 2;
-  }, const_cast<CodeCache*>(lib)) == 1;
+    if (fingerprint != lib->imageFingerprint()) return 2;
+    if (query->loader_name != nullptr && info->dlpi_name != nullptr) {
+      size_t length = strlen(info->dlpi_name);
+      if (length < PATH_MAX) memcpy(query->loader_name, info->dlpi_name, length + 1);
+    }
+    return 1;
+  }, &query) == 1;
 }
 
 bool LibraryPatcher::patch_socket_functions(bool require_active,
@@ -1085,12 +1080,20 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     // Optional weak GOT entries may be NULL; retain the image before reading them.
     UnloadProtection protection(lib);
     if (!protection.isValid()) {
-      if (!mappingMatches(lib)) {
-        continue;
+      char loader_name[PATH_MAX] = {};
+      if (!mappingMatches(lib, loader_name)) continue;
+#ifdef UNIT_TEST
+      observeSocketPatchForTest("loader_name_lookup");
+#endif
+      // NOLOAD needs the loader's alias when the cached maps pathname is gone.
+      // Copy it outside _lock, then revalidate identity after acquiring the pin.
+      if (loader_name[0] != '\0') protection = UnloadProtection(lib, loader_name);
+      if (!protection.isValid()) {
+        if (!mappingMatches(lib)) continue;
+        Log::warn("native I/O hooks disabled: cannot retain mapped DSO %s",
+                  lib->name());
+        return disable_and_unpatch();
       }
-      Log::warn("native I/O hooks disabled: cannot retain mapped DSO %s",
-                lib->name());
-      return disable_and_unpatch();
     }
 #ifdef UNIT_TEST
     observeSocketPatchForTest("mapping_lookup");
@@ -1218,6 +1221,11 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
             _socket_entries.push_back({location, original});
             void* hook = socket_hook_for_target(candidate._target,
                                                 hooks[hook_index]);
+            // Compose above the JDK 8 libnet adapter without changing other poll imports.
+            if (import_id == im_poll &&
+                original == reinterpret_cast<void*>(Symbols::restartablePoll)) {
+              hook = reinterpret_cast<void*>(NativeSocketInterposer::restartable_poll_hook);
+            }
             __atomic_store_n(location, hook, __ATOMIC_RELEASE);
             if (candidate._target == SOCKET_PATCH_IBM_JCL_BRIDGE) {
               ibm_bridge_slots_patched++;
