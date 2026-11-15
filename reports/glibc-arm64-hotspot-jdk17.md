@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk17
 
 ## glibc-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-15 18:02:44 EST
+**Date:** 2026-11-15 18:26:27 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,7 +18,7 @@ title: glibc-arm64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 36 |
+| CPU Cores (start) | 48 |
 | CPU Cores (end) | 48 |
 | Throttling | 0% |
 
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 319 |
-| Sample Rate | 5.32/sec |
-| Health Score | 332% |
+| CPU Samples | 489 |
+| Sample Rate | 8.15/sec |
+| Health Score | 509% |
 | Threads | 9 |
-| Allocations | 170 |
+| Allocations | 367 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 94 |
-| Sample Rate | 1.57/sec |
-| Health Score | 98% |
-| Threads | 14 |
-| Allocations | 44 |
+| CPU Samples | 96 |
+| Sample Rate | 1.60/sec |
+| Health Score | 100% |
+| Threads | 13 |
+| Allocations | 62 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 36-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1794783542 36
-1794783547 36
-1794783552 36
-1794783557 36
-1794783562 36
-1794783567 36
-1794783572 36
-1794783577 36
-1794783582 36
-1794783587 36
-1794783592 36
-1794783597 36
-1794783602 36
-1794783607 36
-1794783612 36
-1794783617 36
-1794783622 36
-1794783627 36
-1794783632 36
-1794783637 36
+1794784908 48
+1794784913 48
+1794784918 48
+1794784923 48
+1794784928 48
+1794784933 48
+1794784938 48
+1794784943 48
+1794784948 48
+1794784953 48
+1794784958 48
+1794784963 48
+1794784968 48
+1794784973 48
+1794784978 48
+1794784983 48
+1794784988 48
+1794784993 48
+1794784998 48
+1794785003 48
 ```
 </details>
 
