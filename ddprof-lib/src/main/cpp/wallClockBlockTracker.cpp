@@ -174,13 +174,6 @@ bool WallClockBlockTracker::hasActiveBlockRun(ThreadFilter::SlotID slot_id) cons
     return s != nullptr && s->activeBlockOwner() != BlockRunOwner::NONE;
 }
 
-bool WallClockBlockTracker::activeOwnedBlockGeneration(ThreadFilter* registry,
-                                                       const ThreadEntry& entry,
-                                                       u64& generation) const {
-    bool already_sampled = false;
-    return ownedBlockGeneration(registry, entry, generation, already_sampled);
-}
-
 bool WallClockBlockTracker::isOwnedBlockSuppressionCandidate(ThreadFilter* registry,
                                                              const ThreadEntry& entry) const {
     u64 generation = 0;
@@ -228,13 +221,9 @@ bool WallClockBlockTracker::ownedBlockGeneration(ThreadFilter* registry,
     }
 #endif
 
-    // The payload is spread across independent atomics. Accept it only if the
-    // slot still represents the lifecycle and block run captured earlier in
-    // this wall-clock timer-thread pass, when `entry` was populated — either
-    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
-    // or by the lazy registry lookup at the top of sampleThreadCommon() —
-    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
-    // template defined in wallClock.h).
+    // entry supplies native identity, lifecycle and recording epoch, not block payload.
+    // Revalidate that identity and the block payload sampled within this call before
+    // accepting a snapshot assembled from independent atomics.
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
         slot->activeBlockState() != state ||

@@ -19,7 +19,37 @@ public:
     profiler._state.store(RUNNING, std::memory_order_release);
   }
   static bool running(Profiler& profiler) { return profiler.state() == RUNNING; }
+  static FlightRecorder& recorder(Profiler& profiler) { return profiler._jfr; }
+  static u32 stripe(Profiler& profiler, int tid) { return profiler.getLockIndex(tid); }
 };
+
+class FlightRecorderTestAccessor {
+public:
+  static Recording* exchangeRecording(FlightRecorder& recorder, Recording* recording) {
+    Recording* previous = recorder._rec;
+    recorder._rec = recording;
+    return previous;
+  }
+};
+
+namespace {
+class ScopedTailRecording {
+  std::unique_ptr<Recording> _recording;
+  FlightRecorder& _recorder;
+  Recording* _previous;
+
+public:
+  explicit ScopedTailRecording(FlightRecorder& recorder)
+      : _recording(std::make_unique<Recording>()), _recorder(recorder),
+        _previous(FlightRecorderTestAccessor::exchangeRecording(recorder, _recording.get())) {}
+  ~ScopedTailRecording() {
+    FlightRecorderTestAccessor::exchangeRecording(_recorder, _previous);
+  }
+  RecordingBuffer* buffer(u32 stripe) { return _recording->buffer(stripe); }
+  ScopedTailRecording(const ScopedTailRecording&) = delete;
+  ScopedTailRecording& operator=(const ScopedTailRecording&) = delete;
+};
+} // namespace
 
 class WallTailRecordingTest : public ::testing::Test {
 protected:
@@ -110,6 +140,37 @@ protected:
     EXPECT_EQ(11U, context.getTag(0));
   }
 };
+
+TEST_F(WallTailRecordingTest, ThreadTableOverflowRetainsTailUntilARepresentableChunk) {
+  FlightRecorder& recorder = ProfilerTestAccessor::recorder(*profiler);
+  {
+    ScopedTailRecording output(recorder);
+    u32 stripe = ProfilerTestAccessor::stripe(*profiler, request.tid);
+    TaskBlockEvent event{};
+    event._start = 1;
+    event._end = 2;
+    for (int tid = 1; tid <= 256; ++tid) {
+      ASSERT_TRUE(recorder.recordTaskBlock(stripe, tid, &event));
+    }
+    ASSERT_GT(request.tid, 256) << "the retained tail's tid must be absent from the full table";
+    int before = output.buffer(stripe)->offset();
+    EXPECT_FALSE(profiler->threadFilter()->flushUnownedTails());
+    EXPECT_EQ(before, output.buffer(stripe)->offset());
+    expectOriginRetained();
+    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+    ASSERT_EQ(1U, profiler->blockTracker()->copyUnownedWeightSegments(request.slot_id, segments));
+    EXPECT_EQ(request.sampling_epoch_start, segments[0].epoch_start);
+    EXPECT_EQ(1ULL, segments[0].weight);
+  }
+  {
+    ScopedTailRecording output(recorder);
+    u32 stripe = ProfilerTestAccessor::stripe(*profiler, request.tid);
+    EXPECT_TRUE(profiler->threadFilter()->flushUnownedTails());
+    EXPECT_GT(output.buffer(stripe)->offset(), 0);
+    EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(request.slot_id)
+                        ->unowned_blocked_pending_weight.load());
+  }
+}
 
 TEST_F(WallTailRecordingTest, ContendedPrimaryDoesNotPublishAnUnrecordedTrace) {
   auto held = profiler->recordingLocksForTest();

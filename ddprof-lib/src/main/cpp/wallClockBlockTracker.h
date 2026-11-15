@@ -189,10 +189,6 @@ public:
             // loads and the exchanges.
             return call_trace_id != 0 && weight != 0 && state != OSThreadState::UNKNOWN;
         }
-        inline void discardUnownedBlockedTail() {
-            unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
-            unowned_blocked_call_trace_id.store(0, std::memory_order_release);
-        }
         // identity_slot supplies the context-window state, which lives on
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
         // On success the run is owned but not yet visible to readers; the
@@ -379,14 +375,9 @@ public:
     // Timer- and signal-side owned-block decisions. All of them read the
     // complete suppression payload and reject it if slot identity or block
     // lifecycle changes before final validation.
-    bool activeOwnedBlockGeneration(ThreadFilter* registry, const ThreadEntry& entry,
-                                    u64& generation) const;
     bool isOwnedBlockSuppressionCandidate(ThreadFilter* registry,
                                           const ThreadEntry& entry) const;
-    // Single-pass merge of activeOwnedBlockGeneration()/isOwnedBlockSuppressionCandidate():
-    // callers that need both the generation and the already-sampled state should use this
-    // instead of calling the two wrappers above in sequence, which would re-validate the
-    // same slot atomics twice.
+    // Returns the generation and sampled state from one validated payload snapshot.
     bool ownedBlockDecision(ThreadFilter* registry, const ThreadEntry& entry,
                             bool& already_sampled, u64& generation) const {
         return ownedBlockGeneration(registry, entry, generation, already_sampled);

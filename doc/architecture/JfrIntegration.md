@@ -82,7 +82,8 @@ and the correlation ID (`flightRecorder.cpp:2914-2943`, `flightRecorder.h:646-65
 
 ASGCT wall sampling keeps the stripe through cached-ID publication and tail commit.
 Ordinary and deferred writes return independent success results. A failed tail write
-must not consume its retained ID, context, state or weight.
+must not consume its retained ID, context, state or weight. The explicit wall serializer
+rejects a thread-pool insertion failure before it appends event bytes.
 
 ### Buffer layout and thresholds
 

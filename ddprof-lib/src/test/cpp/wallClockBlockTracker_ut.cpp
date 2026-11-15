@@ -2369,7 +2369,9 @@ TEST_F(WallClockBlockTrackerTest, OwnedBlockSuppressesOnlyAfterSuccessfulWallSam
     ThreadEntry entry{1234, slot, slot_id, slot->lifecycleGeneration(),
                       slot->recordingEpoch()};
     u64 generation = 0;
-    EXPECT_TRUE(tracker->activeOwnedBlockGeneration(filter.get(), entry, generation));
+    bool already_sampled = true;
+    EXPECT_TRUE(tracker->ownedBlockDecision(filter.get(), entry, already_sampled, generation));
+    EXPECT_FALSE(already_sampled);
     EXPECT_EQ(WallClockBlockTracker::tokenGeneration(token), generation);
     EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
 

@@ -17,6 +17,12 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
+
+static_assert(!std::is_copy_constructible<TaskBlockActivity>::value,
+              "TaskBlockActivity must not duplicate its inflight decrement");
+static_assert(!std::is_copy_assignable<TaskBlockActivity>::value,
+              "TaskBlockActivity must not overwrite activity ownership");
 
 class ProfilerTestAccessor {
 public:

@@ -502,6 +502,15 @@ public final class JavaProfiler {
     return endTaskBlock0(thread, token, blocker, unblockingSpanId);
   }
 
+  /** Test-only native timestamps; the lifecycle seam is disabled outside DEBUG builds. */
+  static native boolean endTaskBlockAtTicksForTest0(
+      Thread thread,
+      long token,
+      long startTicks,
+      long endTicks,
+      long blocker,
+      long unblockingSpanId);
+
   /**
    * Get the ticks for the current thread.
    *

@@ -30,6 +30,13 @@ public final class ProfilerOwnedBlockHooks {
     return profiler.taskBlockSupportedForTest();
   }
 
+  /** Completes the calling thread's block with controlled timestamps in debug native builds. */
+  public static boolean endTaskBlockAtTicks(
+      long token, long startTicks, long endTicks, long blocker, long unblockingSpanId) {
+    return JavaProfiler.endTaskBlockAtTicksForTest0(
+        Thread.currentThread(), token, startTicks, endTicks, blocker, unblockingSpanId);
+  }
+
   public static long beginTaskBlockForThread(JavaProfiler profiler, Thread thread) {
     return profiler.beginTaskBlockForThread(thread);
   }

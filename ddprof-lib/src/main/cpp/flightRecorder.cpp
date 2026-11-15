@@ -2972,10 +2972,11 @@ bool FlightRecorder::recordWallSample(int lock_index, int tid, u64 call_trace_id
   }
   Recording* rec = _rec;
   if (rec == nullptr) return false;
+  // A retained tail must keep its weight if eventThread cannot enter this chunk.
+  if (!rec->addThread(lock_index, tid)) return false;
   RecordingBuffer* buf = rec->buffer(lock_index);
   rec->recordMethodSample(buf, tid, call_trace_id, 0, event, &context);
   rec->flushIfNeeded(buf);
-  rec->addThread(lock_index, tid);
   return true;
 }
 

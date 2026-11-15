@@ -1221,18 +1221,16 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
   }
 #endif
   CriticalSection cs;
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+  RecordingStripe stripe(_locks, getLockIndex(tid));
+  if (!stripe.owned()) {
     return TaskBlockRecordResult::RECORD_FAILED;
   }
+  u32 lock_index = stripe.index();
 
   // Lightweight recordings intentionally encode an absent stack trace as
   // constant-pool ID 0, as the regular CPU and wall-clock sample paths do.
   if (!_omit_stacktraces) {
     if (_max_stack_depth <= 0 || _calltrace_buffer[lock_index] == nullptr) {
-      _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1243,7 +1241,6 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     bool truncated = false;
     int num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
     if (num_frames <= 0) {
-      _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1256,14 +1253,12 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     }
 #endif
     if (call_trace_id == 0) {
-      _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
     event->_callTraceId = call_trace_id;
   }
   bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
-  _locks[lock_index].unlock();
   return recorded ? TaskBlockRecordResult::RECORDED
                   : TaskBlockRecordResult::RECORD_FAILED;
 }
