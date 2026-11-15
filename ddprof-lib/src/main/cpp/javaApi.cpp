@@ -1385,6 +1385,16 @@ static WallClockBlockTracker::BlockState* existingWallBlockStateForTest(
   return profiler->blockTracker()->slotForId(entry.slot_id);
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_hasRegistryEntry0(
+    JNIEnv* env, jclass unused, jint tid) {
+  if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return JNI_FALSE;
+  ThreadFilter* registry = Profiler::instance()->threadFilter();
+  ThreadEntry entry{};
+  entry.tid = tid;
+  return registry->lookupThreadEntry(entry, registry->recordingEpoch()) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_pendingUnownedWeight0(
     JNIEnv* env, jclass unused, jint tid) {

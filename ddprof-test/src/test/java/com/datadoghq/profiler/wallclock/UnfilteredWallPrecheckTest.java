@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -175,23 +176,23 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
    */
   @RetryingTest(3)
   public void unregisteredThreadUsesNormalSampling() throws Exception {
-    long registrationsBefore = registrationCount();
     String threadName = "unfiltered-precheck-unregistered";
     FutureTask<Void> sleep =
         new FutureTask<>(
             () -> {
+              int tid = WallClockBlockTrackerTestSupport.currentTid();
+              assertNoRegistryEntry(tid);
               Thread.sleep(SLEEP_MILLIS);
+              assertNoRegistryEntry(tid);
               return null;
             });
     Thread worker = new Thread(sleep, threadName);
     worker.start();
+    // A different thread's legitimate owned-block registration must not contaminate this check.
+    assertTrue(
+        runPreExistingSleepingWorker(false) != 0,
+        "The unrelated owned-block worker must register successfully");
     sleep.get();
-    if (registrationsBefore >= 0) {
-      assertEquals(
-          registrationsBefore,
-          registrationCount(),
-          "Ordinary sampling should not allocate a registry slot");
-    }
 
     stopProfiler();
     long sampleCount = samplesForThread(threadName);
@@ -329,6 +330,12 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
       profiler.addThread();
     }
     try {
+      if (WallClockBlockTrackerTestSupport.available()) {
+        assertTrue(
+            WallClockBlockTrackerTestSupport.hasRegistryEntry(
+                WallClockBlockTrackerTestSupport.currentTid()),
+            "An owned-block hook must publish this worker's registry entry");
+      }
       Thread.sleep(SLEEP_MILLIS);
       return token;
     } finally {
@@ -366,6 +373,14 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
           suppressedSignals() > suppressedBefore,
           "Expected owned-block once-per-run suppression counter to increase");
     }
+  }
+
+  private void assertNoRegistryEntry(int tid) {
+    if (!WallClockBlockTrackerTestSupport.available()) return;
+    assertTrue(tid > 0, "The unregistered worker must have native TLS identity");
+    assertFalse(
+        WallClockBlockTrackerTestSupport.hasRegistryEntry(tid),
+        "Ordinary sampling should not allocate this worker a registry slot");
   }
 
   private long registrationCount() {

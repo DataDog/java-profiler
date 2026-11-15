@@ -32,6 +32,13 @@ final class WallClockBlockTrackerTestSupport {
 
   private static native long maxPendingUnownedSegmentWeight0(int tid);
 
+  /** Observes the target native thread's existing registry entry; false in release. */
+  static boolean hasRegistryEntry(int tid) {
+    return available() && hasRegistryEntry0(tid);
+  }
+
+  private static native boolean hasRegistryEntry0(int tid);
+
   static boolean hasActiveOwnedBlock(int tid) {
     return available() && hasActiveOwnedBlock0(tid);
   }
