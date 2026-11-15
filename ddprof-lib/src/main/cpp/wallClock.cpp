@@ -328,21 +328,23 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   return recordAsgctWallSampleForTest(&event, tail.transaction, dump_test);
 }
 
-bool BaseWallClock::seedUnownedWallTailForTest(jthread thread) {
+bool BaseWallClock::seedUnownedWallTailForTest(jthread thread, OSThreadState state) {
   Profiler* profiler = Profiler::instance();
   ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
   ThreadFilter* registry = profiler->threadFilter();
-  if (current == nullptr || !profiler->isRunning() ||
-      !registry->unfilteredWallTrackingActive()) return false;
+  if (current == nullptr || !profiler->isRunning() || !registry->registryActive()) return false;
   ThreadFilter::SlotID slot_id = registry->ensureOwnerSlot(*current);
   WallClockBlockTracker::BlockState* slot = profiler->blockTracker()->slotForId(slot_id);
   if (slot == nullptr || slot->activeBlockOwner() != BlockRunOwner::NONE) return false;
   if (!awaitInitialSamplingEpochForTest(5 * NANOTIME_FREQ)) return false;
-  profiler->blockTracker()->resetSlot(slot_id);
+  {
+    auto locks = profiler->recordingLocksForTest();
+    profiler->blockTracker()->resetSlot(slot_id);
+  }
   ExecutionEvent event;
-  event._thread_state = OSThreadState::SLEEPING;
+  event._thread_state = state;
   event._execution_mode = ExecutionMode::JAVA;
-  WallPrecheckResult first = prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING);
+  WallPrecheckResult first = prepareWallPrecheck(current, true, true, state);
   if (first.suppress || !first.transaction.unowned_sample) return false;
   u64 trace_id = profiler->recordJVMTISample(
       1, current->tid(), thread, BCI_WALL, &event, true);
@@ -350,8 +352,11 @@ bool BaseWallClock::seedUnownedWallTailForTest(jthread thread) {
   if (trace_id == 0 || !profiler->recordWallSample(
       nullptr, 1, trace_id, &event, first.transaction).ordinary_recorded) return false;
   finishWallPrecheck(first, true);
+  auto locks = profiler->recordingLocksForTest();
+  const u64 epoch = WallClockCounters::samplingEpochStart();
   for (int i = 0; i < 5; i++) {
-    if (!prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING).suppress) return false;
+    if (!profiler->blockTracker()->deferUnownedWeight(slot_id, epoch)) return false;
+    Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
   }
   return true;
 }
