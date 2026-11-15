@@ -609,17 +609,29 @@ void ElfParser::calcVirtualLoadAddress() {
     _vaddr_diff = _base;
 }
 
+// Size of one DT_JMPREL entry. DT_PLTREL says whether the table holds Elf_Rel or
+// Elf_Rela entries (gABI), so the stride does not depend on DT_RELENT/DT_RELAENT,
+// which a library with only PLT relocations does not have. Without DT_PLTREL fall
+// back to the entry size of the DT_REL/DT_RELA table; 0 means unknown.
+static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
+    if (pltrel == DT_REL) return sizeof(Elf64_Rel);
+    if (pltrel == DT_RELA) return sizeof(Elf64_Rela);
+    return relaent != 0 ? relaent : relent;
+}
+
 void ElfParser::parseDynamicSection() {
     ElfProgramHeader* dynamic = findProgramHeader(PT_DYNAMIC);
     if (dynamic != NULL) {
         const char* symtab = NULL;
         const char* strtab = NULL;
         char* jmprel = NULL;
+        char* rela = NULL;
         char* rel = NULL;
+        uint64_t pltrel = 0;
         size_t pltrelsz = 0;
-        size_t relsz = 0;
-        size_t relent = 0;
-        size_t relcount = 0;
+        size_t relasz = 0, relsz = 0;
+        size_t relaent = 0, relent = 0;
+        size_t relacount = 0, relcount = 0;
         size_t syment = 0;
         size_t strsz = 0;
         uint32_t nsyms = 0;
@@ -627,55 +639,71 @@ void ElfParser::parseDynamicSection() {
         const char* dyn_start = at(dynamic);
         // at(dynamic) is NULL when dynamic->p_vaddr == 0 - same null-base
         // pointer-arithmetic UB as the other fixes in this file.
-        const char* dyn_end = (const char*)((uintptr_t)dyn_start + dynamic->p_memsz);
-        for (ElfDyn* dyn = (ElfDyn*)dyn_start; dyn < (ElfDyn*)dyn_end; dyn++) {
-            switch (dyn->d_tag) {
+        // Whole entries only: a p_memsz that is not a multiple of sizeof(ElfDyn)
+        // must not make the loop read a partial one.
+        size_t dyn_count = dynamic->p_memsz / sizeof(ElfDyn);
+        ElfDyn* dyn = (ElfDyn*)dyn_start;
+        // The array ends at the first DT_NULL; slots after it (patchelf, prelink)
+        // are padding and must not override real tags.
+        for (size_t i = 0; i < dyn_count && dyn[i].d_tag != DT_NULL; i++) {
+            switch (dyn[i].d_tag) {
                 case DT_SYMTAB:
-                    symtab = dyn_ptr(dyn);
+                    symtab = dyn_ptr(&dyn[i]);
                     break;
                 case DT_STRTAB:
-                    strtab = dyn_ptr(dyn);
+                    strtab = dyn_ptr(&dyn[i]);
                     break;
                 case DT_SYMENT:
-                    syment = dyn->d_un.d_val;
+                    syment = dyn[i].d_un.d_val;
                     break;
                 case DT_STRSZ:
-                    strsz = dyn->d_un.d_val;
+                    strsz = dyn[i].d_un.d_val;
                     break;
                 case DT_HASH:
-                    nsyms = ((uint32_t*)dyn_ptr(dyn))[1];
+                    nsyms = ((uint32_t*)dyn_ptr(&dyn[i]))[1];
                     break;
                 case DT_GNU_HASH:
                     if (nsyms == 0) {
-                        nsyms = getSymbolCount((uint32_t*)dyn_ptr(dyn));
+                        nsyms = getSymbolCount((uint32_t*)dyn_ptr(&dyn[i]));
                     }
                     break;
                 case DT_JMPREL:
-                    jmprel = dyn_ptr(dyn);
+                    jmprel = dyn_ptr(&dyn[i]);
                     break;
                 case DT_PLTRELSZ:
-                    pltrelsz = dyn->d_un.d_val;
+                    pltrelsz = dyn[i].d_un.d_val;
+                    break;
+                case DT_PLTREL:
+                    pltrel = dyn[i].d_un.d_val;
                     break;
                 case DT_RELA:
+                    rela = dyn_ptr(&dyn[i]);
+                    break;
                 case DT_REL:
-                    rel = dyn_ptr(dyn);
+                    rel = dyn_ptr(&dyn[i]);
                     break;
                 case DT_RELASZ:
+                    relasz = dyn[i].d_un.d_val;
+                    break;
                 case DT_RELSZ:
-                    relsz = dyn->d_un.d_val;
+                    relsz = dyn[i].d_un.d_val;
                     break;
                 case DT_RELAENT:
+                    relaent = dyn[i].d_un.d_val;
+                    break;
                 case DT_RELENT:
-                    relent = dyn->d_un.d_val;
+                    relent = dyn[i].d_un.d_val;
                     break;
                 case DT_RELACOUNT:
+                    relacount = dyn[i].d_un.d_val;
+                    break;
                 case DT_RELCOUNT:
-                    relcount = dyn->d_un.d_val;
+                    relcount = dyn[i].d_un.d_val;
                     break;
             }
         }
 
-        if (symtab == NULL || strtab == NULL || syment == 0 || relent == 0) {
+        if (symtab == NULL || strtab == NULL || syment == 0) {
             return;
         }
 
@@ -699,13 +727,19 @@ void ElfParser::parseDynamicSection() {
         // though the intent is just "sym addresses are already absolute". Do the
         // addition in integer space, same fix as the .plt case above.
         uintptr_t base_addr = (uintptr_t)this->base();
-        // Smaller entries cannot hold r_offset and r_info (hashImportLayout()
-        // skips them too). Walking only while a whole entry fits keeps offs
-        // within the table, so offs += relent cannot wrap.
-        if (jmprel != NULL && pltrelsz != 0 && relent >= sizeof(ElfRelocation)) {
-            // Parse .rela.plt table
-            for (size_t offs = 0; relent <= pltrelsz - offs; offs += relent) {
-                ElfRelocation r = relocationAt(jmprel + offs);
+        // Records the imports of one relocation table. Entries smaller than
+        // r_offset plus r_info cannot be read (hashImportLayout() skips them too).
+        // Walking only while a whole entry fits keeps offs within the table, so
+        // offs += ent cannot wrap. The leading `skip` bytes are relative
+        // relocations, without a symbol. only_got_slots keeps the GLOB_DAT and
+        // ABS64 entries of .rela.dyn; PLT entries are all imports.
+        auto addImports = [&](char* table, size_t size, size_t ent, size_t skip, bool only_got_slots) {
+            if (table == NULL || size == 0 || ent < sizeof(ElfRelocation)) return;
+            for (size_t offs = skip < size ? skip : size; ent <= size - offs; offs += ent) {
+                ElfRelocation r = relocationAt(table + offs);
+                if (only_got_slots && ELF_R_TYPE(r.r_info) != R_GLOB_DAT && ELF_R_TYPE(r.r_info) != R_ABS64) {
+                    continue;
+                }
                 uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r.r_info) * syment);
                 if (st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, st_name);
@@ -714,28 +748,15 @@ void ElfParser::parseDynamicSection() {
                     }
                 }
             }
-        }
+        };
 
-        if (rel != NULL && relsz != 0 && relent >= sizeof(ElfRelocation)) {
-            // Relocation entries for imports can be found in .rela.dyn, for example
-            // if a shared library is built without PLT (-fno-plt). However, if both
-            // entries exist, addImport saves them both.
-            // The leading DT_RELACOUNT entries are relative relocations, without
-            // a symbol; clamp the start as hashImportLayout() does.
-            size_t start = relcount * relent < relsz ? relcount * relent : relsz;
-            for (size_t offs = start; relent <= relsz - offs; offs += relent) {
-                ElfRelocation r = relocationAt(rel + offs);
-                if (ELF_R_TYPE(r.r_info) == R_GLOB_DAT || ELF_R_TYPE(r.r_info) == R_ABS64) {
-                    uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r.r_info) * syment);
-                    if (st_name != 0) {
-                        const char* sym_name = strAt(strtab, strsz, st_name);
-                        if (sym_name != NULL) {
-                            _cc->addImport((void**)(base_addr + r.r_offset), sym_name);
-                        }
-                    }
-                }
-            }
-        }
+        // .rela.plt / .rel.plt
+        addImports(jmprel, pltrelsz, pltEntrySize(pltrel, relent, relaent), 0, false);
+        // Imports can also be in .rela.dyn / .rel.dyn, for example if a shared
+        // library is built without PLT (-fno-plt). If both tables exist,
+        // addImport saves them both.
+        addImports(rela, relasz, relaent, relacount * relaent, true);
+        addImports(rel, relsz, relent, relcount * relent, true);
     }
 }
 
@@ -1447,46 +1468,46 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
     uintptr_t dyn_start = image.address(dynamic->p_vaddr);
     if (!image.readable(dyn_start, dynamic->p_filesz)) return false;
 
-    uintptr_t symtab = 0, strtab = 0, jmprel = 0, rel = 0;
-    size_t syment = 0, strsz = 0, pltrelsz = 0, relsz = 0, relent = 0, relcount = 0;
+    uintptr_t symtab = 0, strtab = 0, jmprel = 0, rela = 0, rel = 0;
+    uint64_t pltrel = 0;
+    size_t syment = 0, strsz = 0, pltrelsz = 0, relasz = 0, relsz = 0;
+    size_t relaent = 0, relent = 0, relacount = 0, relcount = 0;
     size_t count = dynamic->p_filesz / sizeof(ElfDyn);
     for (const ElfDyn* dyn = (const ElfDyn*)dyn_start; count-- > 0 && dyn->d_tag != DT_NULL; dyn++) {
         switch (dyn->d_tag) {
             case DT_SYMTAB:    symtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
             case DT_STRTAB:    strtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
             case DT_JMPREL:    jmprel = image.dynamicPointer(dyn->d_un.d_ptr); break;
-            case DT_RELA:
+            case DT_RELA:      rela = image.dynamicPointer(dyn->d_un.d_ptr); break;
             case DT_REL:       rel = image.dynamicPointer(dyn->d_un.d_ptr); break;
             case DT_SYMENT:    syment = dyn->d_un.d_val; break;
             case DT_STRSZ:     strsz = dyn->d_un.d_val; break;
             case DT_PLTRELSZ:  pltrelsz = dyn->d_un.d_val; break;
-            case DT_RELASZ:
+            case DT_PLTREL:    pltrel = dyn->d_un.d_val; break;
+            case DT_RELASZ:    relasz = dyn->d_un.d_val; break;
             case DT_RELSZ:     relsz = dyn->d_un.d_val; break;
-            case DT_RELAENT:
+            case DT_RELAENT:   relaent = dyn->d_un.d_val; break;
             case DT_RELENT:    relent = dyn->d_un.d_val; break;
-            case DT_RELACOUNT:
+            case DT_RELACOUNT: relacount = dyn->d_un.d_val; break;
             case DT_RELCOUNT:  relcount = dyn->d_un.d_val; break;
         }
     }
     // ElfParser::parseDynamicSection() records no imports without these.
-    if (symtab == 0 || strtab == 0 || syment == 0 || relent < sizeof(ElfRelocation)) return true;
+    if (symtab == 0 || strtab == 0 || syment == 0) return true;
     if (strsz == 0 || !image.readable(strtab, strsz)) return false;
 
-    if (jmprel != 0 && pltrelsz != 0) {
-        if (!image.readable(jmprel, pltrelsz)
-            || !hashSymbolRelocations(image, jmprel, pltrelsz, relent, symtab, syment, strtab, strsz, hash)) {
-            return false;
-        }
-    }
-    if (rel != 0 && relsz != 0) {
-        if (!image.readable(rel, relsz)) return false;
-        // The leading DT_RELACOUNT entries are relative relocations, without a symbol.
-        size_t skip = relcount * relent < relsz ? relcount * relent : relsz;
-        if (!hashSymbolRelocations(image, rel + skip, relsz - skip, relent, symtab, syment, strtab, strsz, hash)) {
-            return false;
-        }
-    }
-    return true;
+    // Same tables and entry sizes as parseDynamicSection(). Entries smaller than
+    // sizeof(ElfRelocation) are skipped; the leading `skip` bytes are relative
+    // relocations, without a symbol.
+    auto hashTable = [&](uintptr_t table, size_t size, size_t ent, size_t skip) {
+        if (table == 0 || size == 0 || ent < sizeof(ElfRelocation)) return true;
+        if (!image.readable(table, size)) return false;
+        if (skip > size) skip = size;
+        return hashSymbolRelocations(image, table + skip, size - skip, ent, symtab, syment, strtab, strsz, hash);
+    };
+    return hashTable(jmprel, pltrelsz, pltEntrySize(pltrel, relent, relaent), 0)
+        && hashTable(rela, relasz, relaent, relacount * relaent)
+        && hashTable(rel, relsz, relent, relcount * relent);
 }
 
 }  // namespace

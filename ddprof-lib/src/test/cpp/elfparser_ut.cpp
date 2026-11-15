@@ -1042,4 +1042,113 @@ TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
     EXPECT_EQ(cc.findSymbol("undef_stub"), nullptr);
 }
 
+namespace {
+
+// A loaded image with one PT_LOAD, a PT_DYNAMIC holding `dyn` (the caller supplies
+// the terminator), and a .rela.plt with one entry importing pthread_create into
+// GOT slot PLT_SLOT. The dynamic array and tables sit at fixed offsets, so a test
+// controls exactly which tags exist. Returns the image, or null on failure.
+constexpr uint64_t PLT_SLOT = 0x800;
+constexpr size_t DYN_IMAGE_SIZE = 4096;
+constexpr int DYN_NPH = 2;
+constexpr uint64_t DYN_OFF = sizeof(Elf64_Ehdr) + DYN_NPH * sizeof(Elf64_Phdr);
+constexpr uint64_t DYN_MAX = 16;
+constexpr uint64_t DYN_STR_OFF = DYN_OFF + DYN_MAX * sizeof(Elf64_Dyn);
+constexpr uint64_t DYN_SYM_OFF = (DYN_STR_OFF + 32 + 7) & ~uint64_t(7);
+constexpr uint64_t DYN_JMPREL_OFF = DYN_SYM_OFF + 2 * sizeof(Elf64_Sym);
+
+std::unique_ptr<void, decltype(&free)> buildPltImage(const std::vector<Elf64_Dyn>& dyn) {
+    std::unique_ptr<void, decltype(&free)> mem(aligned_alloc(DYN_IMAGE_SIZE, DYN_IMAGE_SIZE), &free);
+    if (!mem || dyn.size() > DYN_MAX) return std::unique_ptr<void, decltype(&free)>(nullptr, &free);
+    char* image = static_cast<char*>(mem.get());
+    memset(image, 0, DYN_IMAGE_SIZE);
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = DYN_NPH;
+    memcpy(image, &e, sizeof(e));
+
+    Elf64_Phdr ph[DYN_NPH];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_filesz = DYN_IMAGE_SIZE;
+    ph[0].p_memsz = DYN_IMAGE_SIZE;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = DYN_OFF;
+    ph[1].p_offset = DYN_OFF;
+    ph[1].p_filesz = dyn.size() * sizeof(Elf64_Dyn);
+    ph[1].p_memsz = dyn.size() * sizeof(Elf64_Dyn);
+    memcpy(image + sizeof(Elf64_Ehdr), ph, sizeof(ph));
+
+    memcpy(image + DYN_OFF, dyn.data(), dyn.size() * sizeof(Elf64_Dyn));
+    const char strtab[] = "\0pthread_create";
+    memcpy(image + DYN_STR_OFF, strtab, sizeof(strtab));
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));
+    sym[1].st_name = 1;  // "pthread_create"
+    memcpy(image + DYN_SYM_OFF, sym, sizeof(sym));
+
+    Elf64_Rela rela;
+    memset(&rela, 0, sizeof(rela));
+    rela.r_offset = PLT_SLOT;
+    rela.r_info = ELF64_R_INFO(1, 0);  // .rela.plt entries are not type-checked
+    memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+    return mem;
+}
+
+// The dynamic tags every PLT image needs, without any relocation entry-size tag.
+std::vector<Elf64_Dyn> pltDyn() {
+    return {
+        {DT_SYMTAB, {DYN_SYM_OFF}},
+        {DT_STRTAB, {DYN_STR_OFF}},
+        {DT_SYMENT, {sizeof(Elf64_Sym)}},
+        {DT_STRSZ, {sizeof("\0pthread_create")}},
+        {DT_JMPREL, {DYN_JMPREL_OFF}},
+        {DT_PLTRELSZ, {sizeof(Elf64_Rela)}},
+        {DT_PLTREL, {DT_RELA}},
+    };
+}
+
+}  // namespace
+
+// gABI: a library with only PLT relocations has no DT_RELENT/DT_RELAENT; the
+// DT_JMPREL entry size comes from DT_PLTREL. Its imports must still be recorded
+// and be part of the image fingerprint.
+TEST_F(ElfTest, pltOnlyImportsWithoutRelent) {
+    auto mem = buildPltImage([] { auto d = pltDyn(); d.push_back({DT_NULL, {0}}); return d; }());
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+
+    CodeCache cc("inmem");
+    ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+    EXPECT_EQ(cc.peekImport(im_pthread_create), (void**)(image + PLT_SLOT));
+
+    const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, (uintptr_t)image);
+    EXPECT_NE(before, 0u);
+    // The PLT table is hashed: moving its GOT slot must change the fingerprint.
+    Elf64_Rela rela;
+    memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
+    rela.r_offset = PLT_SLOT + 2 * sizeof(void*);
+    memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+    EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, (uintptr_t)image), before);
+}
+
+// gABI: the dynamic array ends at the first DT_NULL. Slots after it (patchelf and
+// prelink leave stale ones) must not override real tags.
+TEST_F(ElfTest, dynamicSectionStopsAtDtNull) {
+    auto dyn = pltDyn();
+    dyn.push_back({DT_NULL, {0}});
+    dyn.push_back({DT_PLTRELSZ, {0}});  // stale slot: would disable the PLT table
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+
+    CodeCache cc("inmem");
+    ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+    EXPECT_EQ(cc.peekImport(im_pthread_create), (void**)(image + PLT_SLOT));
+}
+
 #endif //__linux__
