@@ -102,6 +102,31 @@ else:
         self.assertNotIn("safe.directory", " ".join(run))
         self.assertFalse(any(c[1:2] == ["build"] for c in self.calls))
 
+    def test_ordinary_checkout_metadata_alias_is_read_only_without_relabeling(self):
+        metadata = self.source / ".git"
+        metadata.mkdir()
+        self.env["FIXTURE_METADATA"] = str(metadata)
+        self.env["SELINUX"] = "Enforcing"
+        for runtime in ("podman", "docker"):
+            with self.subTest(runtime=runtime):
+                self.invoke(*self.safe_args(), "--container=" + runtime)
+                run, = self.runs()
+                self.assertIn(str(self.source) + ":/workspace", run)
+                self.assertIn(str(metadata) + ":/workspace/.git:ro", run)
+                self.assertIn(str(metadata) + ":" + str(metadata) + ":ro", run)
+                self.assertFalse(any(str(metadata) in arg and arg.endswith(":z") for arg in run))
+                self.assertEqual("label=disable" in run, runtime == "podman")
+
+    def test_linked_worktree_metadata_keeps_original_path_without_source_relabeling(self):
+        (self.source / ".git").write_text("gitdir: " + str(self.metadata / "worktrees/selected"))
+        self.env["SELINUX"] = "Enforcing"
+        self.invoke(*self.safe_args())
+        run, = self.runs()
+        self.assertIn(str(self.source) + ":/workspace", run)
+        self.assertIn(str(self.metadata) + ":" + str(self.metadata) + ":ro", run)
+        self.assertIn("label=disable", run)
+        self.assertFalse(any(":/workspace/.git" in arg for arg in run))
+
     def test_offline_missing_each_image_fails_before_build_or_run(self):
         for image in ("java-profiler-base:glibc-aarch64", "java-profiler-test:glibc-jdk17-aarch64"):
             with self.subTest(image=image):
@@ -293,9 +318,14 @@ else:
     def test_selinux_volume_options(self):
         self.env["SELINUX"] = "Enforcing"
         self.invoke("--mount")
-        self.assertIn(str(self.project) + ":/workspace:z", self.runs()[0])
+        self.assertIn(str(self.project) + ":/workspace", self.runs()[0])
+        self.assertIn("label=disable", self.runs()[0])
+        self.invoke()
+        self.assertIn(str(self.project) + ":/source:ro", self.runs()[0])
+        self.assertIn("label=disable", self.runs()[0])
         self.invoke("--container=docker")
         self.assertIn(str(self.project) + ":/source:ro", self.runs()[0])
+        self.assertNotIn("label=disable", self.runs()[0])
 
     def test_arch_detection_fallback_and_runtime_environment(self):
         for machine, arch in (("amd64", "x64"), ("unknown", "x64"), ("arm64", "aarch64")):

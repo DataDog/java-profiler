@@ -78,11 +78,12 @@ dependency-free leak-demo app; not published).
 
 - Never run `./gradlew` directly. Always invoke the wrapper:
   `./.claude/commands/build-and-summarize <gradle-task...>`. It runs Gradle with
-  `--console=plain -i`, captures the full output into `build/logs/<timestamp>-<task>.log`,
-  and prints only the status line. On failure, read the wrapper's extracted
-  "What went wrong" section and the failing task/test lines; grep the log for anything
-  rarer. If no log path is given, use the newest `build/logs/*.log`. In Claude Code and
-  Pi the `require-gradle-wrapper` hook denies direct `gradlew` calls, except
+  `--console=plain -i`, captures full output in a unique timestamped `build/logs/*.log`,
+  and streams bounded task/build progress. Deterministic summaries, including failures,
+  are written to `build/reports/claude/gradle-summary.md` and `gradle-summary.json`.
+  Read the summary's "What went wrong" and failing task/test lines first; grep the full
+  log for anything rarer. If no log path is given, use the newest `build/logs/*.log`.
+  In Claude Code and Pi the `require-gradle-wrapper` hook denies direct `gradlew` calls, except
   `--stop` and `--version`.
 - Never paste large log chunks into chat. If more than ~30 lines are needed, write to a
   file and point at it.
@@ -125,6 +126,9 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `podman info` / `docker info` and pick the runtime whose daemon answers).
   Full flags in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
+- Real-VM qualification: the shared GitHub workflow's `qualify-real-vm` debug cells
+  require plain HotSpot 25 and genuine OpenJ9 17 lifecycle/classifier methods to pass without
+  skips; see [TestingGuide](doc/building/TestingGuide.md#real-vm-qualification).
 
 Full container flag reference: [TestingGuide](doc/building/TestingGuide.md#bounded-local-container-runs).
 Use `--mount --source-root=/absolute/path` for an exact local Git candidate.

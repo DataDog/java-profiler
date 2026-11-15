@@ -44,6 +44,8 @@ Source/build outputs are read-write at `/workspace`; no cloning or index rewrite
 Paths with volume delimiters (`:` or newline) are rejected.
 
 Git common metadata is read-only at its original absolute path so linked-worktree pointers resolve.
+Ordinary checkouts also mount `/workspace/.git` read-only. Source mounts are not relabeled;
+on enforcing SELinux with Podman the script disables container label separation instead.
 The script does not override Git trust, fabricate metadata, change host Git configuration or relabel metadata.
 Hosts that deny the metadata mount remain blocked.
 
@@ -71,7 +73,7 @@ Missing, non-directory, relative and volume-delimited roots are rejected.
 
 Each `<libc>-jdk<jdk>-<arch>-<config>` child has gtest XML at `/qualification-gtest` and JFRs at `/tmp/recordings`.
 `GTEST_OUTPUT=xml:/qualification-gtest/` requests native XML; Java fixtures write under `/tmp/recordings`.
-Evidence mounts follow the source mount's SELinux labeling convention.
+Evidence mounts use shared SELinux labels with Podman on enforcing hosts.
 
 Linux native Exec stdout can bypass Gradle's console through daemon file descriptors.
 Inspect actual XML names, nonzero cases and skips; Gradle success is not coverage.
@@ -230,6 +232,20 @@ On failure the workflow reports affected scenarios to Slack and uploads test rep
 as artifacts.
 
 ---
+
+### Real-VM Qualification
+
+The shared workflow's `qualify-real-vm` job runs debug qualification on HotSpot 25 and
+OpenJ9 17 (`17-j9`). `DDPROF_EXPECTED_VM` enables the tests, which assert the running VM identity.
+The plain HotSpot lifecycle/classifier and both OpenJ9 producers/classifier must pass without skips.
+
+Delegated JVM-stack qualification probes the selected engine before creating JVM recordings.
+Stock JDKs lack the unreleased extension ([upstream work](https://github.com/openjdk/jdk/pull/31059));
+the test records that limitation as a skip, not passed coverage.
+
+`assert_vm_qualification.py` rejects missing methods, failures and skips except that specific
+capability skip with its retained reason. A mandatory delegated cell awaits an extension-capable JDK.
+The job retains XML, wrapper logs/summaries and JFR recordings even on failure.
 
 ## Tier 3 — dd-trace Integration Tests (GitLab, Every Push)
 
