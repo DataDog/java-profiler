@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <condition_variable>
 #include <cstdio>
 #include <future>
@@ -22,6 +23,22 @@
 
 class ProfilerTestAccessor {
 public:
+  class TaskBlockActivityStateScope {
+    Profiler* _profiler;
+    u64 _previous;
+
+  public:
+    TaskBlockActivityStateScope(Profiler* profiler, u64 count, bool closed)
+        : _profiler(profiler),
+          _previous(profiler->_task_block_activity_state.exchange(
+              count | (closed ? Profiler::TASK_BLOCK_CLOSED : 0), std::memory_order_acq_rel)) {}
+    ~TaskBlockActivityStateScope() {
+      _profiler->_task_block_activity_state.store(_previous, std::memory_order_release);
+    }
+    TaskBlockActivityStateScope(const TaskBlockActivityStateScope&) = delete;
+    TaskBlockActivityStateScope& operator=(const TaskBlockActivityStateScope&) = delete;
+  };
+
   static bool omit(Profiler* p) { return p->_omit_stacktraces; }
   static void setOmit(Profiler* p, bool omit) { p->_omit_stacktraces = omit; }
   static int depth(Profiler* p) { return p->_max_stack_depth; }
@@ -335,6 +352,19 @@ TEST_F(AbandonedTaskBlockTest, RunOnAnotherSlotIsNotClosed) {
       << "the TLS interval is cleared even when its run is not closed";
   EXPECT_TRUE(tracker.exitBlockedRun(
       slot_id, WallClockBlockTracker::tokenGeneration(abandoned)));
+}
+
+TEST_F(TaskBlockRecorderTest, InflightAccessorPreservesWideCountsAndMasksClosure) {
+  Profiler* profiler = Profiler::instance();
+  const u64 counts[] = {0, INT_MAX, static_cast<u64>(INT_MAX) + 1, (1ULL << 32) + 7,
+                        (1ULL << 62) + 9};
+  for (u64 count : counts) {
+    for (bool closed : {false, true}) {
+      ProfilerTestAccessor::TaskBlockActivityStateScope state(profiler, count, closed);
+      EXPECT_EQ(closed, profiler->taskBlockRotationActiveForTest());
+      EXPECT_EQ(count, profiler->taskBlockInflightForTest());
+    }
+  }
 }
 
 TEST_F(TaskBlockRecorderTest, RotationWaitsForInflightActivity) {
