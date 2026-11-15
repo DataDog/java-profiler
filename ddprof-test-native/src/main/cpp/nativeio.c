@@ -13,6 +13,7 @@
 #include <link.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -96,6 +97,9 @@ static int collect_imports(struct dl_phdr_info *info, size_t size, void *data) {
  */
 JNIEXPORT jint JNICALL
 Java_com_datadoghq_profiler_nativesocket_NativeIoErrnoTest_exerciseImports(JNIEnv *env, jclass cls) {
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return 28;
+    if (limit.rlim_max <= 65536u) return -2;
     struct imports imports = {{NULL, NULL, NULL, NULL}};
     dl_iterate_phdr(collect_imports, &imports);
     for (int op = 0; op < 4; op++) if (imports.functions[op] == NULL) return 10 + op;

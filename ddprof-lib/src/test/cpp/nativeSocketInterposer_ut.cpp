@@ -43,6 +43,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -3139,6 +3140,12 @@ TEST_F(NativeSocketInterposerHookTest,
 
 TEST_F(NativeSocketInterposerFdTest,
        UnpatchedReuseSeparatesSamplerRevalidationFromInterposerInvalidation) {
+  struct rlimit limit;
+  ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+  if (limit.rlim_max <= 65536u) {
+    GTEST_SKIP() << "requires RLIMIT_NOFILE > 65536; runner hard limit is "
+                 << limit.rlim_max << " — see the CI runner image configuration";
+  }
   for (int minimum : {0, kFdTypeCacheSizeForTest}) {
     SCOPED_TRACE(minimum);
     int sockets[2];
@@ -3181,6 +3188,12 @@ TEST_F(NativeSocketInterposerFdTest,
 
 TEST_F(NativeSocketInterposerHookTest,
        SamplerOnlyRealPipeIoPreservesSuccessfulAndFailingErrno) {
+  struct rlimit limit;
+  ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+  if (limit.rlim_max <= 65537u) {
+    GTEST_SKIP() << "requires RLIMIT_NOFILE >= 65538; runner hard limit is "
+                 << limit.rlim_max << " — see the CI runner image configuration";
+  }
   ScopedNativeSocketInterposerActive interposer_active(false);
   ScopedNativeSocketSamplerActive sampler_active(true);
   NativeSocketSampler::setOriginalFunctions(::send, ::recv, ::write, ::read);

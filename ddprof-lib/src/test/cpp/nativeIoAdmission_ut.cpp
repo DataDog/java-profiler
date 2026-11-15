@@ -159,6 +159,12 @@ TEST_F(NativeIoFreshAdmissionTest, ScopeAndCombinedRecordingPreserveOriginalEntr
 }
 
 TEST_F(NativeIoFreshAdmissionTest, RawDup2ReuseRevalidatesPositiveAndNegativeAdmissionForEveryOwner) {
+  struct rlimit limit;
+  ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+  if (limit.rlim_max <= 65536u) {
+    GTEST_SKIP() << "requires RLIMIT_NOFILE > 65536; runner hard limit is "
+                 << limit.rlim_max << " — see the CI runner image configuration";
+  }
   auto* interposer = NativeSocketInterposer::instance();
   auto* sampler = NativeSocketSampler::instance();
   for (int owners : {1, 2, 3}) {
@@ -239,6 +245,10 @@ TEST_F(NativeIoFreshAdmissionTest, RawDup2ReuseRevalidatesPositiveAndNegativeAdm
 TEST_F(NativeIoFreshAdmissionTest, RepeatedAdmissionHasBoundedProbeAndDescriptorCost) {
   struct rlimit limit;
   ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+  if (limit.rlim_max <= 65536u) {
+    GTEST_SKIP() << "requires RLIMIT_NOFILE > 65536; runner hard limit is "
+                 << limit.rlim_max << " — see the CI runner image configuration";
+  }
   ASSERT_GT(limit.rlim_cur, 65536u) << "high-FD qualification requires a real sufficient limit";
   const int iterations = 10000;
   for (int owners : {1, 2, 3}) {
