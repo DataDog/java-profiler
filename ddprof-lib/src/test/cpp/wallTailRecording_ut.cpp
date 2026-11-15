@@ -24,12 +24,41 @@ public:
     recorder->_rec = recording;
   }
   ~FlightRecorderTestAccessor() { _recorder->_rec = nullptr; }
+  FlightRecorderTestAccessor(const FlightRecorderTestAccessor&) = delete;
+  FlightRecorderTestAccessor& operator=(const FlightRecorderTestAccessor&) = delete;
 };
 
 class ProfilerTestAccessor {
 public:
   static FlightRecorder* recorder(Profiler* profiler) { return &profiler->_jfr; }
   static u32 stripe(Profiler* profiler, int tid) { return profiler->getLockIndex(tid); }
+  static void prepareStop(Profiler* profiler, Engine* cpu, Engine* wall, Engine* alloc) {
+    profiler->_cpu_engine = cpu;
+    profiler->_wall_engine = wall;
+    profiler->_alloc_engine = alloc;
+    profiler->_activated_mask = EM_CPU | EM_WALL | EM_ALLOC;
+    profiler->_state.store(RUNNING, std::memory_order_release);
+  }
+  static State state(Profiler* profiler) { return profiler->state(); }
+};
+
+class VMTestAccessor {
+  jvmtiInterface_1_ _functions{};
+  _jvmtiEnv _environment{};
+  jvmtiEnv* _previous;
+
+public:
+  VMTestAccessor() : _previous(VM::_jvmti) {
+    // There is no JVM in this binary; thread-name refresh has no Java threads.
+    _functions.GetAllThreads = +[](jvmtiEnv*, jint*, jthread**) {
+      return JVMTI_ERROR_WRONG_PHASE;
+    };
+    _environment.functions = &_functions;
+    VM::_jvmti = &_environment;
+  }
+  ~VMTestAccessor() { VM::_jvmti = _previous; }
+  VMTestAccessor(const VMTestAccessor&) = delete;
+  VMTestAccessor& operator=(const VMTestAccessor&) = delete;
 };
 
 class WallTailRecordingTest : public ::testing::Test {
@@ -204,6 +233,72 @@ TEST_F(WallTailRecordingTest, ActiveOutputFlushFailureRetainsEpochUnitsContextAn
   CallTraceIdSet roots;
   profiler->blockTracker()->collectLiveTraceIds(roots);
   EXPECT_EQ(1u, roots.count(origin)) << "failed delivery must retain the original trace root";
+}
+
+TEST_F(WallTailRecordingTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRejectsRestart) {
+  class StopObserver : public Engine {
+  public:
+    unsigned stops = 0;
+    bool enabled = true;
+    void enableEvents(bool value) override { enabled = value; }
+    void stop() override { ++stops; }
+  } cpu, wall, alloc;
+  VMTestAccessor vm;
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  auto recording = std::make_unique<Recording>(output.fd());
+  RecordingTestAccessor::activateHotWrites(recording.get());
+  auto* recorder = ProfilerTestAccessor::recorder(profiler.get());
+  FlightRecorderTestAccessor active(recorder, recording.get());
+  RecordingBuffer* buffer = recording->buffer(ProfilerTestAccessor::stripe(profiler.get(), request.tid));
+  buffer->skip(JFR_EVENT_FLUSH_THRESHOLD - 1);
+  auto* classes = profiler->classMap();
+  constexpr char class_name[] = "RetainedTailClass";
+  const u32 class_id = classes->lookup(class_name, sizeof(class_name) - 1);
+  ASSERT_NE(0U, class_id);
+  const u64 dictionary_generation = classes->generation();
+  ASSERT_TRUE(output.failWrites());
+  EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  ASSERT_FALSE(recording->outputGood());
+  ASSERT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD);
+  const int retained_bytes = buffer->offset();
+  ProfilerTestAccessor::prepareStop(profiler.get(), &cpu, &wall, &alloc);
+
+  Error error = profiler->stop();
+  ASSERT_TRUE(error);
+  EXPECT_STREQ("Incomplete recording output retained; restart refused", error.message());
+  EXPECT_TRUE(recorder->outputQuarantined());
+  EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler.get()));
+  EXPECT_EQ(1U, cpu.stops);
+  EXPECT_EQ(1U, wall.stops);
+  EXPECT_EQ(1U, alloc.stops);
+  EXPECT_FALSE(cpu.enabled);
+  EXPECT_FALSE(wall.enabled);
+  EXPECT_FALSE(profiler->taskBlockEnabled());
+  EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
+  EXPECT_EQ(0ULL, profiler->threadFilter()->recordingEpoch());
+  EXPECT_TRUE(recorder->active());
+  EXPECT_EQ(retained_bytes, buffer->offset());
+  expectOriginRetained();
+  CallTraceIdSet roots;
+  profiler->blockTracker()->collectLiveTraceIds(roots);
+  EXPECT_EQ(1U, roots.count(origin));
+  EXPECT_EQ(class_id, classes->standby()->lookup(class_name, sizeof(class_name) - 1));
+
+  Arguments args;
+  for (bool reset : {false, true}) {
+    Error restart = profiler->start(args, reset);
+    ASSERT_TRUE(restart);
+    EXPECT_STREQ("Profiler encountered fatal error", restart.message());
+    EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler.get()));
+    EXPECT_EQ(dictionary_generation, classes->generation());
+    expectOriginRetained();
+  }
+  EXPECT_TRUE(profiler->stop());
+  EXPECT_EQ(1U, cpu.stops);
+  EXPECT_EQ(1U, wall.stops);
+  EXPECT_EQ(1U, alloc.stops);
+  EXPECT_EQ(retained_bytes, buffer->offset());
 }
 
 TEST_F(WallTailRecordingTest, ProducerFlushRetriesOnlyFailedEpochWithOriginalContext) {

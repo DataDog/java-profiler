@@ -55,16 +55,40 @@ class FlightRecorderTestAccessor {
   FlightRecorder* _recorder;
 
 public:
-  FlightRecorderTestAccessor(FlightRecorder* recorder, Recording* recording)
+  FlightRecorderTestAccessor(FlightRecorder* recorder, Recording* recording, int uncertain_fd = -1)
       : _recorder(recorder) {
     setRecording(recorder, recording);
+    recorder->_uncertain_create_fd = uncertain_fd;
   }
-  ~FlightRecorderTestAccessor() { setRecording(_recorder, nullptr); }
+  ~FlightRecorderTestAccessor() {
+    setRecording(_recorder, nullptr);
+    _recorder->_uncertain_create_fd = -1;
+  }
+  FlightRecorderTestAccessor(const FlightRecorderTestAccessor&) = delete;
+  FlightRecorderTestAccessor& operator=(const FlightRecorderTestAccessor&) = delete;
 
   static void setRecording(FlightRecorder* recorder, Recording* recording) {
     recorder->_rec = recording;
   }
 };
+
+TEST(FlightRecorderResultTest, OutputQuarantineExcludesInactiveAndHealthyRecordings) {
+  FlightRecorder recorder;
+  EXPECT_FALSE(recorder.outputQuarantined());
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  auto recording = std::make_unique<Recording>(output.fd());
+  FlightRecorderTestAccessor active(&recorder, recording.get());
+  EXPECT_FALSE(recorder.outputQuarantined());
+}
+
+TEST(FlightRecorderResultTest, UncertainCreationCloseIsQuarantinedWithoutRecording) {
+  FlightRecorder recorder;
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  FlightRecorderTestAccessor uncertain(&recorder, nullptr, output.fd());
+  EXPECT_TRUE(recorder.outputQuarantined());
+}
 
 TEST(FlightRecorderResultTest, RecordWallSampleReturnsFalseWhenActiveOutputFlushFails) {
   RecordingWriteFailureFixture output;
@@ -82,6 +106,7 @@ TEST(FlightRecorderResultTest, RecordWallSampleReturnsFalseWhenActiveOutputFlush
   Context context{};
   EXPECT_FALSE(recorder.recordWallSample(0, 1, 42, &event, context));
   EXPECT_FALSE(recording->outputGood());
+  EXPECT_TRUE(recorder.outputQuarantined());
   EXPECT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD)
       << "the failed real pwrite must leave its serialized bytes owned";
 }

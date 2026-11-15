@@ -200,9 +200,13 @@ Dump rejects aliases to the source before truncating the destination. A failed
 copy keeps sealed chunks and starts the next chunk after them. A later successful
 dump delivers all retained chunks with their original clocks and constant pools.
 
-Write, patch and close failures quarantine the output. Recording buffers and
-dictionary roots stay owned; restart is refused. A failed close is not retried,
-because descriptor ownership after failure is platform-dependent.
+Write, patch and close failures quarantine the output. Stop shuts down producers
+and latches the profiler's non-restartable `ERROR` state. Recording buffers,
+dictionary roots and uncommitted wall tails stay owned.
+
+`FlightRecorder::outputQuarantined()` checks this terminal condition under the
+shared recorder lock on normal threads. Lock contention is not quarantine.
+A failed close is not retried because descriptor ownership is platform-dependent.
 
 ### `finishChunk()`
 

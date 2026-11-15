@@ -2691,7 +2691,10 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   if (!output_error) LibraryPatcher::unpatch_libraries();
 
-  if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
+  // Quarantined output cannot recover: stop producers but retain the recording
+  // and its roots, and prevent a later start from reusing their state.
+  if (_jfr.outputQuarantined() ||
+      (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop())) {
     _state.store(ERROR, std::memory_order_release);
   } else {
     _state.store(IDLE, std::memory_order_release);

@@ -138,6 +138,10 @@ Profiler::start()
    socket sampler, wall-clock and CPU teardown. Engine stops use `_activated_mask`,
    not the requested mask: a mixed-success start must not stop an engine that failed.
 
+Output quarantine does not skip engine teardown. After teardown, stop latches
+`ERROR` and retains the recording, dictionary roots and uncommitted wall tails.
+A new start or resume cannot reuse this state.
+
 Stop deactivates the thread-registry recording projection after engine teardown.
 `rollBackStart()` also deactivates it on each post-JFR start failure, including a
 CPU registration-drain failure; its existing signal-drain preconditions still apply.

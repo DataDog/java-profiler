@@ -2866,6 +2866,12 @@ Error FlightRecorder::newRecording(bool reset) {
   return Error::OK;
 }
 
+bool FlightRecorder::outputQuarantined() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  SharedLockGuard locker(&_rec_lock);
+  return _uncertain_create_fd >= 0 || (_rec != nullptr && !_rec->outputGood());
+}
+
 Error FlightRecorder::stop() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);

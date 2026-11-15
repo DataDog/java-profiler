@@ -669,6 +669,8 @@ public:
   FlightRecorder() : _rec(NULL) {}
   Error start(Arguments &args, bool reset);
   Error stop();
+  // Normal-thread query: recorder contention must not be classified as quarantine.
+  bool outputQuarantined();
   Error dump(const char *filename, const int length);
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
