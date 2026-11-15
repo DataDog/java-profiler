@@ -886,30 +886,6 @@ public:
   SocketPatchCandidate& operator=(SocketPatchCandidate&&) noexcept = default;
 };
 
-static bool mappingMatches(const CodeCache* lib) {
-  if (lib->imageBase() == nullptr) {
-    return false;
-  }
-  Dl_info info;
-  if (dladdr(lib->imageBase(), &info) == 0 ||
-      info.dli_fbase != lib->imageBase() || info.dli_fname == nullptr) {
-    return false;
-  }
-  // Append-only caches can outlive an image and its base can be reused.
-  char name[PATH_MAX];
-  size_t length = strlen(lib->name());
-  if (length >= 10 && strcmp(lib->name() + length - 10, " (deleted)") == 0) length -= 10;
-  if (length >= sizeof(name)) return false;
-  memcpy(name, lib->name(), length);
-  name[length] = '\0';
-  if (strcmp(name, info.dli_fname) == 0) return true;
-  char cached_path[PATH_MAX];
-  char loaded_path[PATH_MAX];
-  return realpath(name, cached_path) != nullptr &&
-         realpath(info.dli_fname, loaded_path) != nullptr &&
-         strcmp(cached_path, loaded_path) == 0;
-}
-
 #ifdef UNIT_TEST
 static std::atomic<LibraryPatcher::SocketPatchObserverForTest> socket_patch_observer{nullptr};
 
@@ -922,6 +898,42 @@ static void observeSocketPatchForTest(const char* phase) {
   if (observer != nullptr) observer(phase);
 }
 #endif
+
+// The loader walk owns the live pathname and headers, even on failed-pin paths.
+static bool mappingMatches(const CodeCache* lib) {
+  if (lib->imageBase() == nullptr || lib->imageFingerprint() == 0) return false;
+  return dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) {
+    const CodeCache* lib = static_cast<const CodeCache*>(data);
+    uintptr_t min_vaddr = UINTPTR_MAX;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+      if (info->dlpi_phdr[i].p_type == PT_LOAD) {
+        min_vaddr = std::min(min_vaddr, static_cast<uintptr_t>(info->dlpi_phdr[i].p_vaddr));
+      }
+    }
+    if (min_vaddr == UINTPTR_MAX ||
+        ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) !=
+            reinterpret_cast<uintptr_t>(lib->imageBase())) return 0;
+    // Nonzero ends the walk; only 1 means this base has the cached identity.
+    if (info->dlpi_name == nullptr) return 2;
+    char name[PATH_MAX];
+    size_t length = strlen(lib->name());
+    if (length >= 10 && strcmp(lib->name() + length - 10, " (deleted)") == 0) length -= 10;
+    if (length >= sizeof(name)) return 2;
+    memcpy(name, lib->name(), length);
+    name[length] = '\0';
+    if (strcmp(name, info->dlpi_name) != 0) {
+      char cached_path[PATH_MAX];
+      char loaded_path[PATH_MAX];
+      if (realpath(name, cached_path) == nullptr ||
+          realpath(info->dlpi_name, loaded_path) == nullptr ||
+          strcmp(cached_path, loaded_path) != 0) return 2;
+    }
+    // A reused base/path cannot establish the cached relocation addresses.
+    u64 fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum,
+                                                 info->dlpi_addr);
+    return fingerprint == lib->imageFingerprint() ? 1 : 2;
+  }, const_cast<CodeCache*>(lib)) == 1;
+}
 
 bool LibraryPatcher::patch_socket_functions(bool require_active,
                                             std::atomic<bool>* activating_owner) {
@@ -1071,7 +1083,6 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     }
 
     // Optional weak GOT entries may be NULL; retain the image before reading them.
-    if (!mappingMatches(lib)) continue;
     UnloadProtection protection(lib);
     if (!protection.isValid()) {
       if (!mappingMatches(lib)) {
@@ -1081,6 +1092,10 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
                 lib->name());
       return disable_and_unpatch();
     }
+#ifdef UNIT_TEST
+    observeSocketPatchForTest("mapping_lookup");
+#endif
+    if (!mappingMatches(lib)) continue;
     size_t patch_count = 0;
     for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
          hook_index++) {

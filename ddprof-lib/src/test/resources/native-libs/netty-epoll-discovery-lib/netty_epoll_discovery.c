@@ -25,7 +25,11 @@ void JNI_OnUnload_netty_transport_native_epoll(void* vm, void* reserved) {
 }
 
 ssize_t netty_fixture_read(int fd, void* buffer, size_t size) {
+#ifdef REPLACEMENT_IMAGE
+    return write(fd, buffer, size);
+#else
     return read(fd, buffer, size);
+#endif
 }
 
 int netty_fixture_epoll_pwait2(void) {

@@ -207,9 +207,10 @@ or release-performance qualification.
 
 Netty images are selected by the exact epoll JNI load/unload markers cached during
 symbol ingestion, including shaded and already-unlinked mappings. Discovery pins
-the mapped image before reading weak imports and retains the pin until restoration.
+the mapped image and validates its live fingerprint before reading cached imports.
+It retains the pin until restoration.
 A NULL weak `epoll_pwait2` import stays NULL; supported imports use the same
-errno-preserving, fork-safe scope as the other epoll waits.
+errno-preserving scope as the other epoll waits.
 
 Recording admission validates the requesting native TID, lifecycle generation and
 recording epoch under the registry lock before provisioning suppression backing

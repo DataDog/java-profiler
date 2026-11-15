@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -23,6 +24,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -60,7 +63,7 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
     stopProfiler();
     JfrEvents events = verifyEvents("datadog.TaskBlock", false);
     assertEpollTaskBlock(events, name, "io.netty.");
-    assertEpollTaskBlock(events, name + "-timed", "io.netty.");
+    assertTimedEpollTaskBlocks(events, name + "-timed", "io.netty.");
   }
 
   /** Relocates real classes and lets Netty extract and delete its own renamed native image. */
@@ -90,7 +93,8 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
     stopProfiler();
     JfrEvents events = verifyEvents("datadog.TaskBlock", false);
     assertEpollTaskBlock(events, name, ShadedNettyClassLoader.PREFIX + "io.netty.");
-    assertEpollTaskBlock(events, name + "-timed", ShadedNettyClassLoader.PREFIX + "io.netty.");
+    assertTimedEpollTaskBlocks(
+        events, name + "-timed", ShadedNettyClassLoader.PREFIX + "io.netty.");
   }
 
   /** Loads the deleted image while stopped, then requires events in both subsequent sessions. */
@@ -119,7 +123,7 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
           running = false;
           JfrEvents events = verifyEvents(recording, "datadog.TaskBlock", false);
           assertEpollTaskBlock(events, name, "io.netty.");
-          assertEpollTaskBlock(events, name + "-timed", "io.netty.");
+          assertTimedEpollTaskBlocks(events, name + "-timed", "io.netty.");
           assertEquals(-9, fixture.invalidDescriptorErrno(), "restored JNI must preserve EBADF");
           assertEquals(
               -9, fixture.invalidTimedDescriptorErrno(), "restored timed JNI must preserve EBADF");
@@ -163,9 +167,9 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       JfrEvents oldEvents = verifyEvents(first, "datadog.TaskBlock", false);
       JfrEvents newEvents = verifyEvents(second, "datadog.TaskBlock", false);
       assertEpollTaskBlock(oldEvents, name, "io.netty.");
-      assertEpollTaskBlock(oldEvents, name + "-timed-first", "io.netty.");
+      assertTimedEpollTaskBlocks(oldEvents, name + "-timed-first", "io.netty.");
       assertEpollTaskBlock(newEvents, name, "io.netty.");
-      assertEpollTaskBlock(newEvents, name + "-timed-second", "io.netty.");
+      assertTimedEpollTaskBlocks(newEvents, name + "-timed-second", "io.netty.");
       assertEquals(0, TaskBlockAssertions.countEventsForThread(oldEvents, name + "-survivor"));
       assertEquals(0, TaskBlockAssertions.countEventsForThread(newEvents, name + "-survivor"));
       assertEquals(1, TaskBlockAssertions.countEventsForThread(newEvents, name + "-new"));
@@ -206,7 +210,7 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       runTimedWorker(fixture, name);
     }
     stopProfiler();
-    assertEpollTaskBlock(verifyEvents("datadog.TaskBlock", false), name, "io.netty.");
+    assertTimedEpollTaskBlocks(verifyEvents("datadog.TaskBlock", false), name, "io.netty.");
   }
 
   /** Keeps real JNI waits functional while TaskBlock is explicitly disabled. */
@@ -258,7 +262,7 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       running = false;
       JfrEvents events = verifyEvents(recording, "datadog.TaskBlock", false);
       if (expectBlocks) {
-        assertEpollTaskBlock(events, name, "io.netty.");
+        assertTimedEpollTaskBlocks(events, name, "io.netty.");
       } else {
         assertTrue(!events.hasItems(), "TaskBlock must be absent with wallprecheck=false");
       }
@@ -277,6 +281,12 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
     }
   }
 
+  /** Requires the five explicit timed JNI intervals, separately from ordinary loop waits. */
+  public static void assertTimedEpollTaskBlocks(
+      Iterable<JfrEvent> events, String name, String packagePrefix) {
+    assertEpollTaskBlocks(events, name, packagePrefix, true);
+  }
+
   private static void assertDeletedMapping(boolean shaded) throws Exception {
     String marker =
         shaded ? "ddproffixture_netty_transport_native_epoll" : "libnetty_transport_native_epoll";
@@ -291,36 +301,55 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
     assertTrue(found, "missing actual Netty native mapping for " + marker);
   }
 
-  /**
-   * Requires the full five waits on actual Netty epoll stacks, not unrelated blocks on the same
-   * thread.
-   */
+  /** Requires five Netty epoll waits without accepting unrelated blocks on that worker. */
   public static void assertEpollTaskBlock(
       Iterable<JfrEvent> events, String name, String packagePrefix) {
+    assertEpollTaskBlocks(events, name, packagePrefix, false);
+  }
+
+  private static void assertEpollTaskBlocks(
+      Iterable<JfrEvent> events, String name, String packagePrefix, boolean timed) {
     int matched = 0;
+    Set<Long> intervalStarts = new HashSet<>();
     for (JfrEvent event : events) {
       if (!name.equals(event.getThreadName("eventThread"))) {
         continue;
       }
+      assertNotNull(event.get("stackTrace"), "missing TaskBlock stack");
       boolean epollFrame = false;
+      boolean timedFrame = false;
       for (JfrFrame frame : event.getStackTrace().frames()) {
         String type = frame.className();
         epollFrame |=
             (packagePrefix + "channel.epoll.Native").equals(type)
                 && frame.methodName() != null
                 && frame.methodName().startsWith("epollWait");
+        timedFrame |=
+            (packagePrefix + "channel.epoll.ProfilerEpollFixture").equals(type)
+                && frame.methodName() != null
+                && (frame.methodName().startsWith("timedNativeWait")
+                    || frame.methodName().startsWith("lambda$timedNativeWaits"));
       }
-      if (!epollFrame) {
+      if (!epollFrame || (timed && !timedFrame)) {
         continue;
       }
       assertTrue(event.has("observedBlockingState"), "missing TaskBlock state");
       assertEquals("IO_WAIT", event.getString("observedBlockingState"));
-      assertTrue(event.has("duration"), "missing TaskBlock duration");
-      assertTrue(event.getLong("duration", 0L) > 0, "nonpositive wait duration");
+      assertNotNull(event.getLong("duration"), "missing TaskBlock duration");
+      assertTrue(event.getLong("duration") > 0, "nonpositive wait duration");
       assertTrue(
           !event.has("correlationId"), "synchronous TaskBlock has no async correlation field");
+      if (timed) {
+        Long start = event.getLong("startTime");
+        assertNotNull(start, "missing timed TaskBlock startTime");
+        assertTrue(intervalStarts.add(start), "duplicate timed TaskBlock interval");
+      }
       matched++;
     }
-    assertTrue(matched >= 5, "fewer than five IO_WAIT TaskBlocks on real Netty worker " + name);
+    if (timed) {
+      assertEquals(5, matched, "expected five distinct timedNativeWait intervals on " + name);
+    } else {
+      assertTrue(matched >= 5, "fewer than five IO_WAIT TaskBlocks on real Netty worker " + name);
+    }
   }
 }
