@@ -20,7 +20,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ## Quick Navigation
 
 ### Architecture
-- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots and exact-copy failure handling
+- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots, exact-copy failure handling and ASan-safe chunk reclamation
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: stripe-owned deferred wall tails, recordings, buffers, metadata, constant pools, terminal output quarantine and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation

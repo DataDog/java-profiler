@@ -1,6 +1,15 @@
+/* Copyright 2026, Datadog, Inc. */
+
 #include "gtest/gtest.h"
+#include "common.h"
 #include "linearAllocator.h"
 #include "nativeMem.h"
+
+#ifdef ASAN_ENABLED
+#include <memory>
+#include <sanitizer/asan_interface.h>
+#include <sys/mman.h>
+#endif
 
 // NM_CALLTRACE must track bytes actually handed out by alloc() -- i.e. touched,
 // resident bytes -- not the virtual capacity of the mmap'd chunks backing them.
@@ -82,6 +91,60 @@ TEST_F(LinearAllocatorNativeMemTest, ClearReturnsLiveToZero) {
   EXPECT_EQ(0, NativeMem::live(NM_CALLTRACE))
       << "clear() discards all chunk contents, including the retained _tail's";
 }
+
+#ifdef ASAN_ENABLED
+class ScopedChunkRemap {
+  void* _mapping;
+
+public:
+  explicit ScopedChunkRemap(void* address)
+      : _mapping(mmap(address, CHUNK_SIZE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) {}
+  ~ScopedChunkRemap() {
+    if (_mapping != MAP_FAILED) munmap(_mapping, CHUNK_SIZE);
+  }
+  void* address() const { return _mapping; }
+  ScopedChunkRemap(const ScopedChunkRemap&) = delete;
+  ScopedChunkRemap& operator=(const ScopedChunkRemap&) = delete;
+};
+
+TEST_F(LinearAllocatorNativeMemTest, DestructorReleasesShadowOnlyAfterClearedChunkIsUnmapped) {
+  auto allocator = std::make_unique<LinearAllocator>(CHUNK_SIZE);
+  auto* data = static_cast<char*>(allocator->alloc(128));
+  ASSERT_NE(nullptr, data);
+  auto* chunk = data - sizeof(Chunk);
+  allocator->clear();
+  ASSERT_TRUE(__asan_address_is_poisoned(data));
+  allocator.reset();
+  EXPECT_FALSE(__asan_address_is_poisoned(data));
+  ScopedChunkRemap unrelated(chunk);
+  ASSERT_EQ(chunk, unrelated.address());
+  EXPECT_FALSE(__asan_address_is_poisoned(data));
+}
+
+TEST_F(LinearAllocatorNativeMemTest, DetachedChunksReleaseShadowBeyondReallocatedBytes) {
+  LinearAllocator allocator(CHUNK_SIZE);
+  auto* data = static_cast<char*>(allocator.alloc(128));
+  ASSERT_NE(nullptr, data);
+  auto* chunk = data - sizeof(Chunk);
+  allocator.clear();
+  ASSERT_TRUE(__asan_address_is_poisoned(data + 64));
+  ASSERT_EQ(data, allocator.alloc(32));
+  ASSERT_FALSE(__asan_address_is_poisoned(data));
+  ASSERT_TRUE(__asan_address_is_poisoned(data + 64));
+  auto release = [](ChunkList* chunks) {
+    LinearAllocator::freeChunks(*chunks);
+    delete chunks;
+  };
+  std::unique_ptr<ChunkList, decltype(release)> detached(
+      new ChunkList(allocator.detachChunks()), release);
+  ASSERT_TRUE(__asan_address_is_poisoned(data + 64));
+  detached.reset();
+  EXPECT_FALSE(__asan_address_is_poisoned(data + 64));
+  ScopedChunkRemap unrelated(chunk);
+  ASSERT_EQ(chunk, unrelated.address());
+  EXPECT_FALSE(__asan_address_is_poisoned(data + 64));
+}
+#endif
 
 TEST_F(LinearAllocatorNativeMemTest, FreeChunksReturnsLiveToZero) {
   LinearAllocator allocator(CHUNK_SIZE);

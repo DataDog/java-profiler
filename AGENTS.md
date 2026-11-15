@@ -165,7 +165,7 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
-| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, reusable unowned wall-clock roots) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
+| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, reusable unowned wall-clock roots, ASan-safe chunk reclamation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
