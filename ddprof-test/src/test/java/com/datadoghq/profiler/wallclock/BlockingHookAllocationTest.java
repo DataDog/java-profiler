@@ -21,6 +21,7 @@ import org.objectweb.asm.Opcodes;
 
 /** Guards the Java blocking-hook gate independently of JNI/JVM allocation during native hooks. */
 public class BlockingHookAllocationTest {
+  private static final int GATE_ITERATIONS = 100_000;
   private static volatile Object allocationSink;
 
   @Test
@@ -32,7 +33,7 @@ public class BlockingHookAllocationTest {
     Thread thread = Thread.currentThread();
     assertEquals(
         0L,
-        measureCalibratedGateAllocations(gate, bean, thread, 100_000),
+        measureCalibratedGateAllocations(gate, bean, thread, GATE_ITERATIONS),
         "The warmed primitive gate must not allocate varargs arrays or boxed results");
   }
 
@@ -46,8 +47,10 @@ public class BlockingHookAllocationTest {
                 MethodType.methodType(boolean.class, Thread.class));
     ThreadMXBean bean = allocationBean();
     Thread thread = Thread.currentThread();
+    // OpenJ9 reports allocations in batches. Match the zero-allocation gate's iteration count
+    // so the escaping objects exceed that reporting granularity.
     assertTrue(
-        measureCalibratedGateAllocations(gate, bean, thread, 1_000) > 0,
+        measureCalibratedGateAllocations(gate, bean, thread, GATE_ITERATIONS) > 0,
         "Subtracting accounting overhead must not hide the gate's escaping allocations");
   }
 
