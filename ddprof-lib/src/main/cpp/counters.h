@@ -42,6 +42,8 @@
   X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
   X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
   X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
+  X(REFCOUNT_NESTED_OVERFLOW, "refcount_nested_overflow")                      \
+  X(DICTIONARY_ID_CONFLICTS, "dictionary_id_conflicts")                        \
   X(CLASS_MAP_AT_CAPACITY, "class_map_at_capacity_drops")                      \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
@@ -56,14 +58,27 @@
   X(NATIVE_MEM_LIVE_BYTES, "native_mem_live_bytes")                            \
   X(NATIVE_MEM_MAX_BYTES, "native_mem_max_bytes")                              \
   X(NATIVE_MEM_AVG_BYTES, "native_mem_avg_bytes")                              \
+  /* Process-wide malloc arena state, from glibc's own accounting. These are   \
+   * NOT profiler memory and deliberately are not NM_* categories: those must  \
+   * partition the profiler's own allocations (see nativeMem.h), and arena     \
+   * slack is mostly other subsystems' chunks stranded by interleaving, so it  \
+   * is not attributable to any profiler allocation. Reported so that the      \
+   * allocator's own overhead is visible rather than folded into a "profiler   \
+   * cost" figure -- it differs substantially between glibc, tcmalloc and      \
+   * jemalloc. Sampled on the JFR flush path only: mallinfo2() walks every     \
+   * arena taking locks, so it is neither cheap nor async-signal-safe. */      \
+  X(MALLOC_ARENA_BYTES, "malloc_arena_bytes")                                  \
+  X(MALLOC_IN_USE_BYTES, "malloc_in_use_bytes")                                \
+  X(MALLOC_FREE_HELD_BYTES, "malloc_free_held_bytes")                          \
+  X(MALLOC_TRIMMABLE_BYTES, "malloc_trimmable_bytes")                          \
+  X(MALLOC_MMAP_BYTES, "malloc_mmap_bytes")                                    \
   X(THREAD_IDS_COUNT, "thread_ids_count")                                      \
   X(THREAD_NAMES_COUNT, "thread_names_count")                                  \
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \
   X(THREAD_FILTER_BYTES, "thread_filter_bytes")                                \
   X(THREAD_REGISTRY_CAPACITY_EXHAUSTED, "thread_registry_capacity_exhausted")  \
   X(THREAD_REGISTRY_INDEX_FAILURES, "thread_registry_index_failures")          \
-  X(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED, "thread_registry_context_reset_race_detected") \
-  X(THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION, "thread_registry_javacritical_reregistration") \
+  X(THREAD_REGISTRY_HOOK_REREGISTRATION, "thread_registry_hook_reregistration") \
   X(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED, "thread_registry_block_generation_saturated") \
   X(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN, "thread_registry_unregister_active_block_run") \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
@@ -76,30 +91,42 @@
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
-  X(WC_PRECHECK_SLOT_ID_RECOVERED, "wc_precheck_slot_id_recovered")           \
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
-  X(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED, "wc_precheck_lookup_budget_exhausted") \
   X(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK, "wc_signals_suppressed_owned_block")     \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
+  X(WC_UNOWNED_BLOCKED_TRACE_PRESERVATION_FAILED, "wc_unowned_blocked_trace_preservation_failed") \
+  X(WC_UNOWNED_BLOCKED_TAIL_RECORDED, "wc_unowned_blocked_tail_recorded") \
   X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
+  X(WC_UNOWNED_CONTEXT_SNAPSHOT_UNAVAILABLE, "wc_unowned_context_snapshot_unavailable") \
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(TASK_BLOCK_EMITTED, "task_block_emitted")                                 \
   X(TASK_BLOCK_SKIPPED_TRACE_CONTEXT, "task_block_skipped_trace_context")     \
   X(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW, "task_block_skipped_context_window")   \
   X(TASK_BLOCK_SKIPPED_TOO_SHORT, "task_block_skipped_too_short")             \
   X(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD, "task_block_skipped_jvm_internal_thread") \
+  X(TASK_BLOCK_THRESHOLD_INVALID, "task_block_threshold_invalid")             \
   X(TASK_BLOCK_STACK_CAPTURE_FAILED, "task_block_stack_capture_failed")      \
   X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                     \
-  X(TASK_BLOCK_SEGMENT_STACKLESS, "task_block_segment_stackless")             \
   X(TASK_BLOCK_DROPPED_ROTATION, "task_block_dropped_rotation")               \
   X(TASK_BLOCK_SKIPPED_THREAD_MISMATCH, "task_block_skipped_thread_mismatch") \
   X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
+  X(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED, "task_block_virtual_thread_detection_failed") \
+  X(TASK_BLOCK_RECOVERED_ABANDONED, "task_block_recovered_abandoned")         \
+  X(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT, "block_enter_skipped_trace_context")   \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
+  X(ALLOC_STACK_VM, "alloc_stack_vm")                                          \
+  X(ALLOC_STACK_VIRTUAL_THREAD, "alloc_stack_virtual_thread")                 \
+  X(ALLOC_STACK_VM_FALLBACK, "alloc_stack_vm_fallback")                        \
+  /* VERIFIED counts completed comparisons, including mismatches. */           \
+  X(ALLOC_STACK_VERIFIED, "alloc_stack_verified")                              \
+  X(ALLOC_STACK_MISMATCH, "alloc_stack_mismatch")                              \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
   X(CALLTRACE_STORAGE_EXPANSION_SKIPPED, "calltrace_storage_expansion_skipped") \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \
   X(LINE_NUMBER_TABLE_UNREADABLE, "line_number_table_unreadable")              \
+  /* Raw frames' line number tables dropped because malloc() failed. */      \
+  X(LINE_NUMBER_TABLE_ALLOC_FAILED, "line_number_table_alloc_failed")          \
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
@@ -126,6 +153,24 @@
   X(WALKVM_SAVED_ANCHOR_USED, "walkvm_saved_anchor_used")                    \
   X(WALKVM_STUB_GENERIC_UNWIND, "walkvm_stub_generic_unwind")                \
   X(WALKVM_STUB_FRAMESIZE_FALLBACK, "walkvm_stub_framesize_fallback")        \
+  /* AArch64 precomputed stub unwind info (see hotspot/stubUnwindInfo.h):      \
+   * CLASSIFIED/UNCLASSIFIED count stubs at DynamicCodeGenerated time; HIT      \
+   * counts handler unwinds that used a precomputed phase; FALLBACK counts      \
+   * handler unwinds that had info available but could not apply it (no         \
+   * registered info, PC outside the classified range, SU_UNSUPPORTED phase,    \
+   * or a failed fp/sp sanity guard) and used the legacy heuristics instead;    \
+   * REGISTRATION_FAILED counts stubs whose info could not be registered      \
+   * because the registry could not grow. */                                   \
+  X(WALKVM_STUB_INFO_CLASSIFIED, "walkvm_stub_info_classified")              \
+  X(WALKVM_STUB_INFO_UNCLASSIFIED, "walkvm_stub_info_unclassified")          \
+  X(WALKVM_STUB_INFO_HIT, "walkvm_stub_info_hit")                            \
+  X(WALKVM_STUB_INFO_FALLBACK, "walkvm_stub_info_fallback")                  \
+  X(WALKVM_STUB_INFO_REGISTRATION_FAILED, "walkvm_stub_info_registration_failed") \
+  /* Runtime-stub lookups (JitCodeCache::findRuntimeStub/findRuntimeStubInfo)  \
+   * that returned "not found" without searching because a registration held  \
+   * the stubs lock exclusively; the stack walk continued with its             \
+   * stub-not-found fallback. */                                               \
+  X(STUB_LOOKUP_LOCK_UNAVAILABLE, "stub_lookup_lock_unavailable")            \
   X(WALKVM_FP_CHAIN_ATTEMPT, "walkvm_fp_chain_attempt")                      \
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
   X(WALKVM_ANCHOR_NOT_IN_JAVA,  "walkvm_anchor_not_in_java")                   \
@@ -152,11 +197,84 @@
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
    * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(JVMTI_STACKS_DROPPED_NON_JAVA, "jvmti_stacks_dropped_non_java")           \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
+  X(SAFESTORE_FAILED, "safestore_failed")                                     \
+  X(ANCHOR_RESTORE_FAILED, "anchor_restore_failed")                           \
+  /* Every siglongjmp recovery, from any protected window, counted centrally  \
+   * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
+  X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
+  /* Symbol length/body rejected during the same resolution: unreadable body,  \
+   * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
+   * the fixed inline buffers in ResolvedMethod (hotspotSupport.h) still     \
+   * resolves via its malloc fallback and does not land here. The frame        \
+   * serializes as "unknown". */                                               \
+  X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
+  /* fjmethodid=lazy resolution outcomes. UNLOADED: the frame's class is not \
+   * among the classes the dump pins (unloaded since the sample, or the      \
+   * holder read from a freed Method* is garbage). NOT_CURRENT: the class  \
+   * is alive but the Method* is not among its current methods (freed or    \
+   * redefined). Both                                                        \
+   * serialize as "unknown". RESOLVED: raw frames whose names were read from  \
+   * VM metadata, once per method and tag per dump. */                        \
+  X(METHOD_RESOLVE_LAZY_UNLOADED, "method_resolve_lazy_unloaded")             \
+  X(METHOD_RESOLVE_LAZY_NOT_CURRENT, "method_resolve_lazy_not_current")       \
+  /* CLASS_TOO_LARGE: like NOT_CURRENT, but the Method* was not at its      \
+   * idnum's index and the class has too many methods to scan               \
+   * (VMKlass::MAX_METHODS_SCANNED), so it may well be current; serializes  \
+   * as "unknown". */                                                        \
+  X(METHOD_RESOLVE_LAZY_CLASS_TOO_LARGE, "method_resolve_lazy_class_too_large") \
+  X(METHOD_RESOLVE_LAZY_RESOLVED, "method_resolve_lazy_resolved")             \
+  /* STALE: the class now at the frame's holder address is a different load \
+   * (its trace ID differs); serializes as "unknown".                        \
+   * UNTAGGABLE: a Method* using address bits the raw-frame tag needs, or   \
+   * an unreadable holder trace ID; the frame is stored as not walkable. */  \
+  X(METHOD_RESOLVE_LAZY_STALE, "method_resolve_lazy_stale")                   \
+  /* REDEFINED: raw frame of a class that has been redefined (its Method*s   \
+   * may have been freed and reused); serializes as "unknown". */            \
+  X(METHOD_RESOLVE_LAZY_REDEFINED, "method_resolve_lazy_redefined")           \
+  /* UNREADABLE: the frame's Method* no longer leads to a holder Klass* and  \
+   * ConstMethod (the metadata was freed when its class was unloaded, or the \
+   * read faulted), so no class could even be looked up; serializes as      \
+   * "unknown". Under class churn this is most of the frames lost. */        \
+  X(METHOD_RESOLVE_LAZY_UNREADABLE, "method_resolve_lazy_unreadable")         \
+  /* Classes marked by the redefinition hooks (once per class per          \
+   * redefine/retransform call). */                                          \
+  X(KLASS_REGISTRY_REDEFINITIONS_MARKED, "klass_registry_redefinitions_marked") \
+  /* Gauge, set by each dump that resolves lazy raw frames: loaded classes  \
+   * whose trace ID no longer fits in a raw frame's 25-bit tag. Nonzero means trace-ID tags of two classes \
+   * can now collide: a frame sampled from an unloaded class could then, if  \
+   * a newer class also took over its Method* memory, resolve to that        \
+   * class's method. */                                                      \
+  X(KLASS_TRACE_ID_BEYOND_TAG_RANGE, "klass_trace_id_beyond_tag_range")       \
+  /* Gauges, set by each dump that resolves lazy raw frames: the classes it \
+   * pinned (array classes included), and the nanoseconds it took to collect \
+   * their Klass*s. */                                                        \
+  X(LAZY_DUMP_CLASSES, "lazy_dump_classes")                                   \
+  X(LAZY_DUMP_PIN_NS, "lazy_dump_pin_ns")                                     \
+  /* Raw Method* frame occurrences answered from Lookup's per-dump cache    \
+   * instead of resolving them again. */                                     \
+  X(RAW_FRAME_RESOLVE_CACHE_HITS, "raw_frame_resolve_cache_hits")             \
+  /* Redefinitions whose mark could not be recorded (no memory for it);     \
+   * every lazy frame is refused for the rest of the process once this is   \
+   * nonzero. */                                                             \
+  X(KLASS_REGISTRY_ADD_FAILED, "klass_registry_add_failed")                   \
+  /* Gauges: KlassRegistry's table slots (24 B each; NMT does not see the    \
+   * table) and occupied slots, live or dead. It holds only redefined        \
+   * classes. PURGED: dead entries dropped when the table was rebuilt. */    \
+  X(KLASS_REGISTRY_CAPACITY, "klass_registry_capacity")                       \
+  X(KLASS_REGISTRY_ENTRIES, "klass_registry_entries")                         \
+  X(KLASS_REGISTRY_PURGED, "klass_registry_purged")                           \
+  X(WALKVM_RAW_FRAME_UNTAGGABLE, "walkvm_raw_frame_untaggable")               \
+  /* Gauge, set at each fjmethodid=lazy start: the Klass::_trace_id offset  \
+   * raw frames are tagged with, or -1 if it was not found (lazy mode then    \
+   * falls back to fjmethodid=false). 0 if lazy mode was never requested. */  \
+  X(KLASS_TRACE_ID_OFFSET, "klass_trace_id_offset")                           \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \
@@ -166,13 +284,76 @@
    * samples_dropped_thread_local) to isolate non-pool priming drops, never  \
    * summed. */                                                              \
   X(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, "thread_local_pool_exhausted")        \
+  /* Lookup::resolveMethod() calls that dropped method resolution,            \
+   * because no ProfiledThread could be allocated for the dump thread (OOM):  \
+   * there is nowhere to publish a landing pad. Expected to stay at 0. */     \
+  X(METHOD_RESOLUTION_DROPPED_TLS, "method_resolution_dropped_tls")           \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
    * signal for spotting a recurrence. */                                     \
   X(METADATA_TREE_NULL_CHILD, "metadata_tree_null_child")                     \
   X(METADATA_TREE_DEPTH_EXCEEDED, "metadata_tree_depth_exceeded")             \
+  /* A resolved datadog.ReferenceChain could not be cached in                 \
+   * ReferenceChainTracker::_resolved_chains (referenceChains.h): a brand-new \
+   * leak-candidate klass arrived with the cache already at                   \
+   * MAX_RESOLVED_CHAINS, so its chain is dropped rather than evicting some   \
+   * other still-live sample's chain. See that constant's own comment. */     \
+  X(REFERENCE_CHAIN_EVENTS_DROPPED, "reference_chain_events_dropped")         \
+  /* ReferenceChainTracker::releaseSearchTags() (referenceChains.cpp) failed  \
+   * to call GetObjectsWithTags() for at least one batch - the search's tag   \
+   * release is retried on a later call rather than proceeding, but this     \
+   * counts how often that retry path is taken. */                           \
+  X(REFERENCE_CHAIN_TAG_RELEASE_FAILED, "reference_chain_tag_release_failed") \
+  /* The profiler-side reference-chain writer could not acquire a            \
+   * sample-record lock within its bounded retry budget and dropped the      \
+   * already-dequeued datadog.ReferenceChain event for this dump - not       \
+   * permanently lost, since ReferenceChainTracker::_resolved_chains (see    \
+   * REFERENCE_CHAIN_EVENTS_DROPPED above) keeps the resolved chain cached   \
+   * and re-emits it on a later dump while the leak candidate is still      \
+   * live. */                                                                \
+  X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
+  /* LivenessTracker urgency boost: admissions below the table cap vs.    \
+   * admissions that hit the cap and fell back to the subsample ratio. */  \
+  X(LIVENESS_URGENT_BOOST_ADMITS, "liveness_urgent_boost_admits")             \
+  X(LIVENESS_URGENT_BOOST_BACKED_OFF, "liveness_urgent_boost_backed_off")     \
+  /* FrontierTable's own calloc/realloc-backed storage (referenceChains.cpp) -   \
+   * outside NMT's visibility since it bypasses os::malloc, so this is the only \
+   * way to attribute its native RSS contribution. */                          \
+  X(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES, "reference_chain_frontier_table_bytes") \
+  X(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, "reference_chain_frontier_table_capacity") \
+  X(REFERENCE_CHAIN_CANDIDATE_COUNT, "reference_chain_candidate_count") \
+  X(REFERENCE_CHAIN_CANDIDATES_FOUND, "reference_chain_candidates_found") \
+  /* hasLeakSignal() gate evaluations refused while the OOM urgency latch is \
+   * set and selectLeakCandidates() found zero candidates (a heap-wide leak no \
+   * single klass explains). Counts evaluations (~1/s while latched), not episodes. */ \
+  X(REFERENCE_CHAIN_URGENT_NO_CANDIDATE, "reference_chain_urgent_no_candidate") \
+  /* Heap-floor seqlock: samples DROPPED when a writer claims a slot whose \
+   * seq is still the sentinel - only possible if the ring lapped an \
+   * in-flight writer (RING_SIZE concurrent writers; never under the \
+   * single-writer onGC() contract). Defensive observability only. */ \
+  X(HEAP_FLOOR_SAMPLE_DROPPED_OVERLAP, "heap_floor_sample_dropped_overlap") \
+  /* Heap-floor seqlock: reads that exhausted HEAP_FLOOR_READ_ATTEMPTS without a consistent \
+   * (used, seq) pair (also the emergency-band seed's seq_out==nullptr read; per exhausted read, \
+   * never per attempt). Rising: overlapping writers pin the newest slot. */ \
+  X(HEAP_FLOOR_READ_UNSTABLE, "heap_floor_read_unstable") \
+  /* admitStaticFieldRoots() per-class non-static quota: non-STATIC_FIELD \
+   * edges (CONSTANT_POOL, INTERFACE, SUPERCLASS, CLASS_LOADER, ...) that \
+   * were dropped because the class already hit \
+   * STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS. Total drops across all \
+   * classes/laps — compare against kind_counts (k9 total) to gauge how \
+   * much CP pressure the quota is absorbing. */ \
+  X(REFERENCE_CHAIN_STATIC_SWEEP_NON_STATIC_DROPPED, "reference_chain_static_sweep_non_static_dropped") \
+  /* Incremented once per class that hit the non-static cap at least once \
+   * in a lap (on the first drop for that class). Distinguishes "a few fat \
+   * outlier classes dropping many edges" from "systematic drops across \
+   * almost all classes" — if this tracks the total class count per lap, \
+   * the cap is too low; if it stays near zero, the cap is fine. */ \
+  X(REFERENCE_CHAIN_STATIC_SWEEP_CLASSES_CAPPED, "reference_chain_static_sweep_classes_capped") \
+  X(JFR_OUTPUT_FAILURES, "jfr_output_failures") \
+  X(JFR_DELIVERIES_CERTIFIED, "jfr_deliveries_certified") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
+  DD_COUNTER_TABLE_SAMPLER_PERF(X)                                             \
   DD_COUNTER_TABLE_DEBUG(X)
 
 // Fault-injection-only counter: number of faults actually injected. Only
@@ -198,6 +379,36 @@
 #define DD_COUNTER_TABLE_FI_DEBUG(X)
 #endif
 
+// Sampler-performance-only counters: per-sampler elapsed ticks and sample
+// count, accumulated by the SamplerPerfProbe RAII object (samplerPerf.h). Only
+// compiled in when __SAMPLER_PERF__ is defined, so they occupy no enum slot and
+// add no storage in normal builds.
+//
+// The two slots per sampler are emitted adjacently, in the same order as
+// DD_SAMPLER_LIST in samplerPerf.h, which addresses them by offset as
+// SAMPLER_TICKS_CPU + 2*id for the ticks and +1 for the count -- the same
+// base-plus-offset scheme the DICTIONARY_* group uses. samplerPerf.h
+// static_asserts that layout, so reordering these entries, or inserting an
+// unrelated counter between them, is a compile error rather than silent
+// misattribution.
+#ifdef __SAMPLER_PERF__
+#define DD_COUNTER_TABLE_SAMPLER_PERF(X)                                       \
+  X(SAMPLER_TICKS_CPU, "sampler_ticks.cpu")                                    \
+  X(SAMPLER_COUNT_CPU, "sampler_count.cpu")                                    \
+  X(SAMPLER_TICKS_WALL, "sampler_ticks.wallclock")                             \
+  X(SAMPLER_COUNT_WALL, "sampler_count.wallclock")                             \
+  X(SAMPLER_TICKS_ALLOC, "sampler_ticks.alloc")                                \
+  X(SAMPLER_COUNT_ALLOC, "sampler_count.alloc")                                \
+  X(SAMPLER_TICKS_LIVENESS, "sampler_ticks.liveness")                          \
+  X(SAMPLER_COUNT_LIVENESS, "sampler_count.liveness")                          \
+  X(SAMPLER_TICKS_NATIVEMEM, "sampler_ticks.nativemem")                        \
+  X(SAMPLER_COUNT_NATIVEMEM, "sampler_count.nativemem")                        \
+  X(SAMPLER_TICKS_NATIVESOCKET, "sampler_ticks.nativesocket")                  \
+  X(SAMPLER_COUNT_NATIVESOCKET, "sampler_count.nativesocket")
+#else
+#define DD_COUNTER_TABLE_SAMPLER_PERF(X)
+#endif
+
 // Debug-only counters: SafeAccess reads/copies issued while the thread is
 // already inside a walkVM siglongjmp-protected region (redundant safefetch
 // overhead). Not compiled into release builds at all, so they occupy no enum
@@ -205,7 +416,9 @@
 #ifdef DEBUG
 #define DD_COUNTER_TABLE_DEBUG(X)                                             \
   X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
-  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")
+  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")                     \
+  X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")                   \
+  X(WALL_STOP_WHILE_NOT_ACTIVATED, "wall_stop_while_not_activated")
 #else
 #define DD_COUNTER_TABLE_DEBUG(X)
 #endif

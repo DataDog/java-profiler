@@ -241,7 +241,7 @@ info "Target branch: $RELEASE_BRANCH"
 step "Looking for PRs merged to main since $RELEASE_BRANCH diverged"
 
 CANDIDATE_SHAS=()
-while IFS= read -r sign sha _; do
+while IFS=' ' read -r sign sha _; do
     [ "$sign" == "+" ] && CANDIDATE_SHAS+=("$sha")
 done < <(git cherry "origin/$RELEASE_BRANCH" "origin/main")
 

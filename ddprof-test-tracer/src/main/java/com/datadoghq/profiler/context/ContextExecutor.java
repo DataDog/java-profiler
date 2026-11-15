@@ -1,7 +1,8 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.JavaProfiler;
-
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -9,31 +10,37 @@ import java.util.concurrent.TimeUnit;
 
 public class ContextExecutor extends ThreadPoolExecutor {
 
-    private final JavaProfiler profiler;
-    public ContextExecutor(int corePoolSize, JavaProfiler profiler) {
-        super(corePoolSize, corePoolSize, 30, TimeUnit.SECONDS,
-                new ArrayBlockingQueue<>(128), new RegisteringThreadFactory(profiler));
-        this.profiler = profiler;
-    }
+  private final JavaProfiler profiler;
 
-    @Override
-    protected <T> RunnableFuture<T> newTaskFor(Runnable runnable, T value) {
-        return ContextTask.wrap(runnable, value);
-    }
+  public ContextExecutor(int corePoolSize, JavaProfiler profiler) {
+    super(
+        corePoolSize,
+        corePoolSize,
+        30,
+        TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(128),
+        new RegisteringThreadFactory(profiler));
+    this.profiler = profiler;
+  }
 
-    @Override
-    protected void beforeExecute(Thread t, Runnable r) {
-        super.beforeExecute(t, r);
-        // Clear any context left over from this worker's previous task before wall-clock
-        // profiling is re-enabled below, so a signal in the window before ContextTask.run()
-        // activates the new context can't be attributed to the previous task's span.
-        profiler.clearTraceContext();
-        profiler.addThread();
-    }
+  @Override
+  protected <T> RunnableFuture<T> newTaskFor(Runnable runnable, T value) {
+    return ContextTask.wrap(runnable, value);
+  }
 
-    @Override
-    protected void afterExecute(Runnable r, Throwable t) {
-        profiler.removeThread();
-        super.afterExecute(r, t);
-    }
+  @Override
+  protected void beforeExecute(Thread t, Runnable r) {
+    super.beforeExecute(t, r);
+    // Clear any context left over from this worker's previous task before wall-clock
+    // profiling is re-enabled below, so a signal in the window before ContextTask.run()
+    // activates the new context can't be attributed to the previous task's span.
+    profiler.clearTraceContext();
+    profiler.addThread();
+  }
+
+  @Override
+  protected void afterExecute(Runnable r, Throwable t) {
+    profiler.removeThread();
+    super.afterExecute(r, t);
+  }
 }

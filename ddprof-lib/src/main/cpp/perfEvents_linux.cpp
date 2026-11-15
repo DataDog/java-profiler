@@ -31,10 +31,12 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "signalInflight.h"
 #include "spinLock.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
+#include "stackWalker.inline.h"
 #include "symbols.h"
 #include "threadLocalData.inline.h"
 #include "threadState.inline.h"
@@ -578,8 +580,13 @@ Ring PerfEvents::_ring;
 CStack PerfEvents::_cstack;
 bool PerfEvents::_use_mmap_page;
 
-static int __intsort(const void *a, const void *b) {
-  return *(const int *)a > *(const int *)b;
+int PerfEvents::compareTids(const void *a, const void *b) {
+  // qsort() needs a negative result when a orders first. Returning only
+  // `a > b` (0 or 1) happens to work with glibc's merge sort, which tests
+  // `cmp <= 0`, but musl's smoothsort then leaves the list unsorted.
+  int x = *(const int *)a;
+  int y = *(const int *)b;
+  return (x > y) - (x < y);
 }
 
 int PerfEvents::registerThread(int tid) {
@@ -764,6 +771,9 @@ class PerfFdRearmGuard {
 public:
   PerfFdRearmGuard(int fd, int tid) : _fd(fd), _tid(tid) {}
   ~PerfFdRearmGuard() {
+    // Errno changes made here are caught by the handler-level
+    // ErrnoPreserver, which is declared before this guard and therefore
+    // destructs after it.
     PerfEvents::resetBuffer(_tid);
     ioctl(_fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(_fd, PERF_EVENT_IOC_REFRESH, 1);
@@ -778,9 +788,21 @@ private:
 
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (siginfo->si_code <= 0) {
-    // Looks like an external signal; don't treat as a profiling event
+    // Looks like an external signal; don't treat as a profiling event.
+    // Nothing profiler-owned has run yet, so errno cannot have been touched
+    // and this path needs no ErrnoPreserver.
     return;
   }
+  // Must precede PerfFdRearmGuard so it destructs after it and restores the
+  // errno that the guard's ioctl()/resetBuffer() calls clobber.
+  ErrnoPreserver errno_preserver;
+  // Declared between the two guards on purpose. Locals destruct in reverse
+  // order, so this sits after ErrnoPreserver (which must still destruct last)
+  // but before PerfFdRearmGuard, meaning the guard's resetBuffer()/ioctl()
+  // rearm cost is inside the measured window -- it is part of what a perf
+  // sample costs. The si_code check above already returned for external
+  // signals, so those are never timed as our work.
+  SAMPLER_PERF_PROBE(SP_CPU);
   PerfFdRearmGuard rearm(siginfo->si_fd, OS::threadId());
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
@@ -799,17 +821,19 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
+  // The init-window guard (tickInitWindowIfNeeded()) that the CTimer/WallClock
+  // handlers run here is deliberately not applied: this engine never had it,
+  // and adding it would be a behaviour change beyond a boilerplate extraction.
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
   int tid = current->tid();
   if (__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    Shims::instance().setSighandlerTid(tid);
+    SighandlerTidScope sighandler_tid(tid);
 
     u64 counter = readCounter(siginfo, ucontext);
     ExecutionEvent event;
     event._execution_mode = getThreadExecutionMode();
     Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, 0,
                                        &event);
-    Shims::instance().setSighandlerTid(-1);
   }
 }
 
@@ -938,16 +962,29 @@ Error PerfEvents::start(Arguments &args) {
     // sites); capture the old size first since _max_events is overwritten below.
     long long old_bytes =
         (_events != NULL) ? (long long)((size_t)_max_events * sizeof(PerfEvent)) : 0;
+    // The table is the only record of which fd and ring belong to which tid
+    // (stop() keeps them). Release them while it still exists; otherwise
+    // they leak, and stay armed, once it is freed.
+    releaseThreads();
     free(_events);
     if (old_bytes > 0) {
       NativeMem::record(NM_PERF, -old_bytes);
     }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
-    _max_events = max_events;
-    if (_events != NULL) {
-      NativeMem::record(NM_PERF,
-                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    if (_events == NULL) {
+      // Back to the not-started value, so registerThread() and
+      // unregisterThread() reject every tid. Return before the signal
+      // handler, the hook and the registration gate are set up: start()
+      // fails, so the CPU engine is neither registered nor enabled for this
+      // recording. The next start() retries the allocation.
+      _max_events = -1;
+      Log::error("perfEvents: could not allocate the table for %d threads; "
+                 "PerfEvents is disabled for this recording", max_events);
+      return Error("Failed to allocate perf event table");
     }
+    _max_events = max_events;
+    NativeMem::record(NM_PERF,
+                      (long long)((size_t)max_events * sizeof(PerfEvent)));
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);
@@ -955,6 +992,10 @@ Error PerfEvents::start(Arguments &args) {
   // Enable pthread hook before traversing currently running threads
   __atomic_store_n(_pthread_entry, (void *)pthread_setspecific_hook,
                    __ATOMIC_RELEASE);
+
+  // _events is sized: open the hook gate before listing threads (see
+  // Profiler::openThreadRegistration()).
+  Profiler::instance()->openThreadRegistration();
 
   // Create perf_events for all existing threads
   int threads_sz = 0, threads_cap;
@@ -970,7 +1011,7 @@ Error PerfEvents::start(Arguments &args) {
   }
   delete thread_list;
 
-  qsort(threads, threads_sz, sizeof(int), __intsort);
+  qsort(threads, threads_sz, sizeof(int), compareTids);
 
   int err = 0;
   int threads_idx = 0;
@@ -1028,11 +1069,26 @@ void PerfEvents::stop() {
   // check whether the thread has been registered already on start.
 }
 
+// stop() keeps every fd and ring, and only unregisterThread() releases them
+// when a thread exits. Releases them all when nothing else could:
+// Profiler::replaceCpuEngine() calls this under a ThreadTablesFreeze once
+// another CPU engine replaces this one, and start() calls it before it frees
+// the table on a pid_max change. The start() call runs without a freeze, so a
+// concurrent unregisterThread() of the same tid is still possible there.
+void PerfEvents::releaseThreads() {
+  for (int tid = 0; tid < _max_events; tid++) {
+    unregisterThread(tid);
+  }
+}
+
 int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
                            StackContext *java_ctx) {
   if (!(_ring & RING_KERNEL)) {
     // we are not capturing kernel stacktraces
     return 0;
+  }
+  if (_events == NULL || tid < 0 || tid >= _max_events) {
+    return 0; // no table: the allocation failed (see start())
   }
 
   PerfEvent *event = &_events[tid];
@@ -1054,6 +1110,13 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
       struct perf_event_header *hdr = ring.seek(tail);
       if (hdr->type == PERF_RECORD_SAMPLE) {
         u64 nr = ring.next();
+        // perf_callchain_user hands back the interrupted pc first and return
+        // addresses after it, so everything past the leaf is recorded as the
+        // address the call was made from -- the convention walkFP, walkDwarf
+        // and walkVM already put into callchain[]. java_ctx->pc keeps the exact
+        // address in every case: it is a resume point handed to the JVM, not
+        // something anyone symbolizes.
+        bool is_leaf = true;
         while (nr-- > 0) {
           u64 ip = ring.next();
           if (ip < PERF_CONTEXT_MAX) {
@@ -1063,10 +1126,15 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
               java_ctx->pc = iptr;
               goto stack_complete;
             }
-            callchain[depth++] = iptr;
+            callchain[depth++] = attributionPC(iptr, !is_leaf);
+            is_leaf = false;
           }
         }
 
+        // Deliberately unadjusted below: LBR records branch endpoints, not
+        // return addresses. `from` is the branch instruction itself and `to`
+        // is its target, so both already name the instruction to symbolize;
+        // subtracting one would step off the front of it.
         if (_cstack == CSTACK_LBR) {
           u64 bnr = ring.next();
 
@@ -1112,6 +1180,12 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
 }
 
 void PerfEvents::resetBuffer(int tid) {
+  // Fds left armed by an earlier recording keep delivering SIGPROF, and the
+  // handler calls this on every exit, also after a failed table allocation
+  // left _events NULL (_max_events -1).
+  if (_events == NULL || tid < 0 || tid >= _max_events) {
+    return;
+  }
   PerfEvent *event = &_events[tid];
   if (!event->tryLock()) {
     return; // the event is being destroyed

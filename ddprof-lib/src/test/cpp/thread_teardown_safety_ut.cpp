@@ -18,8 +18,10 @@
 
 #ifdef __linux__
 
+#include "context_api.h"
 #include "guards.h"
 #include "nativeMem.h"
+#include "otel_context.h"
 #include "threadLocalData.inline.h"
 
 #include <atomic>
@@ -350,9 +352,14 @@ static void *t07_body(void *) {
     pthread_testcancel();
     usleep(100);
   }
+  // The only runtime exit from the loop is cancellation: pthread_testcancel() (or the
+  // cancelled usleep()) calls pthread_exit(PTHREAD_CANCELED), which runs the registered
+  // cleanup handler and terminates the thread, so nothing after the loop is ever reached.
+  // pthread_cleanup_pop is still lexically required to pair with pthread_cleanup_push
+  // (both expand to an open/close of a do/while(0) block on musl); execute=0 because it
+  // is not a normal cleanup site — the handler already ran during cancellation.
   pthread_cleanup_pop(0);
-  ProfiledThread::release();
-  return nullptr;
+  __builtin_unreachable();
 }
 
 #endif  // __GLIBC__
@@ -512,6 +519,64 @@ TEST(ThreadTeardownSafetyTest, NativeMemThreadLocalReleasedOnThreadExit) {
   pthread_join(t, nullptr);
   EXPECT_EQ(base, NativeMem::live(NM_THREAD_LOCAL))
       << "pthread-key destructor (freeValue) must balance the accounting";
+}
+
+// ── T-11: otel_thread_ctx_v1 is nulled before the ProfiledThread is released ─
+// Root cause: otel_thread_ctx_v1 (a genuine thread_local pointer that external
+// OTel profilers discover via the ELF dynsym table and dereference directly --
+// see otel_context.h) is set once, by ContextApi::initializeContextTLS(), to
+// point into the ProfiledThread's embedded OtelThreadContextRecord.
+// ProfiledThread::release() -> freeValue() then either deletes that
+// ProfiledThread or hands it back to ThreadLocalDataPool for reuse by a
+// different thread, but never nulled otel_thread_ctx_v1. JVMTI's ThreadEnd
+// fires on the dying thread before it actually exits, so an external reader
+// racing teardown could dereference freed memory or another thread's live
+// context. Fix: freeValue() nulls otel_thread_ctx_v1 before the delete/pool-
+// release, so a racing reader observes "no context" instead.
+
+static void *t11_body(void *) {
+  ProfiledThread::initCurrentThread();
+  ProfiledThread *pt = ProfiledThread::current();
+  if (pt == nullptr) {
+    ADD_FAILURE() << "current() returned nullptr";
+    return nullptr;
+  }
+
+  ContextApi::initializeContextTLS(pt);
+  EXPECT_EQ(pt->getOtelContextRecord(), otel_thread_ctx_v1)
+      << "initializeContextTLS must publish the record pointer";
+
+  ProfiledThread::release();
+
+  EXPECT_EQ(nullptr, otel_thread_ctx_v1)
+      << "otel_thread_ctx_v1 must be nulled before the ProfiledThread backing "
+         "it is deleted or returned to the pool";
+  return nullptr;
+}
+
+TEST(ThreadTeardownSafetyTest, OtelThreadCtxNulledOnRelease) {
+  pthread_t t;
+  ASSERT_EQ(0, pthread_create(&t, nullptr, t11_body, nullptr));
+  pthread_join(t, nullptr);
+}
+
+// ── T-12: A thread that never used the OTel context API tears down cleanly ──
+// otel_thread_ctx_v1 defaults to null (never initialized); release() must
+// leave it null rather than, say, unconditionally dereferencing a record that
+// was never published.
+
+static void *t12_body(void *) {
+  ProfiledThread::initCurrentThread();
+  EXPECT_EQ(nullptr, otel_thread_ctx_v1);
+  ProfiledThread::release();
+  EXPECT_EQ(nullptr, otel_thread_ctx_v1);
+  return nullptr;
+}
+
+TEST(ThreadTeardownSafetyTest, OtelThreadCtxStaysNullWhenContextNeverUsed) {
+  pthread_t t;
+  ASSERT_EQ(0, pthread_create(&t, nullptr, t12_body, nullptr));
+  pthread_join(t, nullptr);
 }
 
 #endif // __linux__

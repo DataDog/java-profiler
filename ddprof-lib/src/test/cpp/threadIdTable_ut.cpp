@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -268,4 +268,21 @@ TEST_F(ThreadIdTableTest, PerformanceRegression) {
     // Should be very fast for signal-safe operations
     EXPECT_LT(duration.count() * 1000.0 / num_operations, 50.0);  // 50ns per op max
 }
-#endif // NDEBUG 
+#endif // NDEBUG
+
+TEST_F(ThreadIdTableTest, InsertionReportsWhetherTheThreadCanBeResolved) {
+    EXPECT_FALSE(table->insert(0));
+    for (int tid = 1; tid <= 256; ++tid) {
+        ASSERT_TRUE(table->insert(tid));
+    }
+    EXPECT_FALSE(table->insert(257));
+    for (int tid = 1; tid <= 256; ++tid) {
+        EXPECT_TRUE(table->insert(tid)) << "duplicate in full table: " << tid;
+    }
+    std::unordered_set<int> tids;
+    table->collect(tids);
+    EXPECT_EQ(256u, tids.size());
+    EXPECT_EQ(0u, tids.count(257));
+    table->clear();
+    EXPECT_TRUE(table->insert(257));
+}

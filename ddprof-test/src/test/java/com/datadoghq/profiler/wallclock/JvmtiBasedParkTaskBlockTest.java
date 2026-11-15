@@ -6,16 +6,16 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.Platform;
-import java.util.Map;
 import org.junit.jupiter.api.Assumptions;
 
 /** Verifies synchronous park production when delegated wall-clock stacks are enabled. */
 public class JvmtiBasedParkTaskBlockTest extends ParkTaskBlockTest {
   @Override
   protected void before() {
-    Map<String, Long> counters = profiler.getDebugCounters();
-    Assumptions.assumeTrue(counters.getOrDefault("jvmti_stacks_init_ok", 0L) > 0,
-        "HotSpot RequestStackTrace JVMTI extension is not available");
+    // Require the selected delegated engine, not just extension availability.
+    Assumptions.assumeTrue(
+        profiler.getStatus().contains("WallClock Engine : WallClock (JVMTI)"),
+        "HotSpot RequestStackTrace JVMTI wall engine was not selected");
   }
 
   @Override

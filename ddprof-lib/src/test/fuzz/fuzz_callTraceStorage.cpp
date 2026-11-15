@@ -77,7 +77,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         } else if (op < 0xC0) {
             // processTraces() — verify I1 and I2
             std::unordered_set<u64> seen;
-            g_storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+            g_storage->processTraces([&](const CallTraceSet& traces) {
                 for (CallTrace* t : traces) {
                     if (t) seen.insert(t->trace_id);
                 }

@@ -7,7 +7,9 @@
 
 #include "asyncSampleMutex.h"
 #include "common.h"
+#include "counters.h"
 #include "frames.h"
+#include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "threadLocalData.inline.h"
@@ -38,25 +40,25 @@ Mutex JVMSupport::_initialization_lock;
 // - JVMTI::VMInit() callback (vmEntry.cpp)
 // - JavaProfiler.getInstance() via JNI down call - JVM must have been initialized
 bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
-    if (jni == nullptr || thread == nullptr) return false;
+    if (jni == nullptr || thread == nullptr || jni->functions == nullptr) return false;
     jint jni_version = jni->GetVersion();
     if (jni_version <= 0) return false;
     if (jni_version < JNI_VERSION_19_VALUE) return true;
-    if (!VM::isHotspot()) return true;
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);
-    if (functions == nullptr) return false;
     IsVirtualThreadFunction is_virtual_thread =
         reinterpret_cast<IsVirtualThreadFunction>(
             functions[IS_VIRTUAL_THREAD_INDEX]);
     if (is_virtual_thread == nullptr) {
+        Counters::increment(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED);
         static std::atomic<bool> warning_emitted{false};
         bool expected = false;
         if (warning_emitted.compare_exchange_strong(expected, true,
                                                      std::memory_order_relaxed)) {
-            LOG_WARN("JNI version 19 or later does not expose IsVirtualThread; "
-                     "JVM producer callbacks will be ignored");
+            LOG_WARN("Failed to resolve IsVirtualThread from the JNI function table "
+                     "even though JNI version is 19 or later; JVM producer callbacks "
+                     "will be ignored");
         }
         return false;
     }
@@ -106,20 +108,31 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
 
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
-    // Already setup by previous execution
-    if (current_state == Fully_loaded) {
-        return;
-    }
 
-    bool load_all = true;
-    if (VM::isHotspot()) {
-        if (!HotspotSupport::shouldPreloadJmethodIDs(args)) {
-            HotspotSupport::initClassloaderInfo(jni);
-            load_all = false;
+    JMethodIDLoadStats state = Fully_loaded;
+    // The stack walker mode as Profiler::start() resolved it from args.
+    CStack cstack = Profiler::instance()->cstackMode();
+    if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs(args, cstack)) {
+        if (!args._lazy_jmethodID) {
+            state = Partial_loaded;
+        } else if (!HotspotSupport::canResolveLazily()) {
+            Log::warn("fjmethodid=lazy: this JVM does not expose the class and method structures it needs; "
+                      "preloading jmethodIDs as with fjmethodid=false");
+            state = Partial_loaded;
+        } else if (HotspotSupport::initLazyResolution(jni)) {
+            state = Lazy_loaded;
+        } else {
+            // initLazyResolution() has logged why.
+            state = Partial_loaded;
         }
+        if (state == Partial_loaded) {
+            HotspotSupport::initClassloaderInfo(jni);
+        }
+    } else if (args._lazy_jmethodID) {
+        Log::warn(VM::isHotspot() ? "fjmethodid=lazy needs cstack=vm; preloading all jmethodIDs"
+                                  : "fjmethodid=lazy is only supported on HotSpot; preloading all jmethodIDs");
     }
 
-    JMethodIDLoadStats state = load_all ? Fully_loaded : Partial_loaded;
     if (state == current_state) {
         return;
     }
@@ -140,6 +153,13 @@ int JVMSupport::walkJavaStack(StackWalkRequest& request) {
         return asyncGetCallTrace(request.frames, request.max_depth, request.ucontext);
     }
     assert(false && "Unsupported JVM");
+    return 0;
+}
+
+int JVMSupport::walkCurrentJavaStack(StackWalkRequest& request) {
+    if (VM::isHotspot()) {
+        return HotspotSupport::walkCurrentJavaStack(request);
+    }
     return 0;
 }
 
@@ -175,6 +195,9 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
 
 void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
     assert(getLoadState() != No_loaded && "Should not call before profiler execution");
+    if (getLoadState() == Lazy_loaded) {
+        return;  // nothing to preload; each dump pins the classes it needs
+    }
 
     jint class_count = 0;
     jclass *classes = nullptr;
@@ -199,10 +222,50 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         return false;
     }
 
+    if (state == Lazy_loaded) {
+        return HotspotSupport::registerClass(jvmti, jni, klass);
+    }
     if (VM::isHotspot()) {
         return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
+    }
+}
+
+bool JVMSupport::enterRedefinitionCall() {
+    return VM::isHotspot() && HotspotSupport::enterRedefinitionCall();
+}
+
+void JVMSupport::exitRedefinitionCall(bool token) {
+    if (VM::isHotspot()) {
+        HotspotSupport::exitRedefinitionCall(token);
+    }
+}
+
+void JVMSupport::beforeClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    if (VM::isHotspot()) {
+        HotspotSupport::beforeClassRedefinition(jvmti, jni, klass);
+    }
+}
+
+void JVMSupport::afterClassRedefinition(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool succeeded) {
+    if (VM::isHotspot()) {
+        HotspotSupport::afterClassRedefinition(jvmti, jni, klass, succeeded);
+    }
+    if (succeeded && getLoadState() != Lazy_loaded) {
+        loadMethodIDsIfNeeded(jvmti, jni, klass);
+    }
+}
+
+void JVMSupport::beginDump(JNIEnv *jni, const jclass *classes, int count) {
+    if (VM::isHotspot()) {
+        HotspotSupport::beginDump(jni, classes, count);
+    }
+}
+
+void JVMSupport::endDump() {
+    if (VM::isHotspot()) {
+        HotspotSupport::endDump();
     }
 }
 

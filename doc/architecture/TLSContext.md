@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Thread-Local Context Architecture
 
 ## Overview
@@ -133,6 +135,112 @@ old record or a complete new record, never a torn intermediate state.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+## Context-Window Membership
+
+Tracing context and context-window membership are separate. Span and tag JNI
+writers change the OTEL record and sidecar only. `addThread()` enters the
+calling native owner's logical window; `removeThread()` exits it. Clearing a
+span does not exit the window. External OTEP profilers read tracing context;
+they do not write this private membership state.
+
+`ProfiledThread::_logical_context_window_state` is a lock-free atomic 64-bit
+word outside the contiguous OTEL record/sidecar region. Its low bit is
+membership; the remaining bits version real transitions. Repeated entry or
+exit does not advance the version. Constructor and pool-reuse reset set it to
+outside/version0. Recording start, stop and dump do not reset it.
+
+| Lifetime | State |
+|----------|-------|
+| Native owner | Private logical membership/version in `ProfiledThread` |
+| Recording | Validated `ThreadFilter::Slot` projection and recording epoch |
+| Sampled run | Tracker token, once-sampled state and cached unowned payload |
+
+Normal JNI add/remove hooks update owner truth even while the registry is
+inactive, without allocating a registry slot, index or tracker backing.
+`ThreadFilter::ensureOwnerSlot()` handles active cold binding. Registration
+rechecks registry mode and native identity under its existing mutex. Fresh
+recording binding invalidates eligibility, resets old sampled payload,
+publishes the owner's snapshot, and release-publishes the matching epoch last.
+The sampler and timer never initialize owner state or walk another thread's
+TLS. The registry is a projection, not a second production authority.
+
+A matching warm owner needs no mutex. Explicit entry clears incompatible owned
+state before exposing membership, including repeated-entry cleanup. A real
+exit also clears incompatible ownership; repeated outside removal preserves a
+legitimate outside run. Same-recording transitions retain cached unowned trace
+IDs, pending weight, state and cadence. An unexpected warm source mismatch
+invalidates the cache and fails open; a later hook performs cold revalidation.
+This must not restore filtered selection after `clearActive()`: only explicit
+entry selects a filtered thread, not a block/park hook or a source snapshot.
+
+Membership belongs to the physical native owner. These hooks do not transfer
+membership between virtual-thread carriers. The private word does not change
+the OTEL record, sidecar, Java/JNI API, registry-slot or tracker-state layout.
+Owner allocations and pool backing remain charged by their actual
+`sizeof(ProfiledThread)` under `NM_THREAD_LOCAL`. Existing cold JNI TLS
+initialization can allocate and active cold registration can lock; this is not
+a JavaCritical-safety guarantee.
+
+## Retained Unowned Wall Context
+
+ASGCT wall precheck captures one normalized `Context` after the known-span and
+unfiltered guards. Configured tag encodings, span ID and local root ID are values,
+not pointers to a live owner's TLS. A valid tag-only context may have both IDs
+zero; an all-zero captured value is distinct from an unavailable retained value.
+
+The block tracker has lazy chunks of 256 coherent cells. Each 128-byte cell contains
+seven atomic payload words, a publication word and four pending-weight segments. Cold normal-owner
+registration allocates backing for stackful ASGCT wall precheck in filtered and
+unfiltered recordings. Warm lookup and signal handlers do not repair missing backing.
+Each chunk contributes 32,768 bytes to `NM_WALLCLOCK`; up to 8 chunks cover 2,048 slots,
+excluding pointer metadata and allocator overhead. Backing survives recording
+resets and is released with the tracker.
+
+A stripe-held publisher performs one CAS to mark the sequence odd, writes the
+payload and real stack root, then release-publishes the next even sequence.
+Readers use bounded atomic probes; zero, odd or changing sequences are rejected.
+Sequence values never wrap or reset during owner reuse or recording transitions.
+The terminal even value remains readable but cannot publish another origin.
+Root invalidation prevents a retained cell from being treated as a new binding.
+Ordinary native-slot reuse preserves block generations so closed predecessor tokens
+cannot alias a new run. Only saturated generations restart after native-owner teardown.
+
+Suppression requires matching current/retained fields and a revalidated native
+identity and recording epoch. Missing backing, unstable publication or terminal
+sequence forces ordinary sampling and increments
+`wc_unowned_context_snapshot_unavailable`; normal first capture and an empty
+captured context are not failures. Known active spans bypass unowned accumulation
+without consuming the old origin.
+
+Pending units retain the start tick of their `WallClockSamplingEpoch` window.
+The timer publishes that same tick before dispatch and after closing each epoch.
+Population changes settle the old window first; unchanged-population send failures
+retain the [success-ratio boundary limitation](ProfilingEngines.md).
+Each origin has four bounded timestamp/weight segments. A full array records the
+current observation normally instead of losing provenance. A successful segment
+write alone commits its units; a failed write keeps them for retry.
+
+The serializer writes each segment at its saved epoch-window start. The consumer
+must scale samples by the epoch window containing the sample timestamp. A periodic
+lump combines pending and current units only within one window. Different windows
+stay separate even when context fields match. Ordinary unit samples keep actual
+serialization timestamps. No public JFR field or type changes.
+
+The recording stripe covers validation, ordinary collection, tail emission and
+commit. A context boundary emits the current ordinary tick with weight 1 and its
+prepared fields. Any positive old tail independently uses its retained stack,
+state, weight and fields. An ordinary success cannot overwrite an old tail whose
+write failed, and an ordinary failure cannot prevent a successful tail commit.
+A blocked boundary preserves cadence; a matching periodic sample consumes old
+pending weight plus the current tick exactly once. The explicit wall serializer
+writes supplied fields; it does not recapture live TLS for a retained tail.
+CPU, delegated and unrelated event serialization keep their existing paths.
+
+This private protocol does not change the public Java/JNI or OTEP layouts, the
+registry Slot or BlockState size, or the supported writer model: library JNI
+writers and external OTEP readers. It does not authorize concurrent external
+writers or virtual-thread membership transfer.
+
 ## Memory Layout
 
 ### OtelThreadContextRecord
@@ -222,9 +330,17 @@ Time 2:  attach()
 ──────────────────────────────────────────────────────────────────
 ```
 
-`clearContextValue0` is the one exception: it preserves whatever `valid`
-value it found (removing a single attribute must not resurrect a record
-that a preceding `clearTraceContext0()` intentionally left detached).
+Two writers do not end with `attach()`:
+
+- `clearTraceContext0` zeros the trace/span IDs, tag encodings and LRS, and
+  leaves the record detached (`valid = 0`), because a cleared context is not
+  active.
+- `clearContextValue0` puts back whatever `valid` value it found, because
+  removing a single attribute must not resurrect a record that a preceding
+  `clearTraceContext0()` left detached.
+
+`setContextValue0`, by contrast, always attaches, so an attribute stays
+visible to the sampler even when no span is active.
 
 ### Reader: DD Signal Handler
 
@@ -237,7 +353,7 @@ void Recording::writeCurrentContext(Buffer *buf) {
     buf->putVar64(rootSpanId);
 
     size_t numAttrs = Profiler::instance()->numContextAttributes();
-    ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
+    ProfiledThread* thrd = hasContext ? ProfiledThread::current() : nullptr;
     for (size_t i = 0; i < numAttrs; i++) {
         buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
     }
@@ -318,8 +434,8 @@ Dictionary-registration path). The read path uses a pre-initialized
 pointer:
 
 ```cpp
-// ProfiledThread::currentSignalSafe() — no allocation, no TLS lazy init
-ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+// ProfiledThread::current() — no allocation, no TLS lazy init
+ProfiledThread* thrd = ProfiledThread::current();
 if (thrd == nullptr || !thrd->isContextInitialized()) {
     return false;  // emit zeros
 }
@@ -355,7 +471,7 @@ rate is effectively 100%.
 reads context in bounded time with no allocation:
 
 1. `ContextApi::get(spanId, rootSpanId)`:
-   - `ProfiledThread::currentSignalSafe()` — cached pointer, no TLS
+   - `ProfiledThread::current()` — cached pointer, no TLS
      lazy init.
    - `__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE)` — if 0, emit
      zeros (record is being mutated).
@@ -363,8 +479,9 @@ reads context in bounded time with no allocation:
    - Read `_otel_local_root_span_id` from sidecar.
 2. For each registered attribute:
    - `thrd->getOtelTagEncoding(i)` — direct u32 read from sidecar.
-   - Only read when `hasContext` is true; emits 0 otherwise, so tag
-     encodings are never emitted alongside a zero span ID.
+   - Only read when `hasContext` is true; emits 0 otherwise. Validity does
+     not imply a nonzero span ID: a tag-only record can emit configured tags
+     while both span IDs are zero.
 
 No dictionary lookup, no string comparison, no allocation. The
 encodings written to JFR events are resolved later during JFR parsing.
@@ -398,6 +515,18 @@ encodings written to JFR events are resolved later during JFR parsing.
 
 - Validates `ContextValueCache` resolution, hash-collision eviction,
   oversized-value rejection, and `clear()` semantics directly.
+
+`ddprof-test/src/test/java/com/datadoghq/profiler/wallclock/UnfilteredWallPrecheckContextRestartTest.java`:
+
+- Covers surviving windows, clear-only versus real removal, stopped-gap entry,
+  and a fresh worker's first inactive add/remove without a post-start re-add.
+- Validates actual admission and same-worker ordinary JFR samples with expected
+  root/span, weight1 and distinct capture times.
+
+Native owner/pool and registry tests in `threadLocalDataPool_ut.cpp` and
+`threadFilter_ut.cpp` cover reset/reuse, inactive allocation, cold publication,
+capacity rejection, filtered selection, stale epochs, version wrap, old-token
+rejection and retained unowned payload.
 
 ### JMH Benchmarks
 

@@ -1,0 +1,64 @@
+# Benchmarks child pipeline.
+#
+# Triggered by run-benchmarks in the parent pipeline (generated copy of this
+# file is passed via `trigger: include: artifact`). Created only when
+# generate-benchmarks-child-pipeline decided benchmarks should run — either
+# because the branch is the top of its PR stack (check-stack-top.sh) or the
+# check failed open.
+#
+# Variables forwarded from the parent pipeline via run-benchmarks:
+#   - CANDIDATE_VERSION / BASELINE_VERSION: declared in run-benchmarks'
+#     `variables:` block (values from the get-versions dotenv artifact), so
+#     they arrive as trigger-job variables — the documented forwarding path.
+#   - BENCHMARK_ITERATIONS / BENCHMARK_MODES (manual pipeline variables, via
+#     trigger:forward: pipeline_variables: true)
+#   - PARENT_PIPELINE_ID / PARENT_COMMIT_SHA / PARENT_COMMIT_BRANCH: set
+#     explicitly by run-benchmarks because CI_PIPELINE_ID/CI_COMMIT_* inside
+#     this child pipeline refer to the child, not the parent.
+---
+stages:
+  - benchmarks
+
+# Fail fast when the version variables did not survive the parent -> child
+# hop: without this guard the BP pipeline would consume empty versions.
+benchmarks-inputs-guard:
+  stage: benchmarks
+  image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest
+  tags: ["arch:amd64"]
+  needs: []
+  rules:
+    # The child pipeline is independently retryable in the UI; a manual retry
+    # must not bypass the parent-level CANCELLED gate and start a BP run.
+    - if: '$CANCELLED == "true"'
+      when: never
+    - when: on_success
+  script:
+    - '[ -n "${CANDIDATE_VERSION:-}" ] || { echo "CANDIDATE_VERSION is empty — version forwarding from the parent pipeline failed"; exit 1; }'
+    - '[ -n "${BASELINE_VERSION:-}" ] || { echo "BASELINE_VERSION is empty — version forwarding from the parent pipeline failed"; exit 1; }'
+    - echo "CANDIDATE_VERSION=${CANDIDATE_VERSION} BASELINE_VERSION=${BASELINE_VERSION}"
+
+# Bridge job: triggers the BP pipeline and blocks until it completes.
+# Bridge jobs cannot appear in other jobs' needs: — downstream jobs use
+# stage ordering (post-benchmarks stage in the parent pipeline runs after
+# the benchmarks stage).
+benchmarks-trigger:
+  stage: benchmarks
+  # Bridge jobs cannot have before_script, so CANCELLED is checked via the
+  # guard job's rules above.
+  # interruptible: false prevents orphaning the BP downstream pipeline on push.
+  interruptible: false
+  needs: [benchmarks-inputs-guard]
+  variables:
+    CANDIDATE_VERSION: "${CANDIDATE_VERSION}"
+    BASELINE_VERSION: "${BASELINE_VERSION}"
+    BENCHMARK_ITERATIONS: "${BENCHMARK_ITERATIONS:-5}"
+    BENCHMARK_MODES: "${BENCHMARK_MODES:-cpu,wall,alloc,memleak}"
+    DDPROF_COMMIT_SHA: "${PARENT_COMMIT_SHA}"
+    DDPROF_COMMIT_BRANCH: "${PARENT_COMMIT_BRANCH}"
+    UPSTREAM_PROJECT_NAME: "java-profiler"
+    UPSTREAM_BRANCH: "${PARENT_COMMIT_BRANCH}"
+    UPSTREAM_PIPELINE_ID: "${PARENT_PIPELINE_ID}"
+  trigger:
+    project: DataDog/apm-reliability/benchmarking-platform
+    branch: java-profiler
+    strategy: depend

@@ -23,6 +23,9 @@ fuzzTargets {
   additionalIncludes.set(
     listOf(
       project(":malloc-shim").file("src/main/public").absolutePath,
+      // referenceChainsTestAccessors.h / referenceChainsMockHeap.h - the shared
+      // gtest-free harness the fuzz_referenceChainHeap target drives.
+      project(":ddprof-lib").file("src/test/cpp").absolutePath,
     ),
   )
 }

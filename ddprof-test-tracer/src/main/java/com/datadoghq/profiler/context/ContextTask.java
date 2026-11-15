@@ -1,24 +1,26 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.context;
 
 import java.util.concurrent.FutureTask;
 
 public class ContextTask<T> extends FutureTask<T> {
 
-    public static <T> FutureTask<T> wrap(Runnable task, T value) {
-        return new ContextTask<>(Tracing.capture(), task, value);
-    }
+  public static <T> FutureTask<T> wrap(Runnable task, T value) {
+    return new ContextTask<>(Tracing.capture(), task, value);
+  }
 
-    public ContextTask(Tracing.MigratingContext context, Runnable task, T value) {
-        super(task, value);
-        this.context = context;
-    }
+  public ContextTask(Tracing.MigratingContext context, Runnable task, T value) {
+    super(task, value);
+    this.context = context;
+  }
 
-    @Override
-    public void run() {
-        try (Tracing.Context activation = this.context.activate()) {
-            super.run();
-        }
+  @Override
+  public void run() {
+    try (Tracing.Context activation = this.context.activate()) {
+      super.run();
     }
+  }
 
-    private final Tracing.MigratingContext context;
+  private final Tracing.MigratingContext context;
 }

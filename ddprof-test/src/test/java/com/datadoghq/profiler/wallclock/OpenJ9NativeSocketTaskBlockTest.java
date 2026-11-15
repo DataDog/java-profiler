@@ -56,8 +56,7 @@ public class OpenJ9NativeSocketTaskBlockTest extends AbstractProfilerTest {
     stopProfiler();
     JfrEvents taskBlocks = verifyEvents("datadog.TaskBlock", false);
     assertTrue(
-        TaskBlockAssertions.containsObservedStateForEventThread(
-            taskBlocks, "IO_WAIT", workerName),
+        TaskBlockAssertions.containsObservedStateForEventThread(taskBlocks, "IO_WAIT", workerName),
         "Expected an OpenJ9 native IO_WAIT TaskBlock for " + workerName);
     TaskBlockAssertions.assertContainsStackTrace(taskBlocks);
     TaskBlockAssertions.assertContainsJavaType(taskBlocks, "OpenJ9NativeSocketTaskBlockTest");

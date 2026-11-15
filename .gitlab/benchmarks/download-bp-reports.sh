@@ -3,7 +3,10 @@
 #
 # Requires only curl and python3 (stdlib) — no aws CLI, pip, or boto3 needed.
 # BP jobs already store artifacts in GitLab; this fetches them directly from
-# the downstream pipeline triggered by benchmarks-trigger.
+# the BP downstream pipeline. The BP pipeline hangs off the benchmarks child
+# pipeline: parent `run-benchmarks` bridge -> benchmarks child pipeline ->
+# `benchmarks-trigger` bridge -> BP pipeline, so the bridge chain is traversed
+# before the BP pipeline id can be resolved.
 set -uo pipefail   # intentionally no -e: we handle errors explicitly
 
 DEST="${1:-reports}"
@@ -27,7 +30,33 @@ api_get() {
   return 0
 }
 
-# ── 1. find the benchmarks-trigger bridge ────────────────────────────────────
+# ── helper: find a bridge by name in a bridges.json ────────────────────
+# Usage: find_bridge <bridges.json> <name> <require_success:yes|no>
+# Prints "<project_id> <pipeline_id>" when the named bridge has a downstream
+# pipeline (status success required iff require_success=yes); prints nothing
+# otherwise.
+find_bridge() {
+  python3 - "$1" "$2" "$3" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    bridges = json.load(f)
+require_success = sys.argv[3] == "yes"
+for b in bridges:
+    if b.get("name") == sys.argv[2]:
+        dp = b.get("downstream_pipeline") or {}
+        if dp.get("id") and dp.get("project_id") and (not require_success or dp.get("status") == "success"):
+            print(dp["project_id"], dp["id"])
+        break
+PYEOF
+}
+
+# ── 1. find the BP pipeline by traversing the bridge chain ──────────────
+# The BP pipeline sits two bridge levels below this pipeline:
+#   run-benchmarks (parent) -> benchmarks child pipeline -> benchmarks-trigger
+#   -> BP pipeline
+# Traversal bridges are accepted in any state (a failed child pipeline must
+# still be inspected to report why), but the BP bridge itself must be
+# `success` — only then are all BP artifacts complete.
 BRIDGES_FILE="${TMPDIR_LOCAL}/bridges.json"
 echo "Querying bridges for pipeline ${CI_PIPELINE_ID}…"
 if ! api_get \
@@ -37,19 +66,24 @@ if ! api_get \
   exit 0
 fi
 
-read -r BP_PROJECT_ID DOWNSTREAM_PIPELINE_ID < <(python3 - "${BRIDGES_FILE}" <<'PYEOF'
-import json, sys
-with open(sys.argv[1]) as f:
-    bridges = json.load(f)
-for b in bridges:
-    if b.get("name") == "benchmarks-trigger":
-        dp = b.get("downstream_pipeline") or {}
-        if dp.get("id") and dp.get("project_id") and dp.get("status") == "success":
-            print(dp["project_id"], dp["id"])
-            sys.exit(0)
-print("", "")
-PYEOF
-)
+BP_PROJECT_ID=""
+DOWNSTREAM_PIPELINE_ID=""
+read -r CHILD_PROJECT_ID CHILD_PIPELINE_ID < <(find_bridge "${BRIDGES_FILE}" "run-benchmarks" no)
+if [ -n "${CHILD_PIPELINE_ID:-}" ]; then
+  echo "Benchmarks child pipeline: project=${CHILD_PROJECT_ID}  pipeline=${CHILD_PIPELINE_ID}"
+  CHILD_BRIDGES_FILE="${TMPDIR_LOCAL}/child_bridges.json"
+  if api_get \
+    "${CI_API_V4_URL}/projects/${CHILD_PROJECT_ID}/pipelines/${CHILD_PIPELINE_ID}/bridges" \
+    "${CHILD_BRIDGES_FILE}"; then
+    read -r BP_PROJECT_ID DOWNSTREAM_PIPELINE_ID < <(find_bridge "${CHILD_BRIDGES_FILE}" "benchmarks-trigger" yes)
+  else
+    echo "Cannot read benchmarks child pipeline bridges — skipping download"
+  fi
+else
+  # Fallback: pipelines where the benchmarks-trigger bridge still lives in
+  # this pipeline directly (no run-benchmarks child-pipeline indirection).
+  read -r BP_PROJECT_ID DOWNSTREAM_PIPELINE_ID < <(find_bridge "${BRIDGES_FILE}" "benchmarks-trigger" yes)
+fi
 
 if [ -z "${DOWNSTREAM_PIPELINE_ID:-}" ]; then
   echo "benchmarks-trigger bridge not found or did not run — skipping download"

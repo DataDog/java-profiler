@@ -201,9 +201,41 @@ void JfrMetadata::initialize(
                   << field("age", T_LONG, "Age", F_UNSIGNED)
                   << field("size", T_LONG, "Original Size", F_BYTES)
                   << field("weight", T_FLOAT, "Sample weight")
+                  << field("leakTag", T_LONG, "Leak Tag", F_UNSIGNED)
+                  << field("leakTagIncarnation", T_LONG,
+                           "Leak Tag Incarnation", F_UNSIGNED)
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
+
+          << (type("datadog.ReferenceChain", T_REFERENCE_CHAIN,
+                   "Live Object Reference Chain")
+              << category("Datadog", "Profiling")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("targetTag", T_LONG, "Frontier Tag", F_UNSIGNED)
+              << field("leakTagIncarnation", T_LONG, "Leak Tag Incarnation",
+                       F_UNSIGNED)
+              << field("depth", T_INT, "Depth")
+              << field("rootKind", T_STRING, "GC Root Kind")
+              << field("totalHops", T_INT,
+                       "Total Chain Length Before Truncation")
+              << field("chain", T_CLASS, "Referrer Chain (Leaf to Root)",
+                       F_CPOOL | F_ARRAY)
+              << field("edges", T_STRING,
+                       "Retention Edge per Hop (Leaf to Root)", F_ARRAY))
+
+          << (type("datadog.ReferenceChainAbandoned",
+                   T_REFERENCE_CHAIN_ABANDONED,
+                   "Live Object Reference Chain Search Abandoned")
+              << category("Datadog", "Profiling")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("reason", T_STRING, "Abandonment Reason")
+              << field("passesRun", T_INT, "Passes Run")
+              << field("frontierSize", T_INT, "Frontier Size")
+              << field("hopCap", T_INT, "Hop Cap")
+              << field("budget", T_INT, "Per-Pass Budget")
+              << field("ttl", T_LONG, "Search TTL", F_DURATION_MILLIS)
+              << field("elapsed", T_LONG, "Elapsed Time", F_DURATION_MILLIS))
 
           << (type("datadog.Endpoint", T_ENDPOINT, "Endpoint")
               << category("Datadog")
@@ -237,8 +269,6 @@ void JfrMetadata::initialize(
                   << field("blocker", T_LONG, "Blocker Identity Hash")
                   << field("unblockingSpanId", T_LONG, "Unblocking Span ID")
                   << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
-                  << field("correlationId", T_LONG,
-                           "Stack Trace Request Correlation ID")
                   << field("observedBlockingState", T_THREAD_STATE,
                            "Observed Blocking State", F_CPOOL)
                   << field("spanId", T_LONG, "Span ID")

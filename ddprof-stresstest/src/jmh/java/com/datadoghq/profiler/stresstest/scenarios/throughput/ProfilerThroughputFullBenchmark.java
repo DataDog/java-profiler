@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,6 @@ import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
-import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
@@ -37,121 +36,119 @@ import org.openjdk.jmh.infra.Blackhole;
 /**
  * Full benchmark for profiler throughput with comprehensive thread counts and statistical rigor.
  *
- * <p>This benchmark measures end-to-end profiling overhead including:
- * - Signal handler interrupts (cpu=100us, wall=100us)
- * - Stack walking via ASGCT
- * - CallTraceStorage::put() operations with RefCountGuard memory reclamation
- * - Atomic operations in the refcount guard lifecycle
- * - JFR background processing
+ * <p>This benchmark measures end-to-end profiling overhead including: - Signal handler interrupts
+ * (cpu=100us, wall=100us) - Stack walking via ASGCT - CallTraceStorage::put() operations with
+ * RefCountGuard memory reclamation - Atomic operations in the refcount guard lifecycle - JFR
+ * background processing
  *
- * <p>Tests the complete profiling pipeline across 7 thread counts (1,2,4,8,16,32,64) with
- * high statistical confidence (3 forks, 5 measurement iterations). Runtime: ~45-60 minutes.
+ * <p>Tests the complete profiling pipeline across 7 thread counts (1,2,4,8,16,32,64) with high
+ * statistical confidence (3 forks, 5 measurement iterations). Runtime: ~45-60 minutes.
  *
  * <p>Use {@link ProfilerThroughputQuickBenchmark} for rapid development iteration (~2 minutes).
  */
 @State(Scope.Benchmark)
 public class ProfilerThroughputFullBenchmark {
 
-    @Param({"cpu=100us,wall=100us"})
-    public String command;
+  @Param({"cpu=100us,wall=100us"})
+  public String command;
 
-    @Param({"false"})
-    public String skipResults;
+  @Param({"false"})
+  public String skipResults;
 
-    private JavaProfiler profiler;
+  private JavaProfiler profiler;
 
-    @Setup(Level.Trial)
-    public void setup() throws IOException {
-        profiler = JavaProfiler.getInstance();
+  @Setup(Level.Trial)
+  public void setup() throws IOException {
+    profiler = JavaProfiler.getInstance();
+  }
+
+  /**
+   * Performs computational work to generate stack samples. The profiler will interrupt these
+   * threads and call CallTraceStorage::put().
+   */
+  private long doWork(long seed) {
+    long result = seed;
+    // Enough work to generate multiple samples
+    for (int i = 0; i < 100_000; i++) {
+      result = (result * 1103515245L + 12345L) & 0x7fffffffL;
     }
+    return result;
+  }
 
-    /**
-     * Performs computational work to generate stack samples.
-     * The profiler will interrupt these threads and call CallTraceStorage::put().
-     */
-    private long doWork(long seed) {
-        long result = seed;
-        // Enough work to generate multiple samples
-        for (int i = 0; i < 100_000; i++) {
-            result = (result * 1103515245L + 12345L) & 0x7fffffffL;
-        }
-        return result;
-    }
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 3, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @Threads(1)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void baseline01Thread(Blackhole bh) {
+    bh.consume(doWork(System.nanoTime()));
+  }
 
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @Threads(1)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void baseline01Thread(Blackhole bh) {
-        bh.consume(doWork(System.nanoTime()));
-    }
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 3, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @Threads(2)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void baseline02Threads(Blackhole bh) {
+    bh.consume(doWork(System.nanoTime()));
+  }
 
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @Threads(2)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void baseline02Threads(Blackhole bh) {
-        bh.consume(doWork(System.nanoTime()));
-    }
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 3, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @Threads(4)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void baseline04Threads(Blackhole bh) {
+    bh.consume(doWork(System.nanoTime()));
+  }
 
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @Threads(4)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void baseline04Threads(Blackhole bh) {
-        bh.consume(doWork(System.nanoTime()));
-    }
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 3, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @Threads(8)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void baseline08Threads(Blackhole bh) {
+    bh.consume(doWork(System.nanoTime()));
+  }
 
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @Threads(8)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void baseline08Threads(Blackhole bh) {
-        bh.consume(doWork(System.nanoTime()));
-    }
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 3, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @Threads(16)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void baseline16Threads(Blackhole bh) {
+    bh.consume(doWork(System.nanoTime()));
+  }
 
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @Threads(16)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void baseline16Threads(Blackhole bh) {
-        bh.consume(doWork(System.nanoTime()));
-    }
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 3, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @Threads(32)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void baseline32Threads(Blackhole bh) {
+    bh.consume(doWork(System.nanoTime()));
+  }
 
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @Threads(32)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void baseline32Threads(Blackhole bh) {
-        bh.consume(doWork(System.nanoTime()));
-    }
-
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 2)
-    @Measurement(iterations = 5, time = 5)
-    @Threads(64)
-    @OutputTimeUnit(TimeUnit.SECONDS)
-    public void baseline64Threads(Blackhole bh) {
-        bh.consume(doWork(System.nanoTime()));
-    }
+  @Benchmark
+  @BenchmarkMode(Mode.Throughput)
+  @Fork(value = 3, warmups = 1)
+  @Warmup(iterations = 3, time = 2)
+  @Measurement(iterations = 5, time = 5)
+  @Threads(64)
+  @OutputTimeUnit(TimeUnit.SECONDS)
+  public void baseline64Threads(Blackhole bh) {
+    bh.consume(doWork(System.nanoTime()));
+  }
 }

@@ -112,6 +112,97 @@ TEST_F(SafeFetchTest, invalidAccessPtr) {
   EXPECT_EQ(res, bp);
 }
 
+// ---------------------------------------------------------------------------
+// SafeAccess::store/store32/storePtr — write-side counterpart of
+// safeFetch{32,64}/loadPtr, sharing the same handle_safefetch fault redirect.
+// ---------------------------------------------------------------------------
+
+TEST_F(SafeFetchTest, validStore32) {
+  int32_t i = 0;
+  EXPECT_TRUE(SafeAccess::store32(&i, 42));
+  EXPECT_EQ(42, i);
+  EXPECT_TRUE(SafeAccess::store32(&i, INT_MIN));
+  EXPECT_EQ(INT_MIN, i);
+}
+
+TEST_F(SafeFetchTest, invalidStore32) {
+  int32_t* p = nullptr;
+  EXPECT_FALSE(SafeAccess::store32(p, 42));
+}
+
+TEST_F(SafeFetchTest, validStorePtr) {
+  void* target = nullptr;
+  void** pp = &target;
+  char c;
+  EXPECT_TRUE(SafeAccess::storePtr(pp, (void*)&c));
+  EXPECT_EQ((void*)&c, target);
+}
+
+TEST_F(SafeFetchTest, invalidStorePtr) {
+  void** pp = nullptr;
+  char c;
+  EXPECT_FALSE(SafeAccess::storePtr(pp, (void*)&c));
+}
+
+TEST_F(SafeFetchTest, validStore) {
+  void* target = nullptr;
+  void** pp = &target;
+  char c;
+  EXPECT_TRUE(SafeAccess::store(pp, (void*)&c));
+  EXPECT_EQ((void*)&c, target);
+}
+
+TEST_F(SafeFetchTest, invalidStore) {
+  void** pp = nullptr;
+  char c;
+  EXPECT_FALSE(SafeAccess::store(pp, (void*)&c));
+}
+
+/**
+ * Tests that store32 correctly handles a read-only page instead of crashing.
+ * PROT_READ (rather than PROT_NONE) isolates that this is specifically a
+ * write fault, not merely an unreadable address.
+ */
+TEST_F(SafeFetchTest, readOnlyMemoryStore32) {
+  void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(page, MAP_FAILED);
+
+  int32_t* ptr = static_cast<int32_t*>(page);
+  *ptr = 1;
+  ASSERT_EQ(mprotect(page, 4096, PROT_READ), 0);
+
+  // This MUST return false, not crash.
+  EXPECT_FALSE(SafeAccess::store32(ptr, 2));
+  // The page is read-only, so the value must be unchanged.
+  ASSERT_EQ(mprotect(page, 4096, PROT_READ | PROT_WRITE), 0);
+  EXPECT_EQ(1, *ptr);
+
+  munmap(page, 4096);
+}
+
+/**
+ * Tests that storePtr correctly handles a read-only page instead of crashing.
+ * Same rationale as readOnlyMemoryStore32 above.
+ */
+TEST_F(SafeFetchTest, readOnlyMemoryStorePtr) {
+  void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(page, MAP_FAILED);
+
+  void** ptr = static_cast<void**>(page);
+  char sentinel;
+  *ptr = &sentinel;
+  ASSERT_EQ(mprotect(page, 4096, PROT_READ), 0);
+
+  char other;
+  EXPECT_FALSE(SafeAccess::storePtr(ptr, &other));
+  ASSERT_EQ(mprotect(page, 4096, PROT_READ | PROT_WRITE), 0);
+  EXPECT_EQ((void*)&sentinel, *ptr);
+
+  munmap(page, 4096);
+}
+
 TEST_F(SafeFetchTest, isReadable) {
   char c = 'x';
   EXPECT_TRUE(SafeAccess::isReadable(&c));

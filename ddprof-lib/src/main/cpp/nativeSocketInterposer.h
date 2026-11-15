@@ -42,6 +42,7 @@ public:
   typedef ssize_t (*recvmsg_fn)(int, struct msghdr*, int);
   typedef int (*epoll_wait_fn)(int, struct epoll_event*, int, int);
   typedef int (*epoll_pwait_fn)(int, struct epoll_event*, int, int, const sigset_t*);
+  typedef int (*epoll_pwait2_fn)(int, struct epoll_event*, int, const struct timespec*, const sigset_t*);
   typedef int (*poll_fn)(struct pollfd*, nfds_t, int);
   typedef int (*ppoll_fn)(struct pollfd*, nfds_t, const struct timespec*, const sigset_t*);
   typedef int (*select_fn)(int, fd_set*, fd_set*, fd_set*, struct timeval*);
@@ -67,6 +68,7 @@ public:
     HOOK_PPOLL,
     HOOK_SELECT,
     HOOK_PSELECT,
+    HOOK_EPOLL_PWAIT2,
     NUM_NATIVE_IO_HOOKS
   };
 
@@ -95,6 +97,8 @@ public:
 
   bool isStreamSocket(int fd);
   bool isDatagramSocket(int fd);
+  bool revalidateStreamSocket(int fd);
+  bool revalidateDatagramSocket(int fd);
   void clearFdType(int fd);
   void clearFdTypeCache();
 
@@ -125,6 +129,8 @@ public:
                              int timeout);
   static int epoll_pwait_hook(int epfd, struct epoll_event* events, int maxevents,
                               int timeout, const sigset_t* sigmask);
+  static int epoll_pwait2_hook(int epfd, struct epoll_event* events, int maxevents,
+                               const struct timespec* timeout, const sigset_t* sigmask);
   static int poll_hook(struct pollfd* fds, nfds_t nfds, int timeout);
   static int ppoll_hook(struct pollfd* fds, nfds_t nfds,
                         const struct timespec* timeout_ts, const sigset_t* sigmask);
@@ -159,6 +165,8 @@ public:
   static int fork_safe_epoll_pwait_hook(int epfd, struct epoll_event* events,
                                         int maxevents, int timeout,
                                         const sigset_t* sigmask);
+  static int fork_safe_epoll_pwait2_hook(int epfd, struct epoll_event* events, int maxevents,
+                                         const struct timespec* timeout, const sigset_t* sigmask);
   static int fork_safe_poll_hook(struct pollfd* fds, nfds_t nfds, int timeout);
   static int fork_safe_ppoll_hook(struct pollfd* fds, nfds_t nfds,
                                   const struct timespec* timeout_ts,
@@ -202,6 +210,7 @@ private:
   static std::atomic<recvmsg_fn> _orig_recvmsg;
   static std::atomic<epoll_wait_fn> _orig_epoll_wait;
   static std::atomic<epoll_pwait_fn> _orig_epoll_pwait;
+  static std::atomic<epoll_pwait2_fn> _orig_epoll_pwait2;
   static std::atomic<poll_fn> _orig_poll;
   static std::atomic<ppoll_fn> _orig_ppoll;
   static std::atomic<select_fn> _orig_select;

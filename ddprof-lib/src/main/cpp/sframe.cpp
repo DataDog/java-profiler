@@ -67,6 +67,7 @@ FrameDesc* SFrameParser::addRecord(u32 loc, u32 cfa, int fp_off, int pc_off) {
     fd->cfa    = cfa;
     fd->fp_off = fp_off;
     fd->pc_off = pc_off;
+    fd->flags  = 0;  // SFrame has no signal-frame notion; never leave it unset
     return fd;
 }
 

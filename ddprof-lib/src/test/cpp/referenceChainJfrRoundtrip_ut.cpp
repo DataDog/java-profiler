@@ -1,0 +1,993 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+// ---------------------------------------------------------------------------
+// Open question this test answers: does JMC's parser actually resolve
+// the datadog.ReferenceChain event's `chain` field - declared in
+// jfrMetadata.cpp as field("chain", T_CLASS, ..., F_CPOOL | F_ARRAY), i.e. an
+// *array of scalar constant-pool-index* T_CLASS values - the same way it
+// resolves a plain scalar F_CPOOL field (e.g. objectClass) or a plain
+// F_ARRAY-of-composite-struct field (e.g. StackTrace.frames)? Neither of
+// those two existing, already-exercised shapes proves this combination.
+//
+// This test answers that empirically, not by inspecting the JFR spec: it
+// drives the *real* production write path (Recording - not a hand-rolled
+// byte layout) to produce one complete, standalone, chunk-finalized .jfr
+// file containing a real datadog.ReferenceChain event plus its class
+// checkpoint, and leaves the actual JMC read-back to the companion Java test
+// (a companion Java parser test in ddprof-test), which loads this file with
+// org.openjdk.jmc.flightrecorder.JfrLoaderToolkit and asserts the resolved
+// class names.
+//
+// Two further boundary properties of the same encoder are pinned here at the
+// byte level (these cannot be checked through JMC, which only sees a valid
+// recording):
+//   - an event whose chain exceeds MAX_REFERENCE_CHAIN_EVENT_HOPS is
+//     truncated to a size that still fits inside the fixed recording buffer
+//     (a fixed hop cap large enough to permit a worst case beyond the buffer
+//     size would write past the buffer - debug assert, release corruption),
+//     and the emitted hops keep their edge labels (labels align with the
+//     chain's leaf-first element order, so the first emitted_size labels are
+//     exactly the labels of the emitted range);
+//   - ObjectLivenessEvent's leak_tag defaults to 0, so a construction path
+//     that forgets to set it serializes a defined "untagged" value, never
+//     indeterminate data.
+//
+// Constructing a real `Recording` outside of Profiler::start()'s state
+// machine is unavoidable here: this gtest binary has no live JVM attached
+// (see referenceChains_ut.cpp's and jvmSupport_ut.cpp's fixture comments for
+// the same, already-established constraint), and Profiler::start()/check()
+// both require live JVM introspection (checkJvmCapabilities() ->
+// JVMThread::hasJavaThreadId(), VMStructs-backed queries) that cannot be
+// satisfied without one. Recording's constructor, recordReferenceChain()
+// and recordHeapLiveObject() are already public production API
+// (flightRecorder.h) that do not go through Profiler::start()/stop()/dump()
+// at all, so using them directly is not a new hook - it is the same "drive
+// the real machinery, don't hand-roll the format" approach as every other
+// test in this file's neighbourhood, just entered one layer lower. The two
+// remaining unavoidable null-pointer dependencies of Recording::
+// finishChunk() - Profiler::cpuEngine()/wallEngine() (NULL until
+// Profiler::start() runs) and VM::jni() (NULL _vm otherwise) - are supplied
+// via the exact same pre-existing, already test-appropriate
+// friend-accessor mechanism this codebase already uses for VM::_jvmti
+// (VMTestAccessor) and Profiler::_state (ProfilerTestAccessor,
+// jvmSupport_ut.cpp): profiler.h and vmEntry.h already declare `friend
+// class ProfilerTestAccessor;` / `friend class VMTestAccessor;` for exactly
+// this purpose, so defining those classes here (per-translation-unit, like
+// every other _ut.cpp that does the same) adds no new production surface.
+// ---------------------------------------------------------------------------
+
+#include <gtest/gtest.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <fcntl.h>
+#include <unistd.h>
+#include <csignal>
+#include <sys/resource.h>
+#include "arguments.h"
+#include "buffers.h"
+#include "codeCache.h"
+#include "common.h"
+#include "engine.h"
+#include "flightRecorder.h"
+#include "jfrMetadata.h"
+#include "profiler.h"
+#include "tsc.h"
+#include "vmEntry.h"
+#include "hotspot/vmStructs.h"
+#ifdef ASAN_ENABLED
+#include <sanitizer/lsan_interface.h>
+#endif
+#include "gtest_crash_handler.h"
+
+static constexpr char REFERENCE_CHAIN_JFR_TEST_NAME[] = "ReferenceChainJfrRoundtripTest";
+
+class ReferenceChainJfrRoundtripGlobalSetup {
+public:
+    ReferenceChainJfrRoundtripGlobalSetup() {
+        installGtestCrashHandler<REFERENCE_CHAIN_JFR_TEST_NAME>();
+    }
+    ~ReferenceChainJfrRoundtripGlobalSetup() {
+        restoreDefaultSignalHandlers();
+    }
+};
+static ReferenceChainJfrRoundtripGlobalSetup global_setup;
+
+// ---------------------------------------------------------------------------
+// VMTestAccessor - friend of VM (vmEntry.h). Same purpose/name as the
+// identically-named, independently-defined class in referenceChains_ut.cpp
+// and jvmSupport_ut.cpp (each _ut.cpp translation unit defines its own copy;
+// see this codebase's established convention). Extended here with a _vm
+// setter: Recording::finishChunk() (flightRecorder.cpp) unconditionally
+// calls VM::jni(), which dereferences VM::_vm - NULL by default in this
+// live-JVM-less gtest binary - so a mocked JavaVM is required the same way
+// a mocked jvmtiEnv already is for VM::_jvmti.
+// ---------------------------------------------------------------------------
+class VMTestAccessor {
+public:
+    static jvmtiEnv *getJvmti() { return VM::_jvmti; }
+    static void setJvmti(jvmtiEnv *env) { VM::_jvmti = env; }
+    static JavaVM *getVm() { return VM::_vm; }
+    static void setVm(JavaVM *vm) { VM::_vm = vm; }
+    static CodeCache *getLibjvm() { return VM::_libjvm; }
+    static void setLibjvm(CodeCache *lib) { VM::_libjvm = lib; }
+};
+
+// ---------------------------------------------------------------------------
+// ProfilerTestAccessor - friend of Profiler (profiler.h), same mechanism
+// jvmSupport_ut.cpp already uses for Profiler::_state. Recording::
+// finishChunk() unconditionally dereferences Profiler::instance()->
+// cpuEngine()/wallEngine() (writeDatadogProfilerConfig) - both NULL until
+// Profiler::start() runs, which (per this file's header comment) cannot run
+// in this gtest binary. Engine's base-class methods (name()="None",
+// interval()=0) are safe no-op defaults, so a plain Engine instance is
+// sufficient here - no engine-specific behaviour is exercised by this test.
+// ---------------------------------------------------------------------------
+class ProfilerTestAccessor {
+public:
+    static void setCpuEngine(Profiler *p, Engine *e) { p->_cpu_engine = e; }
+    static void setWallEngine(Profiler *p, Engine *e) { p->_wall_engine = e; }
+    static FlightRecorder& recorder(Profiler* p) { return p->_jfr; }
+    static void setState(Profiler* p, State state) { p->_state.store(state, std::memory_order_release); }
+    static State state(Profiler* p) { return p->_state.load(std::memory_order_acquire); }
+    static Error rotateOutput(Profiler *p, const std::function<Error()>& output) {
+        return p->rotateDictsAndRun(output);
+    }
+};
+
+class FlightRecorderTestAccessor {
+public:
+    static Recording* ownedRecording(FlightRecorder& recorder) { return recorder._rec; }
+    // The negative fixture owns no live JVM state; discard it after quarantine checks.
+    static void discardFixture(FlightRecorder& recorder) {
+        if (recorder._rec != nullptr) {
+            delete recorder._rec;
+            recorder._rec = nullptr;
+            NativeMem::record(NM_JFR_BUFFERS, -static_cast<long long>(sizeof(Recording)));
+        }
+    }
+};
+
+class RecordingTestAccessor {
+public:
+    static void collectReferences(Recording& recording, std::unordered_set<int>& references) {
+        for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
+            for (int bank = 0; bank < 2; ++bank) recording._thread_ids[stripe][bank].collect(references);
+        }
+    }
+    static void writeJvmInfo(Recording& recording, Buffer* buf) { recording.writeJvmInfo(buf); }
+    static void writeSystemProperties(Recording& recording, Buffer* buf) {
+        recording.writeSystemProperties(buf);
+    }
+    static void setColdIo(Recording& recording, bool cold) { recording._cold_io = cold; }
+    static void setAgentProperties(char* properties) { Recording::_agent_properties = properties; }
+};
+
+static jvmtiError JNICALL mock_SetEventNotificationMode(jvmtiEnv *, jvmtiEventMode,
+                                                         jvmtiEvent, jthread, ...) {
+    return JVMTI_ERROR_NONE;
+}
+
+static jvmtiError JNICALL mock_GetAvailableProcessors(jvmtiEnv *, jint *count_ptr) {
+    *count_ptr = 1;
+    return JVMTI_ERROR_NONE;
+}
+
+// Recording::finishChunk() pins currently-loaded classes via
+// GetLoadedClasses() before/after serialization (see its own comment on the
+// GC-unload race this guards against in a real JVM). Reporting zero loaded
+// classes here is a faithful, not a cheated, answer for this gtest binary:
+// there genuinely are no JVMTI-visible loaded classes without a live JVM,
+// so the DeleteLocalRef()/Deallocate() cleanup loop that follows is a no-op.
+static jvmtiError JNICALL mock_GetLoadedClasses(jvmtiEnv *, jint *count_ptr,
+                                                 jclass **classes_ptr) {
+    *count_ptr = 0;
+    *classes_ptr = nullptr;
+    return JVMTI_ERROR_NONE;
+}
+
+// JVMTI property mocks for the buffer-ownership regressions: every allocation
+// is counted so a test can assert every exit path releases what it allocated.
+static int g_jvmti_property_allocations = 0;
+static int g_jvmti_property_releases = 0;
+
+static jvmtiError JNICALL mock_Deallocate(jvmtiEnv *, unsigned char *mem) {
+    free(mem);
+    ++g_jvmti_property_releases;
+    return JVMTI_ERROR_NONE;
+}
+
+static jvmtiError JNICALL mock_GetSystemProperty(jvmtiEnv *, const char *,
+                                                 char **value_ptr) {
+    *value_ptr = strdup("mock-property");
+    if (*value_ptr == nullptr) return JVMTI_ERROR_OUT_OF_MEMORY;
+    ++g_jvmti_property_allocations;
+    return JVMTI_ERROR_NONE;
+}
+
+// Each keys[] element is a separate allocation, like the real JVMTI table;
+// Deallocate(keys) alone would free only the array shell.
+static jvmtiError JNICALL mock_GetSystemProperties(jvmtiEnv *, jint *count_ptr,
+                                                   char ***keys_ptr) {
+    constexpr jint kKeys = 3;
+    char **keys = (char **)malloc(kKeys * sizeof(char *));
+    if (keys == nullptr) return JVMTI_ERROR_OUT_OF_MEMORY;
+    for (jint i = 0; i < kKeys; i++) {
+        keys[i] = strdup("mock-key");
+        if (keys[i] == nullptr) {
+            for (jint j = 0; j < i; j++) free(keys[j]);
+            free(keys);
+            return JVMTI_ERROR_OUT_OF_MEMORY;
+        }
+        ++g_jvmti_property_allocations;
+    }
+    ++g_jvmti_property_allocations;  // the array shell itself
+    *count_ptr = kKeys;
+    *keys_ptr = keys;
+    return JVMTI_ERROR_NONE;
+}
+
+static JNIEnv_ g_mock_jni_env{};
+
+static jint JNICALL mock_GetEnv(JavaVM *, void **penv, jint) {
+    *penv = &g_mock_jni_env;
+    return 0; // JNI_OK
+}
+
+class ReferenceChainJfrRoundtripTest : public ::testing::Test {
+protected:
+    jvmtiInterface_1_ jvmti_tbl{};
+    _jvmtiEnv mock_jvmti{};
+    JNIInvokeInterface_ vm_tbl{};
+    JavaVM_ mock_vm{};
+    Engine noop_engine;
+
+    jvmtiEnv *orig_jvmti = nullptr;
+    JavaVM *orig_vm = nullptr;
+    CodeCache *orig_libjvm = nullptr;
+    Engine *orig_cpu_engine = nullptr;
+    Engine *orig_wall_engine = nullptr;
+
+    void SetUp() override {
+        orig_jvmti = VMTestAccessor::getJvmti();
+        jvmti_tbl = jvmtiInterface_1_{};
+        jvmti_tbl.SetEventNotificationMode = &mock_SetEventNotificationMode;
+        jvmti_tbl.GetAvailableProcessors = &mock_GetAvailableProcessors;
+        jvmti_tbl.GetLoadedClasses = &mock_GetLoadedClasses;
+        jvmti_tbl.Deallocate = &mock_Deallocate;
+        mock_jvmti.functions = &jvmti_tbl;
+        VMTestAccessor::setJvmti(&mock_jvmti);
+
+        orig_vm = VMTestAccessor::getVm();
+        vm_tbl = JNIInvokeInterface_{};
+        vm_tbl.GetEnv = &mock_GetEnv;
+        mock_vm.functions = &vm_tbl;
+        VMTestAccessor::setVm(&mock_vm);
+
+        orig_cpu_engine = Profiler::instance()->cpuEngine();
+        orig_wall_engine = Profiler::instance()->wallEngine();
+        ProfilerTestAccessor::setCpuEngine(Profiler::instance(), &noop_engine);
+        ProfilerTestAccessor::setWallEngine(Profiler::instance(), &noop_engine);
+
+        // writeSettings() (flightRecorder.cpp) unconditionally calls
+        // VM::libjvm()->hasDebugSymbols() - VM::_libjvm is NULL until
+        // VM::openJvmLibrary() has resolved a real libjvm.so, which never
+        // happens without a live JVM (VM::libjvm() asserts non-null rather
+        // than returning NULL). A name-only, no-symbols CodeCache (the same
+        // "fake shared library" construction libraries_ut.cpp's fixture
+        // already uses) is enough: hasDebugSymbols() degrades to false for
+        // it, same as a never-resolved real library with no debug info.
+        static CodeCache fake_libjvm("fake_libjvm.so");
+        orig_libjvm = VMTestAccessor::getLibjvm();
+        VMTestAccessor::setLibjvm(&fake_libjvm);
+
+        // VMStructs::libjvm() is a separate cache (VMStructs::_libjvm, only
+        // populated by VMStructs::init() after a real symbol scan) from
+        // VM::libjvm() above - nothing in this test's write path reads it,
+        // but VMStructs::init(CodeCache*) is already public production API
+        // (hotspot/vmStructs.h) and idempotent (readSymbol() degrades to 0
+        // for every unresolved symbol, per its own comment), so initializing
+        // it here too keeps this fixture consistent with every other _ut.cpp
+        // that touches this process-wide singleton.
+        VMStructs::init(&fake_libjvm);
+    }
+
+    void TearDown() override {
+        VMTestAccessor::setJvmti(orig_jvmti);
+        VMTestAccessor::setVm(orig_vm);
+        VMTestAccessor::setLibjvm(orig_libjvm);
+        ProfilerTestAccessor::setCpuEngine(Profiler::instance(), orig_cpu_engine);
+        ProfilerTestAccessor::setWallEngine(Profiler::instance(), orig_wall_engine);
+    }
+};
+
+// Path agreed with the companion Java parser test in ddprof-test, which
+// reads the same file back via JMC's JfrLoaderToolkit. The build passes the
+// same DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR to both sides (ddprof-lib and
+// ddprof-test build.gradle.kts) and deletes the file before this gtest runs;
+// the OS temp dir is only a fallback for running the binary by hand.
+// The file is consume-once: ProducesValidStandaloneJfrWithChainEvent unlinks it before
+// writing and the Java test deletes it after reading.
+static std::string chainRoundtripJfrPath() {
+    const char *configured = getenv("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR");
+    if (configured != nullptr && *configured != 0) {
+        return configured;
+    }
+    const char *tmp = getenv("TMPDIR");
+    std::string dir = (tmp != nullptr && *tmp != 0) ? tmp : "/tmp";
+    if (dir.back() != '/') {
+        dir += '/';
+    }
+    return dir + "datadog_reference_chain_roundtrip.jfr";
+}
+
+static std::string siblingRoundtripJfrPath(const char* filename) {
+    std::string base = chainRoundtripJfrPath();
+    size_t separator = base.find_last_of('/');
+    return base.substr(0, separator + 1) + filename;
+}
+
+static void initializeOutputFixtureMetadata(const Arguments& args) {
+#ifdef ASAN_ENABLED
+    __lsan::ScopedDisabler lsan_disabler;
+#endif
+    JfrMetadata::initialize(args._context_attributes);
+}
+
+// Length of Buffer::putVar64()'s encoding for v: its 3-bytes-per-group
+// shortcut carries the same 21 bits per 3 bytes as plain LEB128, so the
+// lengths agree for every v < 2^63 (test-chosen values and TSC ticks are
+// all far below that).
+static int sizeOfVar64(u64 v) {
+    int len = 1;
+    while (v > 0x7f) {
+        len++;
+        v >>= 7;
+    }
+    return len;
+}
+
+// Decode a little-endian base-128 var32 (Buffer::putVar32's encoding) at
+// data[*off], advancing *off past it.
+static u32 decodeVar32(const char *data, int *off) {
+    u32 v = 0;
+    int shift = 0;
+    while (true) {
+        char b = data[(*off)++];
+        v |= (u32)(u8)(b & 0x7f) << shift;
+        if ((b & 0x80) == 0) {
+            return v;
+        }
+        shift += 7;
+    }
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent) {
+    // Drop any fixture left by an earlier (possibly different-revision) run before any ASSERT
+    // below can bail out, so a failed run never leaves a stale file for the Java parser test
+    // (ReferenceChainJfrParserTest) to validate. ENOENT is expected and ignored.
+    unlink(chainRoundtripJfrPath().c_str());
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    // Skip OS/CPU info, JVM info, system properties and native library
+    // enumeration - all of them call further JVMTI/JNI entry points this
+    // fixture does not mock, and none of them are relevant to the question
+    // this test answers (whether JMC resolves the chain[] field).
+    args._jfr_options = JFR_SYNC_OPTS;
+
+    // Recording::writeMetadata() (flightRecorder.cpp) serializes JfrMetadata::root()
+    // as-is - it does not build it. That tree is normally populated exactly once by
+    // JfrMetadata::initialize() (jfrMetadata.cpp), called from Profiler::start()
+    // - which this test does not call (per this file's header
+    // comment). initialize() is itself public, JVM-independent (pure fluent-builder
+    // data construction, no JVMTI/JNI calls) and idempotent (_initialized guard,
+    // jfrMetadata.cpp) - calling it directly here is completing the same
+    // one-time setup step every real Recording implicitly depends on, not a new
+    // hook; without it, writeMetadata() would serialize an empty "root" element
+    // (no datadog.ReferenceChain type declaration at all) instead of the real
+    // metadata tree.
+    // JfrMetadata::initialize() populates the static Element/Attribute tree
+    // (JfrMetadata::_root) exactly once for the life of the process - the same
+    // one-time, never-freed allocation every real agent process makes via
+    // Profiler::start() and relies on the OS to reclaim at exit. This gtest
+    // binary is the only asan unit test that calls initialize() directly, so
+    // LeakSanitizer flags that intentional process-lifetime allocation as a
+    // leak on test exit. Disable leak detection for this call only - it is
+    // not a bug in JfrMetadata or the reference-chain code under test.
+#ifdef ASAN_ENABLED
+    {
+      __lsan::ScopedDisabler lsan_disabler;
+      JfrMetadata::initialize(args._context_attributes);
+    }
+#else
+    JfrMetadata::initialize(args._context_attributes);
+#endif
+
+    // Register three distinct, recognisable class names in the same
+    // StringDictionary (Profiler::classMap()) writeClasses() (flightRecorder.cpp)
+    // serializes into the T_CLASS checkpoint - this is the exact API
+    // Profiler::lookupClass() already-existing tests use (e.g.
+    // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph).
+    // The constants feed the lookup below; the companion Java parser test
+    // (ReferenceChainJfrParserTest) hardcodes the same values, so a change to
+    // the seeding must update both sides - a deliberate two-module diff.
+    static constexpr const char *kLeafClass = "com/test/ChainLeaf";
+    static constexpr const char *kMiddleClass = "com/test/ChainMiddle";
+    static constexpr const char *kRootClass = "com/test/ChainRoot";
+    int leafKlass = Profiler::instance()->lookupClass(
+        kLeafClass, strlen(kLeafClass));
+    int middleKlass = Profiler::instance()->lookupClass(
+        kMiddleClass, strlen(kMiddleClass));
+    int rootKlass = Profiler::instance()->lookupClass(
+        kRootClass, strlen(kRootClass));
+    ASSERT_NE(-1, leafKlass);
+    ASSERT_NE(-1, middleKlass);
+    ASSERT_NE(-1, rootKlass);
+
+    // writeClasses() only serializes classMap()->standby() (the snapshot
+    // captured by rotate()) - without this, the three lookupClass() calls
+    // above would sit in the live "active" buffer only and never reach the
+    // checkpoint. StringDictionary::rotate() is public production API
+    // (stringDictionary.h), the same one Profiler::rotateDictsAndRun() calls
+    // internally for every real dump - calling it directly here is not a
+    // hand-rolled substitute, just the same operation invoked without the
+    // rest of Profiler::dump()'s live-JVM-dependent machinery.
+    Profiler::instance()->classMap()->rotate();
+
+    // A deterministic leaf <- middle <- root chain, in the same leaf-first
+    // element order the production collector produces (the
+    // tracker-driven path to the identical event is covered by
+    // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph; this file
+    // pins the JFR encoding, so the event is built directly).
+    ReferenceChainEvent event;
+    event._target_tag = 3;
+    // Non-zero so the Java parser test can pin the serialized field.
+    event._leak_tag_incarnation = 5;
+    event._depth = 2;
+    event._root_kind = 21; // JVMTI_HEAP_REFERENCE_JNI_GLOBAL - exercises the
+                           // rootKind field end to end (the engine's admission
+                           // callback only ever sets it on a parent_tag==0
+                           // entry).
+    // With the null JNIEnv a live field-name decode would crash on this
+    // binary's unstubbed JVMTI table, so the labels are the degraded
+    // edge-KIND strings the production label resolution produces in exactly that
+    // situation - which is what the Java-side parser test
+    // Java parser test asserts this recording's "edges" field
+    // contains.
+    event._hops = {{(u32)leafKlass, "field"},
+                   {(u32)middleKlass, "element"},
+                   {(u32)rootKlass, "jni_global"}};
+    event._start_time = TSC::ticks();
+
+    const std::string path = chainRoundtripJfrPath();
+    {
+        int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
+        ASSERT_GE(fd, 0) << "could not open " << path << " for writing";
+
+        // Recording(fd, args) and recordReferenceChain() are already public
+        // production API (flightRecorder.h) - this drives the real chunk
+        // header/metadata/settings write (constructor) and the real
+        // datadog.ReferenceChain event encoding (recordReferenceChain(),
+        // the exact F_CPOOL|F_ARRAY `chain` field this test exists to
+        // answer for), not a hand-rolled byte layout.
+        Recording rec(fd, args);
+        Buffer *buf = rec.buffer(/*lock_index=*/0);
+        rec.recordReferenceChain(buf, &event);
+        // ~Recording() (end of scope) calls finishChunk(true): flushes buf,
+        // writes the real class/symbol/package constant-pool checkpoint
+        // (writeCpool() -> writeClasses(), which is what makes leafKlass/
+        // middleKlass/rootKlass resolvable to their names at all), patches
+        // the chunk header's size/cpool-offset fields, and closes fd - the
+        // same finalization every real recording chunk goes through.
+    }
+
+    // No .expected sidecar: the Java parser test hardcodes the seeded values
+    // (chain names, edges labels, targetTag=3, depth=2), so writing a sidecar
+    // nothing reads would only leave a stale file in the temp/build dir.
+
+    FILE *f = fopen(path.c_str(), "rb");
+    ASSERT_NE(nullptr, f) << "expected " << path << " to have been written";
+    char magic[4] = {0, 0, 0, 0};
+    size_t read = fread(magic, 1, 4, f);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fclose(f);
+
+    ASSERT_EQ(4u, read);
+    EXPECT_EQ(0, memcmp(magic, "FLR\0", 4))
+        << "produced file does not start with the JFR chunk magic";
+    EXPECT_GT(size, 4) << "produced file is empty beyond the magic header";
+
+    TEST_LOG("Wrote standalone reference-chain roundtrip JFR to %s (%ld bytes)",
+             path.c_str(), size);
+}
+
+// A chain longer than MAX_REFERENCE_CHAIN_EVENT_HOPS with worst-case (96
+// byte) edge labels must be truncated to exactly the buffer-derived hop cap,
+// and the emitted hops must keep their aligned edge labels - the first
+// emitted_size entries of the leaf-first chain are the emitted range, so
+// their labels are too. The whole event must stay inside the recording
+// buffer (a hop cap permitting a worst case beyond RECORDING_BUFFER_LIMIT
+// underflows recordReferenceChain()'s reservation and writes past the
+// buffer).
+TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabels) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    args._jfr_options = JFR_SYNC_OPTS;
+
+    // Own file, NOT the companion JMC round-trip path: this test's event uses
+    // raw class ids that were never registered in the class dictionary (no
+    // JMC read-back is intended), and leaving it on the companion path would
+    // make the Java parser test resolve every chain[] element to null.
+    const std::string path = chainRoundtripJfrPath() + ".trunc";
+    int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
+    ASSERT_GE(fd, 0) << "could not open " << path << " for writing";
+
+    u32 total_hops = (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS + 40;
+    std::string longest_label(MAX_REFERENCE_CHAIN_EDGE_LABEL, 'x');
+    ReferenceChainEvent event;
+    event._target_tag = 7;
+    event._depth = (u32)total_hops;
+    event._root_kind = 21;
+    event._start_time = TSC::ticks();
+    event._hops.reserve(total_hops);
+    for (u32 i = 0; i < total_hops; i++) {
+        // Small class ids (single-byte var32) and a small target tag keep
+        // the byte walk below deterministic without constraining the
+        // encoder.
+        event._hops.push_back({100 + i, longest_label});
+    }
+
+    Recording rec(fd, args);
+    Buffer *buf = rec.buffer(/*lock_index=*/0);
+
+    // Flush whatever the constructor wrote (limit 0 = always) so the event's
+    // buffer position is deterministic: it starts at offset 0 and the
+    // reservation inside recordReferenceChain() (margin = RECORDING_BUFFER_LIMIT
+    // minus the worst case) cannot trigger a second flush for a freshly
+    // flushed buffer.
+    rec.flushIfNeeded(buf, /*limit=*/0);
+
+    int offset_before = buf->offset();
+    ASSERT_EQ(0, offset_before);
+    rec.recordReferenceChain(buf, &event);
+    int offset_after = buf->offset();
+
+    // The whole event stayed inside the buffer - the exact invariant a fixed
+    // 4096-hop cap broke with near-limit labels (worst case ~438 KB against
+    // a ~61 KB buffer: debug assert, release write past the buffer).
+    EXPECT_LE(offset_after, RECORDING_BUFFER_LIMIT);
+
+    // Walk the just-written event's bytes. recordReferenceChain() reserves a
+    // fixed MAX_VAR32_LENGTH size prefix and patches the minimal var32 over
+    // its head, with the body always starting at offset_before +
+    // MAX_VAR32_LENGTH (the skip() reservation), so the field offsets are
+    // computable from the values this test chose.
+    const char *data = buf->data() + offset_before;
+    // The size prefix is Buffer::putVar32(int offset, u32)'s FIXED 5-byte
+    // form: little-endian 7-bit groups with the continuation bit forced on
+    // the first four bytes, so it decodes positionally, not via minimal
+    // LEB128.
+    auto decodeFixedVar32 = [&data](int off) {
+        return (u32)(u8)data[off] | ((u32)(u8)data[off + 1] & 0x7fu) << 7 |
+               ((u32)(u8)data[off + 2] & 0x7fu) << 14 |
+               ((u32)(u8)data[off + 3] & 0x7fu) << 21 |
+               ((u32)(u8)data[off + 4]) << 28;
+    };
+    u32 encoded_size = decodeFixedVar32(0);
+    ASSERT_GT(encoded_size, 0u);
+    ASSERT_EQ((u32)(offset_after - offset_before), encoded_size)
+        << "the patched size prefix must cover exactly the written event";
+
+    int off = MAX_VAR32_LENGTH; // body start: fixed reservation, then fields
+    off += sizeOfVar64((u64)T_REFERENCE_CHAIN); // type id
+    off += sizeOfVar64(event._start_time);
+    off += sizeOfVar64(event._target_tag);
+    off += sizeOfVar64((u64)event._leak_tag_incarnation);
+    off += sizeOfVar64(event._depth); // depth, small by construction
+    // rootKind putUtf8: 1 encoding-tag byte + var32 length + payload.
+    const char *root_kind_name = "jni_global"; // rootKindName(21)
+    off += 1 + sizeOfVar64((u64)strlen(root_kind_name)) + (int)strlen(root_kind_name);
+    u32 chain_size = decodeVar32(data, &off);
+    u32 emitted_size = decodeVar32(data, &off);
+    // The chain's own entries sit between the counts and the edge labels.
+    for (u32 i = 0; i < emitted_size; i++) {
+        decodeVar32(data, &off);
+    }
+    u32 edge_count = decodeVar32(data, &off);
+
+    EXPECT_EQ(total_hops, chain_size)
+        << "totalHops must carry the pre-truncation chain length";
+    EXPECT_EQ((u32)MAX_REFERENCE_CHAIN_EVENT_HOPS, emitted_size)
+        << "the event must be truncated to exactly the buffer-derived hop cap";
+    EXPECT_EQ((u32)MAX_REFERENCE_CHAIN_EVENT_HOPS, edge_count)
+        << "truncation keeps the emitted range's aligned edge labels - "
+           "dropping all labels is the misaligned-array bug this pins";
+
+    unlink(path.c_str());
+}
+
+// A default-constructed ObjectLivenessEvent must carry leak_tag == 0 so any
+// construction path that forgets to set it serializes a defined "untagged"
+// value instead of indeterminate data (recordHeapLiveObject() reads the
+// field unconditionally).
+TEST_F(ReferenceChainJfrRoundtripTest, DefaultLivenessEventHasZeroLeakTag) {
+    ObjectLivenessEvent event;
+    EXPECT_EQ(0, event.leak_tag);
+    EXPECT_EQ(0u, event.leak_tag_incarnation);
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, FailedDeliveryRetainsSealedChunksForTheNextDump) {
+    std::string path = siblingRoundtripJfrPath("datadog_delivery_retry_roundtrip.jfr");
+    unlink(path.c_str());
+    Arguments args;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    char source[] = "/tmp/ddprof-delivery-source-XXXXXX";
+    int source_fd = mkstemp(source);
+    ASSERT_GE(source_fd, 0);
+    unlink(source);
+    Recording recording(source_fd, args);
+    ExecutionEvent event;
+    event._thread_state = OSThreadState::SLEEPING;
+    recording.addThread(0, 111);
+    recording.recordMethodSample(recording.buffer(0), 111, 0, 0, &event);
+    int refused = open("/dev/null", O_RDONLY);
+    ASSERT_GE(refused, 0);
+    EXPECT_FALSE(recording.switchChunk(refused));
+    ASSERT_TRUE(recording.outputGood());
+    recording.addThread(0, 222);
+    recording.recordMethodSample(recording.buffer(0), 222, 0, 0, &event);
+    int destination = open(path.c_str(), O_CREAT | O_RDWR, 0644);
+    ASSERT_GE(destination, 0);
+    ASSERT_TRUE(recording.prepareDumpTarget(destination));
+    auto delivery = recording.switchChunk(destination);
+    ASSERT_TRUE(delivery);
+    EXPECT_EQ(1U, delivery.first_chunk);
+    EXPECT_EQ(2U, delivery.last_chunk);
+    EXPECT_GT(delivery.bytes, 0U);
+    // The Java companion must observe both controlled stackless events, with
+    // their original chunk headers. This case makes no original-JVM claim.
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, FailedStopRetainsBuffersReferencesAndRefusesRestart) {
+    Arguments args;
+    char path[] = "/tmp/ddprof-failed-stop-XXXXXX";
+    int temporary = mkstemp(path);
+    ASSERT_GE(temporary, 0);
+    close(temporary);
+    std::string command = std::string("jfr,file=") + path;
+    ASSERT_FALSE(args.parse(command.c_str()));
+    args._clock = CLK_MONOTONIC;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    FlightRecorder recorder;
+    struct Discard {
+        FlightRecorder& recorder;
+        const char* path;
+        ~Discard() {
+            FlightRecorderTestAccessor::discardFixture(recorder);
+            unlink(path);
+        }
+    } discard{recorder, path};
+    ASSERT_FALSE(recorder.start(args, true));
+    ExecutionEvent event;
+    ASSERT_TRUE(recorder.recordEvent(0, 123, 0, BCI_WALL, &event));
+    Recording* owned = FlightRecorderTestAccessor::ownedRecording(recorder);
+    Buffer* buffer = owned->buffer(0);
+    std::vector<char> original(buffer->data(), buffer->data() + buffer->offset());
+    ASSERT_FALSE(original.empty());
+    struct rlimit original_limit;
+    ASSERT_EQ(0, getrlimit(RLIMIT_FSIZE, &original_limit));
+    struct sigaction previous, ignored{};
+    ignored.sa_handler = SIG_IGN;
+    sigemptyset(&ignored.sa_mask);
+    ASSERT_EQ(0, sigaction(SIGXFSZ, &ignored, &previous));
+    struct rlimit limited = original_limit;
+    limited.rlim_cur = 1;
+    int installed = setrlimit(RLIMIT_FSIZE, &limited);
+    Error stopped = installed == 0 ? recorder.stop() : Error("limit installation failed");
+    int restored = setrlimit(RLIMIT_FSIZE, &original_limit);
+    int signal_restored = sigaction(SIGXFSZ, &previous, nullptr);
+    ASSERT_EQ(0, installed);
+    ASSERT_EQ(0, restored);
+    ASSERT_EQ(0, signal_restored);
+    EXPECT_TRUE(stopped);
+    EXPECT_EQ(owned, FlightRecorderTestAccessor::ownedRecording(recorder));
+    EXPECT_GE(buffer->offset(), static_cast<int>(original.size()));
+    EXPECT_EQ(0, memcmp(buffer->data(), original.data(), original.size()));
+    std::unordered_set<int> references;
+    RecordingTestAccessor::collectReferences(*owned, references);
+    EXPECT_EQ(1U, references.count(123));
+    EXPECT_FALSE(recorder.recordEvent(0, 124, 0, BCI_WALL, &event));
+    EXPECT_TRUE(recorder.start(args, true));
+    EXPECT_EQ(owned, FlightRecorderTestAccessor::ownedRecording(recorder));
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, FailedOutputDoesNotRetireDictionaryScratchRoots) {
+    Profiler* profiler = Profiler::instance();
+    StringDictionary* dictionaries[] = {
+        profiler->classMap(), profiler->stringLabelMap(), profiler->contextValueMap()
+    };
+    StringDictionaryBuffer* roots[3];
+    u32 ids[3];
+    const char* name = "owned-before-output-failure";
+    for (size_t i = 0; i < 3; ++i) {
+        ids[i] = dictionaries[i]->lookup(name, strlen(name));
+        ASSERT_NE(0U, ids[i]);
+        ASSERT_TRUE(dictionaries[i]->rotate());
+        roots[i] = dictionaries[i]->standby();
+        ASSERT_EQ(ids[i], roots[i]->lookup(name, strlen(name)));
+    }
+    EXPECT_TRUE(ProfilerTestAccessor::rotateOutput(profiler, [] {
+        return Error("controlled output failure");
+    }));
+    // The next rotation made these buffers scratch. Clearing after a failed
+    // callback would erase exactly these still-owned historical bindings.
+    for (size_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(ids[i], roots[i]->lookup(name, strlen(name)));
+        EXPECT_TRUE(dictionaries[i]->clearAll());
+    }
+}
+
+// RED pre-fix: a failed pre-reservation flush used to keep the existing
+// bytes in the buffer while the serializer still appended a maximum labeled
+// chain, running past the recording buffer's capacity and asserting (or
+// corrupting a release build). The writer must abort the serializer instead.
+TEST_F(ReferenceChainJfrRoundtripTest, FailedPreflushAbortsWithoutOverflowingTheRetainedBuffer) {
+    std::string path = siblingRoundtripJfrPath("datadog_preflush_abort_roundtrip.jfr");
+    unlink(path.c_str());
+    Arguments args;
+    std::string command = "jfr,file=" + path;
+    ASSERT_FALSE(args.parse(command.c_str()));
+    args._clock = CLK_MONOTONIC;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    char source[] = "/tmp/ddprof-preflush-source-XXXXXX";
+    int source_fd = mkstemp(source);
+    ASSERT_GE(source_fd, 0);
+    unlink(source);
+    Recording recording(source_fd, args);
+    // Real retained events: a pre-reservation flush must preserve exactly them.
+    ExecutionEvent sample;
+    sample._thread_state = OSThreadState::SLEEPING;
+    sample._weight = 1;
+    recording.addThread(0, 321);
+    recording.recordMethodSample(recording.buffer(0), 321, 0, 0, &sample);
+    recording.recordMethodSample(recording.buffer(0), 321, 0, 0, &sample);
+    recording.recordMethodSample(recording.buffer(0), 321, 0, 0, &sample);
+    Buffer* buffer = recording.buffer(0);
+    const int retained = buffer->offset();
+    // Larger than the pre-reservation slack (RECORDING_BUFFER_LIMIT minus the
+    // worst-case maximum-chain reservation), so the chain serializer cannot
+    // skip its preflush by fitting in the remaining space.
+    ASSERT_GT(retained, RECORDING_BUFFER_LIMIT - (REFERENCE_CHAIN_EVENT_FIXED_BYTES +
+                 MAX_REFERENCE_CHAIN_EVENT_HOPS * REFERENCE_CHAIN_EVENT_PER_HOP_BYTES));
+
+    // Make the next write fail with a real sticky output failure.
+    struct rlimit original_limit;
+    ASSERT_EQ(0, getrlimit(RLIMIT_FSIZE, &original_limit));
+    struct sigaction previous, ignored{};
+    ignored.sa_handler = SIG_IGN;
+    sigemptyset(&ignored.sa_mask);
+    ASSERT_EQ(0, sigaction(SIGXFSZ, &ignored, &previous));
+    struct rlimit limited = original_limit;
+    limited.rlim_cur = 1;
+    ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &limited));
+
+    ReferenceChainEvent chain{};
+    chain._start_time = TSC::ticks();
+    // Full-length labels force the true worst case: the reservation math
+    // assumes up to MAX_REFERENCE_CHAIN_EDGE_LABEL payload bytes per hop.
+    chain._hops.assign(MAX_REFERENCE_CHAIN_EVENT_HOPS,
+                       ReferenceChainHop{1, std::string(MAX_REFERENCE_CHAIN_EDGE_LABEL, 'e')});
+    recording.recordReferenceChain(buffer, &chain);
+
+    ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &original_limit));
+    ASSERT_EQ(0, sigaction(SIGXFSZ, &previous, nullptr));
+
+    // Pre-fix, the serializer still appended the full maximum chain past the
+    // failed pre-reservation flush; the guard must abort it instead.
+    ASSERT_FALSE(recording.outputGood());
+    ASSERT_LE(buffer->offset(), RECORDING_BUFFER_SIZE);
+    EXPECT_EQ(retained, buffer->offset());
+    EXPECT_LT(recording.finishChunk(), 0);
+
+    unlink(path.c_str());
+}
+
+// RED pre-fix: writeJvmInfo returned early (cold paths threw) past its
+// GetSystemProperty allocations, so a failed pre-reservation flush leaked both
+// JVMTI buffers. The owner must release them on every exit path.
+static void assertJvmInfoReleasesPropertyBuffers(jvmtiInterface_1_& jvmti_table, bool cold_path) {
+    std::string path = siblingRoundtripJfrPath(cold_path
+        ? "datadog_jvminfo_leak_cold.jfr" : "datadog_jvminfo_leak_abort.jfr");
+    unlink(path.c_str());
+    Arguments args;
+    args._clock = CLK_MONOTONIC;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    char source[] = "/tmp/ddprof-jvminfo-leak-XXXXXX";
+    int source_fd = mkstemp(source);
+    ASSERT_GE(source_fd, 0);
+    unlink(source);
+    Recording recording(source_fd, args);
+    jvmti_table.GetSystemProperty = &mock_GetSystemProperty;
+    char properties[] = "props";
+    RecordingTestAccessor::setAgentProperties(properties);
+    RecordingTestAccessor::setColdIo(recording, false);
+
+    ExecutionEvent sample;
+    sample._thread_state = OSThreadState::SLEEPING;
+    sample._weight = 1;
+    recording.addThread(0, 654);
+    // Fill past writeJvmInfo's pre-reservation threshold so its preflush runs.
+    while (recording.buffer(0)->offset() <
+           RECORDING_BUFFER_LIMIT - 5 * MAX_STRING_LENGTH) {
+        recording.recordMethodSample(recording.buffer(0), 654, 0, 0, &sample);
+    }
+    Buffer* buffer = recording.buffer(0);
+    const int retained = buffer->offset();
+    long long allocated = g_jvmti_property_allocations;
+    long long released = g_jvmti_property_releases;
+
+    struct rlimit original_limit;
+    ASSERT_EQ(0, getrlimit(RLIMIT_FSIZE, &original_limit));
+    struct sigaction previous, ignored{};
+    ignored.sa_handler = SIG_IGN;
+    sigemptyset(&ignored.sa_mask);
+    ASSERT_EQ(0, sigaction(SIGXFSZ, &ignored, &previous));
+    struct rlimit limited = original_limit;
+    limited.rlim_cur = 1;
+    ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &limited));
+    if (cold_path) RecordingTestAccessor::setColdIo(recording, true);
+    bool threw = false;
+    try {
+        RecordingTestAccessor::writeJvmInfo(recording, buffer);
+    } catch (...) {
+        threw = true;
+    }
+    ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &original_limit));
+    ASSERT_EQ(0, sigaction(SIGXFSZ, &previous, nullptr));
+
+    EXPECT_EQ(cold_path, threw);
+    EXPECT_EQ(2, g_jvmti_property_allocations - allocated);
+    EXPECT_EQ(g_jvmti_property_allocations - allocated,
+              g_jvmti_property_releases - released);
+    EXPECT_FALSE(recording.outputGood());
+    EXPECT_EQ(retained, buffer->offset());
+    RecordingTestAccessor::setAgentProperties(nullptr);
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, FailedJvmInfoPreflushAbortReleasesPropertyBuffers) {
+    assertJvmInfoReleasesPropertyBuffers(jvmti_tbl, false);
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, FailedJvmInfoColdOutputThrowReleasesPropertyBuffers) {
+    assertJvmInfoReleasesPropertyBuffers(jvmti_tbl, true);
+}
+
+// RED on the R3 candidate: a mid-loop exit freed only the visited key and the
+// array shell, leaking every unvisited keys[] element. Every mode below must
+// release the array shell, all keys, and every value read before the exit.
+enum SystemPropertyExit { kPreflushAbort, kColdThrow, kNormal };
+
+static void assertSystemPropertiesReleaseAllKeys(jvmtiInterface_1_& jvmti_table,
+                                                  SystemPropertyExit exit_mode) {
+    std::string path = siblingRoundtripJfrPath("datadog_sysprops_leak.jfr");
+    unlink(path.c_str());
+    Arguments args;
+    args._clock = CLK_MONOTONIC;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    char source[] = "/tmp/ddprof-sysprops-leak-XXXXXX";
+    int source_fd = mkstemp(source);
+    ASSERT_GE(source_fd, 0);
+    unlink(source);
+    Recording recording(source_fd, args);
+    jvmti_table.GetSystemProperties = &mock_GetSystemProperties;
+    jvmti_table.GetSystemProperty = &mock_GetSystemProperty;
+
+    ExecutionEvent sample;
+    sample._thread_state = OSThreadState::SLEEPING;
+    sample._weight = 1;
+    recording.addThread(0, 655);
+    // Fill past writeSystemProperties' pre-reservation threshold so a
+    // mid-iteration preflush runs.
+    while (recording.buffer(0)->offset() <
+           RECORDING_BUFFER_LIMIT - 2 * MAX_STRING_LENGTH) {
+        recording.recordMethodSample(recording.buffer(0), 655, 0, 0, &sample);
+    }
+    Buffer* buffer = recording.buffer(0);
+    const int retained = buffer->offset();
+    long long allocated = g_jvmti_property_allocations;
+    long long released = g_jvmti_property_releases;
+
+    struct rlimit original_limit;
+    struct sigaction previous, ignored{};
+    if (exit_mode != kNormal) {
+        ASSERT_EQ(0, getrlimit(RLIMIT_FSIZE, &original_limit));
+        ignored.sa_handler = SIG_IGN;
+        sigemptyset(&ignored.sa_mask);
+        ASSERT_EQ(0, sigaction(SIGXFSZ, &ignored, &previous));
+        struct rlimit limited = original_limit;
+        limited.rlim_cur = 1;
+        ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &limited));
+    }
+    RecordingTestAccessor::setColdIo(recording, exit_mode == kColdThrow);
+    bool threw = false;
+    try {
+        RecordingTestAccessor::writeSystemProperties(recording, buffer);
+    } catch (...) {
+        threw = true;
+    }
+    if (exit_mode != kNormal) {
+        ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &original_limit));
+        ASSERT_EQ(0, sigaction(SIGXFSZ, &previous, nullptr));
+    }
+
+    EXPECT_EQ(exit_mode == kColdThrow, threw);
+    EXPECT_EQ(g_jvmti_property_allocations - allocated,
+              g_jvmti_property_releases - released);
+    if (exit_mode == kNormal) {
+        EXPECT_TRUE(recording.outputGood());
+    } else {
+        EXPECT_FALSE(recording.outputGood());
+        EXPECT_EQ(retained, buffer->offset());
+    }
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, SystemPropertyPreflushAbortReleasesEveryKey) {
+    assertSystemPropertiesReleaseAllKeys(jvmti_tbl, kPreflushAbort);
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, SystemPropertyColdThrowReleasesEveryKey) {
+    assertSystemPropertiesReleaseAllKeys(jvmti_tbl, kColdThrow);
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, SystemPropertyNormalCompletionReleasesEveryKey) {
+    assertSystemPropertiesReleaseAllKeys(jvmti_tbl, kNormal);
+}
+
+TEST_F(ReferenceChainJfrRoundtripTest, RestartRefusesOwnedOutputBeforeResettingDictionaryRoots) {
+    Profiler* profiler = Profiler::instance();
+    FlightRecorder& recorder = ProfilerTestAccessor::recorder(profiler);
+    ASSERT_EQ(nullptr, FlightRecorderTestAccessor::ownedRecording(recorder));
+    Arguments args;
+    char path[] = "/tmp/ddprof-owned-restart-XXXXXX";
+    int temporary = mkstemp(path);
+    ASSERT_GE(temporary, 0);
+    close(temporary);
+    std::string command = std::string("jfr,file=") + path;
+    ASSERT_FALSE(args.parse(command.c_str()));
+    args._clock = CLK_MONOTONIC;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    struct Restore {
+        Profiler* profiler;
+        State state;
+        FlightRecorder& recorder;
+        const char* path;
+        ~Restore() {
+            FlightRecorderTestAccessor::discardFixture(recorder);
+            ProfilerTestAccessor::setState(profiler, state);
+            unlink(path);
+        }
+    } restore{profiler, ProfilerTestAccessor::state(profiler), recorder, path};
+    ASSERT_FALSE(recorder.start(args, true));
+    ProfilerTestAccessor::setState(profiler, IDLE);
+    u32 class_id = profiler->lookupClass("retained-output-root", 20);
+    ASSERT_NE(0U, class_id);
+    int entries = profiler->classMap()->activeSize();
+    Recording* owner = FlightRecorderTestAccessor::ownedRecording(recorder);
+    Error restarted = profiler->start(args, true);
+    ASSERT_TRUE(restarted);
+    EXPECT_STREQ("Previous recording output is still owned", restarted.message());
+    EXPECT_EQ(owner, FlightRecorderTestAccessor::ownedRecording(recorder));
+    EXPECT_EQ(entries, profiler->classMap()->activeSize());
+    EXPECT_EQ(class_id, profiler->classMap()->lookup("retained-output-root", 20));
+}

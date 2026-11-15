@@ -22,10 +22,11 @@
 #include "ctimer.h"
 #include "signalInflight.h"
 #include "debugSupport.h"
-#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "signalCookie.h"
 #include "threadLocalData.inline.h"
 #include "threadState.inline.h"
@@ -54,7 +55,7 @@ bool CTimer::_enabled = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
-  if (tid >= _max_timers) {
+  if (tid < 0 || tid >= _max_timers) {
     Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
               tid, _max_timers);
     return -1;
@@ -119,7 +120,7 @@ int CTimer::registerThread(int tid) {
 }
 
 void CTimer::unregisterThread(int tid) {
-  if (tid >= _max_timers) {
+  if (tid < 0 || tid >= _max_timers) {
     return;
   }
   // Atomic acquire to avoid possible leak when unregistering
@@ -129,6 +130,51 @@ void CTimer::unregisterThread(int tid) {
   if (timer != 0 && __sync_bool_compare_and_swap(&_timers[tid], timer--, 0)) {
     syscall(__NR_timer_delete, timer);
   }
+}
+
+// Sizes the tid-indexed timer table and accounts it under NM_CTIMER. Called
+// from sizeTimerTable() under a Profiler::ThreadTablesFreeze, so no
+// thread-hook call (pthread hook or JVMTI ThreadStart/ThreadEnd) can be inside
+// the table while it is replaced.
+//
+// On allocation failure the table is left empty (_max_timers == 0), so the tid
+// bound checks reject every tid instead of indexing a NULL table, and the next
+// start() retries. The table currently held always has _max_timers slots, so
+// that is the size released from NM_CTIMER.
+bool CTimer::resizeTimers(int max_timers) {
+  if (max_timers == _max_timers) {
+    return true;
+  }
+  free(_timers);
+  NativeMem::record(NM_CTIMER, -(long long)((size_t)_max_timers * sizeof(int)));
+  _timers = (int *)calloc(max_timers, sizeof(int));
+  if (_timers == NULL) {
+    _max_timers = 0;
+    return false;
+  }
+  _max_timers = max_timers;
+  NativeMem::record(NM_CTIMER, (long long)((size_t)max_timers * sizeof(int)));
+  return true;
+}
+
+// A restart with an unchanged pid_max keeps the table and never closes thread
+// unregistration, so an exit during start() still releases its timer. Only an
+// actual replacement freezes the hook calls. If one is still inside the table
+// after the wait budget, start() fails and keeps the old table; whether a
+// later start() can succeed depends on the stuck call (see
+// Profiler::startCpuEngine()).
+Error CTimer::sizeTimerTable(int max_timers) {
+  if (max_timers == _max_timers) {
+    return Error::OK;
+  }
+  Profiler::ThreadTablesFreeze freeze(Profiler::instance());
+  if (!freeze.drained()) {
+    return Error("thread hook calls did not drain");
+  }
+  if (!resizeTimers(max_timers)) {
+    return Error("Failed to allocate CPU timer table");
+  }
+  return Error::OK;
 }
 
 Error CTimer::check(Arguments &args) {
@@ -142,6 +188,10 @@ Error CTimer::check(Arguments &args) {
 }
 
 Error CTimer::start(Arguments &args) {
+  return startWithTableSize(args, OS::getMaxThreadId());
+}
+
+Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }
@@ -150,11 +200,9 @@ Error CTimer::start(Arguments &args) {
   _cstack = args._cstack;
   _signal = SIGPROF;
 
-  int max_timers = OS::getMaxThreadId();
-  if (max_timers != _max_timers) {
-    free(_timers);
-    _timers = (int *)calloc(max_timers, sizeof(int));
-    _max_timers = max_timers;
+  Error error = sizeTimerTable(max_timers);
+  if (error) {
+    return error;
   }
 
   // Prime the origin-check cache from this non-signal context before any
@@ -164,6 +212,10 @@ Error CTimer::start(Arguments &args) {
   OS::primeSignalOriginCheck();
 
   OS::installSignalHandler(_signal, signalHandler);
+
+  // The table is sized: open the hook gate before listing threads (see
+  // Profiler::openThreadRegistration()).
+  Profiler::instance()->openThreadRegistration();
 
   // Register all existing threads. Individual failures are benign — a thread
   // may exit between listThreads() and registerThread(), and new threads
@@ -175,7 +227,15 @@ Error CTimer::start(Arguments &args) {
   }
   delete thread_list;
 
+  replaySkippedUnregistrations();
   return Error::OK;
+}
+
+void CTimer::replaySkippedUnregistrations() {
+  int count = Profiler::skippedUnregistrationCount();
+  for (int i = 0; i < count; i++) {
+    unregisterThread(Profiler::skippedUnregistration(i));
+  }
 }
 
 void CTimer::stop() {
@@ -206,7 +266,7 @@ Error CTimerJvmti::start(Arguments &args) {
 }
 
 void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
+  ErrnoPreserver errno_preserver;
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
@@ -214,48 +274,45 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  // See the note on probe placement in CTimer::signalHandler below.
+  SAMPLER_PERF_PROBE(SP_CPU);
+
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
   assert(!current->isDeepCrashHandler());
 
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;
   }
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    errno = saved_errno;
     return;
   }
-  int tid = 0;
 
-  if (JVMThread::current() == nullptr
-      && current->inInitWindow()) {
-    current->tickInitWindow();
-    errno = saved_errno;
+  if (tickInitWindowIfNeeded(current)) {
     return;
   }
 
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  tid = current->tid();
 
-  Shims::instance().setSighandlerTid(tid);
-
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  // Opted into JVMTI delegation; drop the sample if the JVM rejects the
-  // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
-  // jdk.StackTraceRequest is disabled). recordSampleDelegated() bumps the
-  // failure counters; there is no fallback to ASGCT in this engine.
-  Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
-                                               BCI_CPU, &event);
-  Shims::instance().setSighandlerTid(-1);
-  errno = saved_errno;
+  {
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    // Opted into JVMTI delegation; drop the sample if the JVM rejects the
+    // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
+    // jdk.StackTraceRequest is disabled). recordSampleDelegated() bumps the
+    // failure counters; there is no fallback to ASGCT in this engine.
+    Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
+                                                 BCI_CPU, &event);
+  }
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
+  ErrnoPreserver errno_preserver;
 
   // Reject signals that did not originate from our timer_create timers.
   // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
@@ -268,7 +325,12 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  // Declared past the origin check so a foreign SIGPROF -- and the foreign
+  // handler OS::forwardForeignSignal() runs for it above -- is never timed as
+  // our work. Everything of ours below, including the bail-outs, is measured.
+  SAMPLER_PERF_PROBE(SP_CPU);
+
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
   ProfiledThread* current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);
@@ -284,26 +346,19 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   assert(!current->isDeepCrashHandler());
-  // Guard against the race window between Profiler::registerThread() and
-  // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
-  // per thread. Pure native threads (where JVMThread::current() is always null)
-  // are allowed through once the one-shot window expires.
-  if (JVMThread::current() == nullptr && current->inInitWindow()) {
-    current->tickInitWindow();
-    errno = saved_errno;
+  if (tickInitWindowIfNeeded(current)) {
     return;
   }
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  int tid = current->tid();
-  Shims::instance().setSighandlerTid(tid);
 
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
-                                     &event);
-  Shims::instance().setSighandlerTid(-1);
-  // we need to avoid spoiling the value of errno (tsan report)
-  errno = saved_errno;
+  {
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
+                                       &event);
+  }
 }
 
 #endif // __linux__

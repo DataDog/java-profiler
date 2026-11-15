@@ -56,7 +56,7 @@ class SimpleNativeLibPlugin : Plugin<Project> {
 
             // Compile task
             val compileTask = project.tasks.register("compileLib", NativeCompileTask::class.java) {
-                onlyIf { extension.enabled.get() && !project.hasProperty("skip-native") }
+                onlyIf { extension.enabled.get() && !PlatformUtils.isNativeSkipped(project) }
                 group = "build"
                 description = "Compile the $libraryName library"
 
@@ -76,7 +76,7 @@ class SimpleNativeLibPlugin : Plugin<Project> {
 
             // Link task
             val linkTask = project.tasks.register("linkLib", NativeLinkTask::class.java) {
-                onlyIf { extension.enabled.get() && !project.hasProperty("skip-native") }
+                onlyIf { extension.enabled.get() && !PlatformUtils.isNativeSkipped(project) }
                 dependsOn(compileTask)
                 group = "build"
                 description = "Link the $libraryName shared library"

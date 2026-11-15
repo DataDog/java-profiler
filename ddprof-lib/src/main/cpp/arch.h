@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -17,9 +18,7 @@
 
 #ifdef _LP64
 #  define LP64_ONLY(code) code
-#else // !_LP64
-#  define LP64_ONLY(code)
-#endif // _LP64
+#endif
 
 #define COMMA ,
 
@@ -53,6 +52,12 @@ static inline long long atomicIncRelaxed(volatile T &var,
     return __atomic_fetch_add(&var, increment, __ATOMIC_RELAXED);
 }
 
+// Atomically replaces var with value and returns the previous value (relaxed).
+template <typename T>
+static inline T atomicExchangeRelaxed(volatile T &var, T value) {
+    return __atomic_exchange_n(&var, value, __ATOMIC_RELAXED);
+}
+
 // Atomic load/store (unordered)
 template <typename T>
 static inline T load(volatile T& var) {
@@ -83,7 +88,12 @@ static inline void storeRelease(volatile T& var, T value) {
     return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
 }
 
-#if defined(__x86_64__) || defined(__i386__)
+// CALLER_PC_IS_RETURN_ADDRESS must match what callerPC() actually produces
+// for each arch below: true when it is __builtin_return_address(0) (a real
+// return address), false when it is a leaf-seed instruction address instead
+// (aarch64's "adr %0, .").
+
+#if defined(__x86_64__)
 
 typedef unsigned char instruction_t;
 const instruction_t BREAKPOINT = 0xcc;
@@ -104,27 +114,7 @@ const int PERF_REG_PC = 8;  // PERF_REG_X86_IP
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        ((void**)__builtin_frame_address(0) + 2)
 
-#elif defined(__arm__) || defined(__thumb__)
-
-typedef unsigned int instruction_t;
-const instruction_t BREAKPOINT = 0xe7f001f0;
-const instruction_t BREAKPOINT_THUMB = 0xde01de01;
-const int BREAKPOINT_OFFSET = 0;
-
-const int SYSCALL_SIZE = sizeof(instruction_t);
-const int FRAME_PC_SLOT = 1;
-const int PROBE_SP_LIMIT = 0;
-const int PLT_HEADER_SIZE = 20;
-const int PLT_ENTRY_SIZE = 12;
-const int PERF_REG_PC = 15;  // PERF_REG_ARM_PC
-
-#define spinPause()       asm volatile("yield")
-#define rmb()             asm volatile("dmb ish" : : : "memory")
-#define flushCache(addr)  __builtin___clear_cache((char*)(addr), (char*)(addr) + sizeof(instruction_t))
-
-#define callerPC()        __builtin_return_address(0)
-#define callerFP()        __builtin_frame_address(1)
-#define callerSP()        __builtin_frame_address(1)
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__aarch64__)
 
@@ -146,6 +136,8 @@ const int PERF_REG_PC = 32;  // PERF_REG_ARM64_PC
 #define callerPC()        ({ void* pc; asm volatile("adr %0, ."  : "=r"(pc)); pc; })
 #define callerFP()        ({ void* fp; asm volatile("mov %0, fp" : "=r"(fp)); fp; })
 #define callerSP()        ({ void* sp; asm volatile("mov %0, sp" : "=r"(sp)); sp; })
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = false;
 
 #elif defined(__PPC64__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 
@@ -169,6 +161,8 @@ const int PERF_REG_PC = 32;  // PERF_REG_POWERPC_NIP
 #define callerPC()        __builtin_return_address(0)
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__riscv) && (__riscv_xlen == 64)
 
@@ -195,6 +189,8 @@ const int PERF_REG_PC = 0;      // PERF_REG_RISCV_PC
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
 
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
+
 #elif defined(__loongarch_lp64)
 
 typedef unsigned int instruction_t;
@@ -215,6 +211,8 @@ const int PERF_REG_PC = 0;      // PERF_REG_LOONGARCH_PC
 #define callerPC()        __builtin_return_address(0)
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #else
 

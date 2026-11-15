@@ -8,13 +8,14 @@
 
 #include "common.h"
 #include "context.h"
-#include "nativeMem.h"
 #include "context_api.h"
+#include "nativeMem.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocal.h"
 #include "threadState.h"
 #include "unwindStats.h"
+#include "xorshift.h"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -59,10 +60,8 @@ public:
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
   static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only
   static constexpr u32 FLAG_MONITOR_BLOCKED = 0x10u;
-  // Set once at JVMTI ThreadStart for threads whose runtime class is
-  // jdk.internal.misc.InnocuousThread (e.g. Read-Poller/Write-Poller,
-  // Common-Cleaner): JDK housekeeping threads, never application "task" work.
-  static constexpr u32 FLAG_JVM_INTERNAL_THREAD = 0x20u;
+  static constexpr u32 FLAG_TASK_BLOCKED = 0x20u;
+  static constexpr u32 FLAG_JVM_INTERNAL_THREAD = 0x40u;
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -92,20 +91,22 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   volatile u32 _misc_flags;
-  u64 _park_start_ticks;
-  u64 _park_block_token;
-  Context _park_context;
-  u64 _task_block_start_ticks;
-  u64 _task_block_token;
-  Context _task_block_context;
-  u64 _monitor_start_ticks;
-  Context _monitor_context;
-  u64 _monitor_blocker;
-  u64 _monitor_block_token;
-  OSThreadState _monitor_block_state;
+  // Park, generic task-block and monitor machines gate their own payload slot
+  // with a dedicated FLAG_* bit in _misc_flags.
+  struct BlockSlot {
+    u64 start_ticks{0};
+    Context context{};
+    u64 blocker{0};
+    u64 block_token{0};
+    OSThreadState block_state{OSThreadState::UNKNOWN};
+  };
+  BlockSlot _park_slot;
+  BlockSlot _task_block_slot;
+  BlockSlot _monitor_slot;
+  u64 _block_recording_epoch;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
-  volatile uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
+  volatile int _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   // Debug only due to memory overhead
   DEBUG_ONLY(UnwindFailures _unwind_failures;)
   // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).
@@ -122,28 +123,37 @@ private:
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
+  // Native-owner lifetime, not recording lifetime. Only the owner's normal
+  // context hooks transition this packed (version << 1) | membership word.
+  // Keep it outside the contiguous OTEL record/sidecar region.
+  std::atomic<u64> _logical_context_window_state;
+  static_assert(std::atomic<u64>::is_always_lock_free,
+                "Logical membership publication must be lock-free");
+
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_start_ticks(0), _park_block_token(0), _park_context{},
-        _task_block_start_ticks(0), _task_block_token(0), _task_block_context{},
-        _monitor_start_ticks(0), _monitor_context{}, _monitor_blocker(0),
-        _monitor_block_token(0), _monitor_block_state(OSThreadState::UNKNOWN),
+        _park_slot{}, _task_block_slot{}, _monitor_slot{}, _block_recording_epoch(0),
         _filter_slot_id(-1),
         _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
-        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
+        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0),
+        _logical_context_window_state(0) {
 #ifdef __FAULT_INJECTION__
-    // Seed like PoissonSampler: instance address XOR a hash of the tid, forced
-    // non-zero (0 is a fixed point of xorshift64). 0x9e37... is the Knuth
-    // multiplicative constant (see common.h KNUTH_MULTIPLICATIVE_CONSTANT).
-    _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
-    if (_fi_rng == 0) _fi_rng = 1;
+    _fi_rng = xorshift::seed((u64)(uintptr_t)this, (u64)tid);
 #endif
   };
 
-  virtual ~ProfiledThread() { }
+  virtual ~ProfiledThread() {
+    // Mirrors unclaimAndReset()'s otel_thread_ctx_v1 null-out (see
+    // threadLocalData.cpp) for the sibling teardown path: this runs when
+    // ThreadLocalDataPool::release() (called from freeValue() or
+    // deleteForTest()) reports the instance isn't pool-owned and falls back
+    // to `delete pt` instead. Always the current thread's own ProfiledThread,
+    // for the same reason given there.
+    __atomic_store_n(&otel_thread_ctx_v1, nullptr, __ATOMIC_SEQ_CST);
+  }
 
   inline bool isClaimed() const {
     return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
@@ -211,13 +221,23 @@ public:
     u32 recording_epoch;
     u32 misc_flags;
     u64 park_block_token;
+    u64 task_block_start_ticks;
+    u64 task_block_token;
+    Context task_block_context;
+    u64 block_recording_epoch;
     int filter_slot_id;
+    u64 logical_context_window_state;
     uint8_t init_window;
-    uint8_t signal_depth;
+    int signal_depth;
     bool in_critical_section;
     bool otel_ctx_initialized;
     u64 otel_local_root_span_id;
   };
+
+  // Normal-thread-only seed for version-wrap tests; no concurrent handlers.
+  void setLogicalContextWindowStateForTest(u64 raw) {
+    _logical_context_window_state.store(raw, std::memory_order_release);
+  }
 
   ResetStateForTest snapshotForTest() const {
     return ResetStateForTest{
@@ -225,7 +245,8 @@ public:
       __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED),
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
-      _park_block_token, _filter_slot_id, _init_window,
+      _park_slot.block_token, _task_block_slot.start_ticks, _task_block_slot.block_token,
+      _task_block_slot.context, _block_recording_epoch, _filter_slot_id, logicalContextWindowState(), _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
     };
@@ -251,6 +272,27 @@ public:
 
   static int currentTid();
   inline int tid() { return _tid; }
+
+  inline u64 logicalContextWindowState() const {
+    return _logical_context_window_state.load(std::memory_order_acquire);
+  }
+
+  // Owner-only. Handlers never write this source, so an interrupted transition
+  // cannot lose a competing update. Registry slots carry published snapshots.
+  inline bool enterLogicalContextWindow() {
+    u64 current = _logical_context_window_state.load(std::memory_order_relaxed);
+    if ((current & 1) != 0) return false;
+    _logical_context_window_state.store(current + 3, std::memory_order_release);
+    return true;
+  }
+
+  inline bool exitLogicalContextWindow() {
+    u64 current = _logical_context_window_state.load(std::memory_order_relaxed);
+    if ((current & 1) == 0) return false;
+    _logical_context_window_state.store(current + 1, std::memory_order_release);
+    return true;
+  }
+
   inline u64 noteCPUSample(u32 recording_epoch) {
     _recording_epoch = recording_epoch;
     return ++_cpu_epoch;
@@ -335,21 +377,18 @@ public:
 
   // Signal-handler depth counter used by SignalHandlerScope (guards.h).
   // Atomic operations to prevent another signal interrupt load-modify-store.
-  inline uint8_t signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
+  inline int signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
   inline void enterSignalScope()    { __atomic_fetch_add(&_signal_depth, 1, __ATOMIC_RELAXED); }
-  inline void exitSignalScope()     { if (signalDepth() > 0) __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED); }
+  inline void exitSignalScope()     {
+    int depth = __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED);
+    assert(depth > 0 && "Unmatched exitSignalScope");
+  }
 
 #ifdef __FAULT_INJECTION__
-  // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.
   // Plain member r/w is AS-safe: signals are delivered to the owning thread.
-  inline u64 nextFiRandom() {
-    _fi_rng ^= _fi_rng << 13;
-    _fi_rng ^= _fi_rng >> 7;
-    _fi_rng ^= _fi_rng << 17;
-    return _fi_rng;
-  }
+  inline u64 nextFiRandom() { return xorshift::next(_fi_rng); }
   // Test hook: force a deterministic PRNG stream for rate/recovery assertions.
-  inline void setFiRng(u64 seed) { _fi_rng = seed ? seed : 1; }
+  inline void setFiRng(u64 seed) { _fi_rng = xorshift::nonZero(seed); }
 #endif
 
 #ifdef DEBUG
@@ -459,18 +498,23 @@ public:
   }
 #endif
 
+  // Called by the owning thread before admitting a producer interval. Registry
+  // identities survive restart, but their old producer payload must not: an
+  // exit callback may have been disabled while the thread was blocked.
+  inline void refreshBlockState(u64 recording_epoch) {
+    if (_block_recording_epoch == recording_epoch) return;
+    __atomic_fetch_and(&_misc_flags,
+                       ~(FLAG_PARKED | FLAG_TASK_BLOCKED | FLAG_MONITOR_BLOCKED),
+                       __ATOMIC_ACQ_REL);
+    _park_slot = {};
+    _task_block_slot = {};
+    _monitor_slot = {};
+    _block_recording_epoch = recording_epoch;
+  }
+
   inline bool parkEnter(u64 start_ticks, const Context& context) {
-    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
-    while ((flags & FLAG_PARKED) == 0) {
-      _park_start_ticks = start_ticks;
-      _park_context = context;
-      if (__atomic_compare_exchange_n(&_misc_flags, &flags,
-                                      flags | FLAG_PARKED, true,
-                                      __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
-        return true;
-      }
-    }
-    return false;
+    return blockSlotEnter<FLAG_PARKED>(_park_slot, start_ticks, context,
+                                       /*blocker=*/0, OSThreadState::UNKNOWN);
   }
 
 #ifdef UNIT_TEST
@@ -478,38 +522,54 @@ public:
 #endif
 
   inline void setParkBlockToken(u64 token) {
-    _park_block_token = token;
+    _park_slot.block_token = token;
   }
 
   inline bool taskBlockEnter(u64 token, u64 start_ticks,
                              const Context& context) {
-    if (token == 0 || _task_block_token != 0) return false;
-    _task_block_start_ticks = start_ticks;
-    _task_block_context = context;
-    _task_block_token = token;
+    if (token == 0) return false;
+    if (!blockSlotEnter<FLAG_TASK_BLOCKED>(_task_block_slot, start_ticks,
+                                          context, /*blocker=*/0,
+                                          OSThreadState::UNKNOWN)) {
+      return false;
+    }
+    _task_block_slot.block_token = token;
     return true;
   }
 
+  // Drops the pending TASK_BLOCK interval and returns its token, or 0 when
+  // none is pending. Lets beginTaskBlock0 recover an interval whose
+  // endTaskBlock0 was never reached; without this, taskBlockEnter() keeps
+  // failing for the rest of the thread's life.
+  inline u64 abandonTaskBlock() {
+    u64 token = _task_block_slot.block_token;
+    clearTaskBlock();
+    return token;
+  }
+
   inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
-    if (token == 0 || _task_block_token != token) return false;
-    start_ticks = _task_block_start_ticks;
-    context = _task_block_context;
-    _task_block_token = 0;
-    return true;
+    if (token == 0 || _task_block_slot.block_token != token) return false;
+    u64 blocker_unused, token_unused;
+    return blockSlotExit<FLAG_TASK_BLOCKED>(_task_block_slot,
+                                            OSThreadState::UNKNOWN,
+                                            start_ticks, context,
+                                            blocker_unused, token_unused);
+  }
+
+  inline u64 taskBlockToken() const { return _task_block_slot.block_token; }
+
+  inline void clearTaskBlock() {
+    __atomic_fetch_and(&_misc_flags, ~FLAG_TASK_BLOCKED, __ATOMIC_ACQ_REL);
+    _task_block_slot.block_token = 0;
   }
 
   // Returns false if the thread was not parked (idempotent).
   inline bool parkExit(u64& start_ticks, Context& context,
                        u64& park_block_token) {
-    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
-    if ((prev & FLAG_PARKED) == 0) {
-      return false;
-    }
-    start_ticks = _park_start_ticks;
-    context = _park_context;
-    park_block_token = _park_block_token;
-    _park_block_token = 0;
-    return true;
+    u64 blocker_unused;
+    return blockSlotExit<FLAG_PARKED>(_park_slot, OSThreadState::UNKNOWN,
+                                      start_ticks, context, blocker_unused,
+                                      park_block_token);
   }
 
 #ifdef UNIT_TEST
@@ -520,56 +580,81 @@ public:
   }
 #endif
 
-  // Object.wait owns its interval until MonitorWaited, including monitor
-  // reacquisition. A nested contention callback must not overwrite that state.
+  // Object.wait owns its interval until MonitorWaited. HotSpot 21 posts that
+  // callback before monitor reacquisition (ObjectMonitor::wait()). A nested
+  // contention callback must not overwrite an interval that is still open.
   inline bool monitorEnter(u64 start_ticks, const Context& context, u64 blocker,
                            OSThreadState state) {
-    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
-    if ((flags & FLAG_MONITOR_BLOCKED) != 0) return false;
-    _monitor_start_ticks = start_ticks;
-    _monitor_context = context;
-    _monitor_blocker = blocker;
-    _monitor_block_token = 0;
-    _monitor_block_state = state;
-    __atomic_fetch_or(&_misc_flags, FLAG_MONITOR_BLOCKED, __ATOMIC_RELEASE);
-    return true;
+    return blockSlotEnter<FLAG_MONITOR_BLOCKED>(_monitor_slot, start_ticks,
+                                                context, blocker, state);
   }
 
   inline void setMonitorBlockToken(u64 token) {
-    _monitor_block_token = token;
+    _monitor_slot.block_token = token;
   }
 
-  inline u64 monitorBlockToken() const { return _monitor_block_token; }
+  inline u64 monitorBlockToken() const { return _monitor_slot.block_token; }
 
   inline void clearMonitorBlock() {
     __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);
-    _monitor_block_token = 0;
-    _monitor_block_state = OSThreadState::UNKNOWN;
+    _monitor_slot.block_token = 0;
+    _monitor_slot.block_state = OSThreadState::UNKNOWN;
   }
 
   inline bool monitorExit(OSThreadState expected_state, u64& start_ticks,
                           Context& context, u64& blocker,
                           u64& monitor_block_token) {
-    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
-    if ((flags & FLAG_MONITOR_BLOCKED) == 0 ||
-        _monitor_block_state != expected_state) {
-      return false;
-    }
-    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED,
-                                  __ATOMIC_ACQ_REL);
-    if ((prev & FLAG_MONITOR_BLOCKED) == 0) return false;
-    start_ticks = _monitor_start_ticks;
-    context = _monitor_context;
-    blocker = _monitor_blocker;
-    monitor_block_token = _monitor_block_token;
-    _monitor_block_token = 0;
-    _monitor_block_state = OSThreadState::UNKNOWN;
-    return true;
+    return blockSlotExit<FLAG_MONITOR_BLOCKED>(_monitor_slot, expected_state,
+                                               start_ticks, context, blocker,
+                                               monitor_block_token);
   }
 
   Context snapshotContext(size_t numAttrs);
 
 private:
+  // FLAG selects the caller's _misc_flags bit; UNKNOWN clears any stored state.
+  // monitorExit gates clearing by state so nested contention cannot clear Object.wait.
+  template <u32 FLAG>
+  inline bool blockSlotEnter(BlockSlot& slot, u64 start_ticks,
+                             const Context& context, u64 blocker,
+                             OSThreadState state) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    while ((flags & FLAG) == 0) {
+      slot.start_ticks = start_ticks;
+      slot.context = context;
+      slot.blocker = blocker;
+      slot.block_token = 0;
+      slot.block_state = state;
+      if (__atomic_compare_exchange_n(&_misc_flags, &flags, flags | FLAG,
+                                      true, __ATOMIC_RELEASE,
+                                      __ATOMIC_ACQUIRE)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  template <u32 FLAG>
+  inline bool blockSlotExit(BlockSlot& slot, OSThreadState expected_state,
+                            u64& start_ticks, Context& context, u64& blocker,
+                            u64& block_token) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    if ((flags & FLAG) == 0) return false;
+    if (expected_state != OSThreadState::UNKNOWN &&
+        slot.block_state != expected_state) {
+      return false;
+    }
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG, __ATOMIC_ACQ_REL);
+    if ((prev & FLAG) == 0) return false;
+    start_ticks = slot.start_ticks;
+    context = slot.context;
+    blocker = slot.blocker;
+    block_token = slot.block_token;
+    slot.block_token = 0;
+    slot.block_state = OSThreadState::UNKNOWN;
+    return true;
+  }
+
   // Atomic flag for signal handler reentrancy protection within the same thread
   // Must be atomic because a signal handler can interrupt normal execution mid-instruction,
   // and both contexts may attempt to enter the critical section. Without atomic exchange(),

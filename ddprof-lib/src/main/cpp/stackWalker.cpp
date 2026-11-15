@@ -5,9 +5,11 @@
  */
 
 #include <setjmp.h>
+#include "dwarfStep.inline.h"
 #include "stackWalker.inline.h"
 #include "dwarf.h"
 #include "faultInjection.h"
+#include "guards.h"
 #include "profiler.h"
 #include "stackFrame.h"
 #include "symbols.h"
@@ -22,18 +24,22 @@ using StackWalkValidation::MAX_FRAME_SIZE;
 
 
 int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
-    const void* pc;
     uintptr_t fp;
     uintptr_t sp;
     uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
 
     StackFrame frame(ucontext);
+    WalkPc walk_pc;
     if (ucontext == NULL) {
-        pc = callerPC();
+        // stripPointer() for the same reason the recovery paths below need it:
+        // where callerPC() is a real return address it carries the platform's
+        // pointer tagging (PAC bits on aarch64, the Thumb interworking bit on
+        // arm).
+        walk_pc.setSeed(stripPointer(callerPC()), CALLER_PC_IS_RETURN_ADDRESS);
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
     } else {
-        pc = (const void*)frame.pc();
+        walk_pc.setExactAddress((const void*)frame.pc());
         fp = frame.fp();
         sp = frame.sp();
     }
@@ -52,13 +58,13 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     }
 
     sigjmp_buf crash_protection_ctx;
-    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    JmpCtxScope jmp_scope(prof_thread);
 
     if (sigsetjmp(crash_protection_ctx, 1) != 0) {
         // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor. Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-        prof_thread->setJmpCtx(prev_jmp_buf);
+        jmp_scope.restore();
         if (truncated) {
             *truncated = true;
             if (depth > max_depth) {
@@ -67,17 +73,23 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
         return depth;
     }
-    prof_thread->setJmpCtx(&crash_protection_ctx);
+    jmp_scope.install(&crash_protection_ctx);
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
-        if (JVMSupport::isJitCode(pc) && !(depth == 0 && JVMSupport::canUnwind(frame, pc)) &&
-            JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
-            java_ctx->set(pc, sp, fp);
-            break;
+        if (JVMSupport::isJitCode(walk_pc.raw())) {
+            const void* unwound_pc = walk_pc.raw();
+            if (depth == 0 && JVMSupport::canUnwind(frame, unwound_pc)) {
+                // unwindAtomicStub rewrites the pc to the link register, i.e.
+                // to a genuine return address, so the flag travels with it.
+                walk_pc.setReturnAddress(unwound_pc);
+            } else if (JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
+                java_ctx->set(walk_pc.raw(), sp, fp);
+                break;
+            }
         }
 
-        callchain[depth++] = pc;
+        callchain[depth++] = walk_pc.attribution();
 
         // Check if the next frame is below on the current stack
         if (fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom) {
@@ -89,16 +101,17 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
             break;
         }
 
-        pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp + FRAME_PC_SLOT)));
-        if (inDeadZone(pc)) {
+        // Unconditionally a return address here: the frame-pointer walk has no
+        // DWARF row, so it cannot see a signal-frame CIE the way walkDwarf can.
+        walk_pc.setReturnAddress(
+            stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp + FRAME_PC_SLOT))));
+        if (inDeadZone(walk_pc.raw())) {
             break;
         }
 
         sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
         fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp));
     }
-
-    prof_thread->setJmpCtx(prev_jmp_buf);
 
     if (truncated && depth > max_depth) {
         *truncated = true;
@@ -109,18 +122,22 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
 }
 
 int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
-    const void* pc;
     uintptr_t fp;
     uintptr_t sp;
     uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
 
     StackFrame frame(ucontext);
+    WalkPc walk_pc;
     if (ucontext == NULL) {
-        pc = callerPC();
+        // stripPointer() for the same reason the recovery paths below need it:
+        // where callerPC() is a real return address it carries the platform's
+        // pointer tagging (PAC bits on aarch64, the Thumb interworking bit on
+        // arm).
+        walk_pc.setSeed(stripPointer(callerPC()), CALLER_PC_IS_RETURN_ADDRESS);
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
     } else {
-        pc = (const void*)frame.pc();
+        walk_pc.setExactAddress((const void*)frame.pc());
         fp = frame.fp();
         sp = frame.sp();
     }
@@ -140,13 +157,13 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     }
 
     sigjmp_buf crash_protection_ctx;
-    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    JmpCtxScope jmp_scope(prof_thread);
 
     if (sigsetjmp(crash_protection_ctx, 1) != 0) {
         // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor. Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-        prof_thread->setJmpCtx(prev_jmp_buf);
+        jmp_scope.restore();
         if (truncated) {
             *truncated = true;
             if (depth > max_depth) {
@@ -155,85 +172,32 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
         return depth;
     }
-    prof_thread->setJmpCtx(&crash_protection_ctx);
+    jmp_scope.install(&crash_protection_ctx);
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
-        if (JVMSupport::isJitCode(pc) && !(depth == 0 && JVMSupport::canUnwind(frame, pc)) &&
-            JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
-            // Don't dereference pc as it may point to unreadable memory
-            // frame.adjustSP(page_start, pc, sp);
-            java_ctx->set(pc, sp, fp);
-            break;
-        }
-
-        callchain[depth++] = pc;
-
-        uintptr_t prev_sp = sp;
-        CodeCache* cc = profiler->findLibraryByAddress(pc);
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();
-
-        u8 cfa_reg = (u8)f.cfa;
-        int cfa_off = f.cfa >> 8;
-        if (cfa_reg == DW_REG_SP) {
-            sp = sp + cfa_off;
-        } else if (cfa_reg == DW_REG_FP) {
-            sp = fp + cfa_off;
-        } else if (cfa_reg == DW_REG_PLT) {
-            sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
-        } else {
-            break;
-        }
-
-        // Check if the next frame is below on the current stack
-        if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
-            break;
-        }
-
-        // Stack pointer must be word aligned
-        if (!aligned(sp)) {
-            break;
-        }
-
-        const void* prev_pc = pc;
-        if (f.fp_off & DW_PC_OFFSET) {
-            pc = (const char*)pc + (f.fp_off >> 1);
-        } else {
-            if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
-                uintptr_t fp_addr = sp + f.fp_off;
-                if (!aligned(fp_addr)) {
-                    break;
-                }
-                fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp_addr));
-            }
-
-            if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                uintptr_t pc_addr = sp + f.pc_off;
-                if (!aligned(pc_addr)) {
-                    break;
-                }
-                pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr)));
-            } else if (depth == 1) {
-                pc = (const void*)frame.link();
-            } else {
+        if (JVMSupport::isJitCode(walk_pc.raw())) {
+            const void* unwound_pc = walk_pc.raw();
+            if (depth == 0 && JVMSupport::canUnwind(frame, unwound_pc)) {
+                // unwindAtomicStub rewrites the pc to the link register, i.e.
+                // to a genuine return address, so the flag travels with it.
+                walk_pc.setReturnAddress(unwound_pc);
+            } else if (JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
+                // Don't dereference pc as it may point to unreadable memory
+                // frame.adjustSP(page_start, pc, sp);
+                java_ctx->set(walk_pc.raw(), sp, fp);
                 break;
             }
-
-            if (EMPTY_FRAME_SIZE == 0 && cfa_off == 0 && f.fp_off != DW_SAME_FP) {
-                // AArch64 default_frame
-                sp = defaultSenderSP(sp, fp);
-                if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
-                    break;
-                }
-            }
         }
 
-        if (inDeadZone(pc) || (pc == prev_pc && sp == prev_sp)) {
+        const void* attribution_pc = walk_pc.attribution();
+        callchain[depth++] = attribution_pc;
+
+        if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
+                               profiler)) {
             break;
         }
     }
-
-    prof_thread->setJmpCtx(prev_jmp_buf);
 
     if (truncated && depth > max_depth) {
         *truncated = true;

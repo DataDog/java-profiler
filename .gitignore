@@ -41,7 +41,25 @@ datadog/maven/resources
 # Temporary documentation and work state
 doc/temp/
 
-# CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
-CLAUDE.md
+# Working state left by run_tests_with_retry.sh
+/flake-evidence/
+/ci-outcome/
 
-.sphinx
+# Bytecode from the CI scripts, left by running them or their tests locally
+__pycache__/
+
+# OS/editor cruft
+.DS_Store
+
+# AI review/agent tooling scratch state
+.sphinx/
+/.scratch/
+.skill-builder-temp/
+.claude/scheduled_tasks.lock
+
+# Python bytecode cache
+*.pyc
+
+# AI investigation scratch state (never committed)
+.investigations/
+/notes/

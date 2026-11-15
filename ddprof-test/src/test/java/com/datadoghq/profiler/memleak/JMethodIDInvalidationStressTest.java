@@ -15,6 +15,20 @@
  */
 package com.datadoghq.profiler.memleak;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.datadoghq.profiler.JfrFrame;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -24,68 +38,56 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
-import java.io.IOException;
-import java.lang.reflect.Method;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
- * Exploratory stress test for jmethodID invalidation, motivated by PROF-15385 (SIGSEGV in
- * {@code Lookup::fillJavaMethodInfo} copying a JVMTI line-number table for a stale jmethodID,
- * fixed by guarding that copy with {@code SafeAccess::isReadableRange}).
+ * Exploratory stress test for jmethodID invalidation, motivated by PROF-15385 (SIGSEGV in {@code
+ * Lookup::fillJavaMethodInfo} copying a JVMTI line-number table for a stale jmethodID, fixed by
+ * guarding that copy with {@code SafeAccess::isReadableRange}).
  *
- * <p>That fix addressed one call site. This test does not target a specific call site; it tries
- * to manufacture the same underlying condition — jmethodIDs whose declaring class is unloaded
- * while the profiler is actively resolving/dumping — at high enough concurrency and volume that
- * any *other*, currently-unguarded, use of a stale jmethodID has a chance to surface on its own.
+ * <p>That fix addressed one call site. This test does not target a specific call site; it tries to
+ * manufacture the same underlying condition — jmethodIDs whose declaring class is unloaded while
+ * the profiler is actively resolving/dumping — at high enough concurrency and volume that any
+ * *other*, currently-unguarded, use of a stale jmethodID has a chance to surface on its own.
  *
  * <p><b>Approach:</b>
+ *
  * <ul>
- *   <li>Several driver threads continuously define throwaway classes in fresh, disposable
- *       {@link ClassLoader}s, invoke their methods a few times (so the jmethodIDs are actually
- *       captured by the profiler), then drop every reference.</li>
- *   <li>A dedicated thread calls {@code System.gc()} on a tight loop for the duration of the
- *       test, to encourage the JVM to actually unload those discarded classes/loaders while the
- *       other threads are still running — rather than letting them merely accumulate.</li>
- *   <li>The main thread calls {@code profiler.dump()} repeatedly throughout, so
- *       {@code writeStackTraces}/{@code Lookup::resolveMethod}/{@code cleanupUnreferencedMethods}
- *       run concurrently with class unloading, not just class-loading.</li>
- *   <li>Both the {@code cpu} and {@code alloc} engines are active, since each has its own path
- *       into {@code Lookup} and its own timing relative to unload.</li>
+ *   <li>Several driver threads continuously define throwaway classes in fresh, disposable {@link
+ *       ClassLoader}s, invoke their methods a few times (so the jmethodIDs are actually captured by
+ *       the profiler), then drop every reference.
+ *   <li>A dedicated thread calls {@code System.gc()} on a tight loop for the duration of the test,
+ *       to encourage the JVM to actually unload those discarded classes/loaders while the other
+ *       threads are still running — rather than letting them merely accumulate.
+ *   <li>The main thread calls {@code profiler.dump()} repeatedly throughout, so {@code
+ *       writeStackTraces}/{@code Lookup::resolveMethod}/{@code cleanupUnreferencedMethods} run
+ *       concurrently with class unloading, not just class-loading.
+ *   <li>Both the {@code cpu} and {@code alloc} engines are active, since each has its own path into
+ *       {@code Lookup} and its own timing relative to unload.
  * </ul>
  *
  * <p><b>Pass/fail signal:</b> a SIGSEGV/SIGABRT kills the whole JVM, so JUnit would never get to
- * report a failure directly -- reaching {@code profiler.stop()} at all is one necessary signal.
- * But that alone would pass vacuously if the churn never actually raced class unload against
- * {@code Lookup::resolveMethod}/{@code fillJavaMethodInfo}. To rule that out, this test reads the
- * native whitebox counters ({@code JavaProfiler#getDebugCounters()}) for {@code
- * jmethodid_skipped_count} and {@code line_number_table_unreadable} -- both are incremented in
- * {@code fillJavaMethodInfo} exactly when {@code SafeAccess::isReadableRange} rejects a stale
- * jmethodID's class/method metadata or line-number table (see flightRecorder.cpp) -- and checks
- * that at least one of them increased during the churn window. Whether the race is actually hit
- * within the window is JVM/host-discretionary, so that check is a JUnit assumption rather than an
- * assertion: if neither counter moved, the test is reported as skipped (not failed), since a
- * healthy host that simply didn't race tightly enough this run is not evidence of a regression. A
- * pass therefore means both "no crash" and "a stale jmethodID was actually observed and safely
- * guarded"; a skip means only the former was exercised. We cannot run this under ASan
- * here, since the profiler under test must run as a live JVMTI agent inside the same JVM process
- * the test is driving, not as a standalone ASan-instrumented binary the way the gtest-level native
- * unit tests can.
+ * report a failure directly -- reaching {@code profiler.stop()} at all is one necessary signal. But
+ * that alone would pass vacuously if the churn never actually raced class unload against {@code
+ * Lookup::resolveMethod}/{@code fillJavaMethodInfo}. To rule that out, this test reads the native
+ * whitebox counters ({@code JavaProfiler#getDebugCounters()}) for {@code jmethodid_skipped_count}
+ * and {@code line_number_table_unreadable} -- both are incremented in {@code fillJavaMethodInfo}
+ * exactly when {@code SafeAccess::isReadableRange} rejects a stale jmethodID's class/method
+ * metadata or line-number table (see flightRecorder.cpp) -- and checks that at least one of them
+ * increased during the churn window. Whether the race is actually hit within the window is
+ * JVM/host-discretionary, so that check is a JUnit assumption rather than an assertion: if neither
+ * counter moved, the test is reported as skipped (not failed), since a healthy host that simply
+ * didn't race tightly enough this run is not evidence of a regression. A pass therefore means both
+ * "no crash" and "a stale jmethodID was actually observed and safely guarded"; a skip means only
+ * the former was exercised. We cannot run this under ASan here, since the profiler under test must
+ * run as a live JVMTI agent inside the same JVM process the test is driving, not as a standalone
+ * ASan-instrumented binary the way the gtest-level native unit tests can.
  *
- * <p><b>Limitations:</b> class unloading is JVM-discretionary and best-effort here — this test
- * does not wait for or verify that any particular class actually unloads (unlike
- * {@code CleanupAfterClassUnloadTest}/{@code WriteStackTracesAfterClassUnloadTest}, which target
- * one specific, already-diagnosed race and gate on a confirmed unload). It relies on volume and
- * concurrency to make unload-during-use likely across many call sites at once, but a clean run
- * is evidence of nothing more than "no crash was hit this time" for whatever code paths happened
- * to be exercised.
+ * <p><b>Limitations:</b> class unloading is JVM-discretionary and best-effort here — this test does
+ * not wait for or verify that any particular class actually unloads (unlike {@code
+ * CleanupAfterClassUnloadTest}/{@code WriteStackTracesAfterClassUnloadTest}, which target one
+ * specific, already-diagnosed race and gate on a confirmed unload). It relies on volume and
+ * concurrency to make unload-during-use likely across many call sites at once, but a clean run is
+ * evidence of nothing more than "no crash was hit this time" for whatever code paths happened to be
+ * exercised.
  */
 @Tag("slow")
 public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
@@ -107,6 +109,7 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
 
     Path baseFile = tempFile("jmethodid-churn-base");
     Path dumpFile = tempFile("jmethodid-churn-dump");
+    Path firedDumpFile = null;
 
     AtomicBoolean running = new AtomicBoolean(true);
     List<Thread> churnThreads = new ArrayList<>();
@@ -126,17 +129,20 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
         t.start();
       }
 
-      gcThread = new Thread(() -> {
-        while (running.get()) {
-          System.gc();
-          try {
-            Thread.sleep(20);
-          } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return;
-          }
-        }
-      }, "jmethodid-churn-gc");
+      gcThread =
+          new Thread(
+              () -> {
+                while (running.get()) {
+                  System.gc();
+                  try {
+                    Thread.sleep(20);
+                  } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                  }
+                }
+              },
+              "jmethodid-churn-gc");
       gcThread.setDaemon(true);
       gcThread.start();
 
@@ -145,9 +151,23 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
       // with class unloading, not just after it.
       long deadline = System.currentTimeMillis() + DURATION_MILLIS;
       int dumps = 0;
+      long prevSkipped = before.getOrDefault("jmethodid_skipped_count", 0L);
       while (System.currentTimeMillis() < deadline) {
         profiler.dump(dumpFile);
         dumps++;
+        // The stale-jmethodID branch (JMETHODID_SKIPPED) and the '<unloaded>' label it
+        // serializes are produced in the same fillJavaMethodInfo call, so a dump whose
+        // window observed the counter crossing is guaranteed to carry the branch's
+        // output. Snapshot it: the assertion cannot use just the last dump file, since
+        // the counter also fires during background JFR buffer flushes between dumps,
+        // and a stale trace still present at an early dump can be evicted from the
+        // call-trace storage by later churn before the final dump is written.
+        long skipped = profiler.getDebugCounters().getOrDefault("jmethodid_skipped_count", 0L);
+        if (firedDumpFile == null && skipped > prevSkipped) {
+          firedDumpFile = tempFile("jmethodid-churn-fired");
+          Files.copy(dumpFile, firedDumpFile, StandardCopyOption.REPLACE_EXISTING);
+        }
+        prevSkipped = skipped;
         Thread.sleep(50);
       }
 
@@ -159,35 +179,74 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
 
       // Reaching this line means the profiler survived the whole churn window.
       Map<String, Long> after = profiler.getDebugCounters();
+      long skippedDelta =
+          after.getOrDefault("jmethodid_skipped_count", 0L)
+              - before.getOrDefault("jmethodid_skipped_count", 0L);
+      long unreadableLineTableDelta =
+          after.getOrDefault("line_number_table_unreadable", 0L)
+              - before.getOrDefault("line_number_table_unreadable", 0L);
+
+      // If the counter only fired during background JFR buffer flushes between dumps,
+      // no dump window observed it and no snapshot was taken. One more dump
+      // re-serializes any trace still carrying that stale jmethodID -- its
+      // '<unloaded>' MethodInfo is cached from the first resolution -- so the label
+      // assertion below stays checkable.
+      if (skippedDelta > 0 && firedDumpFile == null) {
+        firedDumpFile = tempFile("jmethodid-churn-fired");
+        profiler.dump(firedDumpFile);
+      }
+
       profiler.stop();
 
-      assertTrue(Files.size(dumpFile) > 0,
+      assertTrue(
+          Files.size(dumpFile) > 0,
           "Profiler produced no output after " + dumps + " dumps under jmethodID churn");
 
       long churnIterations = CHURN_ITERATIONS.get();
-      assertTrue(churnIterations > 0,
+      assertTrue(
+          churnIterations > 0,
           "Churn threads never completed a single load/invoke/discard iteration -- the "
               + "counter-delta assertion below would be meaningless without this, since it "
               + "can't tell 'no stale jmethodID was hit' apart from 'churn never ran at all' "
               + "(e.g. a regression in generateChurnClassBytecode or IsolatedClassLoader).");
 
-      long skippedDelta = after.getOrDefault("jmethodid_skipped_count", 0L)
-          - before.getOrDefault("jmethodid_skipped_count", 0L);
-      long unreadableLineTableDelta = after.getOrDefault("line_number_table_unreadable", 0L)
-          - before.getOrDefault("line_number_table_unreadable", 0L);
-
       // Whether the stale-jmethodID race actually gets hit within the churn window is
       // JVM/host-discretionary (see class javadoc); treat "never observed" as an aborted
       // run rather than a failure so a healthy host that just didn't race tightly enough
       // doesn't flake CI.
-      Assumptions.assumeTrue(skippedDelta > 0 || unreadableLineTableDelta > 0,
+      Assumptions.assumeTrue(
+          skippedDelta > 0 || unreadableLineTableDelta > 0,
           "Churn window completed without the profiler ever encountering a stale/unmapped "
-              + "jmethodID (jmethodid_skipped_count delta=" + skippedDelta
-              + ", line_number_table_unreadable delta=" + unreadableLineTableDelta
+              + "jmethodID (jmethodid_skipped_count delta="
+              + skippedDelta
+              + ", line_number_table_unreadable delta="
+              + unreadableLineTableDelta
               + ") -- this test is meant to prove the guard actually fires under class-unload "
               + "churn, not just that the JVM didn't crash; if this keeps getting skipped, the "
               + "churn isn't racing unload against resolveMethod/fillJavaMethodInfo tightly "
               + "enough (consider more churn threads or a longer window).");
+
+      // The jmethodid_skipped_count counter is incremented in the exact branch of
+      // Lookup::fillJavaMethodInfo (the JVMTI-resolution-failure 'else') that serializes a
+      // stale-jmethodID frame as '<unloaded>'. line_number_table_unreadable is a separate,
+      // mutually-exclusive branch where the jmethodID *did* resolve to a real method/class name
+      // and only the line-number-table copy failed -- it never produces '<unloaded>'. So the
+      // recording assertion below is only meaningful when skippedDelta > 0; a run that only
+      // triggered the line-table race would otherwise fail spuriously. Gate it accordingly.
+      Assumptions.assumeTrue(
+          skippedDelta > 0,
+          "Churn window hit only the line-number-table race (line_number_table_unreadable delta="
+              + unreadableLineTableDelta
+              + ", jmethodid_skipped_count delta="
+              + skippedDelta
+              + ") -- the '<unloaded>' label assertion is only meaningful when the"
+              + " JVMTI-resolution-failure branch ran; skipping to avoid a spurious failure.");
+      // Assert that the recording produced by that branch uses the '<unloaded>' label and
+      // never the legacy 'jvmtiError' one -- this fails if the label is reverted to 'jvmtiError'.
+      // With skippedDelta > 0, firedDumpFile is always set: either the dump whose window
+      // observed the counter crossing (label emitted in that same fillJavaMethodInfo call)
+      // or the extra post-churn dump taken above.
+      assertUnloadedFrameLabel(firedDumpFile);
     } finally {
       running.set(false);
       for (Thread t : churnThreads) {
@@ -214,7 +273,62 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
         Files.deleteIfExists(dumpFile);
       } catch (IOException ignored) {
       }
+      if (firedDumpFile != null) {
+        try {
+          Files.deleteIfExists(firedDumpFile);
+        } catch (IOException ignored) {
+        }
+      }
     }
+  }
+
+  /**
+   * Asserts that the JFR recording produced by the churn window serializes stale-jmethodID frames
+   * as {@code "<unloaded>"} and never as the legacy {@code "jvmtiError"} label. This is the
+   * regression guard for the flightRecorder.cpp remap: reverting the label to {@code "jvmtiError"}
+   * makes this assertion fail. Only stack-trace-bearing event types are inspected; events without a
+   * {@code stackTrace} field are skipped.
+   */
+  private void assertUnloadedFrameLabel(Path recording) throws Exception {
+    AtomicBoolean foundUnloaded = new AtomicBoolean();
+    AtomicBoolean foundLegacy = new AtomicBoolean();
+    AtomicReference<String> legacySample = new AtomicReference<>();
+    for (String eventType : new String[] {"datadog.ExecutionSample", "datadog.AllocationSample"}) {
+      streamEvents(
+          recording,
+          eventType,
+          event -> {
+            if (!event.has(STACK_TRACE)) {
+              return;
+            }
+            for (JfrFrame frame : event.getStackTrace().frames()) {
+              String name = frame.methodName();
+              if (name == null) {
+                continue;
+              }
+              if (name.equals("<unloaded>")) {
+                foundUnloaded.set(true);
+              } else if (name.equals("jvmtiError")) {
+                foundLegacy.set(true);
+                if (legacySample.get() == null) {
+                  legacySample.set(event.getStackTraceString());
+                }
+              }
+            }
+          });
+    }
+    assertTrue(
+        foundUnloaded.get(),
+        "Expected at least one frame serialized as '<unloaded>' in "
+            + recording
+            + " (jmethodid_skipped_count fired, so the stale-jmethodID branch ran), "
+            + "but none was found -- the remap to '<unloaded>' may have been reverted.");
+    assertTrue(
+        !foundLegacy.get(),
+        "Found a frame serialized as the legacy 'jvmtiError' label in "
+            + recording
+            + "; expected '<unloaded>'. First offending sample: "
+            + legacySample.get());
   }
 
   private void churnLoop(AtomicBoolean running) {
@@ -247,9 +361,9 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
   }
 
   /**
-   * Generates a class with a {@code compute(int)} method (multi-line-number arithmetic, so
-   * {@code GetLineNumberTable} on it returns more than one entry) and an {@code allocate(int)}
-   * method (array allocation, so the alloc engine's stack capture includes this jmethodID too).
+   * Generates a class with a {@code compute(int)} method (multi-line-number arithmetic, so {@code
+   * GetLineNumberTable} on it returns more than one entry) and an {@code allocate(int)} method
+   * (array allocation, so the alloc engine's stack capture includes this jmethodID too).
    */
   private byte[] generateChurnClassBytecode(String internalName) {
     ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);

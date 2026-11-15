@@ -172,6 +172,40 @@ running the wrong number of times (double free or leak across `clear()`, an over
 the next `get()`, and non-bit-exact round-trips for the `double` specialization (NaN,
 infinities, subnormals, -0.0).
 
+### fuzz_threadFilter.cpp
+**Target**: `ThreadFilter` / `WallClockBlockTracker` - the wall-clock thread
+identity registry and its block-run suppression sidecar (see
+`threadFilter.h` / `wallClockBlockTracker.h`).
+
+Drives `registerThread` / `unregisterThread` / `add` / `remove` /
+`enterBlockedRun` / `exitBlockedRun` / `init` (registry restart) over a small,
+fixed tid domain so slot reuse and registration collisions are frequent. A
+shadow model tracks which tid should currently own which slot and retains
+its logical context-window word independently of the registry projection.
+Registration receives that explicit owner word; a recording restart retains
+membership and its version. The driver traps on divergence.
+
+**Regression guards** (no known open bugs): a still-live tid handed a
+second slot, or two live tids sharing one slot (the single-owner invariant
+is enforced by `registerThread()`'s dedupe via `lookupSlotIdByTid()` under
+`_registry_lock` plus `indexSlot()`'s duplicate refusal, and `add()` rejects
+a slot whose `nativeTid()` differs - `add()` never binds a tid); a registry
+restart (`init()`) failing to make old block state ineligible or a retained
+owner's re-registration failing to clear it or restore its logical word;
+a stale or forged generation
+token clearing a newer block run, or a correct-generation exit leaving run
+state behind; `add()` failing for an owned tid or context-window membership
+diverging from the shadow model; the owned-block suppression decision
+diverging (in either direction) from the shadow model; and any
+out-of-bounds/use-after-free in the lazy chunk allocation paths that slot
+reuse and registry resets exercise.
+
+The fuzzer activates the registry with `init("", true)`. In production this requires
+an explicit empty `filter=` and a supported, activated wall engine with precheck;
+omitting `filter` defaults to context filtering. Unfiltered identities register
+lazily on context/block/park hooks. Suppression there applies only to owned blocks
+that remain outside context windows, not arbitrary unowned blocked observations.
+
 ## Corpus
 
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points

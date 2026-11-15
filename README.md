@@ -1,5 +1,5 @@
 # Datadog Java Profiler Library
-_Based on [async-profiler 2.8.3](https://github.com/jvm-profiling-tools/java-profiler/releases/tag/v2.8.3)_
+_Based on [async-profiler 2.8.3](https://github.com/async-profiler/async-profiler/releases/tag/v2.8.3)_
 
 ## Disclaimer
 This is not a fork of [async-profiler](https://github.com/jvm-profiling-tools/async-profiler). This is a work derived from __async-profiler__ but tailored very specifically for Datadog needs.
@@ -37,6 +37,26 @@ cd java-profiler
 ```
 
 The resulting artifact will be in `ddprof-lib/build/libs/ddprof-<version>.jar`
+
+#### Optional Build Flags
+Opt-in compile-time flags for the `release`/`debug` configurations. They are
+deliberately not applied to `asan`/`tsan`/`fuzzer` builds, but gtest builds
+inherit them automatically:
+
+- `-PenableFaultInjection` — appends `-D__FAULT_INJECTION__`, compiling in
+  deliberate fault injection used by the fault-injection test suite
+  (`faultInjection_ut.cpp`) to exercise crash-recovery paths. Never used in
+  production builds.
+- `-PenableSamplerPerf` — appends `-D__SAMPLER_PERF__`, compiling in
+  per-sampler timing counters that print a stop-time report of per-sampler
+  cost. See [doc/reference/SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md).
+
+```bash
+./gradlew buildRelease -PenableFaultInjection
+./gradlew buildDebug   -PenableFaultInjection
+./gradlew buildRelease  -PenableSamplerPerf
+./gradlew buildDebug   -PenableSamplerPerf
+```
 
 #### Gritty details
 Since the upstream code might not be 100% compatible with the current version of the project, we extend the base classes
@@ -135,7 +155,7 @@ The project includes both Java and C++ unit tests. You can run them using:
 `JAVA_TEST_HOME=<path to test JDK> ./gradlew testDebug`
 
 ### Container-Based Testing (musl/glibc)
-Run tests in containers to test on different libc implementations. The script defaults to Podman; use `--container=docker` to use Docker instead. Uses two-level container image caching for fast subsequent runs:
+Run tests in containers to test on different libc implementations. The script defaults to Podman; on macOS use Docker via colima (`--container=docker`) — podman's credential-helper lookup for the Datadog registries (ddtool) fails outside the CI network and aborts container commands. Uses two-level container image caching for fast subsequent runs:
 1. **Base image** (`java-profiler-base:<libc>-<arch>`) - OS with all build tools + sanitizers
 2. **JDK image** (`java-profiler-test:<libc>-jdk<version>-<arch>`) - Adds JDK + Gradle
 
@@ -160,7 +180,7 @@ By default, the script clones the repository at the current commit for clean bui
 # Run one C++ gtest binary only
 ./utils/run-containers-tests.sh --libc=glibc --config=asan --gtest-task=elfparser_ut
 
-# Use Docker instead of the default Podman runtime
+# Use Docker via colima (recommended on macOS)
 ./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
 
 # Force rebuild of all cached container images
@@ -190,7 +210,7 @@ Supported options:
 - `--jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal|regular|j9|graal|all[,..]` (default: 21)
 - `--arch=x64|aarch64|all[,..]` (default: auto-detect)
 - `--config=debug|release|asan|tsan|all[,..]` (default: debug)
-- `--container=podman|docker` (default: podman)
+- `--container=podman|docker` (default: podman; on macOS use `docker` backed by colima)
 - `--tests="TestPattern"`
 - `--gtest` (enable C++ gtests, disabled by default for faster runs)
 - `--gtest-task=Task` (run one C++ gtest task; matrix runs require a short name like `elfparser_ut`, while single-cell runs also accept a full task path like `:ddprof-lib:gtestAsan_elfparser_ut`)
@@ -337,7 +357,8 @@ ddprof-lib/build/
 ```
 
 ### Build Options
-- **Skip debug extraction**: `./gradlew buildRelease -Pskip-debug-extraction=true`
+- **Debug symbol extraction**: runs unconditionally inside `linkRelease` (extract to
+  `debug/`, then strip). There is no skip property.
 - **Debug extraction requires**: `objcopy` (Linux) or `dsymutil` (macOS)
   - Ubuntu/Debian: `sudo apt-get install binutils`
   - Alpine: `apk add binutils`

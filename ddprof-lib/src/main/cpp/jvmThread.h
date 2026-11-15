@@ -15,6 +15,7 @@
  * JVMThread represents a native JVM thread that is JVM implementation agnostic
  */
 class JVMThread {
+    friend class JVMThreadTestAccessor;
 private:
     static jfieldID _tid;
     static ThreadLocal<JVMThread*> _jvm_thread;
@@ -23,7 +24,7 @@ public:
     /*
      * The initialization happens in early startup, in single-threaded mode,
      * no synchronization is needed
-    */
+     */
     static bool initialize();
 
     static inline bool isInitialized() {

@@ -20,15 +20,16 @@ enum EventType {
     EXECUTION_SAMPLE,      // 1
     WALL_CLOCK_SAMPLE,     // 2
     MALLOC_SAMPLE,         // 3
-    INSTRUMENTED_METHOD,   // 4
-    METHOD_TRACE,          // 5
-    ALLOC_SAMPLE,          // 6
-    ALLOC_OUTSIDE_TLAB,    // 7
-    LIVE_OBJECT,           // 8
-    LOCK_SAMPLE,           // 9
-    PARK_SAMPLE,           // 10
-    PROFILING_WINDOW,      // 11
-    USER_EVENT,            // 12
+    SOCKET_SAMPLE,         // 4
+    INSTRUMENTED_METHOD,   // 5
+    METHOD_TRACE,          // 6
+    ALLOC_SAMPLE,          // 7
+    ALLOC_OUTSIDE_TLAB,    // 8
+    LIVE_OBJECT,           // 9
+    LOCK_SAMPLE,           // 10
+    PARK_SAMPLE,           // 11
+    PROFILING_WINDOW,      // 12
+    USER_EVENT,            // 13
 };
 ```
 
@@ -48,8 +49,17 @@ enum ASGCT_CallFrameType {
     BCI_PARK = -16,               // class name of the park() blocker
     BCI_THREAD_ID = -17,          // method_id designates a thread
     BCI_ERROR = -18,              // method_id is an error string
+    BCI_NATIVE_FRAME_REMOTE = -19, // method_id holds packed remote-symbolication data
+    BCI_NATIVE_MALLOC = -20,       // native malloc/free sample (size stored in counter)
+    BCI_VTABLE_RECEIVER = -21,     // method_id holds a VMSymbol* (receiver class name), NOT a jmethodID
+    BCI_NATIVE_SOCKET = -22,       // native socket I/O sample (bytes stored in counter)
 };
 ```
+
+`BCI_NATIVE_FRAME`, `BCI_NATIVE_FRAME_REMOTE` and `BCI_VTABLE_RECEIVER` are
+frame types whose `method_id` is not a `jmethodID`; any reader iterating frames
+must check `bci` before dereferencing `method_id` (see the comment above
+`BCI_VTABLE_RECEIVER` in `vmEntry.h`).
 
 ## Upstream vs Datadog Implementation
 
@@ -57,7 +67,7 @@ enum ASGCT_CallFrameType {
 
 Uses `EventType` consistently throughout:
 
-- **Function signature** (cpp/profiler.h:213):
+- **Function signature** (upstream `cpp/profiler.h`; not in this repository):
   ```cpp
   u64 recordSample(void* ucontext, u64 counter, EventType event_type, Event* event);
   ```
@@ -78,11 +88,14 @@ Uses `EventType` consistently throughout:
 
 Uses BCI_* values directly as event identifiers:
 
-- **Modified function signature** (ddprof-lib/src/main/cpp/profiler.h:247-248):
+- **Modified function signature** (`ddprof-lib/src/main/cpp/profiler.h`, `Profiler::recordSample`):
   ```cpp
-  void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u64 call_trace_id, Event *event);
+  bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
+                    u64 call_trace_id, Event *event,
+                    u64 *recorded_call_trace_id = nullptr);
   ```
+  Sibling entry points take the same `jint event_type`: `recordSampleDelegated()`,
+  `recordJVMTISample()`, `recordDeferredSample()` and `recordExternalSample()`.
 
 - **Direct BCI_* comparisons**:
   ```cpp
@@ -93,14 +106,16 @@ Uses BCI_* values directly as event identifiers:
 - **Call sites pass BCI_* values**:
   ```cpp
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0, &event);
-  Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, call_trace_id, &event);
+  Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, call_trace_id,
+                                     &event, &recorded_call_trace_id);
+  Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
   ```
 
 ## Type Conversion
 
 ### The Problem
 
-Datadog's `StackWalker::walkVM()` (inherited from upstream) expects `EventType` but receives BCI_* values. Previously, this used an unsafe cast:
+The VM stack walker, `HotspotSupport::walkVM()` (`hotspot/hotspotSupport.{h,cpp}`, derived from upstream's `StackWalker::walkVM()`), expects `EventType` but receives BCI_* values. Previously, this used an unsafe cast:
 
 ```cpp
 // Old approach - undefined behavior for negative BCI_* values
@@ -108,7 +123,7 @@ static_cast<EventType>(event_type)
 ```
 
 This cast is technically undefined behavior because:
-- BCI_WALL = -10 is not a valid EventType enum value (0-12)
+- BCI_WALL = -10 is not a valid EventType enum value (0-13)
 - Casting negative integers to enums with only positive values is undefined in C++
 - It worked by accident because numeric comparisons still functioned
 
@@ -126,30 +141,33 @@ inline EventType eventTypeFromBCI(jint bci_type) {
         case BCI_LIVENESS:           return LIVE_OBJECT;
         case BCI_LOCK:               return LOCK_SAMPLE;
         case BCI_PARK:               return PARK_SAMPLE;
+        case BCI_NATIVE_MALLOC:      return MALLOC_SAMPLE;
+        case BCI_NATIVE_SOCKET:      return SOCKET_SAMPLE;
         default:                     return EXECUTION_SAMPLE;
     }
 }
 ```
 
-Usage in profiler.cpp:
+Usage in `hotspot/hotspotSupport.cpp` (`HotspotSupport::walkJavaStack`):
 
 ```cpp
-num_frames += StackWalker::walkVM(ucontext, frames + num_frames,
-                                  max_remaining, _features,
-                                  eventTypeFromBCI(event_type), &truncated);
+return walkVM(ucontext, frames, max_depth, features,
+              eventTypeFromBCI(request.event_type), lock_index, truncated);
 ```
 
 ## Type Mapping
 
 | BCI_* Constant | Value | EventType | Value | Notes |
 |----------------|-------|-----------|-------|-------|
-| BCI_CPU | 0 | EXECUTION_SAMPLE | 1 | CPU samples (perf/itimer) |
+| BCI_CPU | 0 | EXECUTION_SAMPLE | 1 | CPU samples (perf/ctimer/itimer) |
 | BCI_WALL | -10 | WALL_CLOCK_SAMPLE | 2 | Wall clock samples |
-| BCI_ALLOC | -12 | ALLOC_SAMPLE | 6 | TLAB allocations |
-| BCI_ALLOC_OUTSIDE_TLAB | -13 | ALLOC_OUTSIDE_TLAB | 7 | Non-TLAB allocations |
-| BCI_LIVENESS | -14 | LIVE_OBJECT | 8 | Live heap objects |
-| BCI_LOCK | -15 | LOCK_SAMPLE | 9 | Monitor contention |
-| BCI_PARK | -16 | PARK_SAMPLE | 10 | Thread park events |
+| BCI_NATIVE_MALLOC | -20 | MALLOC_SAMPLE | 3 | Native malloc samples (`MallocTracer`) |
+| BCI_NATIVE_SOCKET | -22 | SOCKET_SAMPLE | 4 | Native socket I/O samples (`NativeSocketSampler`) |
+| BCI_ALLOC | -12 | ALLOC_SAMPLE | 7 | TLAB allocations |
+| BCI_ALLOC_OUTSIDE_TLAB | -13 | ALLOC_OUTSIDE_TLAB | 8 | Non-TLAB allocations (no producer in native code; `FlightRecorder::recordEvent()` has no case for it) |
+| BCI_LIVENESS | -14 | LIVE_OBJECT | 9 | Live heap objects |
+| BCI_LOCK | -15 | LOCK_SAMPLE | 10 | Monitor contention (plumbing only: no native call site records it) |
+| BCI_PARK | -16 | PARK_SAMPLE | 11 | Thread park events (plumbing only: no native call site records it) |
 
 ## Key Files
 
@@ -158,18 +176,23 @@ num_frames += StackWalker::walkVM(ucontext, frames + num_frames,
 - `ddprof-lib/src/main/cpp/vmEntry.h` - ASGCT_CallFrameType (BCI_* constants)
 
 ### Conversion Function
-- `ddprof-lib/src/main/cpp/profiler.h:61-96` - eventTypeFromBCI() implementation
+- `ddprof-lib/src/main/cpp/hotspot/hotspotSupport.cpp` - `eventTypeFromBCI()` (file-local `inline`)
 
 ### Usage Sites
-- `ddprof-lib/src/main/cpp/profiler.cpp:716,719` - StackWalker::walkVM() calls
-- `ddprof-lib/src/main/cpp/profiler.cpp:690,717` - BCI_* comparisons
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:1620-1642` - Event recording switch
+- `HotspotSupport::walkJavaStack()` in `hotspot/hotspotSupport.cpp` - `walkVM(..., eventTypeFromBCI(request.event_type), ...)` calls
+- `Profiler::getNativeTrace()` in `profiler.cpp` - BCI_* comparisons (`BCI_CPU`, `BCI_WALL`, `isHookPrefixedSample()`)
+- `FlightRecorder::recordEvent()` / `recordEventDelegated()` in `flightRecorder.cpp` - event recording switch
 
 ### Call Sites (BCI_* sources)
-- `ddprof-lib/src/main/cpp/itimer.cpp:55` - BCI_CPU
-- `ddprof-lib/src/main/cpp/ctimer_linux.cpp:171` - BCI_CPU
-- `ddprof-lib/src/main/cpp/perfEvents_linux.cpp:749` - BCI_CPU
-- `ddprof-lib/src/main/cpp/wallClock.cpp:105` - BCI_WALL
+- `ITimer::signalHandler()` (`itimer.cpp`) - BCI_CPU
+- `CTimer::signalHandler()` / `CTimerJvmti::signalHandler()` (`ctimer_linux.cpp`) - BCI_CPU
+- `PerfEvents::signalHandler()` (`perfEvents_linux.cpp`) - BCI_CPU
+- `WallClockASGCT` / `WallClockJvmti` (`wallClock.cpp`) - BCI_WALL
+- `J9WallClock::timerLoop()` (`j9/j9WallClock.cpp`) - BCI_CPU and BCI_WALL via `recordExternalSample()`
+- `ObjectSampler::recordAllocation()` (`objectSampler.cpp`) - BCI_ALLOC via `recordJVMTISample()`
+- `LivenessTracker` (`livenessTracker.cpp`) - BCI_LIVENESS via `recordDeferredSample()`
+- `MallocTracer::recordMalloc()` (`mallocTracer.cpp`) - BCI_NATIVE_MALLOC
+- `NativeSocketSampler::recordEvent()` (`nativeSocketSampler.cpp`) - BCI_NATIVE_SOCKET
 
 ## Why Two Type Systems?
 
@@ -194,7 +217,7 @@ However, it creates the conversion requirement when calling upstream code that e
 
 1. **Choose the identifier**: Use BCI_* constant for the event type identifier
 2. **Update conversion function**: Add mapping in eventTypeFromBCI()
-3. **Update FlightRecorder**: Add case to recordEvent() switch statement
+3. **Update FlightRecorder**: Add case to recordEvent() switch statement (unknown types make it return `false`)
 4. **Add call sites**: Pass BCI_* value to recordSample()
 
 ### Code Review Checklist
@@ -228,7 +251,7 @@ The eventTypeFromBCI() conversion function provides a clean bridge between Datad
 
 - Eliminates undefined behavior from raw casts
 - Documents the intentional type system divergence
-- Maintains compatibility with upstream StackWalker code
+- Keeps `HotspotSupport::walkVM()` close to its upstream `StackWalker::walkVM()` origin
 - Preserves the semantic benefits of BCI_* identifiers
 
 When working with event types, always use the conversion function when calling code that expects EventType, and use BCI_* constants directly in Datadog-specific code.

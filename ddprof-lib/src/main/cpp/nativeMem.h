@@ -6,6 +6,7 @@
 #define _NATIVEMEM_H
 
 #include "arch.h"
+#include "mallocFootprint.h"
 #include <cassert>
 
 // Physical native-memory categories used by the profiler's own allocations.
@@ -13,10 +14,32 @@
 // per-category live byte gauges partition the total: sum(category) == total,
 // with no double counting.
 //
-// The "reserved vs used vs wasted" breakdowns exposed by the existing counters
-// (CALLTRACE_STORAGE_BYTES is the used slice of the CALLTRACE arena;
-// DICTIONARY_ARENA_WASTE_BYTES is the wasted slice of the DICTIONARY arena) are
-// a separate, nested dimension. They are intentionally NOT summed in here.
+// With the exceptions below, these gauges track memory that is actually touched
+// (and therefore resident), not address space that has merely been reserved.
+// NM_CALLTRACE in particular counts the bytes LinearAllocator::alloc() has
+// bump-allocated, NOT the capacity of the 8 MiB chunks backing them -- see
+// linearAllocator.cpp.
+//
+// Exceptions: the tid-indexed tables of CTimer (NM_CTIMER,
+// pid_max * sizeof(int)) and PerfEvents (part of NM_PERF,
+// pid_max * sizeof(PerfEvent), two cache lines per slot) are counted at their
+// full calloc'd size. That memory is mostly untouched address space -- only the
+// pages holding live tids become resident -- so for these two categories the
+// gauge overstates RSS and should be read as an upper bound. NM_PERF's
+// per-thread ring pages (2 pages each) are touched and resident.
+//
+// Consequently NM_CALLTRACE is no longer an "arena reserved" figure with
+// CALLTRACE_STORAGE_BYTES as its used slice: both now count touched bytes, and
+// their small difference is the call-trace hash tables (also bump-allocated),
+// not chunk slack. Do not compute arena waste as the difference between them.
+// DICTIONARY_ARENA_WASTE_BYTES remains a genuine nested waste figure for the
+// DICTIONARY arena. None of these nested counters are summed in here.
+//
+// The exported per-category counter names (native_mem_{live,avg,max,
+// chunk_overhead,post_flush_live,post_flush_max}_bytes.<category>, written by
+// Recording::writeNativeMem()) derive from this table, and the set grows when
+// a category is added, so consumers should match native_mem_*_bytes. counters
+// by prefix rather than hard-code the category list.
 #define DD_NATIVE_MEM_CATEGORY_TABLE(X)                                        \
   X(CALLTRACE, "calltrace")                                                    \
   X(DICTIONARY, "dictionary")                                                  \
@@ -30,6 +53,7 @@
   X(METHOD_MAP, "method_map")                                                  \
   X(LIVENESS, "liveness")                                                      \
   X(WALLCLOCK, "wallclock")                                                    \
+  X(CTIMER, "ctimer")                                                          \
   X(MISC, "misc")
 
 #define X_NM_ENUM(a, b) NM_##a,
@@ -60,6 +84,13 @@ private:
   // Precise per-category high-water mark, maintained at allocation time by
   // record() so peaks that rise and fall between sample() ticks are still seen.
   static volatile long long _max[NM_NUM_CATEGORIES];
+  // Allocator overhead on the live allocations: rounding to the size quantum
+  // plus the per-chunk header. Kept SEPARATE from _live rather than folded in,
+  // so _live stays directly comparable to sizeof() arithmetic while the amount
+  // RSS additionally pays stays visible. Maintained only by recordAlloc/
+  // recordFreeBefore/recordOverhead; call sites using plain record()
+  // contribute nothing here.
+  static volatile long long _overhead[NM_NUM_CATEGORIES];
 
   // sample()-owned state; touched only from the single-threaded sampling path.
   static long long _window[NM_NUM_CATEGORIES][WINDOW];
@@ -93,6 +124,50 @@ public:
       }
     }
   }
+
+  // Record an allocation together with its measured allocator overhead.
+  //
+  // Prefer this over record() wherever the pointer is in hand: it keeps the
+  // logical byte count in _live (comparable to sizeof()) while accumulating the
+  // rounding-plus-header cost that RSS actually pays. Overhead is a function of
+  // per-allocation size, so it cannot be recovered later from a byte total --
+  // a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
+  //
+  // Not async-signal-safe on first call (the header probe allocates); every
+  // current call site runs on a normal thread.
+  static void recordAlloc(NativeMemCategory category, void *ptr,
+                          size_t requested) {
+    record(category, (long long)requested);
+    if (ptr != NULL) {
+      atomicIncRelaxed(_overhead[category],
+                       (long long)MallocFootprint::overheadOf(ptr, requested));
+    }
+  }
+
+  // Counterpart to recordAlloc. MUST be called before the pointer is freed --
+  // the overhead is read back off the live chunk, which is unreadable afterwards.
+  static void recordFreeBefore(NativeMemCategory category, void *ptr,
+                               size_t requested) {
+    if (ptr != NULL) {
+      atomicIncRelaxed(_overhead[category],
+                       -(long long)MallocFootprint::overheadOf(ptr, requested));
+    }
+    record(category, -(long long)requested);
+  }
+
+  // Account for already-measured overhead, for call sites that hold the figure
+  // but no longer the pointer -- CodeCacheArray::add() sums a library's name
+  // allocations as they are created and records the total once at publication.
+  // Same relaxed atomic add as record(), so concurrent publishers cannot clobber
+  // each other's contribution.
+  static void recordOverhead(NativeMemCategory category, long long delta) {
+    atomicIncRelaxed(_overhead[category], delta);
+  }
+
+  static long long overhead(NativeMemCategory category) {
+    return load(_overhead[category]);
+  }
+  static long long overheadTotal();
 
   // Set a category's live value directly, for gauge-style subsystems whose size
   // is recomputed as an absolute (rather than tracked via alloc/free deltas).

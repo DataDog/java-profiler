@@ -1,7 +1,10 @@
 name: CI Run
 
 concurrency:
-  group: pr-ci_${{ github.event.pull_request.number }}
+  # Push and workflow_dispatch runs have no pull request number: group them by
+  # ref, or they all share one group and cancel each other, merge queue runs
+  # included.
+  group: pr-ci_${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 on:
@@ -45,6 +48,79 @@ jobs:
             .github/scripts/tests/test_release_automation.sh
           .github/scripts/tests/test_release_automation.sh
 
+  ci-script-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate pipeline scripts without network access
+        run: |
+          bash -n \
+            .gitlab/scripts/build.sh \
+            .gitlab/scripts/check-abi-floor.sh \
+            .gitlab/scripts/tests/check_abi_floor_test.sh \
+            .gitlab/scripts/tests/includes_test.sh
+          shellcheck \
+            .gitlab/scripts/check-abi-floor.sh \
+            .gitlab/scripts/tests/check_abi_floor_test.sh
+          bash .gitlab/scripts/tests/check_abi_floor_test.sh
+          bash .gitlab/scripts/tests/includes_test.sh
+
+  # Fails when a quarantine entry is malformed, ticketless, or past its
+  # review_by date. Without this the list only ever grows, and a quarantine
+  # becomes a permanent mute rather than tracked debt.
+  validate-quarantine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the test quarantine list
+        run: |
+          bash -n .github/scripts/run_tests_with_retry.sh
+          bash -n .github/scripts/generate-test-summary.sh
+          python3 -m py_compile .github/scripts/quarantine.py \
+                                .github/scripts/flake_report.py \
+                                .github/scripts/flake_summary.py
+          python3 .github/scripts/quarantine.py validate
+          .github/scripts/tests/test_quarantine.sh
+          .github/scripts/tests/test_generate_test_summary.sh
+          .github/scripts/tests/test_prepare_reports.sh
+
+  # Hermetic tests for the utils/ scripts, agent hooks and CI helper scripts.
+  # Node.js 22 runs the Pi adapter cases (--experimental-strip-types needs 22.6+).
+  script-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Run the hermetic script tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils g++ jq
+          status=0
+          for t in utils/tests/*.sh .github/scripts/tests/test_check_pr_ticket.sh; do
+            echo "::group::$t"
+            bash "$t" || { echo "::error::$t failed"; status=1; }
+            echo "::endgroup::"
+          done
+          exit $status
+
   check-for-pr:
     runs-on: ubuntu-latest
     outputs:
@@ -76,7 +152,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: 'zulu'
           java-version: '21'
@@ -109,6 +185,80 @@ jobs:
         run: |
           ./gradlew spotlessCheck --no-daemon --parallel --build-cache --no-watch-fs
 
+  build-logic-tests:
+    runs-on: ubuntu-22.04
+    needs: check-for-pr
+    if: needs.check-for-pr.outputs.skip != 'true'
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Java
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Test build conventions
+        run: |
+          ./.claude/commands/build-and-summarize -p build-logic :conventions:test --max-workers=2 --no-build-cache --no-daemon --no-watch-fs
+
+      - name: Upload build logic failure reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logic-test-failures
+          path: |
+            build/logs/
+            build-logic/conventions/build/test-results/test/*.xml
+          if-no-files-found: warn
+
+  source-invariant-checks:
+    runs-on: ubuntu-22.04
+    needs: check-for-pr
+    if: needs.check-for-pr.outputs.skip != 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Setup OS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl zip unzip binutils g++ python3
+
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+
+      - name: Cache Gradle User Home
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+
+      - name: Source invariant checks
+        run: |
+          # Signal-reachability check (ELF debug objects + fixture self-test) and the utils/check-*.py source checks
+          # :malloc-shim:validate runs the preloaded signal-allocation detection matrix (glibc-only by its own gate).
+          ./gradlew :ddprof-lib:qualityChecks :malloc-shim:validate --no-daemon --build-cache --no-watch-fs
+
   check-javadoc:
     runs-on: ubuntu-22.04
     needs: check-for-pr
@@ -119,7 +269,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: 'zulu'
           java-version: '21'
@@ -265,7 +415,7 @@ jobs:
         run: ./gradlew :ddprof-lib:fuzz:fuzz -Pfuzz-duration=120 --no-daemon
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-crashes
           path: ddprof-lib/fuzz/build/fuzz-crashes/

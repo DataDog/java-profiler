@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 package com.datadoghq.profiler.junit;
 
 import java.lang.annotation.ElementType;
@@ -7,5 +9,4 @@ import java.lang.annotation.Target;
 
 @Target(ElementType.PARAMETER)
 @Retention(RetentionPolicy.RUNTIME)
-public @interface CStack {
-}
+public @interface CStack {}

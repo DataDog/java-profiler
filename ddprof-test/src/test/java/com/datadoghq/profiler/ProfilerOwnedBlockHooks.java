@@ -7,30 +7,35 @@ package com.datadoghq.profiler;
 
 /** Test bridge for package-scoped owned blocking hooks. */
 public final class ProfilerOwnedBlockHooks {
-    private ProfilerOwnedBlockHooks() {}
+  private ProfilerOwnedBlockHooks() {}
 
-    public static boolean parkEnter(JavaProfiler profiler) {
-        return profiler.parkEnter();
-    }
+  public static boolean parkEnter(JavaProfiler profiler) {
+    return profiler.parkEnter();
+  }
 
-    public static void parkExit(JavaProfiler profiler, long blocker, long unblockingSpanId) {
-        profiler.parkExit(blocker, unblockingSpanId);
-    }
+  public static void parkExit(JavaProfiler profiler, long blocker, long unblockingSpanId) {
+    profiler.parkExit(blocker, unblockingSpanId);
+  }
 
-    public static long blockEnter(JavaProfiler profiler, int state) {
-        return profiler.blockEnter(state);
-    }
+  public static long blockEnter(JavaProfiler profiler, int state) {
+    return profiler.blockEnter(state);
+  }
 
-    public static void blockExit(JavaProfiler profiler, long token) {
-        profiler.blockExit(token);
-    }
+  public static void blockExit(JavaProfiler profiler, long token) {
+    profiler.blockExit(token, 0, 0);
+  }
 
-    public static long beginTaskBlockForThread(JavaProfiler profiler, Thread thread) {
-        return profiler.beginTaskBlockForThread(thread);
-    }
+  public static void blockExit(
+      JavaProfiler profiler, long token, long blocker, long unblockingSpanId) {
+    profiler.blockExit(token, blocker, unblockingSpanId);
+  }
 
-    public static boolean endTaskBlockForThread(JavaProfiler profiler, Thread thread, long token,
-            long blocker, long unblockingSpanId) {
-        return profiler.endTaskBlockForThread(thread, token, blocker, unblockingSpanId);
-    }
+  public static long beginTaskBlockForThread(JavaProfiler profiler, Thread thread) {
+    return profiler.beginTaskBlockForThread(thread);
+  }
+
+  public static boolean endTaskBlockForThread(
+      JavaProfiler profiler, Thread thread, long token, long blocker, long unblockingSpanId) {
+    return profiler.endTaskBlockForThread(thread, token, blocker, unblockingSpanId);
+  }
 }

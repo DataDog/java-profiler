@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 plugins {
     `kotlin-dsl`
 }
@@ -13,8 +15,9 @@ repositories {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib")
-    implementation("com.diffplug.spotless:spotless-plugin-gradle:8.9.0")
+    implementation("com.diffplug.spotless:spotless-plugin-gradle:8.11.0")
 
+    testImplementation(gradleTestKit())
     testImplementation("org.junit.jupiter:junit-jupiter-api:6.1.3")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")

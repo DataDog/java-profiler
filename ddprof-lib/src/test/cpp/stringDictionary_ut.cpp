@@ -5,8 +5,11 @@
 
 #include <gtest/gtest.h>
 #include "stringDictionary.h"
+#include "counters.h"
 #include "nativeMem.h"
+#include "profiler.h"
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -94,10 +97,29 @@ TEST(StringDictionaryBufferTest, CopyFromPreservesAllEntriesWithIds) {
     src.insert_with_id("java/lang/Integer", 17, 20);
 
     StringDictionaryBuffer dst;
-    dst.copyFrom(src);
+    StringDictionaryBuffer::CopyResult result = dst.copyFrom(src);
 
+    EXPECT_EQ(2, result.copied);
+    EXPECT_EQ(0, result.conflicts);
     EXPECT_EQ(10u, dst.lookup("java/lang/String", 16));
     EXPECT_EQ(20u, dst.lookup("java/lang/Integer", 17));
+}
+
+// A key dst already holds under another id is a conflict: it is neither
+// overwritten nor counted as copied.
+TEST(StringDictionaryBufferTest, CopyFromReportsConflictingIds) {
+    StringDictionaryBuffer src;
+    src.insert_with_id("shared", 6, 10);
+    src.insert_with_id("only_src", 8, 20);
+
+    StringDictionaryBuffer dst;
+    dst.insert_with_id("shared", 6, 99);
+    StringDictionaryBuffer::CopyResult result = dst.copyFrom(src);
+
+    EXPECT_EQ(1, result.copied);
+    EXPECT_EQ(1, result.conflicts);
+    EXPECT_EQ(99u, dst.lookup("shared", 6));
+    EXPECT_EQ(20u, dst.lookup("only_src", 8));
 }
 
 TEST(StringDictionaryBufferTest, ClearResetsToEmpty) {
@@ -281,7 +303,7 @@ TEST_F(StringDictionaryTest, ClearAllResetsEverything) {
     u32 id = dict.lookup("x", 1);
     (void)id;
     dict.rotate();
-    dict.clearAll();
+    ASSERT_TRUE(dict.clearAll());
     EXPECT_EQ(0u, dict.bounded_lookup("x", 1));
     dict.rotate();
     std::map<u32, const char*> snap;
@@ -343,4 +365,594 @@ TEST_F(StringDictionaryTest, LookupDuringDumpWithSizeLimitRejectsNewKeyAtCapacit
     // capacity (dump/active hits are checked before the capacity check).
     u32 id0 = dict.lookupDuringDump("dump_cap_0", 10, size_limit);
     EXPECT_GT(id0, 0u);
+}
+
+// ── Reclamation while a guarded accessor is still active (PROF-16136) ─────
+//
+// A dictionary reset must never free or reset buffer storage that a guarded
+// accessor is still using, even when the reference drain gives up waiting.
+// The holder thread below stands in for an accessor that published its
+// RefCountGuard, passed the _accepting recheck, obtained a key pointer and was
+// then delayed.  The key is chosen from a non-first arena chunk, which clear()
+// frees (the first chunk is only rewound), so the stale read is a
+// heap-use-after-free that ASan reports.
+
+namespace {
+
+// Enough keys to spill past the first 512 KiB arena chunk.
+constexpr int kSpillKeys = 50000;
+
+void fillPastFirstArenaChunk(StringDictionary& dict) {
+    for (int i = 0; i < kSpillKeys; i++) {
+        char key[32];
+        int len = snprintf(key, sizeof(key), "string_key_%d", i);
+        ASSERT_GT(dict.lookup(key, (size_t)len), 0u);
+    }
+}
+
+// Holds a RefCountGuard on buf while keeping a pointer to the last inserted
+// key, then re-reads that key once released.
+class GuardedKeyHolder {
+public:
+    explicit GuardedKeyHolder(StringDictionaryBuffer* buf) : _buf(buf), _thread([this] { run(); }) {
+        while (!_ready.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+
+    ~GuardedKeyHolder() {
+        release();
+        _thread.join();
+    }
+
+    // Lets the holder re-read its key and drop the guard; waits until it has.
+    void release() {
+        _release.store(true, std::memory_order_release);
+        while (!_done.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+
+    const std::string& expected() const { return _expected; }
+    const std::string& observed() const { return _observed; }
+
+private:
+    void run() {
+        RefCountGuard guard(_buf);
+        char key[32];
+        snprintf(key, sizeof(key), "string_key_%d", kSpillKeys - 1);
+        _expected = key;
+        std::map<u32, const char*> entries;
+        _buf->collect(entries);
+        const char* held = nullptr;
+        for (auto& kv : entries) {
+            if (strcmp(kv.second, key) == 0) { held = kv.second; break; }
+        }
+        _ready.store(true, std::memory_order_release);
+        while (!_release.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        // Stale read under the bug: the arena chunk holding this key was freed.
+        _observed = held != nullptr ? std::string(held) : std::string();
+        _done.store(true, std::memory_order_release);
+    }
+
+    StringDictionaryBuffer* _buf;
+    std::string _expected;
+    std::string _observed;
+    std::atomic<bool> _ready{false};
+    std::atomic<bool> _release{false};
+    std::atomic<bool> _done{false};
+    std::thread _thread;
+};
+
+} // namespace
+
+// clearAll() must leave every buffer intact when the drain times out with a
+// guard still held, and must reset normally once the guard is gone.
+TEST(StringDictionaryReclamationTest, ClearAllKeepsStorageWhileGuardHeld) {
+    StringDictionary dict;
+    fillPastFirstArenaChunk(dict);
+    dict.rotate();  // the filled buffer becomes the dump buffer; its keys stay put
+    StringDictionaryBuffer* held_buf = dict.standby();
+    const int held_size = held_buf->size();
+    const u32 known_id = dict.bounded_lookup("string_key_0", 12);
+    ASSERT_GT(known_id, 0u);
+    const u64 gen_before = dict.generation();
+
+    {
+        GuardedKeyHolder holder(held_buf);
+
+        EXPECT_FALSE(dict.clearAll());  // the drain must time out: the holder never lets go
+
+        EXPECT_EQ(gen_before, dict.generation()) << "id namespace reset under an active guard";
+        EXPECT_EQ(held_size, held_buf->size()) << "guarded buffer was cleared";
+        EXPECT_EQ(known_id, dict.bounded_lookup("string_key_0", 12));
+
+        holder.release();
+        EXPECT_EQ(holder.expected(), holder.observed());
+    }
+
+    ASSERT_TRUE(dict.clearAll());
+    EXPECT_EQ(gen_before + 1, dict.generation());
+    EXPECT_EQ(0, held_buf->size());
+    EXPECT_EQ(0u, dict.bounded_lookup("string_key_0", 12));
+}
+
+// clearAll() drains only its own buffers.  Profiler::start() resets three
+// dictionaries back to back while JNI callers keep using the other two; a
+// guard held on a different dictionary must neither fail nor delay the reset.
+TEST(StringDictionaryReclamationTest, ClearAllIgnoresGuardsOnOtherDictionaries) {
+    StringDictionary dict;
+    StringDictionary other;
+    ASSERT_GT(dict.lookup("mine", 4), 0u);
+    fillPastFirstArenaChunk(other);
+    other.rotate();
+    const u64 gen_before = dict.generation();
+
+    GuardedKeyHolder holder(other.standby());
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_TRUE(dict.clearAll());
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(100));
+    EXPECT_EQ(gen_before + 1, dict.generation());
+    EXPECT_EQ(0u, dict.bounded_lookup("mine", 4));
+}
+
+// clearStandby() must not clear a buffer that a guard still references.  This
+// is the rotation-side variant: an accessor whose guard on the active buffer
+// outlived rotate()'s drain is still using that buffer two rotations later,
+// when it comes up as the clear target.  The guard is taken after the first
+// rotate() so that drain is not exercised here; the scanner sees the same
+// slot state either way.
+TEST(StringDictionaryReclamationTest, ClearStandbyKeepsBufferWhileGuardHeld) {
+    StringDictionary dict;
+    fillPastFirstArenaChunk(dict);
+    dict.rotate();
+    dict.clearStandby();
+    StringDictionaryBuffer* held_buf = dict.standby();
+    const int held_size = held_buf->size();
+
+    {
+        GuardedKeyHolder holder(held_buf);
+
+        dict.rotate();
+        EXPECT_FALSE(dict.clearStandby());  // held_buf is now the clear target
+
+        EXPECT_EQ(held_size, held_buf->size()) << "guarded buffer was cleared";
+
+        holder.release();
+        EXPECT_EQ(holder.expected(), holder.observed());
+    }
+
+    // The uncleared buffer becomes active on the next rotate() and keeps its
+    // entries, which is harmless because ids are never reassigned outside
+    // clearAll().  With the guard gone it is cleared normally the next time it
+    // comes up as the clear target, three cycles later.
+    u32 id = dict.bounded_lookup("string_key_0", 12);
+    EXPECT_GT(id, 0u);
+    for (int cycle = 0; cycle < 3; cycle++) {
+        dict.rotate();
+        EXPECT_TRUE(dict.clearStandby());
+        EXPECT_EQ(id, dict.bounded_lookup("string_key_0", 12)) << "id changed at cycle " << cycle;
+    }
+    EXPECT_EQ(0, held_buf->size());
+}
+
+// A buffer whose clear was skipped must not bring stale ids back into use.
+// A straggler that outlived rotate()'s drain can insert a key into the old
+// buffer after both copies, while the active buffer gives the same key a
+// different id.  If the straggler still holds its guard when clearStandby()
+// runs, the clear is skipped; when rotate() later reuses that buffer as the
+// new active, the current id must win over the straggler's.
+TEST(StringDictionaryReclamationTest, ReusedUnclearedBufferKeepsCurrentIds) {
+    StringDictionary dict;
+    ASSERT_GT(dict.lookup("early", 5), 0u);
+    dict.rotate();
+    EXPECT_TRUE(dict.clearStandby());
+    StringDictionaryBuffer* held_buf = dict.standby();
+
+    const u32 stale_id = 999999;
+    u32 current_id;
+    {
+        GuardedKeyHolder holder(held_buf);
+        // The straggler's late insert into the old buffer...
+        ASSERT_EQ(stale_id, held_buf->insert_with_id("late", 4, stale_id));
+        // ...while the active buffer assigns the key its own id.
+        current_id = dict.lookup("late", 4);
+        ASSERT_GT(current_id, 0u);
+        ASSERT_NE(stale_id, current_id);
+
+        dict.rotate();
+        EXPECT_FALSE(dict.clearStandby());  // held_buf is the clear target
+    }
+
+    // The straggler is gone; the next rotate() reuses held_buf as the active.
+    EXPECT_TRUE(dict.rotate());
+    EXPECT_EQ(current_id, dict.bounded_lookup("late", 4));
+}
+
+// While a straggler still holds its guard, rotate() reuses the uncleared
+// buffer after a short check instead of waiting out a second full drain
+// timeout on top of the one clearStandby() already spent.
+TEST(StringDictionaryReclamationTest, RotateGivesUpQuicklyOnBufferStillInUse) {
+    StringDictionary dict;
+    ASSERT_GT(dict.lookup("early", 5), 0u);
+    dict.rotate();
+    EXPECT_TRUE(dict.clearStandby());
+    GuardedKeyHolder holder(dict.standby());
+    dict.rotate();
+    EXPECT_FALSE(dict.clearStandby());  // the held buffer is the clear target
+
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(dict.rotate());  // reuses the held buffer uncleared
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(250));
+}
+
+// ── Counter gauges across a skipped reset ─────────────────────────────────
+//
+// Profiler::start() calls Counters::reset() right after resetting the
+// dictionaries.  A dictionary whose reset was skipped keeps all of its storage,
+// so its memory gauges must be re-added after the counter reset; otherwise
+// freeing that storage later drives them negative.
+
+namespace {
+constexpr int kEndpointsOffset = 2;  // the DICTIONARY_ENDPOINTS_* counter rows
+}
+
+TEST(StringDictionaryCountersTest, ReseedKeepsGaugesExactAcrossSkippedReset) {
+    StringDictionary dict(kEndpointsOffset);
+    Counters::reset();
+    dict.reseedCounters();
+    const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
+    const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
+    ASSERT_GT(base_pages, 0);
+    ASSERT_GT(base_bytes, 0);
+
+    fillPastFirstArenaChunk(dict);
+    dict.rotate();
+    {
+        GuardedKeyHolder holder(dict.standby());
+        ASSERT_FALSE(dict.clearAll());
+        Counters::reset();  // what Profiler::start() does next
+        dict.reseedCounters();
+        EXPECT_GT(Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset), base_pages);
+        EXPECT_GT(Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset), base_bytes);
+    }
+
+    // Freeing the retained storage returns the gauges to the baseline.
+    ASSERT_TRUE(dict.clearAll());
+    EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
+    EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
+}
+
+// The reset steps of Profiler::start(): a skipped dictionary reset stays
+// visible as a drain timeout, and its gauges stay non-negative once the
+// storage is freed.
+TEST(StringDictionaryCountersTest, ProfilerResetKeepsCountersAcrossSkippedReset) {
+    Profiler* profiler = Profiler::instance();
+    StringDictionary* labels = profiler->stringLabelMap();
+    ASSERT_EQ(0, profiler->resetRecordingStateForTest());
+    const long long base_pages = Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset);
+    const long long base_bytes = Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset);
+
+    fillPastFirstArenaChunk(*labels);
+    labels->rotate();
+    {
+        GuardedKeyHolder holder(labels->standby());
+        EXPECT_EQ(1, profiler->resetRecordingStateForTest());
+        EXPECT_EQ(1, Counters::getCounter(DICTIONARY_DRAIN_TIMEOUTS));
+    }
+
+    EXPECT_EQ(0, profiler->resetRecordingStateForTest());
+    EXPECT_EQ(base_pages, Counters::getCounter(DICTIONARY_PAGES, kEndpointsOffset));
+    EXPECT_EQ(base_bytes, Counters::getCounter(DICTIONARY_BYTES, kEndpointsOffset));
+}
+
+// ── rotate() transition window ────────────────────────────────────────────
+
+namespace {
+
+// Drives this interleaving through StringDictionary's rotate hooks: writer A
+// inserts a fresh key into the old active after phase 1 copied it, then
+// writer B looks the same key up in the newly published active before the
+// drain and phase 2 have run.
+struct LateInsertScenario {
+    StringDictionary* dict;
+    const char* key;
+    size_t len;
+    u32 id_a = 0;
+    std::atomic<u32> id_b{0};
+    std::atomic<bool> b_done{false};
+    bool b_done_before_drain = false;
+    std::thread b;
+};
+
+void lateInsertHook(StringDictionary::RotateStage stage, void* arg) {
+    auto* s = static_cast<LateInsertScenario*>(arg);
+    if (stage == StringDictionary::ROTATE_AFTER_PHASE1) {
+        // Still the old active here, and phase 1 has already copied it.
+        if (s->key != nullptr) s->id_a = s->dict->lookup(s->key, s->len);
+        return;
+    }
+    if (stage != StringDictionary::ROTATE_BEFORE_DRAIN) return;
+    s->b = std::thread([s]() {
+        const char* key = s->key != nullptr ? s->key : "fresh_key";
+        s->id_b.store(s->dict->lookup(key, strlen(key)));
+        s->b_done.store(true);
+    });
+    // B must not need anything from the rest of rotate() to return.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!s->b_done.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    s->b_done_before_drain = s->b_done.load();
+}
+
+}  // namespace
+
+TEST_F(StringDictionaryTest, LateInsertDuringRotateKeepsOneId) {
+    dict.lookup("seed", 4);
+    const long long base_conflicts = Counters::getCounter(DICTIONARY_ID_CONFLICTS);
+    LateInsertScenario s{&dict, "late_key", 8};
+    dict.setRotateHookForTest(lateInsertHook, &s);
+    dict.rotate();
+    s.b.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    ASSERT_NE(0u, s.id_a);
+    EXPECT_TRUE(s.b_done_before_drain) << "lookup blocked on rotate()";
+    EXPECT_EQ(s.id_a, s.id_b.load()) << "same key got two ids across the rotation";
+    EXPECT_EQ(s.id_a, dict.standby()->lookup("late_key", 8));
+    EXPECT_EQ(s.id_a, dict.bounded_lookup("late_key", 8));
+    EXPECT_EQ(base_conflicts, Counters::getCounter(DICTIONARY_ID_CONFLICTS));
+
+    // The id handed out during the window must still resolve in the next snapshot.
+    dict.clearStandby();
+    dict.rotate();
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(s.id_a));
+    EXPECT_STREQ("late_key", snap[s.id_a]);
+}
+
+// A key nobody has seen before, first looked up mid-rotation, goes into both
+// the dump buffer and the new active under the same id without waiting.
+TEST_F(StringDictionaryTest, FreshKeyDuringRotateLandsInBothBuffers) {
+    dict.lookup("seed", 4);
+    LateInsertScenario s{&dict, nullptr, 0};
+    dict.setRotateHookForTest(lateInsertHook, &s);
+    dict.rotate();
+    s.b.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    u32 id = s.id_b.load();
+    ASSERT_NE(0u, id);
+    EXPECT_TRUE(s.b_done_before_drain) << "lookup blocked on rotate()";
+    EXPECT_EQ(id, dict.standby()->lookup("fresh_key", 9));
+    EXPECT_EQ(id, dict.bounded_lookup("fresh_key", 9));
+}
+
+namespace {
+
+struct AtCapacityScenario {
+    StringDictionary* dict;
+    u32 result = 1;
+};
+
+void atCapacityHook(StringDictionary::RotateStage stage, void* arg) {
+    if (stage != StringDictionary::ROTATE_BEFORE_DRAIN) return;
+    auto* s = static_cast<AtCapacityScenario*>(arg);
+    s->result = s->dict->bounded_lookup("over_cap", 8, 1);
+}
+
+}  // namespace
+
+// The size limit applies mid-rotation too, and the at-capacity miss leaves
+// nothing behind in the dump buffer.
+TEST_F(StringDictionaryTest, BoundedLookupAtCapacityDuringRotateReturnsZero) {
+    dict.lookup("seed", 4);
+    AtCapacityScenario s{&dict};
+    dict.setRotateHookForTest(atCapacityHook, &s);
+    dict.rotate();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    EXPECT_EQ(0u, s.result);
+    EXPECT_EQ(0u, dict.standby()->lookup("over_cap", 8));
+    EXPECT_EQ(0u, dict.bounded_lookup("over_cap", 8));
+}
+
+namespace {
+
+// Writer B is between its dump-buffer insert and its active insert when the
+// transition ends, and writer D looks the same fresh key up right then.  D sees
+// _transitioning clear and assigns the key its own id in the active buffer
+// before B gets there, so the dump buffer keeps the key under B's id.
+struct TransitionEndScenario {
+    StringDictionary* dict;
+    std::atomic<int> b_state{0};  // 1 = B between its inserts, 2 = B released
+    std::atomic<u32> id_b{0};
+    std::thread b;
+};
+
+void transitionEndHook(StringDictionary::RotateStage stage, void* arg) {
+    auto* s = static_cast<TransitionEndScenario*>(arg);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    if (stage == StringDictionary::TRANSITION_BETWEEN_INSERTS) {
+        s->b_state.store(1);
+        while (s->b_state.load() != 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+    } else if (stage == StringDictionary::ROTATE_AFTER_PHASE2) {
+        s->b = std::thread([s]() { s->id_b.store(s->dict->lookup("late_key", 8)); });
+        while (s->b_state.load() != 1 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+    }
+}
+
+}  // namespace
+
+// Callers must agree on one id, and the id the dump thread gets from
+// lookupDuringDump() must be in the dump snapshot this chunk's constant pool
+// is written from, even though the dump buffer holds the key under an id no
+// lookup() caller got.
+TEST_F(StringDictionaryTest, LookupStraddlingTransitionEndKeepsCallersConsistent) {
+    dict.lookup("seed", 4);
+    TransitionEndScenario s{&dict};
+    dict.setRotateHookForTest(transitionEndHook, &s);
+    dict.rotate();  // returns with B between its two inserts
+    ASSERT_EQ(1, s.b_state.load()) << "B never reached the mid-rotation path";
+    u32 id_d = dict.lookup("late_key", 8);
+    s.b_state.store(2);
+    s.b.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    ASSERT_NE(0u, id_d);
+    EXPECT_EQ(id_d, s.id_b.load()) << "callers got different ids";
+    EXPECT_EQ(id_d, dict.bounded_lookup("late_key", 8));
+
+    u32 dump_id = dict.lookupDuringDump("late_key", 8);
+    ASSERT_NE(0u, dump_id);
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(dump_id));
+    EXPECT_STREQ("late_key", snap[dump_id]);
+
+    // The callers' id must resolve in the next snapshot.
+    dict.clearStandby();
+    dict.rotate();
+    snap.clear();
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(id_d));
+    EXPECT_STREQ("late_key", snap[id_d]);
+}
+
+namespace {
+
+// A transition straggler (writer W) parked before its dump insert resumes
+// while the dump runs, and its dump insert lands between the dump thread's
+// two probes: the dump probe missed the key, the active probe finds it under
+// the id a post-phase-2 writer (D) assigned.  addToDump() then loses the dump
+// slot to W's dump insert, so the dump buffer holds the key under W's id
+// while the active buffer holds it under D's.
+struct DumpRaceScenario {
+    StringDictionary* dict;
+    std::atomic<int> w_state{0};  // W: 1 = parked before dump insert, 2 = released; 3 = parked between inserts, 4 = released
+    std::atomic<int> dt_state{0};  // dump thread: 1 = parked between probes, 2 = released
+    std::atomic<u32> id_w{0};
+    std::atomic<u32> id_dt{0};
+    std::thread w;
+    std::thread dt;
+};
+
+void dumpRaceHook(StringDictionary::RotateStage stage, void* arg) {
+    auto* s = static_cast<DumpRaceScenario*>(arg);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    switch (stage) {
+    case StringDictionary::ROTATE_AFTER_PHASE2:
+        // W enters the transition path with phase 2 already done, so nothing
+        // copies its inserts; it parks before its dump insert.
+        s->w = std::thread([s]() {
+            s->id_w.store(s->dict->lookup("late_key", 8));
+        });
+        while (s->w_state.load() != 1 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    case StringDictionary::TRANSITION_BEFORE_DUMP_INSERT:
+        s->w_state.store(1);
+        while (s->w_state.load() != 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    case StringDictionary::TRANSITION_BETWEEN_INSERTS:
+        s->w_state.store(3);
+        while (s->w_state.load() != 4 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    case StringDictionary::DUMP_BETWEEN_PROBES:
+        s->dt_state.store(1);
+        while (s->dt_state.load() != 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+}  // namespace
+
+// lookupDuringDump() must hand the dump thread an id the dump snapshot
+// actually contains, even when a transition straggler's dump insert races its
+// probes: the straggler's dump insert and a post-phase-2 writer's active
+// insert both land between the dump probe (which missed) and the active probe
+// (which hit).
+TEST_F(StringDictionaryTest, LookupDuringDumpRacingStragglerReturnsDumpResidentId) {
+    dict.lookup("seed", 4);
+    const long long base_conflicts = Counters::getCounter(DICTIONARY_ID_CONFLICTS);
+    DumpRaceScenario s{&dict};
+    dict.setRotateHookForTest(dumpRaceHook, &s);
+
+    // Phase 2 has copied; W parks inside the transition path before its dump
+    // insert, and rotate() returns with W still parked.
+    dict.rotate();
+    ASSERT_EQ(1, s.w_state.load()) << "W never reached the transition path";
+
+    // The dump thread probes the dump (miss: W has not inserted yet) and
+    // parks between its probes.
+    s.dt = std::thread([&s]() {
+        s.id_dt.store(s.dict->lookupDuringDump("late_key", 8));
+    });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (s.dt_state.load() != 1 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(1, s.dt_state.load()) << "dump thread never reached its second probe";
+
+    // W's dump insert lands - after the dump thread's dump probe.
+    s.w_state.store(2);
+    while (s.w_state.load() != 3 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(3, s.w_state.load()) << "W never finished its dump insert";
+
+    // A post-phase-2 writer assigns the key its own id in the active buffer,
+    // before W's active insert.
+    u32 id_d = dict.lookup("late_key", 8);
+    ASSERT_NE(0u, id_d);
+
+    // The dump thread's active probe hits id_d.
+    s.dt_state.store(2);
+    s.dt.join();
+    s.w_state.store(4);
+    s.w.join();
+    dict.setRotateHookForTest(nullptr, nullptr);
+
+    u32 dump_id = s.id_dt.load();
+    ASSERT_NE(0u, dump_id);
+
+    // The id handed to the dump thread must be in the dump snapshot this
+    // chunk's constant pool is written from.
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    EXPECT_EQ(1u, snap.count(dump_id));
+    EXPECT_STREQ("late_key", snap[dump_id]);
+
+    // And it must be stable within the dump: a second resolution of the same
+    // key in the same chunk returns the same id.
+    EXPECT_EQ(dump_id, dict.lookupDuringDump("late_key", 8));
+
+    // The conflict (dump buffer holds the key under W's dump id) is reported.
+    EXPECT_EQ(1, Counters::getCounter(DICTIONARY_ID_CONFLICTS) - base_conflicts);
+
+    // lookup() callers keep the active id, and it resolves in the next snapshot.
+    EXPECT_EQ(id_d, s.id_w.load());
+    dict.clearStandby();
+    dict.rotate();
+    snap.clear();
+    dict.standby()->collect(snap);
+    ASSERT_EQ(1u, snap.count(id_d));
+    EXPECT_STREQ("late_key", snap[id_d]);
 }

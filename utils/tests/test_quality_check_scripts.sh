@@ -1,0 +1,758 @@
+#!/usr/bin/env bash
+
+# Copyright 2026, Datadog, Inc
+
+# Hermetic tests for the utils/check-*.py quality-check scripts run by
+# `./gradlew :ddprof-lib:qualityChecks`.
+# Run with: bash utils/tests/test_quality_check_scripts.sh
+#
+# Linux-only cases (they compile the signal-reachability fixture and need GNU
+# objdump) print "SKIP: <case> (not Linux)" elsewhere; a skip counts as a pass.
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+SIGSETJMP="$ROOT/utils/check-sigsetjmp-shape.py"
+BOUNDARY="$ROOT/utils/check-jvm-boundary-includes.py"
+REACHABILITY="$ROOT/utils/check-signal-reachability.py"
+FIXTURE="$ROOT/utils/tests/signal-reachability-fixture.cpp"
+SRC=ddprof-lib/src/main/cpp
+TESTS=0
+FAILED=0
+
+# Importing the scripts as modules must not leave __pycache__ in the tree.
+export PYTHONDONTWRITEBYTECODE=1
+
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+pass() {
+  TESTS=$((TESTS + 1))
+}
+
+fail() {
+  TESTS=$((TESTS + 1))
+  FAILED=$((FAILED + 1))
+  echo "FAIL: $*" >&2
+}
+
+skip() {
+  TESTS=$((TESTS + 1))
+  echo "SKIP: $*"
+}
+
+on_linux() {
+  [ "$(uname -s)" = "Linux" ]
+}
+
+# expect <case> <expected rc> <actual rc> <output> [<substring that must appear>]
+expect() {
+  local name=$1 want_rc=$2 rc=$3 out=$4 want_out=${5:-}
+  if [ "$rc" -ne "$want_rc" ]; then
+    fail "$name: exit $rc, expected $want_rc; output:"$'\n'"$out"
+  elif [ -n "$want_out" ] && [[ "$out" != *"$want_out"* ]]; then
+    fail "$name: output lacks '$want_out'; output:"$'\n'"$out"
+  else
+    pass
+  fi
+}
+
+# --- T1: check-sigsetjmp-shape.py scope recognition ---------------------------
+
+SJ_ROOT="$TEMP_DIR/sigsetjmp"
+mkdir -p "$SJ_ROOT/$SRC"
+PAD_A='if (sigsetjmp(ctx, 1) != 0) { SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP(); jmp_scope.restore(); return; }'
+
+# sigsetjmp_case <case> <file body>; prints output, returns the checker's exit code.
+sigsetjmp_case() {
+  local name=$1 body=$2
+  printf 'void f(ProfiledThread* pt, bool x) {\n%s\n}\n' "$body" > "$SJ_ROOT/$SRC/$name.cpp"
+  python3 "$SIGSETJMP" --root "$SJ_ROOT" "$SRC/$name.cpp" 2>&1
+}
+
+rc=0; out=$(sigsetjmp_case brace_init "  JmpCtxScope jmp_scope{pt};
+  $PAD_A") || rc=$?
+expect "T1a brace-init guard" 0 "$rc" "$out" "OK (1 calls"
+
+rc=0; out=$(sigsetjmp_case paren_init "  JmpCtxScope jmp_scope(pt);
+  $PAD_A") || rc=$?
+expect "T1b paren-init guard" 0 "$rc" "$out" "OK (1 calls"
+
+rc=0; out=$(sigsetjmp_case block_paren "  { JmpCtxScope jmp_scope(pt); }
+  $PAD_A") || rc=$?
+expect "T1c paren-init guard in completed block" 1 "$rc" "$out" "no JmpCtxScope declared"
+
+rc=0; out=$(sigsetjmp_case block_brace "  { JmpCtxScope jmp_scope{pt}; }
+  $PAD_A") || rc=$?
+expect "T1d brace-init guard in completed block" 1 "$rc" "$out" "no JmpCtxScope declared"
+
+rc=0; out=$(sigsetjmp_case enclosing_brace "  JmpCtxScope jmp_scope{pt};
+  if (x) {
+    $PAD_A
+  }") || rc=$?
+expect "T1e brace-init guard in enclosing block" 0 "$rc" "$out" "OK (1 calls"
+
+rc=0; out=$(sigsetjmp_case pad_mismatch "  JmpCtxScope a{pt};
+  if (sigsetjmp(ctx, 1) != 0) { SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP(); b.restore(); return; }") || rc=$?
+expect "T1f brace-init guard, pad name mismatch" 1 "$rc" "$out" \
+  "restores 'b' but the JmpCtxScope in effect is 'a'"
+
+rc=0; out=$(python3 "$SIGSETJMP" 2>&1) || rc=$?
+# Pins the exception count, not the call count: a new compliant sigsetjmp site must not fail this.
+expect "T1g tracked tree" 0 "$rc" "$out" " calls, 1 known exception(s))"
+
+# --- T2: check-jvm-boundary-includes.py include forms --------------------------
+
+# boundary_repo <name> <file> <include line> [<file> <include line> ...]; prints the repo dir.
+boundary_repo() {
+  local repo="$TEMP_DIR/boundary/$1"
+  shift
+  mkdir -p "$repo/$SRC"
+  git -C "$repo" init -q
+  while [ $# -gt 0 ]; do
+    mkdir -p "$(dirname "$repo/$SRC/$1")"
+    printf '%s\nvoid f() {}\n' "$2" > "$repo/$SRC/$1"
+    git -C "$repo" add "$SRC/$1"
+    shift 2
+  done
+  echo "$repo"
+}
+
+# run_boundary <repo> <KNOWN_EXCEPTIONS as a Python literal>
+run_boundary() {
+  python3 - "$BOUNDARY" "$1" "$2" <<'EOF' 2>&1
+import ast, importlib.util, sys
+spec = importlib.util.spec_from_file_location("check_jvm_boundary_includes", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.KNOWN_EXCEPTIONS = ast.literal_eval(sys.argv[3])
+sys.exit(mod.main(["--root", sys.argv[2]]))
+EOF
+}
+
+repo=$(boundary_repo angle shared.cpp '#include <hotspot/vmStructs.h>')
+rc=0; out=$(run_boundary "$repo" '{}') || rc=$?
+expect "T2a angle-bracket include" 1 "$rc" "$out" "shared.cpp:1: shared code includes \"hotspot/vmStructs.h\""
+
+repo=$(boundary_repo quoted shared.cpp '#include "hotspot/vmStructs.h"')
+rc=0; out=$(run_boundary "$repo" '{}') || rc=$?
+expect "T2b quoted include" 1 "$rc" "$out" "shared.cpp:1: shared code includes \"hotspot/vmStructs.h\""
+
+repo=$(boundary_repo j9zing a.cpp '#include <j9/j9Support.h>' b.cpp '#  include <zing/x.h>')
+rc=0; out=$(run_boundary "$repo" '{}') || rc=$?
+expect "T2c j9 angle include" 1 "$rc" "$out" "a.cpp:1: shared code includes \"j9/j9Support.h\""
+expect "T2c zing angle include" 1 "$rc" "$out" "b.cpp:1: shared code includes \"zing/x.h\""
+
+repo=$(boundary_repo mixed1 shared.cpp '#include "hotspot/vmStructs.h>')
+rc=0; out=$(run_boundary "$repo" '{}') || rc=$?
+expect "T2d mixed \"...> delimiters not matched" 0 "$rc" "$out" "jvm boundary includes: OK"
+
+repo=$(boundary_repo mixed2 shared.cpp '#include <hotspot/vmStructs.h"')
+rc=0; out=$(run_boundary "$repo" '{}') || rc=$?
+expect "T2e mixed <...\" delimiters not matched" 0 "$rc" "$out" "jvm boundary includes: OK"
+
+repo=$(boundary_repo known_angle shared.cpp '#include <hotspot/vmStructs.h>')
+rc=0; out=$(run_boundary "$repo" '{"shared.cpp": {"hotspot/vmStructs.h"}}') || rc=$?
+expect "T2f known exception via angle include" 0 "$rc" "$out" "jvm boundary includes: OK"
+
+repo=$(boundary_repo stale shared.cpp '#include <stdio.h>')
+rc=0; out=$(run_boundary "$repo" '{"shared.cpp": {"hotspot/vmStructs.h"}}') || rc=$?
+expect "T2g stale known exception" 1 "$rc" "$out" "no longer included"
+
+repo=$(boundary_repo boundary_file jvmSupport.cpp '#include <hotspot/vmStructs.h>')
+rc=0; out=$(run_boundary "$repo" '{}') || rc=$?
+expect "T2h boundary file exempt" 0 "$rc" "$out" "jvm boundary includes: OK"
+
+repo=$(boundary_repo impl_dir hotspot/x.cpp '#include <hotspot/vmStructs.h>')
+rc=0; out=$(run_boundary "$repo" '{}') || rc=$?
+expect "T2i implementation dir exempt" 0 "$rc" "$out" "jvm boundary includes: OK"
+
+rc=0; out=$(python3 "$BOUNDARY" 2>&1) || rc=$?
+expect "T2j tracked tree" 0 "$rc" "$out" "jvm boundary includes: OK"
+
+# --- T3: check-signal-reachability.py --self-test (Linux) ----------------------
+
+# self_test_copy <case> [<line appended to the fixture copy>]; prints stdout,
+# stderr goes to $TEMP_DIR/sr-<case>.err, returns the self-test's exit code.
+self_test_copy() {
+  local dir="$TEMP_DIR/sr-$1"
+  mkdir -p "$dir/tests"
+  cp "$REACHABILITY" "$dir/"
+  cp "$FIXTURE" "$dir/tests/"
+  if [ -n "${2:-}" ]; then
+    printf '%s\n' "$2" >> "$dir/tests/signal-reachability-fixture.cpp"
+  fi
+  python3 "$dir/check-signal-reachability.py" --self-test 2> "$TEMP_DIR/sr-$1.err"
+}
+
+if on_linux; then
+  rc=0; out=$(self_test_copy healthy) || rc=$?
+  expect "T3a healthy self-test" 0 "$rc" "$out" "self-test PASSED"
+  if [[ "$out" == *MISSED* ]]; then fail "T3a healthy self-test reports MISSED:"$'\n'"$out"; else pass; fi
+
+  rc=0; out=$(self_test_copy missed '// EXPECT: CTimer::signalHandler -> fopen') || rc=$?
+  expect "T3b missed expectation" 1 "$rc" "$out" "MISSED CTimer::signalHandler -> fopen"
+
+  rc=0; out=$(self_test_copy stale '// EXPECT-ALLOWLISTED: CTimer::signalHandler -> dlopen') || rc=$?
+  expect "T3c unused allowlist entry" 1 "$rc" "$out" "NOT FOUND (allowlisted) CTimer::signalHandler -> dlopen"
+  if grep -q 'not enough values to unpack' "$TEMP_DIR/sr-stale.err"; then
+    fail "T3c unused allowlist entry crashed: $(cat "$TEMP_DIR/sr-stale.err")"
+  else
+    pass
+  fi
+
+  rc=0; out=$(self_test_copy false_positive '// EXPECT-NOT: CTimer::signalHandler -> malloc') || rc=$?
+  expect "T3d false positive" 1 "$rc" "$out" "FALSE POSITIVE CTimer::signalHandler -> malloc"
+else
+  skip "T3a-T3d fixture self-test (not Linux)"
+fi
+
+# --- T3h: self_test() evaluates the real findings (every host) ----------------
+#
+# Stubs the compiler run and the object analysis so self_test()'s own logic is
+# exercised without an ELF toolchain: findings must come from
+# find_violations(*build_graph([obj])) inside the temp dir, and check()'s
+# stale-entry list must never be treated as findings.
+
+run_self_test_harness() {
+  python3 - "$REACHABILITY" "$1" <<'EOF' 2>&1
+import contextlib, importlib.util, io, os, re, sys, types
+
+path, case = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("check_signal_reachability", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+with open(mod.SELF_TEST_FIXTURE) as f:
+    src = f.read()
+
+def pairs(tag):
+    return set(re.findall(r"^// %s: (.+?) -> (.+?)\s*$" % tag, src, re.M))
+
+E, A, N = pairs("EXPECT"), pairs("EXPECT-ALLOWLISTED"), pairs("EXPECT-NOT")
+FP = ("Profiler::instance", "malloc")
+MISS = ("CTimer::signalHandler", "malloc")
+if not (E and A and N) or (E & A) or (E & N) or (A & N) or FP not in N or MISS not in E:
+    print("FAIL: %s: fixture precondition broken (E=%r A=%r N=%r)" % (case, E, A, N))
+    sys.exit(1)
+
+cases = {
+    #  name                 findings              stale                                          new findings
+    "healthy":            (E | A,                 [],                                            E),
+    "stale":              (E | A,                 [(("NoSuch::caller",), "malloc", "SELFTEST-1")], E),
+    "allowlisted_absent": (E,                     [],                                            E),
+    "false_positive":     (E | A | {FP},          [],                                            E | {FP}),
+    "missed":             ((E - {MISS}) | A,      [],                                            E - {MISS}),
+}
+F, stale, E_new = cases[case]
+
+DEFINED, GRAPH = object(), object()
+state = {"obj": None, "fv_calls": 0, "problems": []}
+
+def fake_run(cmd, **kw):
+    state["obj"] = cmd[cmd.index("-o") + 1]
+    return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+def fake_check(obj_dir, allowlist):
+    return ["x:%s -> %s (via y)" % p for p in sorted(E_new)], stale
+
+def fake_build_graph(objs):
+    if objs != [state["obj"]]:
+        state["problems"].append("build_graph(%r), expected [%r]" % (objs, state["obj"]))
+    if not os.path.isdir(os.path.dirname(objs[0])):
+        state["problems"].append("build_graph called after the temp dir was removed")
+    return DEFINED, GRAPH
+
+def fake_find_violations(defined, graph):
+    if defined is not DEFINED or graph is not GRAPH:
+        state["problems"].append("find_violations not called with build_graph's result")
+    state["fv_calls"] += 1
+    return {"root"}, [("fixture.o", c, s, "path") for c, s in sorted(F)]
+
+mod._run, mod.check = fake_run, fake_check
+mod.build_graph, mod.find_violations = fake_build_graph, fake_find_violations
+
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stdout(buf):
+        rc = mod.self_test()
+except Exception as e:
+    print("FAIL: %s: self_test raised %s: %s" % (case, type(e).__name__, e))
+    sys.exit(1)
+if state["fv_calls"] != 1:
+    state["problems"].append("find_violations called %d times, expected 1" % state["fv_calls"])
+print(buf.getvalue(), end="")
+for p in state["problems"]:
+    print("FAIL: %s: %s" % (case, p))
+print("rc=%d" % rc)
+sys.exit(1 if state["problems"] else 0)
+EOF
+}
+
+# self_test_harness_case <case> <expected self_test() rc> [<substring>]
+self_test_harness_case() {
+  local name=$1 want=$2 want_out=${3:-}
+  local rc=0 out
+  out=$(run_self_test_harness "$name") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail "T3h-$name: harness failed:"$'\n'"$out"
+  elif [[ "$out" != *"rc=$want"* ]]; then
+    fail "T3h-$name: self_test() did not return $want:"$'\n'"$out"
+  elif [ -n "$want_out" ] && [[ "$out" != *"$want_out"* ]]; then
+    fail "T3h-$name: output lacks '$want_out':"$'\n'"$out"
+  else
+    pass
+  fi
+}
+
+self_test_harness_case healthy 0 "self-test PASSED"
+self_test_harness_case stale 0 "self-test PASSED"
+self_test_harness_case allowlisted_absent 1 "NOT FOUND (allowlisted) wakeupHandler -> Log::warn"
+self_test_harness_case false_positive 1 "FALSE POSITIVE Profiler::instance -> malloc"
+self_test_harness_case missed 1 "MISSED CTimer::signalHandler -> malloc"
+
+# --- T4: tree-level script health and doc/build wiring ------------------------
+
+rc=0; out=$(python3 "$ROOT/utils/check-doc-index.py" 2>&1) || rc=$?
+expect "T4 check-doc-index.py" 0 "$rc" "$out"
+
+rc=0; out=$(python3 "$ROOT/utils/check-tracked-artifacts.py" 2>&1) || rc=$?
+expect "T4 check-tracked-artifacts.py" 0 "$rc" "$out"
+
+# Built without the literal so this file never matches itself.
+pat=s_nested_overflow; pat="${pat}_warned"
+if out=$(git -C "$ROOT" grep -n "$pat" -- doc ddprof-lib AGENTS.md README.md utils/README.md); then
+  fail "T4 removed overflow-warning latch still documented:"$'\n'"$out"
+else
+  pass
+fi
+
+if grep -q 'opt-in; checkSignalReachability plus all four' "$ROOT/utils/README.md"; then
+  fail "T4 utils/README.md still calls qualityChecks opt-in"
+else
+  pass
+fi
+
+if grep -n 'Opt-in' "$ROOT/ddprof-lib/build.gradle.kts"; then
+  fail "T4 ddprof-lib/build.gradle.kts still says Opt-in"
+else
+  pass
+fi
+
+GRADLE="$ROOT/ddprof-lib/build.gradle.kts"
+n=$(grep -c 'hasElfObjects(debugObjDir)' "$GRADLE" || true)
+if [ "$n" -ne 2 ]; then fail "T4 hasElfObjects(debugObjDir) used $n times, expected 2"; else pass; fi
+n=$(grep -c '0x7f' "$GRADLE" || true)
+fun_line=$(grep -n '^fun hasElfObjects' "$GRADLE" | head -1 | cut -d: -f1 || true)
+magic_line=$(grep -n '0x7f' "$GRADLE" | head -1 | cut -d: -f1 || true)
+if [ "$n" -ne 1 ] || [ -z "$fun_line" ] || [ -z "$magic_line" ] ||
+   [ "$magic_line" -le "$fun_line" ] || [ $((magic_line - fun_line)) -gt 6 ]; then
+  fail "T4 ELF magic must appear once, inside fun hasElfObjects (count=$n, fun=$fun_line, magic=$magic_line)"
+else
+  pass
+fi
+
+n=$(grep -cxF './gradlew :ddprof-lib:checkSignalReachability      # opt-in; SKIPPED when the debug objects are not ELF' \
+  "$ROOT/utils/README.md" || true)
+if [ "$n" -ne 1 ]; then fail "T4 utils/README.md standalone checkSignalReachability line changed"; else pass; fi
+
+n=$(grep -c 'REFCOUNT_NESTED_OVERFLOW' "$ROOT/doc/architecture/RefCountGuard.md" || true)
+if [ "$n" -lt 2 ]; then fail "T4 RefCountGuard.md mentions REFCOUNT_NESTED_OVERFLOW $n times, expected >= 2"; else pass; fi
+
+rc=0; out=$(python3 "$ROOT/utils/check-claude-md.py" 2>&1) || rc=$?
+expect "T4 tracked CLAUDE.md is canonical" 0 "$rc" "$out" "CLAUDE.md: OK"
+
+for s in check-copyright.py check-claude-md.py check-knowledgebase.py check-skills.py; do
+  if grep -q "\"$s\"" "$GRADLE"; then pass; else fail "T4 qualityChecks does not run $s"; fi
+done
+
+rc=0; out=$(python3 "$ROOT/utils/check-knowledgebase.py" 2>&1) || rc=$?
+expect "T4 tracked memories carry cairn frontmatter" 0 "$rc" "$out" "knowledgebase: OK"
+
+rc=0; out=$(python3 "$ROOT/utils/check-skills.py" 2>&1) || rc=$?
+expect "T4 tracked skills load and AGENTS.md names only existing skills" 0 "$rc" "$out" "skills: OK"
+
+# --- T5: check-copyright.py over a branch's added and modified files ---------
+
+CR="$ROOT/utils/check-copyright.py"
+CR_ROOT="$TEMP_DIR/copyright"
+mkdir -p "$CR_ROOT" && cd "$CR_ROOT"
+# Ignore the user's git config, so commit signing cannot interfere.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+git init -q -b main
+git config user.email t@example.com && git config user.name t
+mkdir -p src utils/vendor .gitlab
+put() { mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" > "$1"; }
+put src/stale.cpp '// Copyright 2024, Datadog, Inc.'
+put src/ranged.cpp '// Copyright 2024 Datadog, Inc.'
+put src/december.cpp '// Copyright 2024, Datadog, Inc.'
+put src/dirty.cpp '// Copyright 2024, Datadog, Inc.'
+put src/Bare.java 'class Bare {}'
+put src/bare.py 'print(1)'
+put src/upstream.cpp '// Copyright The async-profiler authors'
+put src/present.cpp '// Copyright 2016-Present Datadog, Inc.'
+put src/moved_from.cpp '// Copyright 2024, Datadog, Inc.'
+put src/gone.cpp '// Copyright 2024, Datadog, Inc.'
+put src/table.inc '{1, 2},'
+git add . && GIT_COMMITTER_DATE=2024-06-01T12:00:00 git commit -qm base --date=2024-06-01T12:00:00
+git checkout -qb feature
+put src/new_bare.cpp 'int x;'
+put src/new_ok.cpp '// Copyright 2026, Datadog, Inc.'
+put utils/vendor/lib.py 'print(1)'
+put .gitlab/job.sh 'echo hi'
+put src/notes.md 'no header needed'
+put src/ext.ts 'export {};'
+put tools/hook '#!/usr/bin/env python3'
+put tools/NOTICE 'plain text, no shebang'
+put tools/run.txt '#!/bin/sh'
+ln -s ../tools/NOTICE src/linked.cpp
+ln -s /etc tools/linkdir
+printf '\xff\xfe\x00binary' > src/blob.bin
+put tools/comment '# a comment, not a shebang'
+: > tools/empty
+mkdir -p tools/submodule  # a submodule entry: a directory in the tree, a gitlink in the index
+git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),tools/submodule"
+put $'src/bad\xff.cpp' 'int z;'
+put 'src/café.cpp' 'int y;'
+echo '{3, 4},' >> src/table.inc
+echo '// change' >> src/stale.cpp
+sed -i.bak 's/2024 Datadog/2024, 2026 Datadog/' src/ranged.cpp && rm src/ranged.cpp.bak
+echo '// change' >> src/Bare.java
+echo '# change' >> src/bare.py
+echo '// change' >> src/upstream.cpp
+echo '// change' >> src/present.cpp
+git mv src/moved_from.cpp src/moved_to.cpp
+git rm -q src/gone.cpp
+git add . && GIT_COMMITTER_DATE=2026-03-01T12:00:00 git commit -qm feature --date=2026-03-01T12:00:00
+# Changed and committed in December 2025 with a 2025 end year: checked later, still passes.
+sed -i.bak 's/2024, Datadog/2024, 2025, Datadog/' src/december.cpp && rm src/december.cpp.bak
+git add . && GIT_COMMITTER_DATE=2025-12-15T12:00:00 git commit -qm december --date=2025-12-15T12:00:00
+# Uncommitted change with a stale year: judged against the current year.
+sed -i.bak 's/2024, Datadog/2025, Datadog/' src/dirty.cpp && rm src/dirty.cpp.bak
+
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main 2>&1) || rc=$?
+expect "T5 copyright run" 1 "$rc" "$out" "copyright: 10 problem(s)"
+for want in "src/new_bare.cpp: new file has no" "src/stale.cpp: Datadog copyright ends in 2024; changed in 2026" \
+            "src/Bare.java: modified file has no copyright line" "src/moved_to.cpp: Datadog copyright ends in 2024" \
+            "src/dirty.cpp: Datadog copyright ends in 2025; changed in $(date +%Y)" \
+            "src/ext.ts: new file has no" "tools/hook: new file has no" "src/café.cpp: new file has no" \
+            "src/table.inc: modified file has no copyright line" "src/bad"; do
+  expect "T5 reports $want" 1 "$rc" "$out" "$want"
+done
+for clean in new_ok.cpp utils/vendor .gitlab notes.md ranged.cpp bare.py upstream.cpp present.cpp december.cpp \
+             NOTICE run.txt linked.cpp blob.bin linkdir tools/comment submodule; do
+  if [[ "$out" == *"$clean"* ]]; then fail "T5 flags $clean:"$'\n'"$out"; else pass; fi
+done
+# In a GitHub pull request the default base is origin/$GITHUB_BASE_REF.
+git update-ref refs/remotes/origin/rel HEAD
+rc=0; out=$(GITHUB_BASE_REF=rel python3 "$CR" --root "$CR_ROOT" 2>&1) || rc=$?
+expect "T5 GITHUB_BASE_REF selects the base" 1 "$rc" "$out" "copyright: 1 problem(s)"
+rc=0; out=$(GITHUB_BASE_REF= python3 "$CR" --root "$CR_ROOT" 2>&1) || rc=$?
+expect "T5 the default base is origin/main" 2 "$rc" "$out" "refs/remotes/origin/main"
+rc=0; out=$(GITHUB_BASE_REF=rel python3 "$CR" --root "$CR_ROOT" --base main 2>&1) || rc=$?
+expect "T5 an explicit --base wins over GITHUB_BASE_REF" 1 "$rc" "$out" "copyright: 10 problem(s)"
+git update-ref -d refs/remotes/origin/rel
+# Working tree at odds with HEAD: december.cpp's year reverted but uncommitted, a staged new
+# file, a deleted stale.cpp.
+sed -i.bak 's/2024, 2025, Datadog/2024, Datadog/' src/december.cpp && rm src/december.cpp.bak
+printf 'int s;\n' > src/staged.cpp && git add src/staged.cpp && rm src/stale.cpp
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main --head HEAD 2>&1) || rc=$?
+expect "T5 --head checks the commit" 1 "$rc" "$out" "copyright: 9 problem(s)"
+for want in "tools/hook: new file has no" "src/stale.cpp: Datadog copyright ends in 2024"; do
+  expect "T5 --head reports $want" 1 "$rc" "$out" "$want"
+done
+for wt in dirty.cpp december.cpp staged.cpp linked.cpp linkdir tools/comment tools/empty submodule; do
+  if [[ "$out" == *"$wt"* ]]; then fail "T5 --head flags $wt:"$'\n'"$out"; else pass; fi
+done
+git rm -q --cached src/staged.cpp && rm src/staged.cpp && git checkout -q src/december.cpp src/stale.cpp
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main --head HEAD~1 2>&1) || rc=$?
+expect "T5 --head on an earlier commit" 1 "$rc" "$out" "copyright: 9 problem(s)"
+if [[ "$out" == *december.cpp* ]]; then fail "T5 --head includes a later commit:"$'\n'"$out"; else pass; fi
+# A 2027 commit on ranged.cpp: --head on its parent takes the year from the parent's history.
+echo '// later' >> src/ranged.cpp
+GIT_COMMITTER_DATE=2027-01-10T12:00:00 git commit -qm later --date=2027-01-10T12:00:00 src/ranged.cpp
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base main --head HEAD~1 2>&1) || rc=$?
+expect "T5 --head takes the change year from the commit" 1 "$rc" "$out" "copyright: 9 problem(s)"
+git reset -q HEAD~1 && git checkout -q src/ranged.cpp
+git checkout -q src/dirty.cpp
+
+rc=0; out=$(python3 "$CR" --root "$CR_ROOT" --base no-such-branch 2>&1) || rc=$?
+expect "T5 missing base is an environment error" 2 "$rc" "$out" "merge-base"
+cd "$ROOT"
+
+# --- T6: check-claude-md.py --------------------------------------------------
+
+CM="$ROOT/utils/check-claude-md.py"
+CM_ROOT="$TEMP_DIR/claude-md"
+mkdir -p "$CM_ROOT"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6a missing CLAUDE.md" 1 "$rc" "$out" "CLAUDE.md: missing"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" --write 2>&1) || rc=$?
+expect "T6b --write" 0 "$rc" "$out" "CLAUDE.md: written"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6c canonical CLAUDE.md" 0 "$rc" "$out" "CLAUDE.md: OK"
+CAIRN=$'<!-- cairn:knowledgebase begin (managed by cairn; do not edit manually) -->\n## Cairn\n\ntext\n<!-- cairn:knowledgebase end -->\n\n'
+add_cairn() {  # inserts $CAIRN after the heading, $1 times
+  local i; { head -2 "$CM_ROOT/CLAUDE.md"; for ((i = 0; i < $1; i++)); do printf '%s' "$CAIRN"; done
+             tail -n +3 "$CM_ROOT/CLAUDE.md"; } > "$CM_ROOT/c" && mv "$CM_ROOT/c" "$CM_ROOT/CLAUDE.md"
+}
+add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6d cairn block without a committed canonical file" 1 "$rc" "$out" "differs from the canonical stub"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null
+(cd "$CM_ROOT" && git init -q && git config user.email t@example.com && git config user.name t && git add CLAUDE.md && git commit -qm canonical)
+add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6e uncommitted cairn block is ignored" 0 "$rc" "$out" "uncommitted cairn block ignored"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 1 && echo "## Extra" >> "$CM_ROOT/CLAUDE.md"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6e2 cairn block plus other drift fails" 1 "$rc" "$out" "differs from the canonical stub"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 2
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6f two cairn blocks are not ignored" 1 "$rc" "$out" "differs from the canonical stub"
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 1
+(cd "$CM_ROOT" && git commit -qam "commit the block")
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6g committed cairn block fails (CI view)" 1 "$rc" "$out" "differs from the canonical stub"
+# --root below the repository top: HEAD's CLAUDE.md must be read relative to --root.
+mkdir -p "$CM_ROOT/sub" && echo "not the stub" > "$CM_ROOT/CLAUDE.md"
+python3 "$CM" --root "$CM_ROOT/sub" --write >/dev/null
+(cd "$CM_ROOT" && git add -A && git commit -qm "stub in sub, other file at top")
+CM_TOP=$CM_ROOT; CM_ROOT=$CM_ROOT/sub; add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6i committed file is read relative to --root" 0 "$rc" "$out" "uncommitted cairn block ignored"
+rc=0; out=$(PATH=/nonexistent "$(command -v python3)" "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6j without git the cairn block is not ignored" 1 "$rc" "$out" "differs from the canonical stub"
+printf 'stub\xff\n' > "$CM_ROOT/CLAUDE.md" && (cd "$CM_TOP" && git commit -qam "non-UTF-8 stub")
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6k non-UTF-8 committed file is a clean mismatch" 1 "$rc" "$out" "differs from the canonical stub"
+CM_ROOT=$CM_TOP
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && echo "## Build" >> "$CM_ROOT/CLAUDE.md"
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6h drifted CLAUDE.md" 1 "$rc" "$out" "differs from the canonical stub"
+# --head reads the committed file; `python3 -I -c` is how the git hooks run this script.
+(cd "$CM_ROOT" && git commit -qam drift)
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null
+rc=0; out=$(python3 -I -c "$(cat "$CM")" --root "$CM_ROOT" --head HEAD 2>&1) || rc=$?
+expect "T6l --head checks the commit, not the fixed working tree" 1 "$rc" "$out" "differs from the canonical stub"
+first=$(cd "$CM_ROOT" && git rev-list --max-parents=0 HEAD)
+rc=0; out=$(python3 -I -c "$(cat "$CM")" --root "$CM_ROOT/sub" --head "$first" 2>&1) || rc=$?
+expect "T6m --head on a commit without CLAUDE.md" 1 "$rc" "$out" "CLAUDE.md: missing"
+add_cairn 1 && (cd "$CM_ROOT" && git commit -qam "cairn block")
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null && (cd "$CM_ROOT" && git commit -qam canonical)
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" --head HEAD~1 2>&1) || rc=$?
+expect "T6n --head never ignores a committed cairn block" 1 "$rc" "$out" "differs from the canonical stub"
+
+# --- T7: check-knowledgebase.py ------------------------------------------------
+
+KB="$ROOT/utils/check-knowledgebase.py"
+KB_ROOT="$TEMP_DIR/kb"
+mkdir -p "$KB_ROOT/.knowledgebase/memories" && (cd "$KB_ROOT" && git init -q)
+memory() {  # memory <file> <frontmatter lines...>: writes and tracks one memory file
+  local f="$KB_ROOT/.knowledgebase/memories/$1"; shift
+  { echo ---; printf '%s\n' "$@"; echo ---; echo; echo body; } > "$f"
+  git -C "$KB_ROOT" add -f "$f"
+}
+GOOD=("id: good-one" "title: T" "kind: finding" "tags: [a]" "source: inv/node-1")
+kb() { rc=0; out=$(python3 "$KB" --root "$KB_ROOT" 2>&1) || rc=$?; }
+kb_reset() { git -C "$KB_ROOT" rm -rqf --cached .knowledgebase >/dev/null 2>&1 || true
+             rm -rf "$KB_ROOT/.knowledgebase/memories"/*; }
+memory good-one.md "${GOOD[@]}"
+kb; expect "T7a valid memory" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+printf 'no frontmatter\n' > "$KB_ROOT/.knowledgebase/memories/bare.md" && git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7b memory without frontmatter" 1 "$rc" "$out" "bare.md: no \`---\` frontmatter block"
+printf -- '---\nid: open\n' > "$KB_ROOT/.knowledgebase/memories/bare.md" && git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7c unclosed frontmatter" 1 "$rc" "$out" "bare.md: no \`---\` frontmatter block"
+kb_reset; memory no-source.md "id: no-source" "title: T" "kind: finding" "tags: [a]"
+kb; expect "T7d missing required field" 1 "$rc" "$out" "frontmatter 'source' is required"
+kb_reset; memory renamed.md "${GOOD[@]}"
+kb; expect "T7e id differs from the file name" 1 "$rc" "$out" "id 'good-one' does not match the file name"
+kb_reset; memory Bad_Id.md "id: Bad_Id" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7f id is not a slug" 1 "$rc" "$out" "id 'Bad_Id' is not a lowercase slug"
+kb_reset; memory note.md "id: note" "title: T" "kind: note" "tags: [a]" "source: inv/n"
+kb; expect "T7g unknown kind" 1 "$rc" "$out" "kind 'note' is not one of finding, dead-end"
+kb_reset; memory good-one.md "${GOOD[@]}"
+echo x > "$KB_ROOT/.knowledgebase/memories/stray.txt" && git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7h non-memory file under memories/" 1 "$rc" "$out" "stray.txt: not a memory file"
+kb_reset; memory good-one.md "${GOOD[@]}"
+echo x > "$KB_ROOT/.knowledgebase/.cairn" && echo x > "$KB_ROOT/notes.md" && git -C "$KB_ROOT" add -f .knowledgebase notes.md
+echo x > "$KB_ROOT/.knowledgebase/memories/untracked.md"
+kb; expect "T7i files outside memories/ and untracked files are ignored" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+rc=0; out=$(python3 "$KB" --root "$TEMP_DIR/nonexistent" 2>&1) || rc=$?
+expect "T7j environment error outside a checkout" 2 "$rc" "$out" "error: git ls-files failed"
+kb_reset; memory spaced.md "id : spaced" "  title: T" "kind: finding" "tags: [a]" "source: inv/n" "# note"
+kb; expect "T7k spacing cairn accepts" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+rm "$KB_ROOT/.knowledgebase/memories/spaced.md"
+kb; expect "T7l tracked memory missing from the working tree" 1 "$rc" "$out" "spaced.md: cannot read"
+kb_reset; memory dead-x.md "id: dead-x" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7m dead-* id with kind finding" 1 "$rc" "$out" "dead-* id but kind is 'finding'"
+# Never stricter than cairn's contract: what cairn accepts passes here too.
+kb_reset; memory deadend-y.md "id: deadend-y" "title: T" "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7m deadend-* id with kind finding (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK"
+kb_reset; memory empty-title.md "id: empty-title" 'title: ""' "kind: finding" "tags: [a]" "source: inv/n"
+kb; expect "T7p quoted empty title (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK"
+kb_reset; memory no-tags.md "id: no-tags" "title: T" "kind: finding" "tags: []" "source: inv/n"
+kb; expect "T7q empty tag list, as cairn writes it" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+kb_reset
+{ printf -- '--- \n'; printf '%s\n' "${GOOD[@]}"; printf -- '---\t\n'; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+git -C "$KB_ROOT" add -f .knowledgebase
+kb; expect "T7r trailing whitespace on the delimiters (cairn accepts it)" 0 "$rc" "$out" "knowledgebase: OK (1 memories)"
+{ printf '\xef\xbb\xbf---\n'; printf '%s\n' "${GOOD[@]}"; echo ---; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+kb; expect "T7s leading BOM (cairn finds no frontmatter)" 1 "$rc" "$out" "no \`---\` frontmatter block"
+kb_reset; memory src.md "id: src" "title: T" "kind: finding" "tags: [a]" "source: notes"
+kb; expect "T7n source not in <investigation>/<node-id> form" 1 "$rc" "$out" "source 'notes' is not in"
+for opener in '---garbage' '----'; do
+  kb_reset
+  { echo "$opener"; printf '%s\n' "${GOOD[@]}"; echo ---; } > "$KB_ROOT/.knowledgebase/memories/good-one.md"
+  git -C "$KB_ROOT" add -f .knowledgebase
+  kb; expect "T7o delimiter '$opener' is not a frontmatter line" 1 "$rc" "$out" "no \`---\` frontmatter block"
+done
+
+# --- T8: check-skills.py --------------------------------------------------------
+
+SK="$ROOT/utils/check-skills.py"
+SK_ROOT="$TEMP_DIR/skills"
+skill() {  # skill <dir> <frontmatter lines...>: writes and tracks one SKILL.md
+  mkdir -p "$SK_ROOT/.agents/skills/$1"
+  local f="$SK_ROOT/.agents/skills/$1/SKILL.md"; shift
+  { echo ---; printf '%s\n' "$@"; echo ---; echo; echo body; } > "$f"
+  git -C "$SK_ROOT" add -f "$f"
+}
+sk() { rc=0; out=$(python3 "$SK" --root "$SK_ROOT" 2>&1) || rc=$?; }
+sk_reset() {  # a valid tree: one skill, the .claude/skills symlink, an AGENTS.md pointer
+  rm -rf "$SK_ROOT" && mkdir -p "$SK_ROOT/.agents/skills" "$SK_ROOT/.claude"
+  git -C "$SK_ROOT" init -q
+  ln -s ../.agents/skills "$SK_ROOT/.claude/skills"
+  echo 'Run the `good-one` skill.' > "$SK_ROOT/AGENTS.md"
+  git -C "$SK_ROOT" add -f .claude/skills AGENTS.md
+  skill good-one "name: good-one" "description: Does a thing. Use when a thing is needed."
+}
+unlink_skills() { git -C "$SK_ROOT" rm -q --cached .claude/skills && rm "$SK_ROOT/.claude/skills"; }
+sk_reset
+sk; expect "T8a valid skill, symlink and pointer" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill quoted "name: 'quoted'" 'description: "Quoted values load too."'
+sk; expect "T8b quoted values" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk_reset; printf 'no frontmatter\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8c SKILL.md without frontmatter" 1 "$rc" "$out" "good-one/SKILL.md: no \`---\` frontmatter block"
+sk_reset; printf -- '---\nname: good-one\ndescription: x\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8d unclosed frontmatter" 1 "$rc" "$out" "no \`---\` frontmatter block"
+sk_reset; skill good-one "name: good-one"
+sk; expect "T8e missing description" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "name: good-one" 'description: ""'
+sk; expect "T8f empty quoted description" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "description: x"
+sk; expect "T8g missing name" 1 "$rc" "$out" "frontmatter 'name' is required"
+sk_reset; skill good-one "name: other-one" "description: x"
+sk; expect "T8h name differs from directory" 1 "$rc" "$out" "name 'other-one' differs from its directory 'good-one'"
+for bad in Bad_Name bad--name -bad bad-; do
+  sk_reset; skill "$bad" "name: \"$bad\"" "description: x"  # quoted, so only the name rule applies
+  sk; expect "T8i invalid name '$bad'" 1 "$rc" "$out" "name '$bad' must be lowercase letters"
+done
+long=$(printf 'a%.0s' $(seq 65))
+sk_reset; skill "$long" "name: $long" "description: x"
+sk; expect "T8j name of 65 characters" 1 "$rc" "$out" "at most 64 characters"
+sk_reset; skill "${long:1}" "name: ${long:1}" "description: x"
+sk; expect "T8j name of 64 characters" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk_reset; skill good-one "name: good-one" "description: $(printf 'd%.0s' $(seq 1025))"
+sk; expect "T8k description of 1025 characters" 1 "$rc" "$out" "description has 1025 characters, at most 1024"
+sk_reset; skill good-one "name: good-one" "description: $(printf 'd%.0s' $(seq 1024))"
+sk; expect "T8k description of 1024 characters" 0 "$rc" "$out" "skills: OK (1 skills)"
+for scalar in '>' '|-'; do
+  sk_reset; skill good-one "name: good-one" "description: $scalar" "  Folded text."
+  sk; expect "T8l block-scalar description '$scalar'" 1 "$rc" "$out" "block scalars are not supported"
+done
+sk_reset; mkdir -p "$SK_ROOT/.agents/skills/no-skill" && echo x > "$SK_ROOT/.agents/skills/no-skill/notes.md"
+git -C "$SK_ROOT" add -f .agents/skills/no-skill/notes.md
+sk; expect "T8m skill directory without SKILL.md" 1 "$rc" "$out" "no-skill/SKILL.md: missing"
+sk_reset; mkdir -p "$SK_ROOT/.agents/skills/draft" && echo x > "$SK_ROOT/.agents/skills/draft/SKILL.md"
+sk; expect "T8n untracked skill directories are ignored" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; rm "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8o tracked SKILL.md missing from the working tree" 1 "$rc" "$out" "good-one/SKILL.md: cannot read"
+sk_reset; echo 'Run the `good-one` skill, then the `gone-one` skill.' > "$SK_ROOT/AGENTS.md"
+sk; expect "T8p AGENTS.md names a missing skill" 1 "$rc" "$out" "names the \`gone-one\` skill, but .agents/skills/gone-one/ does not exist"
+sk_reset; echo 'The cairn-memory skill and `code` spans are not pointers.' > "$SK_ROOT/AGENTS.md"
+sk; expect "T8q mentions without a backticked skill name" 0 "$rc" "$out" "skills: OK"
+sk_reset; unlink_skills
+sk; expect "T8r .claude/skills symlink missing" 1 "$rc" "$out" ".claude/skills: must be a tracked symlink"
+sk_reset; unlink_skills; ln -s ../skills "$SK_ROOT/.claude/skills" && git -C "$SK_ROOT" add -f .claude/skills
+sk; expect "T8s .claude/skills symlink points elsewhere" 1 "$rc" "$out" "points to '../skills', expected ../.agents/skills"
+sk_reset; unlink_skills; mkdir "$SK_ROOT/.claude/skills" && echo x > "$SK_ROOT/.claude/skills/f"
+git -C "$SK_ROOT" add -f .claude/skills
+sk; expect "T8t .claude/skills is a directory, not a symlink" 1 "$rc" "$out" ".claude/skills: must be a tracked symlink"
+sk_reset; rm "$SK_ROOT/AGENTS.md"
+sk; expect "T8u AGENTS.md missing" 2 "$rc" "$out" "error: cannot read AGENTS.md"
+rc=0; out=$(python3 "$SK" --root "$TEMP_DIR/nonexistent" 2>&1) || rc=$?
+expect "T8v environment error outside a checkout" 2 "$rc" "$out" "error: git ls-files failed"
+sk_reset; skill good-one "name: good-one" "description: \"$(printf 'd%.0s' $(seq 1024))\""
+sk; expect "T8w double quotes do not count toward the description limit" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; printf 'intro\n---\nname: good-one\ndescription: x\n---\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8x frontmatter must start on the first line" 1 "$rc" "$out" "no \`---\` frontmatter block"
+sk_reset; printf -- '---\nname: good-one\n---\ndescription: in the body\n' > "$SK_ROOT/.agents/skills/good-one/SKILL.md"
+sk; expect "T8y body lines are not frontmatter" 1 "$rc" "$out" "frontmatter 'description' is required"
+sk_reset; skill good-one "name: good-one" "description: x" "metadata:" "  nested: value"
+sk; expect "T8z nested mapping" 1 "$rc" "$out" "line 5: expected \`key: value\` at column 0"
+sk_reset; echo x > "$SK_ROOT/.agents/skills/README.md" && git -C "$SK_ROOT" add -f .agents/skills/README.md
+sk; expect "T8aa files directly under .agents/skills/ are not skills" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill skill2 "name: skill2" "description: x"
+sk; expect "T8ab digits in a name" 0 "$rc" "$out" "skills: OK (2 skills)"
+sk_reset; skill good-one "name: >" "  good-one" "description: x"
+sk; expect "T8ac block-scalar name" 1 "$rc" "$out" "'name' must be a one-line string: block scalars are not supported"
+sk_reset; skill good-one "name: good-one: x" "description: x"
+sk; expect "T8ad name outside the string subset" 1 "$rc" "$out" "'name' must be a one-line string"
+sk_reset; skill good-one "name: good-one" "description: '''$(printf 'd%.0s' $(seq 1023))'"
+sk; expect "T8ae a doubled single quote counts as one character" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" "description: \"\\\"$(printf 'd%.0s' $(seq 1023))\""
+sk; expect "T8af an escaped double quote counts as one character" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" "description: short" "  more text"
+sk; expect "T8ag value continued on an indented line" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: short" "more text"
+sk; expect "T8ah stray unindented line" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "- item"
+sk; expect "T8ai list item" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name:good-one" "description: x"
+sk; expect "T8aj key without a space after the colon" 1 "$rc" "$out" "line 2: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "  # indented comment"
+sk; expect "T8ak indented comment" 1 "$rc" "$out" "line 4: expected \`key: value\` at column 0"
+sk_reset; skill good-one "name: good-one" "description: x" "allowed-tools: [Read"
+sk; expect "T8al other keys are checked too" 1 "$rc" "$out" "line 4: 'allowed-tools' must be a one-line string"
+sk_reset; skill good-one "name: wrong" "name: good-one" "description: x"
+sk; expect "T8am duplicate key" 1 "$rc" "$out" "line 3: duplicate key 'name'"
+sk_reset; skill good-one "# a comment" "name: good-one" "" "description: x" "metadata:"
+sk; expect "T8an comments, blank lines and empty values of other keys" 0 "$rc" "$out" "skills: OK (1 skills)"
+sk_reset; skill good-one "name: good-one" 'description: "bad \p escape"'
+sk; expect "T8ao malformed quoted value names the quoting problem" 1 "$rc" "$out" "the quoted string is unterminated"
+sk_reset; skill good-one "name: good-one" "description: Café notes"
+sk; expect "T8ap non-ASCII text in a plain value" 0 "$rc" "$out" "skills: OK (1 skills)"
+# Values YAML rejects or reads as non-strings, and values outside the accepted subset.
+for bad in 'Use when: a colon' 'x # comment' 'ends with:' '[list]' '{map}' '*alias' '&anchor' '!tag' \
+           '%pct' '@at' '`tick' '|pipe' '- dash' '-' '? q' ': x' '0x1F' '123' '.Inf' '1:30' 'back\slash' \
+           "$(printf 'a\tb')" "$(printf '\xef\xbb\xbfbom')" '"unterminated' '"inner " quote"' \
+           "'unterminated" "'it's'" true No null '~' y OFF \
+           "$(printf 'c1\xc2\x85char')" "$(printf 'non\xef\xbf\xbechar')" "$(printf 'line\xe2\x80\xa8sep')" \
+           "$(printf '"ctrl\x01char"')" "$(printf '"c1\xc2\x85char"')"; do
+  sk_reset; skill good-one "name: good-one" "description: $bad"
+  sk; expect "T8aq rejected description <$bad>" 1 "$rc" "$out" "'description' must be a one-line string"
+done
+for good in '"Use when: quoted"' '"escaped \" quote"' '"escaped \\ backslash"' "'doubled '' quote'" \
+            'a#hash without a space before it' 'time 10:30 is fine' '"true"' 'trueish' 'v1.2 notes' \
+            '"quoted" # trailing comment' "'single' # trailing comment" 'Plain words, with (parens) and a comma.' \
+            'Use when — writing' 'Über alles' "$(printf 'nbsp\xc2\xa0ok')" "$(printf '"tab\tin quotes"')"; do
+  sk_reset; skill good-one "name: good-one" "description: $good"
+  sk; expect "T8ar accepted description <$good>" 0 "$rc" "$out" "skills: OK (1 skills)"
+done
+sk_reset; skill good-one "name: good-one" "$(printf 'description:\tx')"
+sk; expect "T8as tab after the colon" 1 "$rc" "$out" "line 3: use a space, not a tab, after the colon"
+sk_reset; skill good-one "name: good-one" "$(printf 'description: caf\xe9')"
+sk; expect "T8at SKILL.md that is not valid UTF-8" 1 "$rc" "$out" "good-one/SKILL.md: not valid UTF-8 at byte"
+sk_reset; skill good-one "name: good-one" "$(printf '"description": x')"
+sk; expect "T8au quoted key" 1 "$rc" "$out" "line 3: expected \`key: value\` at column 0"
+
+# --- Summary -----------------------------------------------------------------
+
+if [ "$FAILED" -gt 0 ]; then
+  echo "FAIL: $FAILED/$TESTS test groups failed" >&2
+  exit 1
+fi
+echo "PASS: $TESTS test groups"

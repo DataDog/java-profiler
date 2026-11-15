@@ -8,8 +8,12 @@ After evaluating multiple approaches, **we chose to use a new frame type (`FRAME
 - ✅ Ambiguity in semantics
 
 Remote native frames now use:
-- **Modifier**: `0x0100` (ACC_NATIVE, same as regular native frames)
-- **Frame Type**: `FRAME_NATIVE_REMOTE` (7)
+- **Modifier**: `0x0100` (ACC_NATIVE, same as regular native frames) — `Lookup::fillRemoteFrameInfo()` in `flightRecorder.cpp`
+- **Frame Type**: `FRAME_NATIVE_REMOTE` (7) — `enum FrameTypeId` in `frame.h`, registered as `"Native (remote)"` by `Recording::writeFrameTypes()`
+
+> **History note:** the "Profiler Custom Modifiers" and "Modifier Conflict
+> Analysis" sections below record the rejected modifier-flag design. No custom
+> modifier flag (`ACC_REMOTE_SYMBOLICATION` or otherwise) exists in the code.
 
 ## Java Access Modifiers (from JVM Spec)
 
@@ -37,9 +41,9 @@ The Java Virtual Machine specification defines the following access modifiers fo
 | ACC_ENUM | 0x4000 | Classes/Fields | Enum type/constant |
 | ACC_MANDATED | 0x8000 | Parameters | Implicitly declared |
 
-## Profiler Custom Modifiers
+## Profiler Custom Modifiers (rejected design, not implemented)
 
-For the Java profiler's internal use, we define custom modifier flags that don't conflict with Java's standard modifiers:
+The modifier-flag design considered the following custom flags. Only the reused Java modifiers are actually emitted (native frames use `0x100`); `ACC_REMOTE_SYMBOLICATION` was never adopted:
 
 | Modifier | Value | Usage | Notes |
 |----------|-------|-------|-------|
@@ -60,7 +64,7 @@ For the Java profiler's internal use, we define custom modifier flags that don't
 - ⚠️ **CONFLICT**: Java's `ACC_ANNOTATION` (0x2000)
 - While theoretically safe for methods (annotations only apply to classes), still within Java's reserved range
 
-**Version 3 (Final)**: Changed to `0x10000` (bit 16)
+**Version 3**: Changed to `0x10000` (bit 16) — later superseded by the frame-type approach
 - ✅ **NO CONFLICTS**: Completely outside Java's standard modifier range (0x0001-0x8000)
 - ✅ Clean separation from JVM specification
 - ✅ Future-proof against new Java modifiers
@@ -90,11 +94,10 @@ JFR uses LEB128 variable-length encoding for modifiers. The encoding size depend
 | Value Range | Example | Bytes | Notes |
 |-------------|---------|-------|-------|
 | 0x00-0x7F | 0 | 1 | Most compact |
-| 0x80-0x3FFF | 0x0100 (ACC_NATIVE) | 2 | Standard native frames |
-| 0x4000-0x1FFFFF | 0x1000 (ACC_SYNTHETIC) | 2 | High standard modifiers |
-| 0x10000+ | 0x10000 | 3 | **+1 byte overhead!** |
+| 0x80-0x3FFF | 0x0100 (ACC_NATIVE), 0x1000 (ACC_SYNTHETIC) | 2 | Standard native frames |
+| 0x4000-0x1FFFFF | 0x8000 (ACC_MANDATED), 0x10000 | 3 | **+1 byte overhead!** |
 
-**Critical insight**: Using `0x10000` would add **1 extra byte per remote native frame**. Over millions of frames, this becomes significant!
+**Critical insight**: Using `0x10000` would add **1 extra byte per remote native method-pool entry**. Modifiers are written once per entry in the method constant pool (`writeMethodEntry()` in `flightRecorder.cpp`), not per stack frame, so the cost scales with the number of distinct remote frames (build-id + pc offset) per chunk.
 
 ### Alternative Approaches Rejected
 
@@ -107,14 +110,14 @@ JFR uses LEB128 variable-length encoding for modifiers. The encoding size depend
 
 3. **Use modifier 0x10000 (bit 16)**:
    - ❌ 3-byte varint encoding vs 2-byte for regular frames
-   - ❌ **+1 byte overhead per frame** = significant space impact
+   - ❌ **+1 byte overhead per method-pool entry**
 
 4. **Use a separate field**:
    - ❌ Would require JFR metadata changes
    - ❌ Breaks backward compatibility
 
 5. **Use frame type FRAME_NATIVE_REMOTE (CHOSEN)**:
-   - ✅ Zero encoding overhead (type already serialized)
+   - ✅ Zero encoding overhead (the frame type is already written as one byte per stack frame by `Recording::writeStackTraces()`)
    - ✅ No modifier conflicts
    - ✅ Clear semantics
 
