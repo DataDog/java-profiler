@@ -16,6 +16,8 @@ or suggested edits on memory files.
 
 # AGENTS.md
 
+<!-- Copyright 2026, Datadog, Inc. -->
+
 This file provides guidance to AI coding assistants when working with code in this
 repository. It is deliberately a thin index: rules that must always be in context live
 here; subsystem details live in `doc/` (start at the [doc/README.md](doc/README.md)
@@ -155,7 +157,7 @@ before working on a subsystem.
 | Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, reusable unowned wall-clock roots) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
-| TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
+| TLS context (thread-local tracing, owner context-window membership, paired TaskBlock interval recovery, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
 | Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; lazy wall-block backing survives recording resets; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
@@ -326,6 +328,14 @@ Retained units serialize at their original epoch-window start. See [CallTraceSto
 **Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.
 Only owner-side entry/exit changes membership; signals and timers do not walk remote TLS.
 See [TLSContext](doc/architecture/TLSContext.md#context-window-membership).
+
+**Paired TaskBlock intervals.** Run begin admission checks before discarding a pending interval.
+Recovery emits no event and closes only the token's matching current slot and generation.
+See [TLSContext](doc/architecture/TLSContext.md#paired-taskblock-intervals).
+
+**Platform-thread classification.** Verify the caller before mutating Java-owned TaskBlock TLS.
+`JVMSupport::isPlatformThread()` rejects non-HotSpot JNI >= 19 without reading slot 234.
+See [JvmSupportLayer](doc/architecture/JvmSupportLayer.md#platform-thread-classification).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

@@ -541,29 +541,15 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
 
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
-    // Recovery of an abandoned interval is intentionally NOT run here: the
-    // beginTaskBlock() javadoc keeps the open interval on every 0 return, so
-    // dropping the token before this check would break endTaskBlock() for a
-    // live nested interval. The cost is a deferral window: a thread that
-    // loses its endTaskBlock (exception without finally) and then issues
-    // every later beginTaskBlock under an active span keeps its TASK_BLOCK
-    // run armed - and its wall-clock signals suppressed - until it calls
-    // beginTaskBlock outside a trace context. Native code cannot tell that
-    // abandoned case from a nested live interval (both show a pending
-    // token), so the caller-visible contract wins.
+    // A traced nested begin must preserve the pending interval for its end.
+    // An abandoned interval is indistinguishable here, so recovery also waits.
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
 
   WallClockBlockTracker *tracker = profiler->blockTracker();
-  // A pending token here means the previous interval never reached
-  // endTaskBlock0 (or this begin is nested). Supersede it: otherwise
-  // taskBlockEnter() fails for the rest of the thread's life, and the
-  // TASK_BLOCK run, which clearActiveBlockRun() does not clear, keeps this
-  // thread's wall-clock signals suppressed while it stays outside a context
-  // window. Recover only after the checks above have passed: the
-  // beginTaskBlock() javadoc keeps the open interval when one of them
-  // makes this call return 0.
+  // Supersede pending TLS state only after the admission checks above.
+  // Slot/generation checks keep recovery from closing a different run.
   recoverAbandonedTaskBlock(current, tracker, slot_id);
 
   u64 token = tracker->enterBlockedRun(
