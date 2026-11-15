@@ -374,6 +374,9 @@ public:
   void addImport(void **entry, const char *name);
   size_t importCount(ImportId id);
   bool importsComplete(ImportId id) const;
+#ifdef UNIT_TEST
+  void markImportIncompleteForTest(ImportId id) { _incomplete_imports |= 1ULL << id; }
+#endif
   bool prepareImportsForPatch();
   void **findImport(ImportId id, size_t index = 0);
   bool patchImport(ImportId, void *hook_func);

@@ -1555,6 +1555,27 @@ TEST_F(LibraryPatcherSocketTransactionTest,
 }
 
 TEST_F(LibraryPatcherSocketTransactionTest,
+       IncompleteImportWithoutRetainedSlotsRejectsEntireTransaction) {
+  ASSERT_EXIT({
+    initializeFixture();
+    if (HasFatalFailure()) _exit(1);
+    ScopedNativeSocketInterposerActive interposer_active(true);
+    ScopedHookOwnerPid owner(getpid());
+    ASSERT_EQ(0u, libraries[0]->importCount(im_recv));
+    libraries[0]->markImportIncompleteForTest(im_recv);
+    ASSERT_FALSE(libraries[0]->importsComplete(im_recv));
+    ASSERT_GT(libraries[0]->importCount(im_read), 0u);
+    EXPECT_FALSE(LibraryPatcher::patch_socket_functions());
+    expectImports(false, 1);
+    EXPECT_FALSE(NativeSocketInterposer::instance()->active());
+    EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
+    EXPECT_EQ(0, LibraryPatcher::socket_library_count_for_test());
+    TearDown();
+    _exit(HasFailure() ? 1 : 0);
+  }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(LibraryPatcherSocketTransactionTest,
        OwnerRestartMakesReloadedFullRelroImportsWritable) {
   if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
   ASSERT_EXIT({

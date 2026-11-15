@@ -471,7 +471,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
     return JNI_FALSE;
   }
   Profiler *profiler = Profiler::instance();
-  if (current->isJvmInternalThread()) {
+  if (JVMSupport::isJvmInternalThread(current, env)) {
     Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
     return 0;
   }
@@ -557,7 +557,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (current == nullptr) {
     return 0;
   }
-  if (current->isJvmInternalThread()) {
+  if (JVMSupport::isJvmInternalThread(current, env)) {
     Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
     return 0;
   }
@@ -635,7 +635,7 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
       !profiler->taskBlockEnabled()) {
     return 0;
   }
-  if (current->isJvmInternalThread()) {
+  if (JVMSupport::isJvmInternalThread(current, env)) {
     Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
     return 0;
   }

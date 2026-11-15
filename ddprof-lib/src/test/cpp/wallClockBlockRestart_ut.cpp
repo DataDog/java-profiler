@@ -43,8 +43,8 @@ public:
     }
 };
 
-// The real JNI bodies do not use JNIEnv. Exercise their TLS, slot validation,
-// admission, and exit paths on real native threads without bootstrapping a JVM.
+// Classify fixture owners as application threads without bootstrapping a JVM.
+// Exercise production TLS, slot validation, admission and exits on native threads.
 class WallClockBlockRestartTest : public ::testing::TestWithParam<RestartHook> {
 protected:
     void SetUp() override {
@@ -87,6 +87,7 @@ protected:
     }
 
     u64 enterHook() {
+        ProfiledThread::current()->setJvmInternalThread(false);
         if (GetParam() == RestartHook::TASK_BLOCK) {
             return Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
                 &env, nullptr, reinterpret_cast<jthread>(1));

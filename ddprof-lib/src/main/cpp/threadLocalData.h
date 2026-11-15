@@ -62,6 +62,7 @@ public:
   static constexpr u32 FLAG_MONITOR_BLOCKED = 0x10u;
   static constexpr u32 FLAG_TASK_BLOCKED = 0x20u;
   static constexpr u32 FLAG_JVM_INTERNAL_THREAD = 0x40u;
+  static constexpr u32 FLAG_JVM_INTERNAL_CLASSIFIED = 0x80u;
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -455,11 +456,17 @@ public:
   }
 
   inline void setJvmInternalThread(bool is_internal) {
-    if (is_internal) {
-      __atomic_fetch_or(&_misc_flags, FLAG_JVM_INTERNAL_THREAD, __ATOMIC_RELEASE);
-    } else {
-      __atomic_fetch_and(&_misc_flags, ~FLAG_JVM_INTERNAL_THREAD, __ATOMIC_ACQ_REL);
-    }
+    u32 cur = __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED);
+    u32 desired;
+    do {
+      desired = (cur & ~FLAG_JVM_INTERNAL_THREAD) | FLAG_JVM_INTERNAL_CLASSIFIED |
+          (is_internal ? FLAG_JVM_INTERNAL_THREAD : 0);
+    } while (!__atomic_compare_exchange_n(&_misc_flags, &cur, desired, true,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
+  }
+
+  inline bool isJvmInternalClassified() const {
+    return (__atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE) & FLAG_JVM_INTERNAL_CLASSIFIED) != 0;
   }
 
   inline bool isJvmInternalThread() const {

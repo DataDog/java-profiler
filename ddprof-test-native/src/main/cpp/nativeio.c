@@ -16,6 +16,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 /* Read actual installed JDK import slots, not exported test-only profiler APIs. */
@@ -157,6 +158,85 @@ Java_com_datadoghq_profiler_nativesocket_NativeIoErrnoTest_exerciseImports(JNIEn
     clearerr(stdout);
     return failure;
 }
+static void pinned_read_failure(JNIEnv *env, const char *message) {
+    jclass error = (*env)->FindClass(env, "java/lang/IllegalStateException");
+    if (error != NULL) {
+        (*env)->ThrowNew(env, error, message);
+        (*env)->DeleteLocalRef(env, error);
+    }
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_datadoghq_profiler_wallclock_NativeSocketTaskBlockTest_openPinnedSocket0(JNIEnv *env, jclass cls) {
+    int sockets[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) != 0) {
+        pinned_read_failure(env, "socketpair failed");
+        return NULL;
+    }
+    struct timeval timeout = {5, 0};
+    if (setsockopt(sockets[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
+        close(sockets[0]); close(sockets[1]);
+        pinned_read_failure(env, "socket timeout setup failed");
+        return NULL;
+    }
+    jintArray result = (*env)->NewIntArray(env, 2);
+    if (result == NULL) {
+        close(sockets[0]); close(sockets[1]);
+        return NULL;
+    }
+    jint values[2] = {sockets[0], sockets[1]};
+    (*env)->SetIntArrayRegion(env, result, 0, 2, values);
+    return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_datadoghq_profiler_wallclock_NativeSocketTaskBlockTest_pinnedRead0(
+        JNIEnv *env, jclass cls, jint fd, jlongArray observed, jobject entered) {
+    struct imports imports = {{NULL, NULL, NULL, NULL}};
+    dl_iterate_phdr(collect_imports, &imports);
+    if (imports.functions[3] == NULL) {
+        pinned_read_failure(env, "no installed JDK read hook");
+        return -1;
+    }
+    jclass thread_class = (*env)->FindClass(env, "java/lang/Thread");
+    if (thread_class == NULL) return -1;
+    jmethodID carrier_method = (*env)->GetStaticMethodID(env, thread_class, "currentCarrierThread", "()Ljava/lang/Thread;");
+    if (carrier_method == NULL) { (*env)->DeleteLocalRef(env, thread_class); return -1; }
+    jobject carrier = (*env)->CallStaticObjectMethod(env, thread_class, carrier_method);
+    if (carrier == NULL) { (*env)->DeleteLocalRef(env, thread_class); return -1; }
+    jmethodID id_method = (*env)->GetMethodID(env, thread_class, "getId", "()J");
+    if (id_method == NULL) {
+        (*env)->DeleteLocalRef(env, carrier); (*env)->DeleteLocalRef(env, thread_class);
+        return -1;
+    }
+    /* Observe the actual carrier through the JDK, independently of profiler TLS/JFR. */
+    jlong identity[2] = {(*env)->CallLongMethod(env, carrier, id_method), syscall(SYS_gettid)};
+    (*env)->DeleteLocalRef(env, carrier);
+    (*env)->DeleteLocalRef(env, thread_class);
+    if ((*env)->ExceptionCheck(env)) return -1;
+    (*env)->SetLongArrayRegion(env, observed, 0, 2, identity);
+    jclass latch_class = (*env)->GetObjectClass(env, entered);
+    if (latch_class == NULL) return -1;
+    jmethodID count_down = (*env)->GetMethodID(env, latch_class, "countDown", "()V");
+    if (count_down != NULL) (*env)->CallVoidMethod(env, entered, count_down);
+    (*env)->DeleteLocalRef(env, latch_class);
+    if (count_down == NULL || (*env)->ExceptionCheck(env)) return -1;
+    char byte = 0;
+    ssize_t result = ((ssize_t (*)(int, void *, size_t))imports.functions[3])(fd, &byte, 1);
+    return result == 1 && byte == 1 ? 1 : -1;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_datadoghq_profiler_wallclock_NativeSocketTaskBlockTest_releasePinnedRead0(JNIEnv *env, jclass cls, jint fd) {
+    char byte = 1;
+    return write(fd, &byte, 1);
+}
+
+JNIEXPORT void JNICALL
+Java_com_datadoghq_profiler_wallclock_NativeSocketTaskBlockTest_closePinnedSocket0(JNIEnv *env, jclass cls, jint fd) {
+    if (close(fd) != 0) pinned_read_failure(env, "socket close failed");
+}
+
 #else
 JNIEXPORT jint JNICALL
 Java_com_datadoghq_profiler_nativesocket_NativeIoErrnoTest_exerciseImports(JNIEnv *env, jclass cls) {

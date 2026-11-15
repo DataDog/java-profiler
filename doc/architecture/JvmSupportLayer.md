@@ -37,6 +37,12 @@ compiles only on its own architecture: `hotspot/hotspotStackFrame_x64.cpp:7`
 (`#ifdef __x86_64__`), `hotspot/hotspotStackFrame_aarch64.cpp:7`, and
 `hotspot/stubUnwindInfo.cpp:6` (`#ifdef __aarch64__`).
 
+## Owner-side housekeeping classification
+
+`JVMSupport::isJvmInternalThread` caches the JDK `InnocuousThread` marker in owner TLS.
+Native and Java producer admission can classify threads that predate recording.
+Classification uses JNI/JVMTI outside signals; failed lookups reject admission without caching.
+
 ## Implementation selection at load time
 
 The VM type is detected once, in `VM::initShared()` (`vmEntry.cpp:229`). Every

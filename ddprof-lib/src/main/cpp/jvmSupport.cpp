@@ -12,6 +12,7 @@
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
+#include "signalSafety.h"
 #include "threadLocalData.inline.h"
 #include "threadLocalDataPool.h"
 #include "vmEntry.h"
@@ -63,6 +64,39 @@ bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
         return false;
     }
     return is_virtual_thread(jni, thread) == JNI_FALSE;
+}
+
+bool JVMSupport::isJvmInternalThread(ProfiledThread* current, JNIEnv* jni,
+                                     jthread thread) {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    if (current->isJvmInternalClassified()) return current->isJvmInternalThread();
+    if (jni == nullptr) jni = VM::jni();
+    jvmtiEnv* jvmti = VM::jvmti();
+    if (jni == nullptr || jvmti == nullptr) return true;
+
+    bool owns_thread = thread == nullptr;
+    if (owns_thread && (jvmti->GetCurrentThread(&thread) != JVMTI_ERROR_NONE ||
+                        thread == nullptr)) {
+        if (thread != nullptr) jni->DeleteLocalRef(thread);
+        return true;
+    }
+    jclass cls = jni->GetObjectClass(thread);
+    bool internal = true;
+    if (cls != nullptr) {
+        char* signature = nullptr;
+        if (jvmti->GetClassSignature(cls, &signature, nullptr) == JVMTI_ERROR_NONE &&
+            signature != nullptr) {
+            // InnocuousThread marks JDK pollers/cleaners, not application tasks.
+            internal = strcmp(signature, "Ljdk/internal/misc/InnocuousThread;") == 0;
+            current->setJvmInternalThread(internal);
+        }
+        if (signature != nullptr) jvmti->Deallocate(reinterpret_cast<unsigned char*>(signature));
+        jni->DeleteLocalRef(cls);
+    } else if (jni->ExceptionCheck()) {
+        jni->ExceptionClear();
+    }
+    if (owns_thread) jni->DeleteLocalRef(thread);
+    return internal;
 }
 
 bool JVMSupport::initialize() {
