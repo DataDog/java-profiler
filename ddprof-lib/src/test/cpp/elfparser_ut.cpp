@@ -652,9 +652,11 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     sym[0].st_name = 1;   // "mis_main"
     sym[0].st_value = 0x20000;
     sym[0].st_size = 4;
+    sym[0].st_shndx = 1;  // defined; SHN_UNDEF symbols are not code addresses
     sym[1].st_name = 10;  // "mis_helper"
     sym[1].st_value = 0x21000;
     sym[1].st_size = 4;
+    sym[1].st_shndx = 1;
     const uint64_t str_off = sym_off + sizeof(sym);
     const char strtab[] = "\0mis_main\0mis_helper\0";  // 22 bytes: names at 1 and 10
     // 4 pad bytes push .rela.plt off its natural alignment too, so the
@@ -969,6 +971,75 @@ TEST_F(ElfTest, dynamicSectionInvalidRelocationEntrySize) {
         ElfParser::parseProgramHeaders(&cc, image, image + IMAGE_SIZE, /*relocate_dyn=*/false);
         EXPECT_EQ(cc.peekImport(im_pthread_create), nullptr);
     }
+}
+
+// gABI "Symbol Values": st_value is an in-image address only for a defined,
+// non-TLS, non-ABS symbol. TLS offsets, absolute values and undefined symbols
+// (an executable's PLT stub address) must not become code-cache entries.
+TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
+    const uint16_t NSEC = 4;
+    const uint64_t shoff = sizeof(Elf64_Ehdr);
+    const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
+    const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
+    const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    const char strtab[] = "\0good_func\0tls_var\0abs_sym\0undef_stub\0";
+    enum { GOOD = 1, TLS = 11, ABS = 19, UNDEF = 27 };
+
+    Elf64_Sym sym[4];
+    memset(sym, 0, sizeof(sym));
+    auto set = [&](int i, uint32_t name, unsigned char type, uint16_t shndx, uint64_t value) {
+        sym[i].st_name = name;
+        sym[i].st_info = ELF64_ST_INFO(STB_GLOBAL, type);
+        sym[i].st_shndx = shndx;
+        sym[i].st_value = value;
+        sym[i].st_size = 4;
+    };
+    set(0, GOOD, STT_FUNC, 1, 0x20000);
+    set(1, TLS, STT_TLS, 1, 0x8);
+    set(2, ABS, STT_NOTYPE, SHN_ABS, 0x30000);
+    set(3, UNDEF, STT_FUNC, SHN_UNDEF, 0x40000);
+    const uint64_t str_off = sym_off + sizeof(sym);
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = shoff;
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = NSEC;
+    e.e_shstrndx = 3;
+
+    Elf64_Shdr sh[4];
+    memset(sh, 0, sizeof(sh));
+    sh[1].sh_name = 1;   // ".symtab"
+    sh[1].sh_type = SHT_SYMTAB;
+    sh[1].sh_offset = sym_off;
+    sh[1].sh_size = sizeof(sym);
+    sh[1].sh_link = 2;
+    sh[1].sh_entsize = sizeof(Elf64_Sym);
+    sh[2].sh_name = 9;   // ".strtab"
+    sh[2].sh_type = SHT_STRTAB;
+    sh[2].sh_offset = str_off;
+    sh[2].sh_size = sizeof(strtab);
+    sh[3].sh_name = 17;  // ".shstrtab"
+    sh[3].sh_type = SHT_STRTAB;
+    sh[3].sh_offset = shstr_off;
+    sh[3].sh_size = sizeof(shstrtab);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(sh, sizeof(sh));
+    app(shstrtab, sizeof(shstrtab));
+    app(sym, sizeof(sym));
+    app(strtab, sizeof(strtab));
+
+    CodeCache cc("regress");
+    ASSERT_NO_FATAL_FAILURE(parseElfBytes(b, &cc, /*use_debug=*/true));
+    EXPECT_EQ(cc.findSymbol("good_func"), (const void*)0x20000);
+    EXPECT_EQ(cc.findSymbol("tls_var"), nullptr);
+    EXPECT_EQ(cc.findSymbol("abs_sym"), nullptr);
+    EXPECT_EQ(cc.findSymbol("undef_stub"), nullptr);
 }
 
 #endif //__linux__

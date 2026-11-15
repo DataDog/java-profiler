@@ -983,6 +983,28 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
     return result;
 }
 
+// Whether st_value of this symbol is a virtual address inside the image (gABI,
+// "Symbol Values"). Excluded:
+//  - SHN_UNDEF: defined elsewhere. In an executable a non-zero st_value is the
+//    address of the PLT stub, which must not be named after the real function.
+//  - SHN_ABS / SHN_COMMON and other reserved indices: st_value is an absolute
+//    value or an alignment, not an address to relocate by the load bias.
+//  - STT_TLS: st_value is an offset into the TLS template, not an address.
+//  - STT_SECTION / STT_FILE: bookkeeping entries, not code or data objects.
+static bool isCodeAddressSymbol(const ElfSymbol& entry) {
+    if (entry.st_shndx == SHN_UNDEF || entry.st_shndx >= SHN_LORESERVE) {
+        return false;
+    }
+    switch (ELF64_ST_TYPE(entry.st_info)) {
+        case STT_TLS:
+        case STT_SECTION:
+        case STT_FILE:
+            return false;
+        default:
+            return true;
+    }
+}
+
 void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings, size_t strings_size) {
     // A stride smaller than one symbol entry would never advance past (or would
     // re-read) an entry; reject it to avoid an infinite loop / over-read.
@@ -1000,7 +1022,7 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
         // aliasing mapped bytes through a typed pointer.
         ElfSymbol entry;
         memcpy(&entry, symbols + off, sizeof(entry));
-        if (entry.st_name != 0 && entry.st_value != 0) {
+        if (entry.st_name != 0 && entry.st_value != 0 && isCodeAddressSymbol(entry)) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
             // out of bounds.
