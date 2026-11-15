@@ -18,6 +18,7 @@
 #include "counters.h"
 #include "callTraceStorage.h"
 #include "nativeMem.h"
+#include "profiler.h"
 #include "threadFilter.h"
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
@@ -32,6 +33,16 @@
 #include <random>
 #include <limits>
 #include <memory>
+#include <future>
+
+class ThreadFilterTestAccessor {
+public:
+    static std::unique_lock<std::mutex> lock(ThreadFilter& filter) {
+        return std::unique_lock<std::mutex>(filter._registry_lock);
+    }
+    static int retired(const ThreadFilter& filter) { return filter._retired_count.load(std::memory_order_acquire); }
+    static int free(const ThreadFilter& filter) { return filter._free_count.load(std::memory_order_acquire); }
+};
 
 // Test name for crash handler
 static constexpr char THREAD_FILTER_TEST_NAME[] = "ThreadFilterTest";
@@ -1275,6 +1286,96 @@ static void fillRegistry(ThreadFilter& registry, int first_tid, std::vector<int>
             slot_ids->push_back(slot_id);
         }
     }
+}
+
+TEST(ThreadFilterRetirementTest, TlsDestructionDoesNotWaitForRegistryMutex) {
+    auto& registry = *Profiler::instance()->threadFilter();
+    registry.init("", true);
+    struct Deactivate {
+        ThreadFilter& registry;
+        ~Deactivate() { registry.deactivateRecording(); }
+    } deactivate{registry};
+    std::promise<int> registered;
+    std::promise<void> exit;
+    auto exit_signal = exit.get_future();
+    std::thread owner([&] {
+        auto* current = ProfiledThread::initCurrentThreadSignalSafe();
+        if (current == nullptr || registry.ensureOwnerSlot(*current) < 0) {
+            registered.set_value(-1);
+            return;
+        }
+        registered.set_value(current->tid());
+        exit_signal.wait();
+        // The pthread-key destructor, not an explicit release, retires this TLS.
+    });
+    auto joined = std::async(std::launch::async, [&] { owner.join(); });
+    const int tid = registered.get_future().get();
+    std::future_status status;
+    {
+        auto lock = ThreadFilterTestAccessor::lock(registry);
+        exit.set_value();
+        status = joined.wait_for(std::chrono::seconds(5));
+    }
+    joined.get();
+    ASSERT_GE(tid, 0);
+    EXPECT_EQ(std::future_status::ready, status) << "TLS destruction blocked on the held registry mutex";
+    EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+    EXPECT_EQ(1, ThreadFilterTestAccessor::retired(registry));
+    registry.unregisterThreadByTid(tid);
+    // A fresh lock holder drains even when the old TID is already invisible.
+    registry.unregisterThread(-1);
+    EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+}
+
+TEST_F(ThreadRegistryTest, RetiredListDrainRecoversEverySlotAtCapacity) {
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 10000));
+    ASSERT_EQ(-1, registry.registerThread(20000));
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        registry.retireThreadByTid(10000 + i);
+        ASSERT_EQ(nullptr, registry.lookupByTid(10000 + i));
+    }
+    ASSERT_EQ(ThreadFilter::kMaxThreads, ThreadFilterTestAccessor::retired(registry));
+    ASSERT_EQ(0, ThreadFilterTestAccessor::free(registry));
+    std::vector<int> recovered;
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 20000, &recovered));
+    EXPECT_EQ(ThreadFilter::kMaxThreads, std::set<int>(recovered.begin(), recovered.end()).size());
+    EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+    EXPECT_EQ(0, ThreadFilterTestAccessor::free(registry));
+    EXPECT_EQ(-1, registry.registerThread(30000));
+}
+
+TEST_F(ThreadRegistryTest, RetireVersusUnregisterReclaimsEachOwnershipOnce) {
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        const int tid = 10000 + attempt;
+        const int slot = registry.registerThread(tid);
+        ASSERT_GE(slot, 0);
+        if (attempt == 0) {
+            registry.retireThreadByTid(tid);
+            registry.unregisterThread(slot, tid);
+        } else if (attempt == 1) {
+            registry.unregisterThread(slot, tid);
+            registry.retireThreadByTid(tid);
+        } else {
+            std::promise<void> start;
+            auto go = start.get_future().share();
+            auto retire = std::async(std::launch::async, [&] { go.wait(); registry.retireThreadByTid(tid); });
+            auto unregister = std::async(std::launch::async, [&] { go.wait(); registry.unregisterThread(slot, tid); });
+            start.set_value();
+            EXPECT_EQ(std::future_status::ready, retire.wait_for(std::chrono::seconds(5)));
+            EXPECT_EQ(std::future_status::ready, unregister.wait_for(std::chrono::seconds(5)));
+            retire.get();
+            unregister.get();
+        }
+        EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+        EXPECT_EQ(1, ThreadFilterTestAccessor::retired(registry) + ThreadFilterTestAccessor::free(registry));
+        registry.unregisterThread(-1);
+        EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+        EXPECT_EQ(1, ThreadFilterTestAccessor::free(registry));
+    }
+    std::vector<int> slots;
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 20000, &slots));
+    EXPECT_EQ(ThreadFilter::kMaxThreads, std::set<int>(slots.begin(), slots.end()).size());
+    EXPECT_EQ(-1, registry.registerThread(30000));
 }
 
 TEST_F(ThreadRegistryTest, FullRegistryRejectsUnknownTidWithoutLocking) {

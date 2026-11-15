@@ -439,9 +439,13 @@ time. Mixed-window tails serialize separately; same-window periodic weights can
 compact. Closed epoch metadata follows pending segments across dumps; see
 [JfrIntegration](JfrIntegration.md#event-encoding).
 
-Deferred weight publication tries a recording stripe and reads the epoch start
-again while holding it. Contention records normally instead of suppressing.
-The timer publishes closed metadata and its successor start under one stripe.
+Deferred publication and periodic matching read the epoch under their acquired
+recording stripe. Contention records normally. A weight-1 observation keeps its
+serialization timestamp; only a roll-up uses the matching pending window start.
+
+The normal timer holds an epoch mutex during each pass, not during sleep.
+Dump takes that mutex, then all stripes, and settles the open window before sealing.
+Timer exit settles the final window. Signals never access this mutex or timer state.
 
 A changed population closes the preceding window before dispatch. Changed send
 results close it with its prior statistics before installing the new counts.

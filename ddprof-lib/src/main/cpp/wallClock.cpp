@@ -17,6 +17,7 @@
 #include "profiler.h"
 #include "signalCookie.h"
 #include "signalInflight.h"
+#include "signalSafety.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include "wallClockCounters.h"
@@ -29,6 +30,31 @@
 #include <algorithm> // For std::sort and std::binary_search
 
 std::atomic<bool> BaseWallClock::_enabled{false};
+std::mutex BaseWallClock::_sampling_epoch_lock;
+BaseWallClock* BaseWallClock::_active_epoch_timer = nullptr;
+
+std::unique_lock<std::mutex> BaseWallClock::samplingEpochLock() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  return std::unique_lock<std::mutex>(_sampling_epoch_lock);
+}
+
+void BaseWallClock::closeSamplingEpoch(u64 end, bool stripes_held) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  _sampling_epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
+  _sampling_epoch.endEpoch(TSC::ticks_to_millis(end - _sampling_epoch._start_time));
+#ifdef UNIT_TEST
+  observeClosedEpochForTest(_sampling_epoch);
+#endif
+  Profiler::instance()->recordWallClockEpoch(_epoch_timer_tid, &_sampling_epoch, end, stripes_held);
+  _sampling_epoch.newEpoch(end);
+}
+
+void BaseWallClock::settleSamplingEpoch() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  if (_active_epoch_timer != nullptr && _active_epoch_timer->_have_epoch_stats) {
+    _active_epoch_timer->closeSamplingEpoch(TSC::ticks(), true);
+  }
+}
 #ifdef UNIT_TEST
 static std::atomic<BaseWallClock::ThreadStateReaderForTest> thread_state_reader_for_test{nullptr};
 static BaseWallClock::UnownedContextProbeHook unowned_context_probe_hook = nullptr;

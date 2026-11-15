@@ -280,7 +280,7 @@ at tracker destruction. The eight chunk pointers, mode flag, storage pointer and
 ABI padding belong to the tracker object, not the chunk payload. Unit-test hooks
 are not production metadata.
 
-The maximum combined backing payload is 262,400 bytes. This excludes tracker and
+The maximum combined backing payload is 393,472 bytes. This excludes tracker and
 owner objects, allocator overhead, other profiler structures and RSS effects;
 it is not a whole-profiler memory limit or an accepted resource budget.
 `NativeMem::record()` tracks logical live bytes, not allocator overhead.

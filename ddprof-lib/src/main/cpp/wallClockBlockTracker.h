@@ -139,19 +139,9 @@ public:
             unowned_blocked_state.store(state, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
         }
-        // Unowned-blocked bookkeeping (pending weight, call_trace_id, state,
-        // decision_count) is cleared ONLY by (R-B1):
-        //  (a) a successful flushUnownedBlockedTail();
-        //  (b) consumeUnownedBlockedWeight() at a recorded sample (weight only);
-        //  (c) registry-lifecycle resetSlot()/resetAll() (registerThread,
-        //      refreshSlotForRecording, unregisterThreadLocked,
-        //      retireThreadByTid, drainRetiredLocked, clearActive).
-        // The thread's own events - a failed flush, owned-run entry or
-        // generation-checked exit, context-window entry - must not clear it.
-        // Validate, then consume: an incomplete tail reports what was read
-        // through the out-params and consumes nothing. Accepted residual: the
-        // sampling cadence now carries across runs, so up to kRatio-1 units may
-        // be attributed to an earlier run's stack/state.
+        // Transactional tails commit only successful writes; lifecycle resets
+        // invalidate the payload. Context/owned-run transitions retain it.
+        // Legacy flush validates the complete tail before consuming anything.
         inline bool peekUnownedBlockedTail(u64& call_trace_id, u64& weight,
                                            OSThreadState& state) const {
             call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
@@ -207,11 +197,8 @@ public:
             // racing context transition leaves a stale epoch that can only fail
             // the equality check: a missed suppression, never a wrongful one.
             active_block_context_epoch.store(context_state >> 1, std::memory_order_relaxed);
-            // The unowned-blocked tail is deliberately preserved (R-B1). Owned
-            // runs in a precheck-suppression state never read or write the
-            // unowned fields, because prepareWallPrecheck() takes the owned
-            // path; an owned run in a non-suppression state falls through to
-            // the unowned path, which is the same thread's weight.
+            // Owned-run entry retains the unowned tail. Suppressible owned states
+            // bypass unowned sampling; other states fall through on the same owner.
             last_sampled_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_relaxed);
             active_block_state.store(state, std::memory_order_release);

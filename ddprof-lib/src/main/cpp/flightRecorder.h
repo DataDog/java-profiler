@@ -637,6 +637,9 @@ public:
 
 class FlightRecorder {
   friend Profiler;
+#ifdef UNIT_TEST
+  friend class ProfilerTestAccessor;
+#endif
 
 private:
   std::string _filename;

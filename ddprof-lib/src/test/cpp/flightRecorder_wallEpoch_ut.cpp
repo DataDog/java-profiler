@@ -4,6 +4,11 @@
  */
 
 #include <gtest/gtest.h>
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstring>
+#include <thread>
 #include <unistd.h>
 #include <map>
 #include <stdexcept>
@@ -13,6 +18,8 @@
 #include "flightRecorder.h"
 #include "profiler.h"
 #include "tsc.h"
+#include "wallClockCounters.h"
+#include "wallClock.h"
 
 class VMTestAccessor {
 public:
@@ -25,11 +32,14 @@ class ProfilerTestAccessor {
 public:
   static Engine*& cpu() { return Profiler::instance()->_cpu_engine; }
   static Engine*& wall() { return Profiler::instance()->_wall_engine; }
+  static Recording*& recording() { return Profiler::instance()->_jfr._rec; }
+  static State exchangeState(State state) { return Profiler::instance()->_state.exchange(state); }
 };
 
 class RecordingTestAccessor {
 public:
   static size_t epochCount(const Recording& recording) { return recording._wall_epochs.size(); }
+  static bool hasEpoch(const Recording& recording, u64 start) { return recording._wall_epochs.count(start) != 0; }
 };
 
 // Recording needs VM services even when serializing native-only events.
@@ -64,6 +74,9 @@ protected:
       *count = 0; *classes = nullptr; return JVMTI_ERROR_NONE;
     };
     jvmti_functions.Deallocate = +[](jvmtiEnv*, unsigned char* memory) { free(memory); return JVMTI_ERROR_NONE; };
+    jvmti_functions.GetAllThreads = +[](jvmtiEnv*, jint* count, jthread** threads) {
+      *count = 0; *threads = nullptr; return JVMTI_ERROR_NONE;
+    };
     vm_functions.GetEnv = +[](JavaVM*, void** env, jint) {
       static JNIEnv_ jni{};
       *env = &jni; return JNI_OK;
@@ -114,6 +127,8 @@ protected:
     VMTestAccessor::jvmti() = saved_jvmti;
   }
 
+  void checkOrdinaryAfterEpochRotation(bool fail_deferral);
+
   WallSampleResult flushTail() {
     ExecutionEvent event;
     event._thread_state = OSThreadState::RUNNABLE;
@@ -126,6 +141,7 @@ class WallEpochFile {
   char path[64] = "/tmp/ddprof-wall-epochs-XXXXXX";
 public:
   int fd = mkstemp(path);
+  const char* filename() const { return path; }
   ~WallEpochFile() { if (fd >= 0) close(fd); unlink(path); }
   WallEpochFile() = default;
   WallEpochFile(const WallEpochFile&) = delete;
@@ -253,6 +269,204 @@ TEST_P(WallEpochRecordingTest, ClosedOriginsFollowPendingSegmentsAcrossDumpsAndP
     }
   }
   EXPECT_DOUBLE_EQ(3.0 * pools[0] / 8 + 5.0 * pools[1] / 8, scaled);
+}
+
+void WallEpochRecordingTest::checkOrdinaryAfterEpochRotation(bool fail_deferral) {
+  WallEpochFile continuous;
+  ASSERT_GE(continuous.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  const int recording_fd = dup(continuous.fd);
+  ASSERT_GE(recording_fd, 0);
+  Recording recording(recording_fd, args);
+  target = &recording;
+  struct SamplingEpochRestore {
+    u64 saved = WallClockCounters::samplingEpochStart();
+    ~SamplingEpochRestore() { WallClockCounters::beginSamplingEpoch(saved); }
+  } restore;
+  const u64 first = TSC::ticks();
+  WallClockCounters::beginSamplingEpoch(first);
+  request.sampling_epoch_start = first;
+  request.unowned_sample = true;
+  request.flush_tail = false;
+  ASSERT_TRUE(profiler->blockTracker()->readUnownedContext(
+      slot, request.context, request.context_publication));
+  ASSERT_EQ(0ULL, profiler->blockTracker()->slotForId(slot)->unowned_blocked_pending_weight.load());
+  if (fail_deferral) {
+    auto locks = profiler->recordingLocksForTest();
+    ASSERT_FALSE(profiler->deferUnownedWallSample(request));
+  }
+  ASSERT_EQ(first, request.sampling_epoch_start);
+  ASSERT_FALSE(request.force_unowned_ordinary);
+  const u64 second = TSC::ticks();
+  ASSERT_GT(second, first);
+  {
+    auto locks = profiler->recordingLocksForTest();
+    WallClockEpochEvent epoch(first);
+    epoch.endEpoch(11);
+    recording.recordWallClockEpoch(recording.buffer(0), &epoch);
+    WallClockCounters::beginSamplingEpoch(second);
+    WallEpochFile snapshot;
+    ASSERT_GE(snapshot.fd, 0);
+    recording.switchChunk(snapshot.fd);
+    ASSERT_EQ(1U, decodeWallEpochs(snapshot.fd).epochs.count(first));
+    ASSERT_EQ(0U, RecordingTestAccessor::epochCount(recording));
+  }
+  profiler->sampleWriteHookForTest = +[](u32, u64 trace, Event* raw, const Context* context, void* arg) {
+    auto* self = static_cast<WallEpochRecordingTest*>(arg);
+    self->target->recordMethodSample(self->target->buffer(0), self->request.tid, trace, 0,
+                                    static_cast<ExecutionEvent*>(raw), context);
+    return true;
+  };
+  EXPECT_TRUE(flushTail().ordinary_recorded);
+  WallClockEpochEvent epoch(second);
+  epoch.endEpoch(17);
+  recording.recordWallClockEpoch(recording.buffer(0), &epoch);
+  WallEpochFile final;
+  ASSERT_GE(final.fd, 0);
+  recording.switchChunk(final.fd);
+  const auto events = decodeWallEpochs(final.fd);
+  ASSERT_EQ(1U, events.weights.size());
+  EXPECT_EQ(0U, events.weights.count(first)) << "Pruned epoch must not be resurrected by an ordinary write";
+  ASSERT_EQ(1U, events.epochs.count(second));
+  for (const auto& sample : events.weights) {
+    EXPECT_EQ(1ULL, sample.second);
+    EXPECT_GT(sample.first, second) << "A weight-1 observation must keep its ordinary serialization timestamp";
+  }
+}
+
+TEST_P(WallEpochRecordingTest, FailedDeferralCannotWritePrunedEpochAfterDump) {
+  checkOrdinaryAfterEpochRotation(true);
+}
+
+TEST_P(WallEpochRecordingTest, ZeroPendingPeriodicRequestKeepsOrdinaryTimestampAfterDump) {
+  checkOrdinaryAfterEpochRotation(false);
+}
+
+class WallEpochTimer : public BaseWallClock {
+public:
+  std::atomic<int> passes{0};
+  const char* name() override { return "Wall epoch custody test"; }
+  bool awaitPasses(int count) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (passes.load(std::memory_order_acquire) < count) {
+      if (std::chrono::steady_clock::now() >= deadline) return false;
+      std::this_thread::yield();
+    }
+    return true;
+  }
+private:
+  void timerLoop() override {
+    auto collect = [](std::vector<ThreadEntry>& entries) {
+      for (int tid = 1; tid <= 32; ++tid) entries.push_back({tid, nullptr, -1, 0, 0});
+    };
+    auto sample = [](ThreadEntry, int&, int&, int&, int&, bool) {
+      return WallClockCandidateOutcome::SIGNAL_SENT;
+    };
+    auto clean = [&] { passes.fetch_add(1, std::memory_order_release); };
+    timerLoopCommon<ThreadEntry>(collect, sample, clean, 16, _interval);
+  }
+};
+
+class ScopedWallEpochTimer {
+  Recording* saved_recording = ProfilerTestAccessor::recording();
+  State saved_state = ProfilerTestAccessor::exchangeState(RUNNING);
+  using SignalHandler = void (*)(int);
+  SignalHandler saved_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
+  bool saved_enabled = BaseWallClock::eventsEnabled();
+  u64 saved_epoch = WallClockCounters::samplingEpochStart();
+public:
+  WallEpochTimer timer;
+  explicit ScopedWallEpochTimer(Recording* recording) {
+    ProfilerTestAccessor::recording() = recording;
+    timer.enableEvents(true);
+  }
+  ~ScopedWallEpochTimer() {
+    timer.stop();
+    timer.enableEvents(saved_enabled);
+    WallClockCounters::beginSamplingEpoch(saved_epoch);
+    ProfilerTestAccessor::recording() = saved_recording;
+    ProfilerTestAccessor::exchangeState(saved_state);
+    std::signal(WAKEUP_SIGNAL, saved_handler);
+  }
+};
+
+TEST_P(WallEpochRecordingTest, OpenEpochSurvivesDumpThenRetirementBeforeNormalClosure) {
+  WallEpochFile continuous;
+  ASSERT_GE(continuous.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  const int recording_fd = dup(continuous.fd);
+  ASSERT_GE(recording_fd, 0);
+  Recording recording(recording_fd, args);
+  target = &recording;
+  ScopedWallEpochTimer running(&recording);
+  args._wall = 10000000;
+  ASSERT_FALSE(running.timer.start(args));
+  ASSERT_TRUE(running.timer.awaitPasses(2));
+  u64 origin;
+  {
+    auto epoch_lock = BaseWallClock::samplingEpochLock();
+    origin = WallClockCounters::samplingEpochStart();
+    ASSERT_FALSE(RecordingTestAccessor::hasEpoch(recording, origin)) << "Origin must still be open";
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, origin));
+  }
+  WallEpochFile first;
+  ASSERT_GE(first.fd, 0);
+  ASSERT_FALSE(profiler->dump(first.filename(), std::strlen(first.filename())));
+  {
+    auto epoch_lock = BaseWallClock::samplingEpochLock();
+    ASSERT_TRUE(RecordingTestAccessor::hasEpoch(recording, origin));
+    request.trace_epoch = profiler->recordingEpoch();
+    ASSERT_TRUE(flushTail().tail_recorded);
+    profiler->threadFilter()->unregisterThread(slot, request.tid);
+    slot = -1;
+  }
+  if (GetParam()) running.timer.stop();
+  WallEpochFile final;
+  ASSERT_GE(final.fd, 0);
+  ASSERT_FALSE(profiler->dump(final.filename(), std::strlen(final.filename())));
+  const auto events = decodeWallEpochs(final.fd);
+  ASSERT_EQ(1U, events.weights.size());
+  EXPECT_EQ(1ULL, events.weights.at(origin));
+  ASSERT_EQ(1U, events.epochs.count(origin));
+  const auto& fields = events.epochs.at(origin);
+  EXPECT_EQ(32ULL, fields[1]);
+  EXPECT_EQ(16ULL, fields[2]);
+}
+
+TEST_P(WallEpochRecordingTest, TimerExitClosesFinalWindowBeforeFinalSeal) {
+  WallEpochFile continuous;
+  ASSERT_GE(continuous.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  const int recording_fd = dup(continuous.fd);
+  ASSERT_GE(recording_fd, 0);
+  Recording recording(recording_fd, args);
+  target = &recording;
+  ScopedWallEpochTimer running(&recording);
+  args._wall = 10000000;
+  ASSERT_FALSE(running.timer.start(args));
+  ASSERT_TRUE(running.timer.awaitPasses(2));
+  u64 origin;
+  {
+    auto epoch_lock = BaseWallClock::samplingEpochLock();
+    origin = WallClockCounters::samplingEpochStart();
+    ASSERT_FALSE(RecordingTestAccessor::hasEpoch(recording, origin));
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, origin));
+    ASSERT_TRUE(flushTail().tail_recorded);
+  }
+  running.timer.stop();
+  ASSERT_TRUE(RecordingTestAccessor::hasEpoch(recording, origin));
+  WallEpochFile final;
+  ASSERT_GE(final.fd, 0);
+  recording.switchChunk(final.fd);
+  const auto events = decodeWallEpochs(final.fd);
+  ASSERT_EQ(1U, events.weights.size());
+  EXPECT_EQ(1ULL, events.weights.at(origin));
+  ASSERT_EQ(1U, events.epochs.count(origin));
+  EXPECT_EQ(32ULL, events.epochs.at(origin)[1]);
+  EXPECT_EQ(16ULL, events.epochs.at(origin)[2]);
 }
 
 INSTANTIATE_TEST_SUITE_P(PopulationChanges, WallEpochRecordingTest, ::testing::Bool());

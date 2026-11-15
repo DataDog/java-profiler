@@ -929,6 +929,9 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
     return result;
   }
 
+  // Dump holds every stripe while pruning. Use the current window, not a
+  // precheck snapshot that may precede a completed close and chunk switch.
+  const u64 sampling_epoch_start = WallClockCounters::samplingEpochStart();
   auto* block = wallSampleSlot(request);
   Context origin{};
   u64 publication = 0;
@@ -939,11 +942,11 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   bool matching_periodic = request.unowned_sample && origin_readable && publishable &&
       !request.force_unowned_ordinary && publication == request.context_publication &&
       origin.equals(request.context) &&
-      _block_tracker.unownedWeightMatchesEpoch(request.slot_id, request.sampling_epoch_start);
+      _block_tracker.unownedWeightMatchesEpoch(request.slot_id, sampling_epoch_start);
   if (block != nullptr && request.unowned_sample) {
     event->_weight = matching_periodic
         ? block->unowned_blocked_pending_weight.load(std::memory_order_acquire) + 1 : 1;
-    if (matching_periodic) event->_sample_ticks = request.sampling_epoch_start;
+    if (matching_periodic && event->_weight > 1) event->_sample_ticks = sampling_epoch_start;
   }
   // A dump can invalidate the ordinary collapsing cache before this stripe
   // is acquired. Preserved unowned roots, unlike that cache, survive a dump.
@@ -1144,13 +1147,21 @@ bool Profiler::deferUnownedWallSample(WallSampleRequest& request) {
   return _block_tracker.deferUnownedWeight(request.slot_id, request.sampling_epoch_start);
 }
 
-void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start) {
+void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start,
+                                   bool stripes_held) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   SignalBlocker signals;
-  ExclusiveLockGuard stripe(&_locks[getLockIndex(tid)]);
-  _jfr.wallClockEpoch(getLockIndex(tid), event);
-  // Publish the successor before dump can prune this epoch without pending units.
-  WallClockCounters::beginSamplingEpoch(next_epoch_start);
+  auto publish = [&] {
+    _jfr.wallClockEpoch(getLockIndex(tid), event);
+    // Publish the successor before dump can prune this epoch without pending units.
+    WallClockCounters::beginSamplingEpoch(next_epoch_start);
+  };
+  if (stripes_held) {
+    publish();
+  } else {
+    ExclusiveLockGuard stripe(&_locks[getLockIndex(tid)]);
+    publish();
+  }
 }
 
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
@@ -2591,11 +2602,12 @@ Error Profiler::dump(const char *path, const int length) {
     updateNativeLibMemStats();
 
     Error err = Error::OK;
-    // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
-    // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
-    // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination.
+    // Normal-thread order: epoch mutex -> all recording stripes -> _rec_lock.
+    // rotateDictsAndRun excludes signal writers before settlement and sealing.
+    // Dictionary readers drain separately through RefCountGuard.
+    auto epoch_lock = BaseWallClock::samplingEpochLock();
     rotateDictsAndRun([&]{
+      BaseWallClock::settleSamplingEpoch();
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
     });

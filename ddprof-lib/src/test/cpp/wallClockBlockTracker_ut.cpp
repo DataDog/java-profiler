@@ -1450,6 +1450,7 @@ public:
     int writes = 0;
     bool ordinary_ok = true;
     bool tail_ok = true;
+    u64 previous_sampling_epoch = WallClockCounters::samplingEpochStart();
     u64 emitted_weight = 0;
     void (*during_write)(WallClockSampleTransactionTest*) = nullptr;
 
@@ -1481,6 +1482,7 @@ public:
         request.registry_epoch = registry->recordingEpoch();
         request.trace_epoch = profiler->recordingEpoch();
         request.sampling_epoch_start = TSC::ticks();
+        WallClockCounters::beginSamplingEpoch(request.sampling_epoch_start);
         request.flush_tail = true;
         request.context_captured = true;
         ASGCT_CallFrame frame{};
@@ -1501,6 +1503,10 @@ public:
             request.slot_id, request.sampling_epoch_start));
         profiler->sampleWriteHookForTest = write;
         profiler->sampleWriteHookArgForTest = this;
+    }
+
+    void TearDown() override {
+        WallClockCounters::beginSamplingEpoch(previous_sampling_epoch);
     }
 
     WallSampleResult sample() {
@@ -2218,6 +2224,115 @@ TEST(UnownedWallAttributionTest, StripeContentionFailsOpenWithoutDeferringWeight
         scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
         EXPECT_TRUE(suppressed);
         EXPECT_EQ(pending + 1, block->unowned_blocked_pending_weight.load());
+    });
+    worker.get();
+}
+
+TEST(UnownedWallAttributionTest, FailedDeferralPreparationKeepsZeroPendingWriteOrdinaryAfterEpochChange) {
+    auto worker = std::async(std::launch::async, [] {
+        ScopedUnownedAttributionOwner scoped;
+        u64 id = 0;
+        ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id, 1));
+        auto* tracker = scoped.profiler->blockTracker();
+        auto* block = tracker->slotForId(scoped.owner->filterSlotId());
+        bool suppressed = true;
+        WallSampleRequest request;
+        {
+            auto locks = scoped.profiler->recordingLocksForTest();
+            request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        }
+        ASSERT_FALSE(suppressed);
+        ASSERT_TRUE(request.unowned_sample);
+        ASSERT_FALSE(request.force_unowned_ordinary);
+        ASSERT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
+        const u64 next_epoch = TSC::ticks();
+        ASSERT_GT(next_epoch, request.sampling_epoch_start);
+        {
+            auto locks = scoped.profiler->recordingLocksForTest();
+            std::unordered_set<u64> pending;
+            tracker->collectUnownedEpochStarts(pending);
+            ASSERT_EQ(0U, pending.count(request.sampling_epoch_start));
+            WallClockCounters::beginSamplingEpoch(next_epoch);
+        }
+        int writes = 0;
+        scoped.profiler->sampleWriteHookArgForTest = &writes;
+        scoped.profiler->sampleWriteHookForTest = +[](u32, u64, Event* raw, const Context*, void* arg) {
+            ++*static_cast<int*>(arg);
+            auto* sample = static_cast<ExecutionEvent*>(raw);
+            EXPECT_EQ(1ULL, sample->_weight);
+            EXPECT_EQ(0ULL, sample->_sample_ticks);
+            return true;
+        };
+        ExecutionEvent event;
+        EXPECT_TRUE(scoped.profiler->recordWallSample(nullptr, 1, id, &event, request).ordinary_recorded);
+        EXPECT_EQ(1, writes);
+    });
+    worker.get();
+}
+
+TEST(UnownedWallAttributionTest, UnsuppressedZeroPendingPeriodicPreparationKeepsOrdinaryTimestamp) {
+    auto worker = std::async(std::launch::async, [] {
+        ScopedUnownedAttributionOwner scoped;
+        u64 id = 0;
+        ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id, 1));
+        auto* block = scoped.profiler->blockTracker()->slotForId(scoped.owner->filterSlotId());
+        block->unowned_blocked_decision_count.store(
+            WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio, std::memory_order_release);
+        bool suppressed = true;
+        auto request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        ASSERT_FALSE(suppressed);
+        ASSERT_TRUE(request.unowned_sample);
+        ASSERT_FALSE(request.force_unowned_ordinary);
+        ASSERT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
+        ExecutionEvent event;
+        ASSERT_TRUE(scoped.profiler->recordWallSample(nullptr, 1, id, &event, request).ordinary_recorded);
+        EXPECT_EQ(1ULL, event._weight);
+        EXPECT_EQ(0ULL, event._sample_ticks) << "No pending roll-up means no epoch-start timestamp override";
+    });
+    worker.get();
+}
+
+TEST(UnownedWallAttributionTest, StripeEpochRereadKeepsOlderPendingSegmentsSeparate) {
+    auto worker = std::async(std::launch::async, [] {
+        ScopedUnownedAttributionOwner scoped;
+        u64 id = 0;
+        ASSERT_NO_FATAL_FAILURE(scoped.primeOrigin(113, id));
+        const u64 origin_epoch = WallClockCounters::samplingEpochStart();
+        auto* block = scoped.profiler->blockTracker()->slotForId(scoped.owner->filterSlotId());
+        block->unowned_blocked_decision_count.store(
+            WallClockBlockTracker::BlockState::kUnownedBlockedFallbackRatio, std::memory_order_release);
+        bool suppressed = true;
+        auto request = scoped.clock.prepareWallSampleRequestForTest(scoped.owner, suppressed);
+        ASSERT_FALSE(suppressed);
+        ASSERT_FALSE(request.force_unowned_ordinary);
+        ASSERT_EQ(3ULL, block->unowned_blocked_pending_weight.load());
+        const u64 next_epoch = TSC::ticks();
+        ASSERT_GT(next_epoch, origin_epoch);
+        WallClockCounters::beginSamplingEpoch(next_epoch);
+        struct Writes { u64 origin; int ordinary = 0, tail = 0; } writes{origin_epoch};
+        scoped.profiler->sampleWriteHookArgForTest = &writes;
+        scoped.profiler->sampleWriteHookForTest = +[](u32, u64, Event* raw, const Context*, void* arg) {
+            auto* writes = static_cast<Writes*>(arg);
+            auto* sample = static_cast<ExecutionEvent*>(raw);
+            if (sample->_execution_mode == ExecutionMode::JAVA) {
+                ++writes->ordinary;
+                EXPECT_EQ(1ULL, sample->_weight);
+                EXPECT_EQ(0ULL, sample->_sample_ticks);
+            } else {
+                ++writes->tail;
+                EXPECT_EQ(3ULL, sample->_weight);
+                EXPECT_EQ(writes->origin, sample->_sample_ticks);
+            }
+            return true;
+        };
+        ExecutionEvent event;
+        event._execution_mode = ExecutionMode::JAVA;
+        auto result = scoped.profiler->recordWallSample(nullptr, 1, id, &event, request);
+        EXPECT_TRUE(result.ordinary_recorded);
+        EXPECT_TRUE(result.tail_recorded);
+        EXPECT_EQ(1, writes.ordinary);
+        EXPECT_EQ(1, writes.tail);
+        EXPECT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
     });
     worker.get();
 }

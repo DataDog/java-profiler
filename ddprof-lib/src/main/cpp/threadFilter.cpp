@@ -456,7 +456,7 @@ void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
 }
 
 void ThreadFilter::rollbackFailedIndex(Slot& slot) {
-    // Never indexed, so no concurrent tid CAS can race this store (R-A2 exception).
+    // Never indexed, so no concurrent tid CAS can race this store.
     slot.tid.store(-1, std::memory_order_release);
     Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
 }
@@ -639,12 +639,8 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     int tid = slot->nativeTid();
     if (tid < 0) return;  // free, or retired-pending-drain
     if (expected_tid >= 0 && tid != expected_tid) return;
-    // The lock does not exclude the lock-free retireThreadByTid(), so claim the
-    // ownership with a tid CAS (R-A2): exactly one of {retire, unregister} frees
-    // a given ownership, and the loser touches nothing. The CAS precedes
-    // unindexSlot(); that is safe because lock-free readers already treat an
-    // index entry whose slot tid differs from the probed tid as a miss, and only
-    // lock holders mutate the index.
+    // Retirement bypasses the mutex; the tid CAS gives one reclaimer ownership.
+    // Index readers reject a mismatched tid, so claiming before unindexing is safe.
     if (!slot->tid.compare_exchange_strong(tid, -1, std::memory_order_acq_rel,
                                            std::memory_order_acquire)) {
         return;  // retire (or another claim) won
@@ -680,7 +676,7 @@ void ThreadFilter::retireThreadByTid(int tid) {
     if (slot_id < 0) return;
     Slot* slot = slotForId(slot_id);
     if (slot == nullptr) return;
-    // Claim the ownership (R-A2). The slot becomes invisible immediately:
+    // Claim the ownership. The slot becomes invisible immediately:
     // lookups, add(), collect(), activeSlotForId() and the wall-clock
     // suppression check all compare nativeTid().
     int expected = tid;
@@ -696,7 +692,7 @@ void ThreadFilter::retireThreadByTid(int tid) {
         // exiting thread is joined (lock-free; null-safe with lazy storage).
         _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
     }
-    // Count before the push (R-A3): over-reporting only sends registrations to
+    // Count before the push: over-reporting only sends registrations to
     // the locked (exact) path; see capacityExhausted().
     _retired_count.fetch_add(1, std::memory_order_release);
     SlotID head = _retired_head.load(std::memory_order_relaxed);
@@ -727,7 +723,7 @@ void ThreadFilter::drainRetiredLocked() {
             _block_tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
         }
         pushToFreeList(slot_id);
-        _retired_count.fetch_sub(1, std::memory_order_release);  // after the push (R-A3)
+        _retired_count.fetch_sub(1, std::memory_order_release);  // after the push
         slot_id = next;
     }
 }
@@ -857,7 +853,7 @@ void ThreadFilter::clearActive() {
         }
 
         for (auto& slot : chunk->slots) {
-            // Cross-thread writer while owners are live: CAS (R-A5).
+            // Cross-thread writer while owners are live: CAS.
             slot.exitContextWindowFromNonOwner();
         }
     }

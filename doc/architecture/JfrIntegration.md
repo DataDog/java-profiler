@@ -154,9 +154,12 @@ Consumers must apply the scale of the window containing that timestamp, not the
 later serialization time. Ordinary unit samples keep serialization timestamps;
 the MethodSample schema is unchanged.
 
-`Recording` keeps closed wall epochs under exclusive `_rec_lock` access by the timer.
-After extraction, it prunes epochs with no pending tail and replays the rest into
-its new chunk. Repeated dumps therefore keep each retained tail's scale available.
+`Recording` keeps closed wall epochs under exclusive `_rec_lock` access.
+Dump locks the normal timer's epoch mutex before all recording stripes and closes
+the open window before sealing. Timer exit closes its final window before JFR stop.
+
+After extraction, the writer prunes epochs with no pending tail and replays the
+rest into its new chunk. Repeated dumps keep each retained tail's scale available.
 
 The map contains current-chunk epochs and retained origins, charged to `NM_WALLCLOCK`.
 Dump collects pending origins while all stripes exclude tail writes and deferred

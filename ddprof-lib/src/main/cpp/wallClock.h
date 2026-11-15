@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <mutex>
 #include "engine.h"
 #include "nativeMem.h"
 #include "os.h"
@@ -32,6 +33,14 @@ class BaseWallClock : public Engine {
   private:
     static std::atomic<bool> _enabled;
     std::atomic<bool> _running;
+    // The epoch mutex protects the active timer and its window from chunk sealing.
+    // Signal paths use only WallClockCounters' atomic epoch start.
+    static std::mutex _sampling_epoch_lock;
+    static BaseWallClock* _active_epoch_timer;
+    WallClockEpochEvent _sampling_epoch{0};
+    bool _have_epoch_stats = false;
+    int _epoch_timer_tid = 0;
+    void closeSamplingEpoch(u64 end, bool stripes_held = false);
     // Timer-owned fixed-size ledger, published only when the timer exits and
     // read after pthread_join(). No signal-handler or per-tick logging.
     struct TimerPhases {
@@ -113,25 +122,23 @@ class BaseWallClock : public Engine {
         }
       }
 
-      u64 startTime = TSC::ticks();
-      WallClockEpochEvent epoch(startTime);
-      WallClockCounters::beginSamplingEpoch(startTime);
+      {
+        auto epoch_lock = samplingEpochLock();
+        _sampling_epoch = WallClockEpochEvent(TSC::ticks());
+        _have_epoch_stats = false;
+        _epoch_timer_tid = self;
+        _active_epoch_timer = this;
+        WallClockCounters::beginSamplingEpoch(_sampling_epoch._start_time);
+      }
+      auto& epoch = _sampling_epoch;
 
       ReservoirSampler<ThreadType> reservoir(reservoirSize, TSC::ticks());
       TimerPhases phases;
       WallClockTimer timer(OS::nanotime());
-      bool have_epoch_stats = false;
-      auto close_epoch = [&](u64 end) {
-        epoch.endEpoch(TSC::ticks_to_millis(end - startTime));
-#ifdef UNIT_TEST
-        observeClosedEpochForTest(epoch);
-#endif
-        Profiler::instance()->recordWallClockEpoch(self, &epoch, end);
-        epoch.newEpoch(end);
-        startTime = end;
-      };
-
-      while (_running.load(std::memory_order_relaxed)) {
+      while (_running.load(std::memory_order_acquire)) {
+        // Normal-thread order: epoch mutex -> recording stripes -> _rec_lock.
+        // Signals never acquire the epoch mutex or access the timer's epoch.
+        auto epoch_lock = samplingEpochLock();
         const u64 pass_start = TSC::ticks();
         u64 phase_start = _timer_diagnostics ? OS::nanotime() : 0;
         collectThreads(threads);
@@ -144,11 +151,11 @@ class BaseWallClock : public Engine {
           accounted_capacity = capacity;
         }
         const u32 num_samplable_threads = static_cast<u32>(threads.size());
-        const bool pool_changed = have_epoch_stats &&
+        const bool pool_changed = _have_epoch_stats &&
             epoch._num_samplable_threads != num_samplable_threads;
         // The new population is known before dispatch. Settle its predecessor
         // first so old retained units cannot acquire the new population's scale.
-        if (pool_changed) close_epoch(pass_start);
+        if (pool_changed) closeSamplingEpoch(pass_start);
 
         if (_timer_diagnostics) {
           u64 now = OS::nanotime();
@@ -206,7 +213,7 @@ class BaseWallClock : public Engine {
           Counters::increment(WC_PRECHECK_REGISTRY_LOOKUPS, registry_lookups);
         }
 
-        const bool outcomes_changed = have_epoch_stats &&
+        const bool outcomes_changed = _have_epoch_stats &&
             (epoch._num_successful_samples != num_successful_samples ||
              epoch._num_failed_samples != static_cast<u32>(num_failures) ||
              epoch._num_exited_threads != static_cast<u32>(threads_already_exited) ||
@@ -214,8 +221,8 @@ class BaseWallClock : public Engine {
         // Send results are known only now. Close prior statistics first.
         // Units already coalesced across an unchanged-pool success-ratio change
         // cannot be split retroactively.
-        if (!pool_changed && outcomes_changed) close_epoch(pass_start);
-        have_epoch_stats = true;
+        if (!pool_changed && outcomes_changed) closeSamplingEpoch(pass_start);
+        _have_epoch_stats = true;
         epoch.updateNumSamplableThreads(num_samplable_threads);
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
@@ -226,9 +233,9 @@ class BaseWallClock : public Engine {
         observeEpochForTest(epoch);
 #endif
         u64 endTime = TSC::ticks();
-        u64 duration = TSC::ticks_to_millis(endTime - startTime);
+        u64 duration = TSC::ticks_to_millis(endTime - epoch._start_time);
         if (epoch.hasChanged() || duration >= 1000) {
-          close_epoch(endTime);
+          closeSamplingEpoch(endTime);
         } else {
           epoch.clean();
         }
@@ -249,8 +256,14 @@ class BaseWallClock : public Engine {
           phases.requested_sleep_ns += sleep_ns;
           phase_start = now;
         }
+        epoch_lock.unlock();
         OS::sleepWhile(sleep_ns, _running);
         if (_timer_diagnostics) phases.actual_sleep_ns += OS::nanotime() - phase_start;
+      }
+      {
+        auto epoch_lock = samplingEpochLock();
+        if (_have_epoch_stats) closeSamplingEpoch(TSC::ticks());
+        _active_epoch_timer = nullptr;
       }
       _timer_phases = phases;
 
@@ -261,6 +274,11 @@ class BaseWallClock : public Engine {
     }
 
 public:
+    // Normal timer/dump threads only. Hold through stripe acquisition and sealing.
+    static std::unique_lock<std::mutex> samplingEpochLock();
+    // Caller holds the epoch mutex and every recording stripe.
+    static void settleSamplingEpoch();
+
 #ifdef UNIT_TEST
     // The timer publishes this snapshot at exit; callers must stop/join first.
     const auto& timerPhasesForTest() const { return _timer_phases; }

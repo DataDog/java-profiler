@@ -31,6 +31,9 @@ class ProfiledThread;
 class WallClockBlockTracker;  // wall-clock owned/unowned block-run suppression state, see wallClockBlockTracker.h
 
 class ThreadFilter {
+#ifdef UNIT_TEST
+    friend class ThreadFilterTestAccessor;
+#endif
 public:
     using SlotID = int;
     using RecordingEpoch = u64;
@@ -95,26 +98,9 @@ public:
         inline u64 contextWindowEpoch() const {
             return context_window_state.load(std::memory_order_acquire) >> 1;
         }
-        // enterContextWindow()/exitContextWindow() are owner-only: add()/remove()
-        // only ever call them on the calling thread's own slot, so the release
-        // store is sufficient for concurrent readers using the acquire loads in
-        // inContextWindow()/contextWindowEpoch(). Avoiding a CAS turns a locked
-        // RMW into a plain store on every context-filtered enter/exit.
-        //
-        // Other writers of this field (R-A5):
-        // - refreshSlotForRecording() copies the owner's source snapshot only
-        //   after invalidating old recording payload. Normal owner context
-        //   hooks publish warm logical transitions without resetting tails.
-        // - unregisterThreadLocked()/retireThreadByTid() reset it only after
-        //   winning the tid CAS, so the slot has no live owner afterwards.
-        // - registerThread() initializes it before publishing native ownership.
-        // - clearActive() is the only cross-thread writer while the owner is
-        //   live, and it uses exitContextWindowFromNonOwner() (a CAS).
-        // Why this is safe: only the owner sets bit 0. After the owner loads
-        // bit 0 clear, nobody else can change the word before its store. After
-        // it loads bit 0 set, the only overlapping write is clearActive()'s
-        // identical current+1. Neither the bit nor the epoch is lost or moved
-        // backwards except by lifecycle resets or an owner's logical-word wrap.
+        // Only the owner sets membership; clearActive() CAS-clears it.
+        // An owner exit racing clearActive() stores the same current+1 value.
+        // Lifecycle resets require claiming tid; refresh runs on the owner.
         inline bool enterContextWindow() {
             u64 current = context_window_state.load(std::memory_order_relaxed);
             if ((current & 1) != 0) return false;
@@ -127,9 +113,7 @@ public:
             context_window_state.store(current + 1, std::memory_order_release);
             return true;
         }
-        // Cross-thread exit used by clearActive(): CAS so a racing owner
-        // transition is never overwritten (R-A5). Returns whether this call
-        // cleared bit 0.
+        // clearActive() uses CAS so it cannot overwrite a racing owner transition.
         inline bool exitContextWindowFromNonOwner() {
             u64 current = context_window_state.load(std::memory_order_acquire);
             while ((current & 1) != 0) {
@@ -328,30 +312,9 @@ private:
     void initializeChunk(int chunk_idx);
     bool pushToFreeList(SlotID slot_id);
     SlotID popFromFreeList();
-    // Lock-free admission gate: true when every slot index has been handed
-    // out, no retirement is pending and no slot is waiting in the free list,
-    // i.e. a new registration cannot succeed.
-    // 1. _next_index only changes under _registry_lock and never drops below
-    //    kMaxThreads once reached (an overshoot is reverted, never reset).
-    // 2. Load order matters: _retired_count before _free_count. Drain removes
-    //    a slot from _retired_count only after pushToFreeList() has counted it
-    //    in _free_count, so every completed retirement is visible in at least
-    //    one of the two reads.
-    // 3. A free whose pushToFreeList() has not yet incremented _free_count is
-    //    an in-progress operation ordered after this rejection - the same
-    //    outcome as the locked path.
-    // 4. Consequently THREAD_REGISTRY_CAPACITY_EXHAUSTED counts genuine
-    //    full-registry rejections; the caller retries on its next hook
-    //    (ensureOwnerSlot()).
-    // 5. Pending retirements count as capacity, so a registry full of retired
-    //    slots reaches the lock and drains them (starvation guard).
-    // 6. Do not reorder the loads and do not take the lock here
-    //    (FullRegistryRejectsUnknownTidWithoutLocking).
-    // 7. retireThreadByTid() increments _retired_count before its Treiber push,
-    //    so if the exiting thread is descheduled between the two, drains briefly
-    //    find an empty list while this gate returns false and over-capacity
-    //    registrations take _registry_lock. That is intentional (over-report is
-    //    the safe direction); do not "fix" the order.
+    // Read retired before free: drain counts the free slot before retracting its
+    // retirement, so completed retirements remain visible in at least one load.
+    // Count-before-push retirement may over-report capacity; locked admission rechecks.
     inline bool capacityExhausted() const {
         return _next_index.load(std::memory_order_acquire) >= kMaxThreads &&
                _retired_count.load(std::memory_order_acquire) == 0 &&

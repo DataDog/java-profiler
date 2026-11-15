@@ -701,8 +701,10 @@ public:
                             jint event_type, Event *event);
   // Bounded signal-side publication; dump excludes it with all recording stripes.
   bool deferUnownedWallSample(WallSampleRequest& request);
-  // Normal timer only: metadata and the successor start publish under one stripe.
-  void recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start);
+  // Normal timer/dump threads: metadata and the successor start publish together.
+  // stripes_held requires every recording stripe, as held by chunk sealing.
+  void recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start,
+                            bool stripes_held = false);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   void writeLog(LogLevel level, const char *message);
