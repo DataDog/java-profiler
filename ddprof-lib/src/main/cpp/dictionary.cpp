@@ -25,6 +25,9 @@
 
 static inline char *allocateKey(const char *key, size_t length) {
   char *result = (char *)malloc(length + 1);
+  if (result == NULL) {
+    return NULL;  // OOM: the caller fails the insert
+  }
   memcpy(result, key, length);
   result[length] = 0;
   // NM_DICTIONARY accounting recovers a freed key's size via strlen at clear()
@@ -120,7 +123,11 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
     DictRow *row = &table->rows[h % ROWS];
     for (int c = 0; c < CELLS; c++) {
       if (for_insert && row->keys[c] == NULL) {
-        char *new_key = allocateKey(key, length);
+        char *new_key =
+            _fail_key_alloc_for_test ? NULL : allocateKey(key, length);
+        if (new_key == NULL) {
+          return sentinel;  // OOM: fail the insert instead of dereferencing NULL
+        }
         if (__sync_bool_compare_and_swap(&row->keys[c], NULL, new_key)) {
           Counters::increment(DICTIONARY_KEYS, 1, _id);
           Counters::increment(DICTIONARY_KEYS_BYTES, length + 1, _id);
@@ -137,7 +144,14 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
 
     if (row->next == NULL) {
       if (for_insert) {
-        DictTable *new_table = (DictTable *)calloc(1, sizeof(DictTable));
+        DictTable *new_table =
+            _fail_table_alloc_for_test
+                ? NULL
+                : (DictTable *)calloc(1, sizeof(DictTable));
+        if (new_table == NULL) {
+          // OOM: fail the insert; base_index below would store through NULL.
+          return sentinel;
+        }
         new_table->base_index =
             __sync_add_and_fetch(&_base_index, TABLE_CAPACITY);
         if (!__sync_bool_compare_and_swap(&row->next, NULL, new_table)) {

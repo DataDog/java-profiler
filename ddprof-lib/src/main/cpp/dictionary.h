@@ -51,6 +51,9 @@ private:
   const int _id;
   volatile unsigned int _base_index;
   volatile int _size;
+  // Test hooks: make key / overflow-table allocation fail.
+  bool _fail_key_alloc_for_test = false;
+  bool _fail_table_alloc_for_test = false;
 
   static void clear(DictTable *table, int id);
 
@@ -75,6 +78,11 @@ public:
   ~Dictionary();
 
   void clear();
+
+  void failAllocationForTest(bool keys, bool tables) {
+    _fail_key_alloc_for_test = keys;
+    _fail_table_alloc_for_test = tables;
+  }
 
   bool         check(const char* key);
   // NOT signal-safe: the inserting lookup overloads call malloc/calloc on miss
