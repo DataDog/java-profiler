@@ -103,8 +103,9 @@ static inline uintptr_t untag(uintptr_t p) {
 #endif
 }
 
-// A request above the default tcache limit (1032 bytes) skips the thread
+// With the default tcache limit (1032 bytes), a larger request skips the thread
 // cache, which can hold chunks of other arenas, and is served by this thread's arena.
+// If glibc.malloc.tcache_max covers this size, the request can come from the cache.
 static const size_t SEED_BYTES = 4096;
 
 // Caches the arena of a chunk allocated by this thread, unless that chunk

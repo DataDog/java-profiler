@@ -57,7 +57,9 @@ fields at known offsets.
 1. The calling thread calls `malloc(4096)` and reads the size field of the
    chunk header. The size is above the default tcache limit (1032 bytes), so
    the chunk comes from the thread's own arena. A small request can return a
-   chunk from the thread cache that belongs to another arena.
+   chunk from the thread cache that belongs to another arena. If
+   `glibc.malloc.tcache_max` is set to 4096 bytes or more, the 4096-byte
+   request can also come from the thread cache.
 2. A seed is accepted only when the chunk is not mmapped and has the
    non-main-arena bit set. A chunk in `main_arena` gives no seed.
 3. The heap start is the chunk address masked to a 64 MiB boundary
