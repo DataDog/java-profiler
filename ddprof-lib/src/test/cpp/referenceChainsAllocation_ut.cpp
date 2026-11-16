@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <new>
 #include <pthread.h>
+#include <thread>
 
 #include "arguments.h"
 #include "referenceChains.h"
@@ -28,18 +29,18 @@ static std::atomic<bool> g_thread_published{false};
 // Relaxed: only the counting thread increments and reads the counter (the
 // identity check excludes every other thread), and all of that is same-thread.
 static std::atomic<long> g_allocs{0};
-// Relaxed: only the counting thread's value decides counting - foreign
-// threads exit at the identity check before reaching this load.
-static std::atomic<int> g_pause_depth{0};
+// Each thread pauses only its own mock bookkeeping; other threads' mocks
+// must not suppress allocations counted on the gtest thread.
+static thread_local int g_pause_depth = 0;
 
 static void accountingHook(bool pause) {
-    g_pause_depth.fetch_add(pause ? 1 : -1, std::memory_order_relaxed);
+    g_pause_depth += pause ? 1 : -1;
 }
 
 static bool shouldCount() {
     if (!g_counting.load(std::memory_order_acquire)) return false;
     if (!pthread_equal(pthread_self(), g_counting_thread)) return false;
-    return g_pause_depth.load(std::memory_order_relaxed) == 0;
+    return g_pause_depth == 0;
 }
 
 static void *plainAlloc(std::size_t size, bool nothrow) {
@@ -158,7 +159,7 @@ TEST_F(ReferenceChainsAllocationTest, ExplicitNewCountsAcrossPauseAndResume) {
         }
         ::operator delete(::operator new(16));
         after_pause = counter.count();
-        pause_depth = g_pause_depth.load(std::memory_order_relaxed);
+        pause_depth = g_pause_depth;
     }
     ::operator delete(::operator new(16));
     EXPECT_GT(counted_new, 0);
@@ -175,31 +176,46 @@ TEST_F(ReferenceChainsAllocationTest, ExplicitNewCountsAcrossPauseAndResume) {
 // the global hook mid-scope (null included) can neither redirect nor lose the
 // release, and a null-captured guard stays fully inert.
 TEST_F(ReferenceChainsAllocationTest, GuardsReleaseThroughCapturedHook) {
-    EXPECT_EQ(0, g_pause_depth.load(std::memory_order_relaxed));
+    EXPECT_EQ(0, g_pause_depth);
     {
         MockAllocPause pause;
-        EXPECT_EQ(1, g_pause_depth.load(std::memory_order_relaxed));
+        EXPECT_EQ(1, g_pause_depth);
         {
             MockAllocResume resume;
-            EXPECT_EQ(0, g_pause_depth.load(std::memory_order_relaxed));
+            EXPECT_EQ(0, g_pause_depth);
             alloc_accounting_hook = nullptr;
         }
-        EXPECT_EQ(1, g_pause_depth.load(std::memory_order_relaxed))
+        EXPECT_EQ(1, g_pause_depth)
             << "the resume must re-pause through its captured hook";
     }
-    EXPECT_EQ(0, g_pause_depth.load(std::memory_order_relaxed));
+    EXPECT_EQ(0, g_pause_depth);
     {
         MockAllocPause null_hook_pause;
         alloc_accounting_hook = &accountingHook;
-        EXPECT_EQ(0, g_pause_depth.load(std::memory_order_relaxed))
+        EXPECT_EQ(0, g_pause_depth)
             << "a guard built with a null hook must not call it";
     }
-    EXPECT_EQ(0, g_pause_depth.load(std::memory_order_relaxed));
+    EXPECT_EQ(0, g_pause_depth);
 }
 
 static void *foreignAllocator(void *) {
     ::operator delete(::operator new(32));
     ::operator delete(::operator new[](32));
+    return nullptr;
+}
+
+struct ForeignPauseState {
+    std::atomic<bool> paused{false};
+    std::atomic<bool> resume{false};
+};
+
+static void *foreignMockPause(void *arg) {
+    auto *state = static_cast<ForeignPauseState *>(arg);
+    ReferenceChainsMockHeap::MockAllocPause pause;
+    state->paused.store(true, std::memory_order_release);
+    while (!state->resume.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
     return nullptr;
 }
 
@@ -223,11 +239,28 @@ TEST_F(ReferenceChainsAllocationTest, ForeignThreadAllocationsDoNotCount) {
         << "only the constructing thread's operator new calls may count";
 }
 
+TEST_F(ReferenceChainsAllocationTest, ForeignThreadPauseDoesNotSuppressOwnerAllocations) {
+    ForeignPauseState state;
+    pthread_t tid;
+    long owner_count = 0;
+    {
+        AllocCounter counter;
+        ASSERT_EQ(0, pthread_create(&tid, nullptr, foreignMockPause, &state));
+        while (!state.paused.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        ::operator delete(::operator new(32));
+        owner_count = counter.count();
+        state.resume.store(true, std::memory_order_release);
+        EXPECT_EQ(0, pthread_join(tid, nullptr));
+    }
+    EXPECT_GT(owner_count, 0)
+        << "mock bookkeeping paused on another thread must not pause owner counting";
+}
+
 TEST_F(ReferenceChainsAllocationTest, TrackLeakAccumulationRecordedAncestorDoesNotAllocate) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=64");
+    ReferenceChainTracker *tracker = guard.tracker();
     FrontierTable *frontier = tracker->frontierTable();
 
     constexpr u32 kLeafKlass = 987, kParentKlass = 100, kMidKlass = 200, kRootKlass = 300;
@@ -259,15 +292,11 @@ TEST_F(ReferenceChainsAllocationTest, TrackLeakAccumulationRecordedAncestorDoesN
     EXPECT_EQ(2u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(midTag));
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(rootTag));
-
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsAllocationTest, TrackLeakAccumulationSeededAncestorsDoNotAllocate) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=64");
+    ReferenceChainTracker *tracker = guard.tracker();
     FrontierTable *frontier = tracker->frontierTable();
 
     constexpr u32 kLeafKlass = 987, kParentKlass = 100, kMidKlass = 200, kRootKlass = 300;
@@ -322,15 +351,11 @@ TEST_F(ReferenceChainsAllocationTest, TrackLeakAccumulationSeededAncestorsDoNotA
     EXPECT_TRUE(root_recorded);
     EXPECT_EQ(2u, parent_fanout);
     EXPECT_TRUE(parent_recorded);
-
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsAllocationTest, ExpandFrontierBatchBookkeepingDoesNotScaleWithBatchSize) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     // Empty-queue warm-up: exercises expandFrontier()'s first-call setup (the
@@ -382,6 +407,4 @@ TEST_F(ReferenceChainsAllocationTest, ExpandFrontierBatchBookkeepingDoesNotScale
     // Mock allocations are paused; the remaining per-call allocation is the
     // candidate_tags vector (one block per call), independent of batch size.
     EXPECT_LE(large - small, 2);
-
-    tracker->stop();
 }

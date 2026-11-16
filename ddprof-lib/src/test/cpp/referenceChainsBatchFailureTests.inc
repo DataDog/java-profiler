@@ -253,6 +253,38 @@ TEST_F(ReferenceChainsBfsTest, StaticFieldSweepAdmitsOneHopPastEachClass) {
     EXPECT_EQ(0, tags_ever_assigned[child]) << "the sweep admits one hop past each class, no deeper";
 }
 
+TEST_F(ReferenceChainsBfsTest, StaticFieldSweepResetsPreviousBatchMembership) {
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
+    ReferenceChainsTestAccessor::setPassDeadlineNs(0);
+    FrontierTable *frontier = tracker->frontierTable();
+    int class_node = addNode(), target = addNode(), child = addNode();
+    addClass((void *)&node_tags[class_node], "Lcom/rc/statics/PreviousBatch;");
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+
+    // Leave target in the previous ordinary batch's member set. The static sweep must reset it
+    // before walking the class's field, or it will descend through target and admit child.
+    seedBatchEntry(tracker, *this, frontier, target);
+    script.clear();
+    int edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni, &edges);
+    ASSERT_NE(0, tags_ever_assigned[target]);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(tags_ever_assigned[target], &entry));
+    ASSERT_EQ(FrontierEntryState::EXPANDED, entry.state);
+
+    script = {
+        {JVMTI_HEAP_REFERENCE_STATIC_FIELD, class_node, target, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, target, child, -1},
+    };
+    bool truncated = true;
+    ReferenceChainsTestAccessor::admitStaticFieldRootsForTest(
+        &mock_jvmti, &mock_jni, 1000, &edges, &truncated);
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(0, tags_ever_assigned[child])
+        << "the static sweep must not inherit prior batch membership";
+}
+
 TEST_F(ReferenceChainsBfsTest, LeakTagInterceptDoesNotDescendInlineUnderBatching) {
     BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
     ReferenceChainTracker *tracker = guard.tracker();

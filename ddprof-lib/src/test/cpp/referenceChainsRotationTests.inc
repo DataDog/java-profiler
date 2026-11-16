@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "referenceChainsBatchTestSupport.h"
+
 TEST_F(ReferenceChainsBfsTest, StaleRootAttributionUpgradesOnRediscovery) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
@@ -879,10 +881,8 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSiblingsShareRecordedAncesto
 // assertion if their branch is removed. The early stop keys on ancestors_recorded, never mere
 // presence.
 TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationAncestorOutcomesKeepFanoutAndSignature) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=64");
+    ReferenceChainTracker *tracker = guard.tracker();
     FrontierTable *frontier = tracker->frontierTable();
 
     constexpr u32 kLeafKlass = 987, kParentKlass = 100, kMidKlass = 200, kRootKlass = 300;
@@ -952,8 +952,6 @@ TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationAncestorOutcomesKeepFanoutAn
         rootTag, &absentKey, &absentFanout, &absentRecorded))
         << "the walk must stop at mid, whose ancestors were already recorded";
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(midTag));
-
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementalUpdates) {

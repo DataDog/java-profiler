@@ -97,11 +97,22 @@ TEST(ReferenceChainBatchSetDeathTest, MarkUnresolvedTagAborts) {
   // The deaths above ran in forked children; in this process the set is
   // untouched and a valid call must survive.
   EXPECT_EQ(1u, set.size());
+  EXPECT_TRUE(set.isMember(7));
   EXPECT_FALSE(set.isMember(8));
   EXPECT_FALSE(set.isCompleted(9));
   set.markCompleted(7);
   EXPECT_TRUE(set.isCompleted(7));
   EXPECT_TRUE(set.anyCompleted());
+}
+
+TEST(ReferenceChainBatchSetDeathTest, ResetMakesOldMarkerTagsUnresolved) {
+  ReferenceChainBatchSet set;
+  set.reset();
+  ASSERT_TRUE(set.addResolved(100));
+  set.markMember(100);
+  set.reset();
+  EXPECT_EXIT(set.markMember(100), ::testing::KilledBySignal(SIGABRT), "");
+  EXPECT_EXIT(set.markCompleted(100), ::testing::KilledBySignal(SIGABRT), "");
 }
 
 // Fills the set to CAPACITY with `tags`, then asserts every key is found and

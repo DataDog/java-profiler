@@ -6,10 +6,8 @@
 #include "referenceChainsBatchTestSupport.h"
 
 TEST_F(ReferenceChainsBfsTest, TruncatedBatchRetainsUnvisitedDeadEntryAndExpandsCompletedOne) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int e0 = addNode(), e1 = addNode(), e2 = addNode();
@@ -40,14 +38,11 @@ TEST_F(ReferenceChainsBfsTest, TruncatedBatchRetainsUnvisitedDeadEntryAndExpands
     std::vector<jlong> pending = ReferenceChainsTestAccessor::pendingExpandContents();
     ASSERT_GE(pending.size(), 2u);
     EXPECT_EQ((std::vector<jlong>{t1, t2}), std::vector<jlong>(pending.begin(), pending.begin() + 2));
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, BatchDescentGateExpandsOnlyBatchMembers) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int e0 = addNode(), c0 = addNode(), c1 = addNode(), g0 = addNode();
@@ -68,14 +63,11 @@ TEST_F(ReferenceChainsBfsTest, BatchDescentGateExpandsOnlyBatchMembers) {
     EXPECT_FALSE(truncated);
     EXPECT_NE(0, tags_ever_assigned[c1]);
     EXPECT_EQ(0, tags_ever_assigned[g0]) << "must not expand past the non-member c0";
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, BatchCompletionRequiresReferrerTransition) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int e0 = addNode(), e1 = addNode(), e2 = addNode();
@@ -106,14 +98,11 @@ TEST_F(ReferenceChainsBfsTest, BatchCompletionRequiresReferrerTransition) {
     std::vector<jlong> pending = ReferenceChainsTestAccessor::pendingExpandContents();
     ASSERT_GE(pending.size(), 2u);
     EXPECT_EQ((std::vector<jlong>{t0, t2}), std::vector<jlong>(pending.begin(), pending.begin() + 2));
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, TruncatedBatchWithoutCompletionLeavesWholeBatchQueued) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int e0 = addNode(), e1 = addNode();
@@ -139,14 +128,11 @@ TEST_F(ReferenceChainsBfsTest, TruncatedBatchWithoutCompletionLeavesWholeBatchQu
     std::vector<jlong> pending = ReferenceChainsTestAccessor::pendingExpandContents();
     ASSERT_GE(pending.size(), 2u);
     EXPECT_EQ((std::vector<jlong>{t0, t1}), std::vector<jlong>(pending.begin(), pending.begin() + 2));
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, ReorderedObjectsWithTagsResultsFullBatch) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int e0 = addNode(), e1 = addNode(), e2 = addNode();
@@ -173,14 +159,11 @@ TEST_F(ReferenceChainsBfsTest, ReorderedObjectsWithTagsResultsFullBatch) {
     EXPECT_EQ(FrontierEntryState::EXPANDED, entry.state);
     EXPECT_NE(0, tags_ever_assigned[c0]);
     EXPECT_NE(0, tags_ever_assigned[c2]);
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, ReorderedObjectsWithTagsResultsTruncatedBatch) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int e0 = addNode(), e1 = addNode(), e2 = addNode();
@@ -210,14 +193,11 @@ TEST_F(ReferenceChainsBfsTest, ReorderedObjectsWithTagsResultsTruncatedBatch) {
     ASSERT_GE(pending.size(), 2u);
     EXPECT_EQ((std::vector<jlong>{t0, t2}), std::vector<jlong>(pending.begin(), pending.begin() + 2))
         << "the remainder must be re-queued in request order, not result order";
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, DuplicateCandidateTagsMatchBaseline) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int e0 = addNode(), e1 = addNode(), c0 = addNode(), c1 = addNode();
@@ -242,7 +222,6 @@ TEST_F(ReferenceChainsBfsTest, DuplicateCandidateTagsMatchBaseline) {
         << "every queue slot of the duplicate batch must be consumed";
     EXPECT_NE(0, tags_ever_assigned[c0]);
     EXPECT_NE(0, tags_ever_assigned[c1]);
-    tracker->stop();
 }
 
 // Always fails, injected into the fixture's own JVMTI table: tagObject() returns 0 on a SetTag
@@ -252,10 +231,8 @@ static jvmtiError JNICALL fail_SetTag(jvmtiEnv *, jobject, jlong) {
 }
 
 TEST_F(ReferenceChainsBfsTest, SeedBatchEntryThrowsWhenTagObjectFails) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     FrontierTable *frontier = tracker->frontierTable();
     int node = addNode();
@@ -264,14 +241,11 @@ TEST_F(ReferenceChainsBfsTest, SeedBatchEntryThrowsWhenTagObjectFails) {
     jvmti_tbl.SetTag = &ReferenceChainsMockHeap::mock_SetTag;
     EXPECT_TRUE(ReferenceChainsTestAccessor::pendingExpandContents().empty())
         << "a failed seed must not queue pending work";
-    tracker->stop();
 }
 
 TEST_F(ReferenceChainsBfsTest, SeedBatchEntryThrowsWhenFrontierInsertionFails) {
-    Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
-    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
-    ASSERT_FALSE(tracker->start(args));
+    BatchTrackerGuard guard("referencechains=true:hops=64:budget=1000");
+    ReferenceChainTracker *tracker = guard.tracker();
     ReferenceChainsTestAccessor::setPassDeadlineNs(0);
     int first = addNode(), second = addNode();
     // Consumes tag 1 so the next seed lands on index 1, past the one-slot table's capacity.
@@ -281,5 +255,4 @@ TEST_F(ReferenceChainsBfsTest, SeedBatchEntryThrowsWhenFrontierInsertionFails) {
     EXPECT_THROW(seedBatchEntry(tracker, *this, &one_slot, second), std::logic_error);
     EXPECT_TRUE(ReferenceChainsTestAccessor::pendingExpandContents().empty())
         << "a failed seed must not queue pending work";
-    tracker->stop();
 }
