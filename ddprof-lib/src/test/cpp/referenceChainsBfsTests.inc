@@ -21,6 +21,15 @@ protected:
     void TearDown() override { tearDown(); }
 };
 
+class LivenessTrackerTestResetGuard {
+public:
+    ~LivenessTrackerTestResetGuard() {
+        LivenessTracker *liveness = LivenessTracker::instance();
+        liveness->klassPopulationResetForTest();
+        liveness->setGcGenerationsForTest(false);
+    }
+};
+
 TEST_F(ReferenceChainsBfsTest, ReconstructsChainForSyntheticGraph) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -547,8 +556,8 @@ TEST_F(ReferenceChainsBfsTest, FirstPassWatchesQualifiedLeakBeforeCompleting) {
     ASSERT_FALSE(args.parse("referencechains=true:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
-    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard(
-        /*reset_liveness=*/true);
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    LivenessTrackerTestResetGuard liveness_reset_guard;
     LivenessTracker *liveness = LivenessTracker::instance();
     liveness->klassPopulationResetForTest();
     liveness->setGcGenerationsForTest(true);

@@ -40,26 +40,13 @@ class ReferenceChainsTestAccessor {
 public:
     // Failure-safe teardown for tests that start the tracker: a gtest ASSERT_* failure returns from
     // the test body immediately and skips a trailing stop(), leaving the singleton started with a
-    // populated frontier/index and (optionally) LivenessTracker's GC-generation machinery enabled -
-    // exactly the cross-test state this suite's negative controls depend on being empty. Owns the
-    // teardown instead of the trailing lines; its stop() is a no-op once already stopped.
+    // populated frontier/index. Owns the teardown instead; stop() is a no-op once already stopped.
     class TrackerStopGuard {
     public:
-        explicit TrackerStopGuard(bool reset_liveness = false)
-            : _reset_liveness(reset_liveness) {}
-        ~TrackerStopGuard() {
-            if (_reset_liveness) {
-                LivenessTracker *liveness = LivenessTracker::instance();
-                liveness->klassPopulationResetForTest();
-                liveness->setGcGenerationsForTest(false);
-            }
-            ReferenceChainTracker::instance()->stop();
-        }
+        TrackerStopGuard() = default;
+        ~TrackerStopGuard() { ReferenceChainTracker::instance()->stop(); }
         TrackerStopGuard(const TrackerStopGuard &) = delete;
         TrackerStopGuard &operator=(const TrackerStopGuard &) = delete;
-
-    private:
-        bool _reset_liveness;
     };
 
     static void reset() {
