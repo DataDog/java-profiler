@@ -104,10 +104,13 @@ findings are surfaced to the author, never auto-implemented."
    A finding pre-existing in files the PR does not touch is never fixed in this PR:
    flag it in the stop summary as a split candidate — the session lands it as its own
    PR through the same gates (the repo's scope rule: unrelated production changes get
-   their own PR; AGENTS.md). A refuted finding
-   (scanner noise, premise false against the code) gets a one-line factual reply on
-   its comment. A finding that needs a design decision drives a brainstorm, never a
-   silent implementation:
+   their own PR; AGENTS.md). Every open thread gets exactly one reply, posted when
+   its finding is resolved, never deferred to the stop summary: a refuted finding
+   (scanner noise, premise false against the code) gets a one-line factual reply; an
+   already-fixed or stale finding gets one line naming the fix (the commit or the
+   current text); a design-level finding gets its brainstorm surfaced with the drafted
+   reply. Never resolve a thread — the human resolves. A finding that needs a design
+   decision drives a brainstorm, never a silent implementation:
    - **Ground it.** Read the code the comment touches; the finding's premise is a claim
      to verify, not a fact. A comment wrong about the code gets a one-line factual
      reply, not a brainstorm.
