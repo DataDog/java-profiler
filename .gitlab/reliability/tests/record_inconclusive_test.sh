@@ -39,8 +39,7 @@ assert_eq() { # $1 what, $2 expected, $3 actual
 run_case() { # $1 dir, $2 config, $3 allocator, $4 arch, $5 variant
   (
     cd "$1" || exit 1
-    export CONFIG="$2" ALLOCATOR="$3" ARCH="$4" VARIANT="$5"
-    exec bash "${SCRIPT}"
+    exec env CONFIG="$2" ALLOCATOR="$3" ARCH="$4" VARIANT="$5" bash "${SCRIPT}"
   )
 }
 
@@ -156,9 +155,8 @@ mkdir -p "${CASE}"
 printf 'INCONCLUSIVE:%s\n' "${REASON}" > "${CASE}/err.log"
 (
   cd "${CASE}" || exit 1
-  export CONFIG='profiler+tracer' ALLOCATOR=gmalloc ARCH=amd64 VARIANT=memory
-  export BUILD_ENV_ROW="build-env/profiler_tracer_gmalloc_amd64Xmemory/build.env"
-  exec bash "${SCRIPT}"
+  exec env CONFIG='profiler+tracer' ALLOCATOR=gmalloc ARCH=amd64 VARIANT=memory \
+    BUILD_ENV_ROW="build-env/profiler_tracer_gmalloc_amd64Xmemory/build.env" bash "${SCRIPT}"
 )
 assert_eq "the row copy is written at the BUILD_ENV_ROW path" "0" "$?"
 assert_eq "the row copy carries the same key and reason" \
@@ -183,9 +181,8 @@ mkdir -p "${CASE}"
 echo "FAIL:Memory usage is trending up" > "${CASE}/err.log"
 (
   cd "${CASE}" || exit 1
-  export CONFIG=profiler ALLOCATOR=gmalloc ARCH=amd64 VARIANT=memory
-  export BUILD_ENV_ROW="build-env/profiler_gmalloc_amd64Xmemory/build.env"
-  exec bash "${SCRIPT}"
+  exec env CONFIG=profiler ALLOCATOR=gmalloc ARCH=amd64 VARIANT=memory \
+    BUILD_ENV_ROW="build-env/profiler_gmalloc_amd64Xmemory/build.env" bash "${SCRIPT}"
 )
 if [ -e "${CASE}/build-env" ]; then
   fail_case "a confirmed fail still created the row copy"
@@ -220,7 +217,9 @@ assert_wiring "the scheduled timeout fallback stays" "${SCHEDULED_YAML}" 'Unknow
 assert_wiring "the PR child timeout fallback stays" "${PR_YAML}" 'Unknown failure, perhaps timeout'
 # The row copy keeps every row alive when the downloaded root-level build.env
 # files overwrite each other in the publish job's workspace.
+# shellcheck disable=SC2016  # the wiring needle must stay literal
 assert_wiring "the scheduled recorder passes BUILD_ENV_ROW" "${SCHEDULED_YAML}" 'BUILD_ENV_ROW="build-env/$(printf'
+# shellcheck disable=SC2016  # the wiring needle must stay literal
 assert_wiring "the PR child recorder passes BUILD_ENV_ROW" "${PR_YAML}" 'BUILD_ENV_ROW="build-env/$(printf'
 row_dir_path_count() { # $1 yaml
   sed -n '/^  artifacts:/,/^    reports:/p' "$1" | grep -cF -- 'build-env/'
@@ -229,8 +228,10 @@ assert_eq "the scheduled artifacts carry the build-env row directory" "2" \
   "$(row_dir_path_count "${SCHEDULED_YAML}")"
 assert_eq "the PR child artifacts carry the build-env row directory" "2" \
   "$(row_dir_path_count "${PR_YAML}")"
+# shellcheck disable=SC2016  # the row dir needle must stay literal
 assert_eq "both scheduled job templates write the row dir name" "4" \
   "$(grep -cF 'build-env/${_key#REASON_}/build.env' "${SCHEDULED_YAML}")"
+# shellcheck disable=SC2016  # the row dir needle must stay literal
 assert_eq "both PR child job templates write the row dir name" "4" \
   "$(grep -cF 'build-env/${_key#REASON_}/build.env' "${PR_YAML}")"
 
