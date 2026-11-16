@@ -124,8 +124,9 @@ findings are surfaced to the author, never auto-implemented."
      channel (the blocking request/reply link; bounded by the run cap as in step 3)
      with the brainstorm — options, recommendation, falsifiers, and the drafted
      reply — and post the reply on the thread per the answer. Still unanswered when
-     the cap hits, the question goes to the stop summary. Never implement a
-     design-level finding without the human's pick.
+     the cap hits, post the drafted reply marked as awaiting the operator's decision
+     and name the question in the stop summary — the thread is never left reply-less.
+     Never implement a design-level finding without the human's pick.
 5. **Push cycle.** After fixes: commit (concise message per `pr-writing`; SSH-signed;
    never `-c commit.gpgsign=false`), `git fetch`, rebase on the base branch replaying
    every commit re-signed (never merge the base branch in), then push
