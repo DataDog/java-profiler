@@ -170,9 +170,10 @@ const appended = result?.content?.length > content.length
 process.stdout.write(appended);
 process.exit(appended ? 2 : 0);
 EOF
+  REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
   pi_hook() {
     node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
-      "$PWD/.pi/extensions/babysit-pr.ts" "${4:-$TEMP_DIR/repo}" "$1" "$2" "$3"
+      "$REPO_ROOT/.pi/extensions/babysit-pr.ts" "${4:-$TEMP_DIR/repo}" "$1" "$2" "$3"
   }
   expect() { # expect <name> <rc> <grep-pattern> <args to pi_hook...>
     local name="$1" want_rc="$2" pattern="$3"; shift 3

@@ -22,7 +22,7 @@ import time
 
 # The fix universe: production source and tests. Everything else — skills, hooks, agent
 # personas, CI, build system, docs — is banned by omission.
-ALLOWLIST = re.compile(r"^(ddprof-lib/src/(main|test)/|ddprof-test/src/|ddprof-stresstest/src/)")
+ALLOWLIST = re.compile(r"^(ddprof-lib/src/(main|test)/|ddprof-test/src/|ddprof-stresstest/src/|malloc-shim/src/)")
 ZERO = set("0")
 
 
@@ -32,20 +32,25 @@ def git_out(*args):
 
 
 def delta_files(local_sha, remote_sha):
-    """Files changed by the push. Against the replaced remote tip: the babysit run's own
-    commits, not the branch's whole PR diff. A branch creation (all-zero remote) falls
-    back to the merge-base with origin/main."""
+    """Files changed by the push: the diff from the merge-base of the replaced remote tip
+    and the local tip (three-dot), so a mandatory rebase onto an advanced base branch
+    does not drag the base's own changes into the delta. A branch creation (all-zero
+    remote) diffs from the merge-base with origin/main."""
     base = remote_sha if set(remote_sha) != ZERO else git_out(
         "merge-base", "refs/remotes/origin/main", local_sha)
+    if set(remote_sha) != ZERO:
+        merge_base = git_out("merge-base", remote_sha, local_sha)
+        if merge_base is not None:
+            base = merge_base
     if base is None:
         return None
     out = git_out("diff", "--name-only", base, local_sha)
     return None if out is None else [f for f in out.splitlines() if f]
 
 
-# mtime is the marker's creation time (the file is never rewritten during a run), so
-# the age-out must exceed the two-hour run cap by a wide margin to be safe for a long
-# final push; a dead run must not gate its branch forever.
+# mtime is the marker's last write (the skill updates the scope array during a run and
+# rewrites the marker at stop), so the age-out must exceed the two-hour run cap by a
+# wide margin; a dead run must not gate its branch forever.
 STALE_AFTER_S = 26 * 3600
 
 

@@ -19,7 +19,12 @@ written by it, and it dies with the session — its stop summary names what rema
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
 4. **Worker.** Write `{"pr": <n>, "branch": "<branch>", "status": "running",
-   "scope": []}` to `build/babysit-pr-<n>.json`, then launch the `babysit-pr` agent — shipped with the skill in `.pi/agents/` (Pi)
+   "scope": []}` to `build/babysit-pr-<n>.json` **in the session's checkout** — that
+   copy is the dedupe record only — and pass the instruction to the worker: on start,
+   write the same-shaped marker **in its own worktree's `build/`** and maintain it
+   there (the pushing checkout is the one the pre-push guard reads; write it
+   atomically — temp file plus rename — so a concurrent guard read never sees a
+   truncated JSON it would skip). Then launch the `babysit-pr` agent — shipped with the skill in `.pi/agents/` (Pi)
    and `.claude/agents/` (Claude Code); it reads the loop below from the checkout —
    as an async background subagent with worktree isolation, passing the PR number,
    the checkout path, and the branch in the task (Pi: `subagent` with `worktree:true`;
@@ -41,10 +46,11 @@ dogbrew shim where it exists (required on Datadog workstations), bare `gh` other
 
 **Edit scope is deterministic, not judgment.** Every file the worker edits must be
 inside the source/test allowlist enforced by the pre-push hook and inside the `scope`
-array of the marker — `utils/babysit-scope-guard.py` is the single source for both
-checks; read it. The worker adds the files each finding justifies to the marker's
-`scope` array before its first edit, and updates it if a fix grows beyond the first
-estimate. An edit no finding justifies goes to the stop summary instead of the tree.
+array of the marker **in the worker's own worktree** — `utils/babysit-scope-guard.py`
+is the single source for both checks; read it. The worker adds the files each finding
+justifies to that marker's `scope` array before its first edit, and updates it if a fix
+grows beyond the first estimate (atomically: temp file plus rename). An edit no finding
+justifies goes to the stop summary instead of the tree.
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`; and
@@ -67,7 +73,8 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
      subagent has to its session; the request suspends the worker until the operator
      answers — with a structured question: both sides, your proposed resolution,
      what would falsify it. Resolve per the answer. Never silently pick a side the
-     operator has not seen.
+     operator has not seen. The ask is bounded by the run cap: still unanswered when
+     the cap hits, the question itself goes to the stop summary.
    - A conflict in a file outside the edit allowlist (the PR's own meta files — hooks,
      skills, agents) cannot be edited by the worker under the scope guard: draft the
      resolution, ask the operator through the same channel to apply it, and resolve
@@ -110,9 +117,9 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
    re-request GitHub silently ignores (the PR author, a bot without review rights)
    is recorded in the stop summary instead of retried.
 6. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
-   any cap hit (at most two fix-push rounds and two hours per run). Update the marker to
-   `{"pr": <n>, "status": "stopped"}` and summarize: commits pushed, findings flagged,
-   threads left.
+   any cap hit (at most two fix-push rounds and two hours per run). Update the marker
+   to `{"pr": <n>, "status": "stopped"}` in **both** the worker worktree and the
+   session's checkout, and summarize: commits pushed, findings flagged, threads left.
 
 ## Never
 
