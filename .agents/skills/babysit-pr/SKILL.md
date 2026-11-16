@@ -56,15 +56,19 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
    `./.claude/commands/build-and-summarize` (never bare `./gradlew`), and follow
    `verify-profiler-change` for what the fix must pass.
 3. **Merge conflicts.** When the poll reports the PR conflicted (`mergeStateStatus`
-   `DIRTY`), rebase on the base branch. Add every file you will resolve to the marker's
-   `scope` before resolving it. A conflict whose resolution needs no semantic
-   choice — adjacent hunks, additive changes on both sides, provable by build and
-   tests — is resolved and verified like any mechanical fix, in the same push cycle
-   (step 5). A conflict where both sides changed the same logic differently is
-   design-level: surface the brainstorm and the drafted resolution in the stop
-   summary, never silently pick a side. A conflict in a file outside the edit
-   allowlist (the PR's own meta files — hooks, skills, agents) cannot be resolved by
-   the worker under the scope guard: surface it with the drafted resolution too.
+   `DIRTY`), rebase on the base branch and examine every conflict: draft a resolution
+   for each — both sides' intent and the proposed merged result. Add every file you
+   will resolve to the marker's `scope` before resolving it.
+   - A conflict whose resolution needs no semantic choice — adjacent hunks, additive
+     changes on both sides, provable by build and tests — is resolved and verified
+     like any mechanical fix, in the same push cycle (step 5).
+   - When in doubt (both sides changed the same logic differently), ask the operator
+     through the supervisor channel with a structured question — both sides, your
+     proposed resolution, what would falsify it — and resolve per the answer. Never
+     silently pick a side the operator has not seen.
+   - A conflict in a file outside the edit allowlist (the PR's own meta files — hooks,
+     skills, agents) cannot be edited by the worker under the scope guard: draft the
+     resolution, ask the operator to apply it, and resolve the rest.
 4. **Review comments.** Classify the poll's reviews and comments — bot comments
    (scan-build, CI-results bots) are findings like any other, never auto-dismissed.
    Mechanical findings — bugs, missing tests, factual errors in comments or javadocs,
