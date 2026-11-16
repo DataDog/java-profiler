@@ -109,7 +109,11 @@ justifies goes to the stop summary instead of the tree.
    hook demands a fresh review marker:
    rerun the `pre-pr-review` skill on the fix range before pushing. Count that against
    the review budget — about $20–30 per babysit run; a run that would exceed it stops
-   and reports instead.
+   and reports instead. The scope guard is fail-closed against a rebased push when the
+   base branch advanced mid-run: the base's own file changes appear in the delta and
+   the push is refused — recognize that refusal immediately (compare the fetched base
+   tip against your run-start tip), do not burn a fix-push round on it: report it as a
+   base-advance stop.
    When the pushed fixes address the comments of a blocking review (`CHANGES_REQUESTED`
    in `gh pr view --json reviews`), re-request review from that review's author so the
    block clears when they re-review:
