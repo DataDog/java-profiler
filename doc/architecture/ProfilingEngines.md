@@ -611,7 +611,7 @@ engine produces it; `ObjectSampler` always records `BCI_ALLOC`.
 
 ## Live Heap (`LivenessTracker`, `livenessTracker.{h,cpp}`)
 
-`LivenessTracker` is **not** an `Engine` (`livenessTracker.h:209`). It is
+`LivenessTracker` is **not** an `Engine`. It is
 driven by `ObjectSampler` and by JVMTI `GarbageCollectionFinish`. This
 section covers only its tracking core. Leak-candidate selection and reference
 chains are described in
@@ -630,7 +630,7 @@ chains are described in
   under the exclusive table lock, so a callback left over from the previous
   recording never sees a capacity without its table.
 - **Table size**: `min(MAX_TRACKING_TABLE_SIZE (262144), max_heap /
-  interval)`. It grows by doubling up to that cap (`livenessTracker.cpp:1985`).
+  interval)`. It grows by doubling up to that cap, in the overflow path of `track()`.
   Memory is accounted under `NM_LIVENESS`.
 - **`LivenessTracker::track()`** runs from the allocation
   callback:
@@ -656,9 +656,9 @@ chains are described in
      `_table_cap` after unlocking.
   5. When the table is full, runs one forced reap-only `cleanup_table()`, may
      grow the table under the exclusive lock, and retries once.
-- **GC hook**: `vmEntry.cpp:454` fans `GarbageCollectionFinish` out to
+- **GC hook**: `ForwardedGarbageCollectionFinish()` in `vmEntry.cpp` fans `GarbageCollectionFinish` out to
   `LivenessTracker` and `ReferenceChainTracker`. `onGC()` only bumps
-  `_gc_epoch` and records heap-usage samples (`livenessTracker.cpp:2526`). The
+  `_gc_epoch` and records heap-usage samples. The
   work happens later in `cleanup_table()`, which holds the exclusive lock,
   drops entries whose weak ref is cleared, compacts the table, and ages
   survivors. `cleanup_table()` runs from `flush()`, `stop()`, the overflow path
@@ -667,7 +667,7 @@ chains are described in
 - **Output**: `Profiler::dump()` calls `flush()`. The
   flush runs a cleanup and then, under the exclusive lock, emits one
   `BCI_LIVENESS` deferred sample per surviving entry through
-  `recordDeferredSample()` (`livenessTracker.cpp:1962`). When heap-usage
+  `recordDeferredSample()` in `flush_table()`. When heap-usage
   recording is enabled, it also writes a heap-usage event.
 - **Trace retention**: when enabled, `start()` registers a liveness checker
   with `CallTraceStorage`. The checker returns the `call_trace_id` of every
