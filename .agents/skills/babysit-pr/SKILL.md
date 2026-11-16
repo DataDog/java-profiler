@@ -100,8 +100,11 @@ findings are surfaced to the author, never auto-implemented."
 4. **Review comments.** Classify the poll's reviews and comments — bot comments
    (scan-build, CI-results bots) are findings like any other, never auto-dismissed.
    Mechanical findings — bugs, missing tests, factual errors in comments or javadocs,
-   typos, including pre-existing ones in files the PR does not touch — are fixed in
-   the same push cycle as CI fixes, through the same review gates. A refuted finding
+   typos — are fixed in the same push cycle as CI fixes, through the same review gates.
+   A finding pre-existing in files the PR does not touch is never fixed in this PR:
+   flag it in the stop summary as a split candidate — the session lands it as its own
+   PR through the same gates (the repo's scope rule: unrelated production changes get
+   their own PR; AGENTS.md). A refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply on
    its comment. A finding that needs a design decision drives a brainstorm, never a
    silent implementation:
