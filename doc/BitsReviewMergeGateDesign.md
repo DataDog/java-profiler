@@ -211,8 +211,9 @@ set for H was read successfully and is empty, write nothing. Never infer H from
 the workflow's `GITHUB_SHA`.
 
 Before writing, read all status pages and select the newest `bits-review/head`
-entry created by `dd-octo-sts[bot]`, ordered by creation time and ID. Suppress the
-write only when its state, description, and target URL match the desired status.
+entry created by `java-profiler-bits-gate-c5a8bc[bot]`, ordered by creation time and
+ID. Suppress the write only when its state, description, and target URL match the
+desired status.
 A failed status read must not suppress a safety update. An error decision fails
 the run even when an unchanged-status match suppresses its POST. Failed writes
 also fail the run.
@@ -281,15 +282,24 @@ branch protection on `main`. Do not add a second ruleset. Preserve unrelated
 protections and existing admin bypass. A workflow without a required status does
 not enforce the merge policy.
 
-Use the existing `dd-octo-sts` app as publisher, with a repository policy that
-grants only status-write authority. Bind issuance to the trusted gate workflow on
+Use the app of the dedicated dd-octo-sts pool `java-profiler-bits-gate` as
+publisher, with a repository policy that grants only status-write authority. The
+workflow selects the pool with the `pool_name` input of `dd-octo-sts-action`.
+Without that input the action calls the legacy endpoint, which issues tokens for
+the shared default `dd-octo-sts` app. Bind issuance to the trusted gate workflow on
 `refs/heads/main`, the protected-ref claim, and its allowed event types. Use a
 read-only `GITHUB_TOKEN` for reads. Do not use it to publish the authoritative status.
 
-App-source binding does not isolate the gate from internal services that also hold
-status-write authority as `dd-octo-sts`. Those services are accepted as trusted
-infrastructure. Candidate-controlled workflows must not obtain the publisher token.
-The installation permission and exact policy claims must be tested before activation.
+The shared default app does not isolate the gate: org-wide trust policies grant
+other internal services status-write authority on every repository through it. The
+dedicated pool admits only the identities in its allow list. dd-octo-sts checks
+that list before it selects an app, and the trust policy applies after it. The pool
+must hold exactly one app, because the required context binds one app ID. The
+pool's allow list pins `job_workflow_ref`, `ref`, `repository`, and `event_name`
+for each allowed event type. dd-octo-sts administrators and the dd-octo-sts service
+hold the app key and remain trusted infrastructure. Candidate-controlled workflows
+must not obtain the publisher token. The installation permission, the pool allow
+list, and exact policy claims must be tested before activation.
 The repository policy file `.github/chainguard/self.bits-review-gate.publish-status.sts.yaml`
 carries exactly these claims:
 
@@ -322,7 +332,7 @@ required context and its expected-publisher binding are added in one change, and
 the same-repo `GITHUB_TOKEN` spoof is an AC10 case.
 
 When separately authorized, propose required context `bits-review/head` with expected
-publisher app ID `1157446`. Read the live protection and rules into a fresh baseline
+publisher app ID `5784409`. Read the live protection and rules into a fresh baseline
 immediately before an authorized change. The change is additive: preserve every
 existing required context and check, the existing `strict` value, `enforce_admins`,
 and every unrelated field. Initialize the gate's context with `strict: false` only
@@ -388,7 +398,7 @@ remain open until activation is separately authorized.
 | AC9 | test-drive | A branch workflow cannot obtain publisher authority; each shared-head PR needs its own PASS; a missing-review duplicate blocks and closing it reevaluates the SHA |
 | AC10 | production-check | Over a controlled test PR lifecycle, an ordinary non-bypass actor cannot merge without PASS and becomes eligible with PASS, subject to other checks; a same-repository branch workflow posting `bits-review/head: success` with its own `GITHUB_TOKEN` does not satisfy the required check |
 | AC11 | production-check | Read-back confirms the required publisher, main-only scope, unchanged unrelated protections, and preserved admin bypass |
-| AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation |
+| AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation; a caller outside the pool allow list is denied the pool's token |
 
 Run the repository's adjacent script tests and CI safety checks for implementation
 changes. Run `:ddprof-lib:qualityChecks` through the documented build wrapper for
@@ -438,7 +448,7 @@ The following material refinements are approved and reflected in the contract ab
 | Eight-account allowlist; unknown marked bots block | All eight are observed Bits authors on this repository; excluding one false-blocks every PR whose latest result is from it. Copied bot markers may cause false blocks | Identity, ordering, unknown-origin, and marker-copy cases |
 | Conservative edited-bot candidates, including unknown origins | Erased metadata must not uncover an older PASS; unrelated edited bot reviews may block | Actual-edit detection, unknown-origin erasure, and live bot-edit signal |
 | No edited summary can pass | Original author identity does not authenticate later text; even original-bot edits require a fresh review | Valid-looking edited PASS, original-author edit, and fresh-review recovery cases |
-| Main-workflow-bound Octo-STS publisher | Branch workflows can share the Actions identity; existing internal Octo-STS status writers remain trusted | Token-claim restrictions and attempted branch-workflow spoofing |
+| Main-workflow-bound publisher from a dedicated Octo-STS pool | Branch workflows can share the Actions identity; dd-octo-sts administrators remain trusted | Token-claim restrictions, pool allow-list denial, and attempted branch-workflow spoofing |
 | Shared-SHA conjunction | Statuses cannot express independent PR approval; a duplicate PR may block other PRs on the same head | Separate results per PR, duplicate closure and retargeting |
 
 The implementation also includes event-driven updates, a 30-minute recovery sweep,
