@@ -57,8 +57,9 @@ inside the source/test allowlist enforced by the pre-push hook and inside the `s
 array of the marker **in the worker's own worktree** — `utils/babysit-scope-guard.py`
 is the single source for both checks; read it. The worker adds the files each finding
 justifies to that marker's `scope` array before its first edit, and updates it if a fix
-grows beyond the first estimate (atomically: temp file plus rename). An edit no finding
-justifies goes to the stop summary instead of the tree.
+grows beyond the first estimate (atomically: temp file plus rename; a `git mv` declares
+both its source and its destination — the guard's `--no-renames` delta lists both). An
+edit no finding justifies goes to the stop summary instead of the tree.
 
 **Run signals.** At start the worker adds the `dog-sitter` label to the PR and posts
 one status comment; at stop it removes the label and edits that same comment with the
