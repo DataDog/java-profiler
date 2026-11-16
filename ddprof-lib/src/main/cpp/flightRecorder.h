@@ -460,9 +460,8 @@ public:
   // updateMallocArenaStats() for why this matters. Exposed for
   // RecordingTestAccessor.
   static bool glibcMallocActive();
-  // Decides whether the arena walk may run. Returns ARENA_WALK_OK when it may.
-  // Precedence: no SIGSEGV recovery (UNSUPPORTED_JVM), then a replacement
-  // allocator (REPLACED_ALLOCATOR), then hugetlb heaps (HUGETLB_TUNABLE).
+  // Walk gate. Precedence: no SIGSEGV recovery (UNSUPPORTED_JVM), replacement
+  // allocator (REPLACED_ALLOCATOR), hugetlb heaps (HUGETLB_TUNABLE).
   // Exposed for RecordingTestAccessor.
   static ArenaWalkStatus gateStatus(bool fault_recovery, bool glibc_active,
                                     bool hugetlb);

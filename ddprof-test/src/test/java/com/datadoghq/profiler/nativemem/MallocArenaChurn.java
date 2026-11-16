@@ -10,13 +10,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Creates glibc per-thread malloc arenas that hold free memory.
- *
- * <p>Each worker thread allocates {@code blocksPerThread} blocks with {@code
- * sun.misc.Unsafe.allocateMemory}, called reflectively, frees all blocks except every 8th one, and
- * then stays alive until {@link #close()}. The threads stay alive together, so that each one keeps
- * the arena that glibc assigned to it on its first allocation. The surviving blocks pin the arena
- * heaps, so the freed memory stays inside the arenas.
+ * Creates glibc per-thread malloc arenas that hold free memory: each thread allocates blocks
+ * through a reflective {@code Unsafe}, frees all but every 8th, and stays alive until {@link
+ * #close()} so it keeps its arena. The surviving blocks pin the heap.
  */
 final class MallocArenaChurn implements AutoCloseable {
   private static final int BLOCK_BYTES = 1024;

@@ -5,7 +5,7 @@
 
 #include "mallocArenaRule.h"
 
-// glibc caps the number of arenas at 8 x online CPUs by default.
+// glibc caps the number of arenas at 8 x online CPUs by default on 64-bit.
 static const int ARENAS_PER_CPU = 8;
 
 static const long long MAX_HEAP_UNLIMITED = 0x7fffffffffffffffLL;

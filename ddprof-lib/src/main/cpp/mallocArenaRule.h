@@ -27,7 +27,7 @@ struct MallocArenaEvaluation {
   bool cond1;                   // arenaCount exceeds recommendedArenaMax
   bool cond2;                   // measureBytes exceeds thresholdPercent of nativeHeadroom
   bool active;                  // walkOk && cond1 && cond2
-  int recommendedArenaMax;      // 8 * ceil(quota CPUs); 0 when there is no quota
+  int recommendedArenaMax;      // 8 * ceil(quota CPUs) (64-bit); 0 without a quota
   u64 nativeHeadroom;           // memoryLimit minus maxHeap, or memoryLimit; 0 when the limit is unknown
   const char* headroomSource;   // "limit-minus-heap" or "limit-only"
   bool heapExceedsLimit;        // maxHeap >= memoryLimit
@@ -46,11 +46,9 @@ public:
 
   MallocArenaWarningState() : _current(NONE), _last_measure(0) {}
 
-  // Advances the state by one chunk. valid == false (the walk failed) keeps
-  // the state and returns NONE. While a warning is raised, WORSENED is
-  // returned when measure is at least 125% of the measure at the last
-  // RAISED or WORSENED transition (growth of 25% or more). An active state
-  // implies measure > 0.
+  // Advances one chunk. valid == false keeps the state and returns NONE. While
+  // raised, WORSENED means measure grew at least 25% since the last RAISED or
+  // WORSENED. An active state implies measure > 0.
   Transition step(bool valid, bool active, u64 measure);
 
   bool active() const { return _current != NONE; }

@@ -6,14 +6,12 @@
 #ifndef _MALLOCARENAINPUTS_H
 #define _MALLOCARENAINPUTS_H
 
-// Process-static inputs of the glibc malloc arena detector: the CPU quota, the
-// memory limit, the arena limit glibc applies, and the glibc version. They are
-// captured once per recording. The parsers are pure functions and do not
-// allocate.
+// Process-static inputs of the arena detector (CPU quota, memory limit, arena
+// limit, glibc version), captured once per recording. The parsers do not allocate.
 struct MallocArenaInputs {
     // CPU quota in millicores, or -1 when there is no quota.
     long cpuQuotaMilli;
-    // Online CPUs, as OS::getCpuCount() reports them.
+    // Online CPUs from OS::getCpuCount(), at least 1.
     int onlineCpus;
     // Arena limit glibc applies: the arena_max tunable, MALLOC_ARENA_MAX, or
     // the default of 8 arenas per online CPU (2 on 32-bit).
@@ -34,18 +32,14 @@ struct MallocArenaInputs {
     static MallocArenaInputs capture();
 };
 
-// Looks up `key` in a GLIBC_TUNABLES style list ("k1=v1:k2=v2"). Returns true
-// and sets *out only when the key is present as a whole key with a value that
-// is a complete decimal integer with an optional leading '-'
-// (no leading whitespace or '+'). Returns false for a null list, a missing key
-// or a value such as "max".
+// Looks up `key` in a GLIBC_TUNABLES-style list ("k1=v1:k2=v2"). Sets *out only
+// for a whole-key match whose value is a decimal integer with an optional '-'.
+// Returns false for a null list, a missing key, or a value such as "max".
 bool parseTunableLong(const char* tunables, const char* key, long* out);
 
-// Returns the arena limit glibc applies. The glibc.malloc.arena_max tunable in
-// `tunables` has precedence over `env` (the MALLOC_ARENA_MAX value). A value
-// that is not a positive integer is ignored. Otherwise the limit is 8 *
-// onlineCpus (2 * onlineCpus when pointers are 32-bit). *source is set to
-// "tunable", "env" or "default".
+// Arena limit glibc applies: the glibc.malloc.arena_max tunable, else `env`
+// (MALLOC_ARENA_MAX), ignoring non-positive values, else 8 * onlineCpus
+// (2 * onlineCpus on 32-bit). *source is "tunable", "env" or "default".
 long effectiveArenaLimit(const char* tunables, const char* env, int onlineCpus,
                          const char** source);
 

@@ -27,7 +27,6 @@ static const char* const STATUS_NAMES[ARENA_WALK_STATUS_COUNT] = {
     "replaced-allocator",
     "hugetlb-tunable",
     "no-seed",
-    "no-layout",
     "fault",
     "implausible",
     "bad-next",
@@ -152,7 +151,6 @@ static void walkFrom(const ArenaLayout& l, ArenaWalkResult* r, int cap, uintptr_
   int mainSeen = 0;
   u64 attached1 = 0;
   initResult(r, ARENA_WALK_OK);
-  r->heapInfoSize = heapInfoSize;
   do {
     if (r->arenaCount >= cap) {
       r->status = ARENA_WALK_TOO_MANY;
@@ -182,11 +180,7 @@ static void walkFrom(const ArenaLayout& l, ArenaWalkResult* r, int cap, uintptr_
       return;
     }
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    if (isMain) {
-      r->mainBytes = sys;
-    } else {
-      r->nonMainBytes += sys;
-    }
+    if (!isMain) r->nonMainBytes += sys;
     if (sys > r->largestBytes) r->largestBytes = sys;
     if (max > r->largestMaxBytes) r->largestMaxBytes = max;
     if (l.off_attached != 0 && attached == 1) attached1++;
@@ -229,7 +223,7 @@ void MallocArenaWalker::walk(ArenaWalkResult* out, int cap) {
   int major = 0, minor = 0;
   sscanf(gnu_get_libc_version(), "%d.%d", &major, &minor);
   int pref = preferredArenaLayout(major, minor);
-  ArenaWalkStatus firstFail = ARENA_WALK_NO_LAYOUT;
+  ArenaWalkStatus firstFail = ARENA_WALK_IMPLAUSIBLE;
   for (int k = 0; k < ARENA_LAYOUT_COUNT; k++) {
     int idx = (pref + k) % ARENA_LAYOUT_COUNT;
     walkFrom(LAYOUTS[idx], out, cap, seed, hi);
@@ -241,7 +235,6 @@ void MallocArenaWalker::walk(ArenaWalkResult* out, int cap) {
     if (k == 0) firstFail = out->status;
   }
   initResult(out, firstFail);
-  out->heapInfoSize = hi;
 }
 
 void MallocArenaWalker::resetForTest() {
