@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-15 20:29:55 EST
+**Date:** 2026-11-15 20:41:37 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 609 |
-| Sample Rate | 10.15/sec |
-| Health Score | 634% |
+| CPU Samples | 519 |
+| Sample Rate | 8.65/sec |
+| Health Score | 541% |
 | Threads | 8 |
-| Allocations | 394 |
+| Allocations | 379 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 886 |
-| Sample Rate | 14.77/sec |
-| Health Score | 923% |
+| CPU Samples | 735 |
+| Sample Rate | 12.25/sec |
+| Health Score | 766% |
 | Threads | 10 |
-| Allocations | 524 |
+| Allocations | 495 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1794792276 81
-1794792281 81
-1794792286 81
-1794792291 81
-1794792296 81
-1794792301 81
-1794792306 81
-1794792311 81
-1794792316 81
-1794792321 81
-1794792326 81
-1794792331 81
-1794792336 81
-1794792341 81
-1794792346 81
-1794792351 81
-1794792356 81
-1794792361 81
-1794792366 81
-1794792371 81
+1794793077 81
+1794793082 81
+1794793087 81
+1794793092 81
+1794793097 81
+1794793102 81
+1794793107 81
+1794793112 81
+1794793117 81
+1794793122 81
+1794793127 81
+1794793132 81
+1794793137 81
+1794793142 81
+1794793147 81
+1794793152 81
+1794793157 81
+1794793162 81
+1794793167 81
+1794793172 81
 ```
 </details>
 
