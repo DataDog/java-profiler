@@ -124,6 +124,10 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   Full flags in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
 
+GitLab dd-trace integration selects and verifies the labeled JVM and JDK major;
+OpenJ9 uses Semeru on glibc and fails explicitly on musl (no runtime configured).
+See [TestingGuide](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
+
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:
 debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 `gradle/sanitizers/*.supp`, and `sudo sysctl vm.mmap_rnd_bits=28` if ASan crashes occur.

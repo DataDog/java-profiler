@@ -166,7 +166,13 @@ as artifacts.
 
 **Pipeline:** `.gitlab/dd-trace-integration/.gitlab-ci.yml`
 
-**Runs on:** amd64 and aarch64 × glibc and musl × HotSpot + OpenJ9, JDK 8–25
+**Matrix:** amd64 and aarch64 × glibc and musl × HotSpot + OpenJ9, JDK 8–25.
+OpenJ9 glibc cells install pinned IBM Semeru JDKs, not distro OpenJDK packages.
+OpenJ9 musl cells fail without `allow_failure`: no OpenJ9 musl runtime is configured.
+
+`verify-jvm.sh` checks `java.vm.name` and the JDK major before prerequisites and tests.
+A mismatch or failed identity query fails the cell. The verified identity is in the job log.
+Selector and identity regression tests run in `shell-unit-tests`.
 
 **Triggers:** every branch push; skipped on `release/*` branches, when
 `CI_PIPELINE_SOURCE` is `merge_request_event` (GitLab merge-request pipeline), or when
