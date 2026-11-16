@@ -721,7 +721,12 @@ public:
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,
                             jint event_type, Event *event);
-  void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
+  // Bounded signal-side publication; dump excludes it with all recording stripes.
+  bool deferUnownedWallSample(WallSampleRequest& request);
+  // Normal timer/dump threads: metadata and the successor start publish together.
+  // stripes_held requires every recording stripe, as held by chunk sealing.
+  void recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start,
+                            bool stripes_held = false);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   enum class TaskBlockRecordResult {

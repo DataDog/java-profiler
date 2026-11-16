@@ -1188,6 +1188,16 @@ void Recording::switchChunk(int fd) {
   OS::truncateFile(_fd);
   _chunk_start = 0;
 
+  std::unordered_set<u64> pending_epochs;
+  Profiler::instance()->blockTracker()->collectUnownedEpochStarts(pending_epochs);
+  for (auto it = _wall_epochs.begin(); it != _wall_epochs.end();) {
+    if (pending_epochs.count(it->first) == 0) {
+      it = _wall_epochs.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
   // the recording file is restarted, so write out all the info events again
   writeHeader(_buf);
   writeMetadata(_buf);
@@ -1204,6 +1214,9 @@ void Recording::switchChunk(int fd) {
     writeNativeLibraries(_buf);
   } else {
     _recorded_lib_count = -1;
+  }
+  for (auto& entry : _wall_epochs) {
+    recordWallClockEpoch(_buf, &entry.second);
   }
   flush(_buf);
 }
@@ -2428,6 +2441,8 @@ void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
 }
 
 void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  _wall_epochs.insert_or_assign(event->_start_time, *event);
   int start = buf->skip(1);
   buf->putVar64(T_WALLCLOCK_SAMPLE_EPOCH);
   buf->putVar64(event->_start_time);
@@ -2812,13 +2827,10 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 
 void FlightRecorder::wallClockEpoch(int lock_index,
                                     WallClockEpochEvent *event) {
-  OptionalSharedLockGuard locker(&_rec_lock);
-  if (locker.ownsLock()) {
-    Recording* rec = _rec;
-    if (rec != nullptr) {
-      Buffer *buf = rec->buffer(lock_index);
-      rec->recordWallClockEpoch(buf, event);
-    }
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  ExclusiveLockGuard locker(&_rec_lock);
+  if (_rec != nullptr) {
+    _rec->recordWallClockEpoch(_rec->buffer(lock_index), event);
   }
 }
 

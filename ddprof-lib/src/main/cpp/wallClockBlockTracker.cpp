@@ -481,6 +481,24 @@ void WallClockBlockTracker::collectLiveTraceIds(CallTraceIdSet& live) {
     }
 }
 
+void WallClockBlockTracker::collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    SlotStorage* storage = _storage.load(std::memory_order_acquire);
+    if (storage == nullptr) return;
+    for (size_t word = 0; word < storage->roots.size(); ++word) {
+        u64 bits = storage->roots[word].load(std::memory_order_acquire);
+        while (bits != 0) {
+            const size_t slot_id = word * 64 + __builtin_ctzll(bits);
+            if (storage->slots[slot_id].unowned_blocked_call_trace_id.load(std::memory_order_acquire) != 0) {
+                WeightSegment segments[kMaxWeightSegments];
+                size_t count = copyUnownedWeightSegments(slot_id, segments);
+                for (size_t i = 0; i < count; ++i) epochs.insert(segments[i].epoch_start);
+            }
+            bits &= bits - 1;
+        }
+    }
+}
+
 void WallClockBlockTracker::onUnpreservedTraceIds(const CallTraceIdSet& failed) {
     SlotStorage* storage = _storage.load(std::memory_order_acquire);
     if (storage == nullptr || failed.empty()) return;

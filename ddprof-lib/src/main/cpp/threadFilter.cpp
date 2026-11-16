@@ -456,7 +456,7 @@ void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
 }
 
 void ThreadFilter::rollbackFailedIndex(Slot& slot) {
-    // Never indexed, so no concurrent tid CAS can race this store (R-A2 exception).
+    // Never indexed, so no concurrent tid CAS can race this store.
     slot.tid.store(-1, std::memory_order_release);
     Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
 }
@@ -470,13 +470,16 @@ bool ThreadFilter::indexOrRollback(Slot& slot, SlotID slot_id, int tid) {
     return true;
 }
 
-ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
+ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid, int probe_budget) const {
     TidIndex* tid_index = _tid_index.load(std::memory_order_acquire);
     if (tid < 0 || tid_index == nullptr) return -1;
     unsigned start = hashTid(tid) & kTidIndexMask;
-    for (int probe = 0; probe < kTidIndexSize; ++probe) {
+    for (int probe = 0; probe < probe_budget; ++probe) {
         int index = (start + probe) & kTidIndexMask;
         int value = tid_index->entries[index].load(std::memory_order_acquire);
+#ifdef UNIT_TEST
+        _tid_index_probes_for_test.fetch_add(1, std::memory_order_relaxed);
+#endif
         if (value == 0) return -1;
         if (value > 0) {
             Slot* slot = slotForId(value - 1);
@@ -484,6 +487,9 @@ ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
                 return value - 1;
             }
         }
+    }
+    if (probe_budget == kWallPrecheckProbeBudget) {
+        Counters::increment(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
     }
     return -1;
 }
@@ -506,14 +512,19 @@ ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, SlotID* out_slot_id) cons
 
 ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
                                              SlotID* out_slot_id) const {
+    return lookupByTid(tid, epoch, out_slot_id, kTidIndexSize);
+}
+
+ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
+                                             SlotID* out_slot_id, int probe_budget) const {
     if (out_slot_id != nullptr) {
         *out_slot_id = -1;
     }
     if (epoch == 0 || recordingEpoch() != epoch) {
         return nullptr;
     }
-    SlotID slot_id = -1;
-    Slot* slot = lookupByTid(tid, &slot_id);
+    SlotID slot_id = lookupSlotIdByTid(tid, probe_budget);
+    Slot* slot = slot_id < 0 ? nullptr : slotForId(slot_id);
     if (slot == nullptr || slot->recordingEpoch() != epoch) {
         return nullptr;
     }
@@ -521,6 +532,11 @@ ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
         *out_slot_id = slot_id;
     }
     return slot;
+}
+
+ThreadFilter::Slot* ThreadFilter::lookupForWallPrecheck(int tid, RecordingEpoch epoch,
+                                                       SlotID* out_slot_id) const {
+    return lookupByTid(tid, epoch, out_slot_id, kWallPrecheckProbeBudget);
 }
 
 ThreadFilter::Slot* ThreadFilter::activeSlotForId(SlotID slot_id,
@@ -654,12 +670,8 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     int tid = slot->nativeTid();
     if (tid < 0) return;  // free, or retired-pending-drain
     if (expected_tid >= 0 && tid != expected_tid) return;
-    // The lock does not exclude the lock-free retireThreadByTid(), so claim the
-    // ownership with a tid CAS (R-A2): exactly one of {retire, unregister} frees
-    // a given ownership, and the loser touches nothing. The CAS precedes
-    // unindexSlot(); that is safe because lock-free readers already treat an
-    // index entry whose slot tid differs from the probed tid as a miss, and only
-    // lock holders mutate the index.
+    // Retirement bypasses the mutex; the tid CAS gives one reclaimer ownership.
+    // Index readers reject a mismatched tid, so claiming before unindexing is safe.
     if (!slot->tid.compare_exchange_strong(tid, -1, std::memory_order_acq_rel,
                                            std::memory_order_acquire)) {
         return;  // retire (or another claim) won
@@ -705,7 +717,7 @@ void ThreadFilter::retireThreadByTid(int tid) {
     if (slot_id < 0) return;
     Slot* slot = slotForId(slot_id);
     if (slot == nullptr) return;
-    // Claim the ownership (R-A2). The slot becomes invisible immediately:
+    // Claim the ownership. The slot becomes invisible immediately:
     // lookups, add(), collect(), activeSlotForId() and the wall-clock
     // suppression check all compare nativeTid().
     int expected = tid;
@@ -723,7 +735,7 @@ void ThreadFilter::retireThreadByTid(int tid) {
 }
 
 void ThreadFilter::enqueueRetired(SlotID slot_id, Slot* slot) {
-    // Count before the push (R-A3): over-reporting only sends registrations to
+    // Count before the push: over-reporting only sends registrations to
     // the locked (exact) path; see capacityExhausted().
     _retired_count.fetch_add(1, std::memory_order_release);
     SlotID head = _retired_head.load(std::memory_order_relaxed);
@@ -883,7 +895,7 @@ void ThreadFilter::clearActive() {
         }
 
         for (auto& slot : chunk->slots) {
-            // Cross-thread writer while owners are live: CAS (R-A5).
+            // Cross-thread writer while owners are live: CAS.
             slot.exitContextWindowFromNonOwner();
         }
     }

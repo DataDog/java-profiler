@@ -91,6 +91,7 @@
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
+  X(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED, "wc_precheck_registry_probe_exhausted") \
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
   X(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK, "wc_signals_suppressed_owned_block")     \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \

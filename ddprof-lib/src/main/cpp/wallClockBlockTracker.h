@@ -164,7 +164,9 @@ public:
             unowned_blocked_state.store(state, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
         }
-        // Peek leaves the root and pending units intact until stripe-held commit.
+        // Transactional tails commit only successful writes; lifecycle resets
+        // invalidate the payload. Context/owned-run transitions retain it.
+        // Legacy flush validates the complete tail before consuming anything.
         inline bool peekUnownedBlockedTail(u64& call_trace_id, u64& weight,
                                            OSThreadState& state) const {
             call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
@@ -313,6 +315,7 @@ public:
 #endif
     // Normal-thread callbacks; all recording stripes must exclude publication.
     void collectLiveTraceIds(CallTraceIdSet& live);
+    void collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const;
     void onUnpreservedTraceIds(const CallTraceIdSet& failed);
 
     // Returns nullptr if slot_id is out of range or storage is not yet
