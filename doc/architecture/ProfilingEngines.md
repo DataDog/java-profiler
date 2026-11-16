@@ -632,7 +632,7 @@ chains are described in
 - **Table size**: `min(MAX_TRACKING_TABLE_SIZE (262144), max_heap /
   interval)`. It grows by doubling up to that cap (`livenessTracker.cpp:1985`).
   Memory is accounted under `NM_LIVENESS`.
-- **`track()`** (`livenessTracker.cpp:2354`) runs from the allocation
+- **`LivenessTracker::track()`** runs from the allocation
   callback:
   1. Admission subsampling (`admitForTracking()`). The weight of rejected
      allocations accumulates in a thread-local `skipped` value, tagged with the

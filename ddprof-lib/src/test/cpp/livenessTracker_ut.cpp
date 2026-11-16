@@ -3717,15 +3717,16 @@ TEST_F(LivenessTrackerMockJvmTest, SkippedWeightStaysInItsTableGeneration) {
     EXPECT_EQ(32.0, tracker->trackingSkippedForTest(0));
 
     // Across a restart.
-    rejectTwice(tracker->tableGeneration());
+    const u64 before_restart = tracker->tableGeneration();
+    rejectTwice(before_restart);
     tracker->release(&jvm.jni);
     restart();
     trackNew(&jvm.retained_class, /*tid=*/1);
     ASSERT_EQ(1u, tracker->tableSizeForTest());
     EXPECT_EQ(0.0, tracker->trackingSkippedForTest(0));
 
-    // Rejected callbacks that read the previous generation.
-    rejectTwice(tracker->tableGeneration() - 1);
+    // Rejected callbacks that read the generation before the restart.
+    rejectTwice(before_restart);
     trackNew(&jvm.retained_class, /*tid=*/1);
     ASSERT_EQ(2u, tracker->tableSizeForTest());
     EXPECT_EQ(0.0, tracker->trackingSkippedForTest(1));
