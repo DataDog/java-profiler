@@ -36,14 +36,20 @@ get-versions:
   script:
     - set +e
     - echo "runtime=${RUNTIME}, config=${CONFIG}, variant=${VARIANT}, allocator=${ALLOCATOR}, arch=${ARCH}"
+    # The image's global python3 lacks numpy and matplotlib; the stability
+    # venv carries both, so the memory trend check runs on it.
+    - export MEM_TREND_PYTHON=/app/bp-stability/venv/bin/python3
     - .gitlab/reliability/run.sh "$RUNTIME" "$CONFIG" "$VARIANT" "$ALLOCATOR" "$ARCH" 2>err.log 1>out.log
     - REASON=$(grep -m1 'FAIL:' err.log | cut -f2- -d':' | tr -d '\n') || true
-    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_'); echo "${_key}=${REASON}" >> build.env; exit 1; fi
+    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_'); _row="build-env/${_key#REASON_}/build.env"; mkdir -p "${_row%/*}"; echo "${_key}=${REASON}" | tee -a build.env >> "${_row}"; exit 1; fi
+    - BUILD_ENV_ROW="build-env/$(printf '%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_')/build.env" .gitlab/reliability/record_inconclusive.sh
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
         _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_')
-        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" >> build.env
+        _row="build-env/${_key#REASON_}/build.env"
+        mkdir -p "${_row%/*}"
+        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" | tee -a build.env >> "${_row}"
       fi
   artifacts:
     name: "results-${ARCH}"
@@ -54,6 +60,8 @@ get-versions:
       - hs_err.log
       - err.log
       - out.log
+      - build.env
+      - build-env/
     reports:
       dotenv: build.env
     expire_in: 1 day
@@ -96,12 +104,14 @@ reliability-aarch64:
     - echo "runtime=${RUNTIME}, config=${CONFIG}, allocator=${ALLOCATOR}, arch=${ARCH}, jdk=${CHAOS_JDK}"
     - CHAOS_JDK="${CHAOS_JDK}" .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log 1>out.log
     - REASON=$(grep -m1 'FAIL:' err.log | cut -f2- -d':' | tr -d '\n') || true
-    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%s_%sXchaos' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_'); echo "${_key}=${REASON}" >> build.env; exit 1; fi
+    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%s_%sXchaos' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_'); _row="build-env/${_key#REASON_}/build.env"; mkdir -p "${_row%/*}"; echo "${_key}=${REASON}" | tee -a build.env >> "${_row}"; exit 1; fi
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
         _key=$(printf 'REASON_%s_%s_%s_%sXchaos' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_')
-        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" >> build.env
+        _row="build-env/${_key#REASON_}/build.env"
+        mkdir -p "${_row%/*}"
+        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" | tee -a build.env >> "${_row}"
       fi
   artifacts:
     name: "chaos-results-${ARCH}"
@@ -110,6 +120,8 @@ reliability-aarch64:
       - hs_err.log
       - err.log
       - out.log
+      - build.env
+      - build-env/
     reports:
       dotenv: build.env
     expire_in: 1 day

@@ -26,13 +26,20 @@ variables:
   script:
     - set +e
     - echo "runtime=${RUNTIME}, config=${CONFIG}, variant=${VARIANT}, allocator=${ALLOCATOR}, arch=${ARCH}"
+    # The image's global python3 lacks numpy and matplotlib; the stability
+    # venv carries both, so the memory trend check runs on it.
+    - export MEM_TREND_PYTHON=/app/bp-stability/venv/bin/python3
     - .gitlab/reliability/run.sh "$RUNTIME" "$CONFIG" "$VARIANT" "$ALLOCATOR" "$ARCH" 2>err.log 1>out.log
     - REASON=$(cat err.log | grep "FAIL:" | cut -f2 -d':') || true
-    - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}X${VARIANT}=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
+    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_'); _row="build-env/${_key#REASON_}/build.env"; mkdir -p "${_row%/*}"; echo "${_key}=${REASON}" | tee -a build.env >> "${_row}"; exit 1; fi
+    - BUILD_ENV_ROW="build-env/$(printf '%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_')/build.env" .gitlab/reliability/record_inconclusive.sh
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
-        grep -q "$(printf 'REASON_%s_%s_%sX%s=' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_')" build.env 2>/dev/null || echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}X${VARIANT}=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
+        _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_')
+        _row="build-env/${_key#REASON_}/build.env"
+        mkdir -p "${_row%/*}"
+        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" | tee -a build.env >> "${_row}"
       fi
   artifacts:
     name: "results-${ARCH}"
@@ -44,6 +51,8 @@ variables:
       - err.log
       - out.log
       - maven-get.log
+      - build.env
+      - build-env/
     reports:
       dotenv: build.env
     expire_in: 7 days
@@ -90,11 +99,14 @@ reliability-aarch64:
     - echo "runtime=${RUNTIME}, config=${CONFIG}, allocator=${ALLOCATOR}, arch=${ARCH}, jdk=${CHAOS_JDK}"
     - CHAOS_JDK="${CHAOS_JDK}" .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log 1>out.log
     - REASON=$(cat err.log | grep "FAIL:" | cut -f2 -d':') || true
-    - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}_${CHAOS_JDK//[.-]/_}Xchaos=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
+    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%s_%sXchaos' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_'); _row="build-env/${_key#REASON_}/build.env"; mkdir -p "${_row%/*}"; echo "${_key}=${REASON}" | tee -a build.env >> "${_row}"; exit 1; fi
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
-        grep -q "$(printf 'REASON_%s_%s_%s_%sXchaos=' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_')" build.env 2>/dev/null || echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}_${CHAOS_JDK//[.-]/_}Xchaos=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
+        _key=$(printf 'REASON_%s_%s_%s_%sXchaos' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_')
+        _row="build-env/${_key#REASON_}/build.env"
+        mkdir -p "${_row%/*}"
+        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" | tee -a build.env >> "${_row}"
       fi
   artifacts:
     name: "chaos-results-${ARCH}"
@@ -103,6 +115,8 @@ reliability-aarch64:
       - hs_err.log
       - err.log
       - out.log
+      - build.env
+      - build-env/
     reports:
       dotenv: build.env
     expire_in: 7 days
@@ -125,7 +139,7 @@ notify-slack:
   stage: notify
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: on_failure
+      when: always
     - when: never
   image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: [ "arch:amd64" ]
