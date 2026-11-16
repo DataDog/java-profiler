@@ -56,7 +56,7 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
    `./.claude/commands/build-and-summarize` (never bare `./gradlew`), and follow
    `verify-profiler-change` for what the fix must pass.
 3. **Merge conflicts.** When the poll reports the PR conflicted (`mergeStateStatus`
-   `DIRTY`), rebase on the base branch. Add every conflict-touched file to the marker's
+   `DIRTY`), rebase on the base branch. Add every file you will resolve to the marker's
    `scope` before resolving it. A conflict whose resolution needs no semantic
    choice — adjacent hunks, additive changes on both sides, provable by build and
    tests — is resolved and verified like any mechanical fix, in the same push cycle
