@@ -211,10 +211,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     u64 root_enum_start_ns = OS::nanotime();
     jvmtiError root_err;
 #ifdef DEBUG
-    // Debug-build-only error injection (setRootEnumErrorInjectionForTest()): forces this attempt
-    // to fail with JVMTI_ERROR_OUT_OF_MEMORY without touching the real JVMTI call - a failed
-    // call makes no progress and leaves user_data unmodified, so skipping it is faithful to the
-    // failure being simulated. Release builds never set the flag.
+    // Error injection must not admit objects through the heap callbacks.
+    // Bypass JVMTI so the test reaches the error path without mutating tags.
     if (_root_enum_error_injection.load(std::memory_order_acquire)) {
       root_err = JVMTI_ERROR_OUT_OF_MEMORY;
     } else

@@ -796,11 +796,8 @@ private:
   // ladder abandons the search (ROOT_ENUM_ERROR) - the only bound when ttl=0.
   u32 _consecutive_enum_errors = 0;
 
-  // Debug-build-only test seam flag: when true, runPassManualWalk()'s root/stack-ref enumeration
-  // attempt fails with JVMTI_ERROR_OUT_OF_MEMORY without touching the real JVMTI call (see
-  // setRootEnumErrorInjectionForTest()). Written by a JNI test thread, read on the BFS thread, so
-  // atomic with release/acquire ordering - a torn/relaxed read could let one pass run without the
-  // injection the test counted on.
+  // JNI tests toggle this flag while the BFS thread can read it; keep accesses atomic.
+  // Only DEBUG builds consult it to bypass the root-enumeration JVMTI call.
   std::atomic<bool> _root_enum_error_injection{false};
 
   ReferenceChainTracker()
@@ -1313,10 +1310,8 @@ public:
         : OS::nanotime() - (u64)ms_since_last_enum * 1000000ULL;
     _last_root_enum_safepoint_ms = last_enum_cost_ms;
   }
-  // Debug-build-only test seam (javaApi.cpp's setRootEnumErrorInjection0()): see
-  // _root_enum_error_injection's own comment. No engine lock: the flag is atomic; seeding it
-  // while a driven pass is in flight only shifts which pass sees the injection, which no test
-  // depends on.
+  // Takes effect when an enumeration attempt reads the flag; it does not cancel an in-flight walk.
+  // Tests must disable injection before resetting the shared search.
   void setRootEnumErrorInjectionForTest(bool enabled) {
     _root_enum_error_injection.store(enabled, std::memory_order_release);
   }

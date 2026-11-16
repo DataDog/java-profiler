@@ -2664,19 +2664,13 @@ void Recording::recordReferenceChainAbandoned(
   int start = buf->skip(1);
   buf->putVar64(T_REFERENCE_CHAIN_ABANDONED);
   buf->putVar64(event->_start_time);
-  // SearchAbandonReason (the engine's reason enum) - kept as a small fixed table
-  // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
-  // _operation -> kOpNames string mapping above. Indexed directly by the
-  // SearchAbandonReason value; the "unknown" slot at RECORDING_END (4) exists
-  // only to keep ROOT_ENUM_ERROR (5) at its enum index - RECORDING_END is never
-  // enqueued as an abandonment event (see its own comment), so that slot's
-  // string is never actually written. Without its entry, ROOT_ENUM_ERROR - a
-  // genuinely distinct, engine-reported abandonment - would serialize as
-  // "unknown" and misattribute the cause in the JFR event.
+  // Indexed by SearchAbandonReason, including its internal RECORDING_END value.
+  // Keep that slot so ROOT_ENUM_ERROR stays at its enum index; recording stop
+  // does not enqueue an event for RECORDING_END.
   static const char *const kReasons[] = {"none", "frontier_cap", "ttl",
                                          "canary_stuck", "unknown",
                                          "root_enum_error"};
-  buf->putUtf8(event->_reason < (u8)(sizeof(kReasons) / sizeof(kReasons[0]))
+  buf->putUtf8(event->_reason < sizeof(kReasons) / sizeof(kReasons[0])
                    ? kReasons[event->_reason]
                    : "unknown");
   buf->putVar32(event->_passes_run);
