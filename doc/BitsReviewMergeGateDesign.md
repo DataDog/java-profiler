@@ -297,9 +297,14 @@ that list before it selects an app, and the trust policy applies after it. The p
 must hold exactly one app, because the required context binds one app ID. The
 pool's allow list pins `job_workflow_ref`, `ref`, `repository`, and `event_name`
 for each allowed event type. dd-octo-sts administrators and the dd-octo-sts service
-hold the app key and remain trusted infrastructure. Candidate-controlled workflows
-must not obtain the publisher token. The installation permission, the pool allow
-list, and exact policy claims must be tested before activation.
+hold the app key and remain trusted infrastructure. The approvers of the pool
+configuration in `ddoghq/dd-source` can change who obtains the token, and are
+trusted too. Code merged to `main`, also through the preserved admin bypass, runs
+with the publisher token. The gate therefore depends on change control for the
+gate workflow, its scripts, and the trust policy file. Candidate-controlled
+workflows must not obtain the publisher token. The app installation must cover
+only this repository. The installation scope, the pool allow list, and exact
+policy claims must be tested before activation.
 The repository policy file `.github/chainguard/self.bits-review-gate.publish-status.sts.yaml`
 carries exactly these claims:
 
@@ -340,6 +345,10 @@ when the fresh baseline has no required checks; never replace the checks list
 unconditionally or disable an existing strict requirement. If the fresh baseline
 differs from these assumptions, stop and revise the proposal before any authorized
 write. Read back and compare the settings against the fresh baseline after the change.
+Bind the context to app `5784409` only: with any other source, older
+`dd-octo-sts[bot]` statuses and statuses from other services satisfy it. Before the
+change, rerun the gate for every open-PR head, so that each head carries a status
+from app `5784409`.
 
 GitHub status storage is commit-scoped. The conjunction across shared-head PRs is
 the approved isolation policy. Prove that one PR's review cannot satisfy another
@@ -397,7 +406,7 @@ remain open until activation is separately authorized.
 | AC8 | test-drive | A push invalidates an earlier PASS; submission, edit, dismissal, and retry update the head status; an actual bot body edit exposes the edit signal used by the evaluator |
 | AC9 | test-drive | A branch workflow cannot obtain publisher authority; each shared-head PR needs its own PASS; a missing-review duplicate blocks and closing it reevaluates the SHA |
 | AC10 | production-check | Over a controlled test PR lifecycle, an ordinary non-bypass actor cannot merge without PASS and becomes eligible with PASS, subject to other checks; a same-repository branch workflow posting `bits-review/head: success` with its own `GITHUB_TOKEN` does not satisfy the required check |
-| AC11 | production-check | Read-back confirms the required publisher, main-only scope, unchanged unrelated protections, and preserved admin bypass |
+| AC11 | production-check | Read-back confirms the required publisher app ID `5784409`, main-only scope, unchanged unrelated protections, and preserved admin bypass; the app installation covers only this repository |
 | AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation; a caller outside the pool allow list is denied the pool's token |
 
 Run the repository's adjacent script tests and CI safety checks for implementation
