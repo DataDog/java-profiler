@@ -33,6 +33,12 @@ public class NettyEpollIsolationTest {
     run("survivingOwnerAndNewWorkerAreDisjointAcrossRestart");
   }
 
+  /** Distinguishes a fresh post-EINTR scope from replay of a surviving old hook. */
+  @Test
+  public void interruptedSurvivorStartsFreshScopeAfterRestart() throws Exception {
+    run("interruptedSurvivorStartsFreshScopeAfterRestart");
+  }
+
   /** Exercises Netty's own extraction/deletion after package-prefix shading. */
   @Test
   public void shadedDeletedImageProducesTaskBlock() throws Exception {

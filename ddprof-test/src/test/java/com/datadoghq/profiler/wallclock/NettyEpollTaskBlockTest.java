@@ -13,6 +13,7 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
+import com.datadoghq.profiler.NativeWaitTestSupport;
 import com.datadoghq.profiler.Platform;
 import io.netty.channel.epoll.ProfilerEpollFixture;
 import java.io.DataInputStream;
@@ -139,9 +140,21 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
     }
   }
 
-  /** Holds an old JNI owner across restart while a new worker owns a distinct active interval. */
+  /** Holds one old hook scope, not merely a retrying JNI invocation, across restart. */
   @Test
   public void survivingOwnerAndNewWorkerAreDisjointAcrossRestart() throws Exception {
+    verifySurvivorAcrossRestart(false);
+  }
+
+  /**
+   * One deliberate EINTR opens fresh recording-local work without stealing the new worker's run.
+   */
+  @Test
+  public void interruptedSurvivorStartsFreshScopeAfterRestart() throws Exception {
+    verifySurvivorAcrossRestart(true);
+  }
+
+  private void verifySurvivorAcrossRestart(boolean interruptSurvivor) throws Exception {
     stopProfiler();
     String name = "netty-controlled-loop";
     Path first = Files.createTempFile(Paths.get("/tmp/recordings"), "netty-old-owner-", ".jfr");
@@ -152,14 +165,27 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       running = true;
       exerciseBothWorkers(fixture, name + "-timed-first");
       try (ProfilerEpollFixture.ControlledWait old = fixture.controlledWait(name + "-survivor")) {
+        WallClockBlockTrackerTestSupport.NativeOwnerSnapshot before =
+            WallClockBlockTrackerTestSupport.available()
+                ? WallClockBlockTrackerTestSupport.nativeOwnerSnapshot(old.nativeTid())
+                : null;
         profiler.stop();
         running = false;
         profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + second.toAbsolutePath());
         running = true;
         try (ProfilerEpollFixture.ControlledWait next = fixture.controlledWait(name + "-new")) {
+          old.assertBlocked();
+          assertSameNativeOwner(before, old.nativeTid(), false);
+          if (interruptSurvivor) {
+            NativeWaitTestSupport.interruptWait(old.nativeTid());
+            old.assertBlocked();
+            assertSameNativeOwner(before, old.nativeTid(), true);
+            // Keep the fresh scope beyond the duration threshold before releasing its eventfd.
+            exerciseBothWorkers(fixture, name + "-timed-second");
+          }
           old.close();
           next.assertBlocked();
-          exerciseBothWorkers(fixture, name + "-timed-second");
+          if (!interruptSurvivor) exerciseBothWorkers(fixture, name + "-timed-second");
         }
         profiler.stop();
         running = false;
@@ -171,14 +197,56 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       assertEpollTaskBlock(newEvents, name, "io.netty.");
       assertTimedEpollTaskBlocks(newEvents, name + "-timed-second", "io.netty.");
       assertEquals(0, TaskBlockAssertions.countEventsForThread(oldEvents, name + "-survivor"));
-      assertEquals(0, TaskBlockAssertions.countEventsForThread(newEvents, name + "-survivor"));
+      assertEquals(
+          interruptSurvivor ? 1 : 0,
+          TaskBlockAssertions.countEventsForThread(newEvents, name + "-survivor"));
       assertEquals(1, TaskBlockAssertions.countEventsForThread(newEvents, name + "-new"));
+      if (interruptSurvivor) {
+        JfrEvents recordingInfo = verifyEvents(second, "jdk.ActiveRecording", false);
+        assertEquals(1, recordingInfo.count());
+        Long recordingStart = recordingInfo.iterator().next().getLong("startTime");
+        assertNotNull(recordingStart, "missing restarted recording startTime");
+        for (JfrEvent event : newEvents) {
+          if ((name + "-survivor").equals(event.getThreadName("eventThread"))) {
+            Long start = event.getLong("startTime");
+            assertNotNull(start, "missing fresh survivor startTime");
+            assertTrue(start > recordingStart, "old-scope entry must not replay after restart");
+            assertEquals("IO_WAIT", event.getString("observedBlockingState"));
+            assertNotNull(event.get("stackTrace"));
+            assertTrue(event.getStackTraceString().contains("ControlledWait"));
+          }
+        }
+      }
     } finally {
       if (running) profiler.stop();
       if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) {
         Files.deleteIfExists(first);
         Files.deleteIfExists(second);
       }
+    }
+  }
+
+  /** Generation observations are DEBUG-only; release retains kernel, mask and JFR oracles. */
+  private static void assertSameNativeOwner(
+      WallClockBlockTrackerTestSupport.NativeOwnerSnapshot before, int tid, boolean reentered) {
+    if (before == null) return;
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    WallClockBlockTrackerTestSupport.NativeOwnerSnapshot after;
+    do {
+      after = WallClockBlockTrackerTestSupport.nativeOwnerSnapshot(tid);
+      if (!reentered || after.blockGeneration > before.blockGeneration) break;
+      Thread.yield();
+    } while (System.nanoTime() - deadline < 0);
+    assertTrue(before.blockGeneration > 0, "old native hook must actually own a token");
+    assertEquals(before.slotId, after.slotId, "restart must retain the native slot");
+    assertEquals(before.lifecycleGeneration, after.lifecycleGeneration);
+    assertEquals(before.blockGeneration + (reentered ? 1 : 0), after.blockGeneration);
+    if (reentered) {
+      assertTrue(after.recordingEpoch > before.recordingEpoch);
+      assertEquals(after.currentRecordingEpoch, after.recordingEpoch);
+    } else {
+      assertEquals(before.recordingEpoch, after.recordingEpoch);
+      assertTrue(after.currentRecordingEpoch > after.recordingEpoch);
     }
   }
 

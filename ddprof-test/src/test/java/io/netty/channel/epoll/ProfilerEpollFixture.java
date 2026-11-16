@@ -5,6 +5,7 @@
 
 package io.netty.channel.epoll;
 
+import com.datadoghq.profiler.NativeWaitTestSupport;
 import io.netty.channel.unix.FileDescriptor;
 import io.netty.util.Version;
 import java.lang.reflect.Method;
@@ -105,7 +106,7 @@ public final class ProfilerEpollFixture implements AutoCloseable {
     }
   }
 
-  /** Starts an independently owned real JNI wait and observes its kernel entry before returning. */
+  /** Holds a real JNI wait with profiling signals masked so restart cannot cause EINTR retries. */
   public ControlledWait controlledWait(String name) throws Exception {
     ControlledWait wait = new ControlledWait(name);
     try {
@@ -119,6 +120,21 @@ public final class ProfilerEpollFixture implements AutoCloseable {
       }
       throw error;
     }
+  }
+
+  /** /proc exposes the host kernel ABI even when QEMU presents another userspace architecture. */
+  static boolean kernelUsesArm64Syscalls(String cpuInfo) {
+    for (String line : cpuInfo.split("\n")) {
+      int colon = line.indexOf(':');
+      if (colon < 0) continue;
+      String key = line.substring(0, colon).trim();
+      if ("vendor_id".equals(key)) return false;
+      if ("CPU architecture".equals(key)) {
+        if ("8".equals(line.substring(colon + 1).trim())) return true;
+        throw new IllegalStateException("unsupported Linux CPU architecture: " + line);
+      }
+    }
+    throw new IllegalStateException("missing Linux kernel CPU architecture");
   }
 
   /** Eventfd release makes stop/restart ordering independent of a timeout or scheduler delay. */
@@ -140,14 +156,22 @@ public final class ProfilerEpollFixture implements AutoCloseable {
             new Thread(
                 () -> {
                   try {
-                    String stat =
-                        new String(
-                            Files.readAllBytes(Paths.get("/proc/thread-self/stat")),
-                            StandardCharsets.UTF_8);
-                    tid = stat.substring(0, stat.indexOf(' '));
-                    if (Native.epollWait(epoll, events, -1) != 1) {
-                      throw new AssertionError("controlled epoll wait did not observe its eventfd");
-                    }
+                    NativeWaitTestSupport.withProfilingSignalsBlocked(
+                        () -> {
+                          try {
+                            String stat =
+                                new String(
+                                    Files.readAllBytes(Paths.get("/proc/thread-self/stat")),
+                                    StandardCharsets.UTF_8);
+                            tid = stat.substring(0, stat.indexOf(' '));
+                            if (Native.epollWait(epoll, events, -1) != 1) {
+                              throw new AssertionError(
+                                  "controlled epoll wait did not observe its eventfd");
+                            }
+                          } catch (Exception error) {
+                            throw new AssertionError("controlled JNI wait failed", error);
+                          }
+                        });
                   } catch (Throwable error) {
                     failure.set(error);
                   }
@@ -165,10 +189,17 @@ public final class ProfilerEpollFixture implements AutoCloseable {
       }
     }
 
-    /**
-     * Requires this exact descriptor to be blocked in the kernel, not merely a runnable Java frame.
-     */
+    /** Returns the observed Linux worker identity, never an inferred Java-to-native mapping. */
+    public int nativeTid() {
+      if (tid == null) throw new IllegalStateException("worker has not published its Linux tid");
+      return Integer.parseInt(tid);
+    }
+
+    /** Requires the exact descriptor in a kernel wait with profiling signals still masked. */
     public void assertBlocked() throws Exception {
+      boolean arm64 =
+          kernelUsesArm64Syscalls(
+              new String(Files.readAllBytes(Paths.get("/proc/cpuinfo")), StandardCharsets.UTF_8));
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
       while (System.nanoTime() - deadline < 0) {
         if (failure.get() != null || !worker.isAlive()) {
@@ -182,10 +213,23 @@ public final class ProfilerEpollFixture implements AutoCloseable {
                       StandardCharsets.UTF_8)
                   .trim();
           String[] fields = syscall.split("\\s+");
-          boolean arm64 = "aarch64".equals(System.getProperty("os.arch"));
           boolean epollSyscall =
               arm64 ? fields[0].equals("22") : fields[0].equals("232") || fields[0].equals("281");
           if (fields.length > 1 && epollSyscall && Long.decode(fields[1]) == epoll.intValue()) {
+            boolean maskFound = false;
+            for (String line :
+                Files.readAllLines(
+                    Paths.get("/proc/self/task", id, "status"), StandardCharsets.UTF_8)) {
+              if (line.startsWith("SigBlk:")) {
+                long mask = Long.parseUnsignedLong(line.substring("SigBlk:".length()).trim(), 16);
+                long profiling = NativeWaitTestSupport.profilingSignalMask();
+                if ((mask & profiling) != profiling) {
+                  throw new AssertionError("controlled worker has unmasked profiling signals");
+                }
+                maskFound = true;
+              }
+            }
+            if (!maskFound) throw new AssertionError("missing controlled worker signal mask");
             System.out.println(
                 "NETTY_CONTROLLED_WAIT tid="
                     + id

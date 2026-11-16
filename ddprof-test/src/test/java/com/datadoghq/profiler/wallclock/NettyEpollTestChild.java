@@ -32,7 +32,8 @@ public final class NettyEpollTestChild {
             || "disabledTaskBlockPreservesNativeWaits".equals(args[0])
             || "nativeSocketSamplerCoexistsWithTaskBlock".equals(args[0])
             || "interruptedCloseStillTerminatesEventLoop".equals(args[0])
-            || "survivingOwnerAndNewWorkerAreDisjointAcrossRestart".equals(args[0]))) {
+            || "survivingOwnerAndNewWorkerAreDisjointAcrossRestart".equals(args[0])
+            || "interruptedSurvivorStartsFreshScopeAfterRestart".equals(args[0]))) {
       throw new IllegalArgumentException("expected one allowlisted Netty test method name");
     }
     String reports = System.getProperty("ddprof.netty.reports");
