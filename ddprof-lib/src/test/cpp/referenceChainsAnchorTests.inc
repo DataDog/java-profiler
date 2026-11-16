@@ -240,6 +240,45 @@ TEST_F(ReferenceChainsBfsTest, FreshContainerWalkedBeforeFairBacklog) {
     tracker->stop();
 }
 
+// Overflow must preserve the oldest unserved first looks and drop only newest admissions.
+TEST_F(ReferenceChainsBfsTest, FreshQueueCapDropsNewestAnchors) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::freshAnchorQueueCapForTest();
+    const jlong first = 2000;
+    const jlong klass = -799100;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(klass, true);
+    for (size_t i = 0; i < cap + 2; i++) {
+        const jlong tag = first + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, klass, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+
+    std::vector<jlong> queued = ReferenceChainsTestAccessor::freshQueueTagsForTest();
+    ASSERT_EQ(cap, queued.size());
+    EXPECT_EQ(first, queued.front()) << "the oldest unserved first look must stay queued";
+    EXPECT_EQ(first + (jlong)cap - 1, queued.back());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        first + (jlong)cap));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        first + (jlong)cap + 1));
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(1);
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(first, selected[0]) << "the retained FIFO head must receive the next first look";
+    EXPECT_EQ(first + 1, ReferenceChainsTestAccessor::freshQueueTagsForTest().front());
+
+    tracker->stop();
+}
+
 // Tier fairness: the other tier (everything not leak-tagged, not container-shaped) still
 // reaches full coverage across wraps - a 40-anchor tier at a 16 budget covers all 40 in exactly 3
 // calls with no duplicates within a call.
@@ -1409,12 +1448,9 @@ TEST_F(ReferenceChainsBfsTest, HeapReferenceCallbackReenlistsEvictedDurableAncho
     tracker->stop();
 }
 
-// When the local share is at the cap and full of live containers, a compaction that removes nothing
-// arms a backoff: the next LOCAL_ANCHOR_COMPACT_BACKOFF at-cap resolves skip the locked scan (the
-// cap holds, the parked containers are dropped and re-reported). Dead locals are reclaimed by the
-// first compaction after the backoff runs out, which disarms it. Under the cap the backoff is
-// neither consulted nor changed.
-TEST_F(ReferenceChainsBfsTest, LocalRootAnchorCompactBackoffSkipsNoProgressCompactions) {
+// No-progress and low-yield compactions arm a backoff; reclaiming at least the threshold leaves it
+// disarmed. Under the cap the backoff is neither consulted nor changed.
+TEST_F(ReferenceChainsBfsTest, LocalRootAnchorCompactBackoffSkipsLowYieldCompactions) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -1474,8 +1510,9 @@ TEST_F(ReferenceChainsBfsTest, LocalRootAnchorCompactBackoffSkipsNoProgressCompa
     EXPECT_EQ(index_size, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
     EXPECT_EQ(backoff - 1, ReferenceChainsTestAccessor::localCompactBackoffForTest());
 
-    // Kill part of the local share. While the backoff is armed the dead entries keep their slots.
-    const size_t dead = 100;
+    // A low-yield compaction must re-arm the backoff after reclaiming fewer than the threshold.
+    const size_t dead = ReferenceChainsTestAccessor::kLocalCompactMinReclaim - 1;
+    ASSERT_GT(dead, 0u);
     for (size_t i = 1; i <= dead; i++) {
         frontier->clear(local_base + (jlong)i);
     }
@@ -1487,13 +1524,13 @@ TEST_F(ReferenceChainsBfsTest, LocalRootAnchorCompactBackoffSkipsNoProgressCompa
         EXPECT_EQ(k - 1, ReferenceChainsTestAccessor::localCompactBackoffForTest());
     }
 
-    // Backoff exhausted: the next at-cap resolve compacts the dead share, disarms the backoff and
-    // admits the parked container.
+    // Backoff exhausted: the next at-cap resolve reclaims the small dead share and admits the
+    // parked container, then re-arms the backoff for that low-yield batch.
     ReferenceChainsTestAccessor::noteLocalRootHolderForTest(next_parked++, kContainer);
     ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
     EXPECT_EQ(cap - dead + 1, ReferenceChainsTestAccessor::localAnchorCountForTest());
     EXPECT_EQ(index_size - dead + 1, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
-    EXPECT_EQ(0, ReferenceChainsTestAccessor::localCompactBackoffForTest());
+    EXPECT_EQ(backoff, ReferenceChainsTestAccessor::localCompactBackoffForTest());
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
 
     tracker->stop();

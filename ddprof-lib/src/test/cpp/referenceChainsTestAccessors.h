@@ -612,6 +612,9 @@ public:
     static size_t freshAnchorQueueSizeForTest() {
         return ReferenceChainTracker::instance()->_static_anchor_fresh_queue.size();
     }
+    static size_t freshAnchorQueueCapForTest() {
+        return ReferenceChainTracker::STATIC_ANCHOR_FRESH_CAP;
+    }
     static bool freshAnchorQueueContainsForTest(jlong tag) {
         const auto &queue =
             ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
@@ -658,6 +661,8 @@ public:
         ReferenceChainTracker::PENDING_LOCAL_ANCHOR_CAP;
     static constexpr int kLocalCompactBackoff =
         ReferenceChainTracker::LOCAL_ANCHOR_COMPACT_BACKOFF;
+    static constexpr size_t kLocalCompactMinReclaim =
+        ReferenceChainTracker::LOCAL_ANCHOR_COMPACT_MIN_RECLAIM;
     static int localCompactBackoffForTest() {
         return ReferenceChainTracker::instance()->_local_compact_backoff;
     }

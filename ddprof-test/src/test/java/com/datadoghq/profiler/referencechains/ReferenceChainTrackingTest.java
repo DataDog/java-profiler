@@ -1013,10 +1013,10 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   }
 
   /**
-   * /** Failure-only diagnostics for a success-path test's {@code assertNotNull(match, ...)}
-   * message: call it only once the round and grace loops have ended without a match, so a passing
-   * run does no extra work. In a debug-instrumented build it reports the current leak candidates
-   * ({@code selectLeakCandidateKlassIds0()}), the representative's frontier state ({@code
+   * Failure-only diagnostics for a success-path test's {@code assertNotNull(match, ...)} message:
+   * call it only once the round and grace loops have ended without a match, so a passing run does
+   * no extra work. In a debug-instrumented build it reports the current leak candidates ({@code
+   * selectLeakCandidateKlassIds0()}), the representative's frontier state ({@code
    * getReferenceChainFrontierStateForTest0()}, -1 = not in the frontier) and resolved target tag
    * ({@code getReferenceChainResolvedTargetTagForTest0()}), and how many rounds ran. In a release
    * build the seams do not exist, so it returns {@code ""}.

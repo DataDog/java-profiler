@@ -196,7 +196,7 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         // NEWEST pushes: they fall back to the fair tiers at their index positions, the same
         // treatment the force-drain gave them.
         while (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
-          _static_anchor_fresh_queue.pop_front();
+          _static_anchor_fresh_queue.pop_back();
         }
         break;
       }
@@ -449,8 +449,11 @@ void ReferenceChainTracker::resolvePendingLocalAnchors() {
       if (_local_compact_backoff > 0) {
         _local_compact_backoff--;
       } else {
+        const size_t reclaimed = compactLocalAnchors();
         _local_compact_backoff =
-            compactLocalAnchors() == 0 ? LOCAL_ANCHOR_COMPACT_BACKOFF : 0;
+            reclaimed < LOCAL_ANCHOR_COMPACT_MIN_RECLAIM
+                ? LOCAL_ANCHOR_COMPACT_BACKOFF
+                : 0;
       }
     }
     if (_local_anchor_tags.size() >= LOCAL_ANCHOR_INDEX_CAP) {
@@ -622,7 +625,7 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
   // Walk newly admitted anchors before the fair cursors.
   _static_anchor_fresh_queue.push_back(tag);
   if (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
-    _static_anchor_fresh_queue.pop_front();
+    _static_anchor_fresh_queue.pop_back();
   }
 }
 

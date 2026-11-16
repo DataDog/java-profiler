@@ -560,14 +560,12 @@ private:
   u64 _durable_anchor_resweep_gen = 0;
   u64 _static_field_sweep_lap_request_gen = 0;
   u64 _static_field_sweep_served_gen = 0;
-  // compactLocalAnchors() attempts to skip after one that removed nothing (local share full of
-  // live containers): bounds the steady-state locked O(cap) scan to one in every
-  // LOCAL_ANCHOR_COMPACT_BACKOFF + 1 at-cap resolve passes. While backing off, a container met at
-  // the cap is dropped from the pending buffer and re-reported by the next root enumeration; dead
-  // locals hold their slots for at most this many extra at-cap passes.
+  // Small compactions scan both shares to reclaim few slots; skip 8 at-cap attempts after
+  // reclaiming less than one eighth of the local cap. New holders are re-reported meanwhile.
   static constexpr int LOCAL_ANCHOR_COMPACT_BACKOFF = 8;
-  // At-cap compaction attempts still to skip. Set by a no-progress compaction, decremented by each
-  // skipped attempt, zeroed by a productive one; untouched while the local share is under the cap.
+  static constexpr size_t LOCAL_ANCHOR_COMPACT_MIN_RECLAIM =
+      LOCAL_ANCHOR_INDEX_CAP / LOCAL_ANCHOR_COMPACT_BACKOFF;
+  // Remaining at-cap attempts to skip after a low-yield compaction.
   int _local_compact_backoff = 0;
 
   // Local-root holders whose class was not yet classified when root enumeration reported them
