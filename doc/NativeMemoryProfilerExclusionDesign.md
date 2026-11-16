@@ -9,8 +9,8 @@ claim below becomes verified only through its acceptance tests.
 This document specifies a startup admission check for java-profiler native-memory
 profiling. It does not yet describe verified implemented behavior. The current
 implemented runtime contract remains
-[Native Memory Profiling](architecture/NativeMemoryProfiling.md) until the
-implementation lands.
+[Native Memory Profiling](architecture/NativeMemoryProfiling.md) until
+acceptance verification is complete.
 
 ## Decision
 
@@ -392,12 +392,16 @@ The mechanism and lifecycle distinctions above were checked against released
 java-profiler 1.52.1, ddprof 0.26.0/0.27.0, and zstd-jni 1.5.7-25 on Linux x86_64
 with glibc 2.39 and jemalloc 5.3.0. There are 58 checked cases covering routing,
 owner identity, recording lifecycle, later activation, and closed-stream live
-accounting. Proposed rejection paths were not implemented or tested.
+accounting. The implementation is in progress; acceptance verification is not
+complete.
 
 The allocation-hook source is identical between the released Java version and
 main `399ce5e60b9543940ebed4f4769474f05ae37d79`. ddprof ELF hook handling is identical
 between those releases and main `9830a2e27ac15fa08f4761c94392de8b9edb3d04`. These
-main revisions were source-reviewed, not built and executed. No service-specific
+main revisions were source-reviewed, not built and executed. The implementation
+verification matrix targets Linux x86_64 and aarch64 with glibc, using the
+published ddprof 0.26.0 and 0.27.0 archives. A blocked matrix cell does not
+establish behavior for that architecture or mode. No service-specific
 percentages, production growth rates, or RSS measurements are assumed here.
 
 [S1]: https://github.com/DataDog/java-profiler/blob/06b4be4a64abeaa17233de9d9c75a2a69153bb6e/ddprof-lib/src/main/cpp/mallocTracer.cpp#L26-L261
