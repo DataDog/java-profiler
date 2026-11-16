@@ -1,6 +1,6 @@
 ---
 name: build-test-review
-description: Implement a PROF Jira ticket whose Design, acceptance criteria and Build plan are accepted, by running build, review and test sub-sessions from a checklist on the ticket, up to a reviewed local branch. Use when asked to implement, build or carry out such a ticket; use it instead of cairn dev-process or sphinx implement for it.
+description: Implement a PROF Jira ticket whose Design, acceptance criteria and Build plan are accepted, by running implementation, review and test sub-sessions from a checklist on the ticket, up to a reviewed local branch. Use when asked to implement, build or carry out such a ticket. For such a ticket, this skill takes precedence over the cairn dev-process and sphinx implement skills.
 ---
 
 # Build, test and review
@@ -18,10 +18,10 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 
 2. **Checklist.** Derive a "Sub-sessions" section from the Build plan and add it to the
    ticket description. It needs no separate sign-off; the engineer can edit it. It
-   names the branch, the worktree and the base, then has three parts: S1 Build, S2
-   Test and S3 Review. Each part lists its checks as checkboxes and ends with a
-   "Done:" line that names its output. Each part is self-contained: a fresh session
-   can do it from the ticket alone.
+   names the branch, the worktree and the base, then has three parts, in run order:
+   S1 Implement, S2 Review and S3 Test. Each part lists its checks as checkboxes and
+   ends with a "Done:" line that names its output. Each part is self-contained: a
+   fresh session can do it from the ticket alone.
 
 3. **Sub-sessions.** In Claude Code, run each sub-session as a fresh subagent: the
    `Agent` tool with `general-purpose`, never `fork`, which inherits this conversation.
@@ -30,19 +30,19 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    engineer accepted (step 5). Never give your own view of the
    change or of its defects. Tell the sub-session to read its part on the ticket, to
    write nothing to the ticket, and to return a report.
-   - **S1 Build** changes the code. It does not start another orchestration skill,
-     such as the cairn `dev-process` pipeline or `sphinx:implement`. It runs the
+   - **S1 Implement** changes the code. It does not start another orchestration
+     skill, such as the cairn `dev-process` pipeline or `sphinx:implement`. It runs the
      `local` acceptance criteria, the checks that `verify-profiler-change` names for
      the kind of change, and the `pre-pr-review` step 2 self-checks. It commits
      locally only when they pass, or when its prompt quotes the engineer's
      acceptance of a check that stays `blocked`. Otherwise it reports without a
      commit. It does not push. Its report names the commit and each check as
      `passed`, `failed`, `blocked` or `inconclusive`.
-   - **S3 Review** runs the reviewer as `pre-pr-review` step 3 says: the
+   - **S2 Review** runs the reviewer as `pre-pr-review` step 3 says: the
      [reviewer table](../pre-pr-review/SKILL.md#reviewer-table) and its fallback, and
      the [fresh-context](../pre-pr-review/SKILL.md#fresh-context) brief. It names the
      range explicitly, reports the findings and fixes nothing.
-   - **S2 Test** runs the `test-drive` acceptance criteria in a fresh clone of the
+   - **S3 Test** runs the `test-drive` acceptance criteria in a fresh clone of the
      candidate commit, never in the worktree. Each drive runs without MCP servers and
      with only the tools that its criterion needs: for example `claude -p` with
      `--strict-mcp-config`, `--tools` to limit the available tools, and
@@ -53,19 +53,19 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 
 4. **Loop.**
    1. Run S1.
-   2. Run S3: on the first round from the merge base with the base, later on the fix
+   2. Run S2: on the first round from the merge base with the base, later on the fix
       range.
    3. Triage. Check each finding against the code at the candidate commit, drop what
       does not hold, and set its severity as the `pre-pr-review`
       [Findings](../pre-pr-review/SKILL.md#findings) step says. Send the findings to
       fix to a new S1 run, then go to 2. That step's rules decide when the rounds stop,
       and its round limit takes precedence over this loop.
-   4. Run S2 only after a review round that left no Critical or High finding open. A
-      failed check goes to a new S1 run like a finding, its fix goes to S3, and then S2
+   4. Run S3 only after a review round that left no Critical or High finding open. A
+      failed check goes to a new S1 run like a finding, its fix goes to S2, and then S3
       runs again.
 
-   Evidence binds to a commit. After each new commit, every earlier S2 result is
-   `inconclusive` for the new candidate until S2 runs on it. After each step, update
+   Evidence binds to a commit. After each new commit, every earlier S3 result is
+   `inconclusive` for the new candidate until S3 runs on it. After each step, update
    the checklist on the ticket.
 
 5. **Stops.** Stop and ask the engineer when:
@@ -85,7 +85,7 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 6. **Close.** Tick the checklist and post the evidence table as `ticket-writing` says.
    The commits are not pushed yet: name them by hash, and add the links after the
    engineer pushes. Then run `pre-pr-review` step 0 and steps 4 to 7 in this
-   session. The S3 reviews are its step 3 reviews, its step 4 fixes go through S1 as
+   session. The S2 reviews are its step 3 reviews, its step 4 fixes go through S1 as
    in step 4 above, and the marker names this session. For its step 7, use the
    sub-session reports and this session's own mistakes. Do not push and do not open
    a PR: tell the engineer that the branch is ready, and that they open the PR with
@@ -94,8 +94,8 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 ## Pi
 
 In Pi, do not call a subagent tool for any purpose, also when an extension such as
-`pi-subagents` provides one. Say so, then run S1, S3 and S2 one after another in
-this session, with the same loop and stops. Pi has no review tool, so S3 follows
+`pi-subagents` provides one. Say so, then run S1, S2 and S3 one after another in
+this session, with the same loop and stops. Pi has no review tool, so S2 follows
 `pre-pr-review` step 3 for a missing reviewer.
 
 ## `gh` in test drives
