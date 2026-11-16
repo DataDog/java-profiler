@@ -537,24 +537,16 @@ TEST_F(ReferenceChainJfrRoundtripTest, DefaultLivenessEventHasZeroLeakTag) {
     EXPECT_EQ(0u, event.leak_tag_incarnation);
 }
 
-// recordReferenceChainAbandoned()'s kReasons[] table must map every
-// SearchAbandonReason value to a distinct string, indexed directly by the
-// enum value - a stale table silently serializes a genuinely-distinct
-// abandonment as "unknown", misattributing the cause in the
-// datadog.ReferenceChainAbandoned event. ROOT_ENUM_ERROR (5) pins the
-// table's tail - without its entry, the engine's enum-error abandonment
-// (referenceChainTraversal.cpp's error branch) serializes as "unknown";
-// an out-of-range value pins the bounds check.
+// Exercise the real writer: ROOT_ENUM_ERROR must remain distinguishable from
+// the unknown-value fallback even though RECORDING_END occupies the preceding enum slot.
 TEST_F(ReferenceChainJfrRoundtripTest,
        AbandonedEventSerializesRootEnumErrorReason) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     args._jfr_options = JFR_SYNC_OPTS;
 
-    // Own file, NOT the companion JMC round-trip path - this test's events use
-    // reason values only (no class dictionary entries), and leaving them on
-    // the companion path would make the Java parser test resolve unrelated
-    // state.
+    // Java parser tests consume the chain fixture at chainRoundtripJfrPath().
+    // Use a separate file so these events cannot replace that fixture.
     const std::string path = chainRoundtripJfrPath() + ".abandoned";
     int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
     ASSERT_GE(fd, 0) << "could not open " << path << " for writing";
@@ -563,8 +555,8 @@ TEST_F(ReferenceChainJfrRoundtripTest,
     Buffer *buf = rec.buffer(/*lock_index=*/0);
     rec.flushIfNeeded(buf, /*limit=*/0);
 
-    // Both events carry _start_time = 0 (single-byte var64) so the reason
-    // field's offset is computable without decoding the timestamp.
+    // A zero timestamp occupies one byte, keeping the reason offset fixed.
+    // Keep the timestamp zero when changing the cases below.
     struct ReasonCase {
         u8 reason;
         const char *expected;
@@ -584,20 +576,17 @@ TEST_F(ReferenceChainJfrRoundtripTest,
         EXPECT_LE(offset_after, RECORDING_BUFFER_LIMIT);
         EXPECT_GT(offset_after, offset_before);
 
-        // Field order (recordReferenceChainAbandoned): 1-byte size prefix
-        // (writeEventSizePrefix patches one byte - this event is always <
-        // 128 bytes), var64 type id, var64 startTime, then the reason putUtf8
-        // = 1 encoding-tag byte + var32 length + payload. _start_time = 0
-        // makes the timestamp var64 exactly one byte.
+        // This writer reserves one size byte, unlike the chain writer's five-byte prefix.
+        // Skip the type id and zero timestamp before reading the UTF-8 tag and length.
         const char *data = buf->data() + offset_before;
         int off = 1; // size prefix
-        off += sizeOfVar64((u64)T_REFERENCE_CHAIN_ABANDONED);
+        off += sizeOfVar64(static_cast<u64>(T_REFERENCE_CHAIN_ABANDONED));
         off += sizeOfVar64(0);
         EXPECT_EQ(3, data[off])
             << "reason putUtf8's encoding-tag byte must precede its length";
         off += 1;
         u32 len = decodeVar32(data, &off);
-        u32 expected_len = (u32)strlen(c.expected);
+        u32 expected_len = static_cast<u32>(strlen(c.expected));
         ASSERT_EQ(expected_len, len)
             << "reason " << (int)c.reason << " must serialize as "
             << c.expected;

@@ -50,6 +50,7 @@ public final class ReferenceChainTestHooks {
     return JavaProfiler.runReferenceChainPass0();
   }
 
+  /** Enables debug-native root-enumeration error injection; release builds ignore it. */
   public static void setRootEnumErrorInjection0(boolean enabled) {
     JavaProfiler.setRootEnumErrorInjection0(enabled);
   }
