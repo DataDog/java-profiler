@@ -1281,6 +1281,24 @@ UnloadProtection::~UnloadProtection() {
     }
 }
 
+bool UnloadProtection::importsAreCurrent(const CodeCache* cc) const {
+    if (!_valid || cc->imageFingerprint() == 0) return false;
+
+    // The pin keeps the live ELF header and program headers mapped, including
+    // when a replacement image occupies the cached base. Do not use cached offsets.
+    const ElfHeader* header = reinterpret_cast<const ElfHeader*>(cc->imageBase());
+    const ElfProgramHeader* phdrs = reinterpret_cast<const ElfProgramHeader*>(cc->imageBase() + header->e_phoff);
+    uintptr_t min_vaddr = UINTPTR_MAX;
+    for (int i = 0; i < header->e_phnum; i++) {
+        if (phdrs[i].p_type == PT_LOAD && phdrs[i].p_vaddr < min_vaddr) {
+            min_vaddr = phdrs[i].p_vaddr;
+        }
+    }
+    if (min_vaddr == UINTPTR_MAX) return false;
+    uintptr_t load_bias = reinterpret_cast<uintptr_t>(cc->imageBase()) - (min_vaddr & ~OS::page_mask);
+    return cc->imageFingerprint() == Symbols::imageFingerprint(phdrs, header->e_phnum, load_bias);
+}
+
 static u64 fnv1a(const void* data, size_t size, u64 hash) {
     for (size_t i = 0; i < size; i++) {
         hash = (hash ^ ((const unsigned char*)data)[i]) * 1099511628211ULL;

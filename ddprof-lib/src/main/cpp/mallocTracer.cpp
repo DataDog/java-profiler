@@ -245,8 +245,8 @@ void MallocHooker::patchLibraries() {
         CodeCache* cc = native_libs[_patched_libs++];
 
         UnloadProtection handle(cc);
-        if (!handle.isValid()) {
-            TEST_LOG("MallocHooker::patchLibraries: skipping (invalid handle) %s", cc->name());
+        if (!handle.importsAreCurrent(cc)) {
+            TEST_LOG("MallocHooker::patchLibraries: skipping (stale or unavailable image) %s", cc->name());
             continue;
         }
 
