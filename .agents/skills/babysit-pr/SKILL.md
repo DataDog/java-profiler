@@ -59,9 +59,9 @@ one status comment; at stop it removes the label and edits that same comment wit
 outcome — one timeline entry per run, never a reply. A missing label is flagged in the
 stop report, never created (the worker does not create repo labels). The status comment
 is fixed boilerplate: "🐶 babysit-pr is watching this PR: CI breakages and mechanical
-findings are fixed and pushed through the repo's review gates (caps: two fix-push
-rounds, two hours; stops with its session). Design-level findings are surfaced to the
-author, never auto-implemented."
+findings are fixed and pushed through the repo's review gates (run caps and stop
+conditions per the babysit-pr skill; it stops with its session). Design-level
+findings are surfaced to the author, never auto-implemented."
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`; and
