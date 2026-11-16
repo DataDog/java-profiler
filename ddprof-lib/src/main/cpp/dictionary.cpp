@@ -23,8 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static inline char *allocateKey(const char *key, size_t length) {
-  char *result = (char *)malloc(length + 1);
+static inline char *allocateKey(const char *key, size_t length,
+                                bool fail_for_test) {
+  char *result = fail_for_test ? NULL : (char *)malloc(length + 1);
   if (result == NULL) {
     return NULL;  // OOM: the caller fails the insert
   }
@@ -123,8 +124,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
     DictRow *row = &table->rows[h % ROWS];
     for (int c = 0; c < CELLS; c++) {
       if (for_insert && row->keys[c] == NULL) {
-        char *new_key =
-            _fail_key_alloc_for_test ? NULL : allocateKey(key, length);
+        char *new_key = allocateKey(key, length, failKeyAlloc());
         if (new_key == NULL) {
           return sentinel;  // OOM: fail the insert instead of dereferencing NULL
         }
@@ -145,7 +145,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
     if (row->next == NULL) {
       if (for_insert) {
         DictTable *new_table =
-            _fail_table_alloc_for_test
+            failTableAlloc()
                 ? NULL
                 : (DictTable *)calloc(1, sizeof(DictTable));
         if (new_table == NULL) {

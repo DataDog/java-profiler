@@ -21,7 +21,6 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
-#include <string>
 
 // ── Dictionary ─────────────────────────────────────────────────────────────
 
@@ -109,12 +108,20 @@ TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
 
     d.failAllocationForTest(false, true);
     int failed = 0;
+    long long added_bytes = 0;
     for (int i = 0; i < 20000; i++) {
         snprintf(key, sizeof(key), "new_%d", i);
-        if (d.lookup(key, strlen(key)) == 0) failed++;  // must not crash
+        if (d.lookup(key, strlen(key)) == 0) {  // must not crash
+            failed++;
+        } else {
+            added_bytes += (long long)strlen(key) + 1;
+        }
     }
     EXPECT_GT(failed, 0) << "no insert needed an overflow table";
-    EXPECT_GT(NativeMem::live(NM_DICTIONARY), live_before);  // keys that fit were still added
+    EXPECT_GT(added_bytes, 0);  // keys that fit were still added
+    // Only the keys that were inserted are accounted: failures leak nothing and
+    // no table was allocated.
+    EXPECT_EQ(live_before + added_bytes, NativeMem::live(NM_DICTIONARY));
 
     EXPECT_GT(d.lookup("fill_0", 6), 0U);  // existing keys still resolve
     d.failAllocationForTest(false, false);

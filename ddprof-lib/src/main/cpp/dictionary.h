@@ -51,9 +51,15 @@ private:
   const int _id;
   volatile unsigned int _base_index;
   volatile int _size;
-  // Test hooks: make key / overflow-table allocation fail.
+#ifdef UNIT_TEST
   bool _fail_key_alloc_for_test = false;
   bool _fail_table_alloc_for_test = false;
+  bool failKeyAlloc() const { return _fail_key_alloc_for_test; }
+  bool failTableAlloc() const { return _fail_table_alloc_for_test; }
+#else
+  bool failKeyAlloc() const { return false; }
+  bool failTableAlloc() const { return false; }
+#endif
 
   static void clear(DictTable *table, int id);
 
@@ -79,16 +85,19 @@ public:
 
   void clear();
 
+#ifdef UNIT_TEST
   void failAllocationForTest(bool keys, bool tables) {
     _fail_key_alloc_for_test = keys;
     _fail_table_alloc_for_test = tables;
   }
+#endif
 
   bool         check(const char* key);
   // NOT signal-safe: the inserting lookup overloads call malloc/calloc on miss
   // (see allocateKey and the calloc in dictionary.cpp). Signal handlers must use
   // bounded_lookup(key, length, 0) instead, which never inserts and returns
-  // INT_MAX on miss.
+  // INT_MAX on miss. If an insert's allocation fails, lookup() returns 0 and
+  // bounded_lookup() returns INT_MAX; neither is a valid id.
   unsigned int lookup(const char *key);
   unsigned int lookup(const char *key, size_t length);
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);
