@@ -40,11 +40,11 @@ Every `gh` call runs `GH=/opt/dogbrew/shims/bin/gh; [ -x "$GH" ] || GH=gh` first
 dogbrew shim where it exists (required on Datadog workstations), bare `gh` otherwise.
 
 **Edit scope is deterministic, not judgment.** Every file the worker edits must be
-inside `ddprof-lib/src/main/`, `ddprof-lib/src/test/`, `ddprof-test/src/`, or
-`ddprof-stresstest/src/`, and inside the `scope` array the marker declares before the
-first edit — the pre-push hook (`utils/babysit-scope-guard.py`) rejects a babysit push
-failing either check. An edit no finding justifies goes to the stop summary instead of
-the tree.
+inside the source/test allowlist enforced by the pre-push hook and inside the `scope`
+array of the marker — `utils/babysit-scope-guard.py` is the single source for both
+checks; read it. The worker adds the files each finding justifies to the marker's
+`scope` array before its first edit, and updates it if a fix grows beyond the first
+estimate. An edit no finding justifies goes to the stop summary instead of the tree.
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json reviews,comments,url`; and

@@ -5,7 +5,11 @@ in this worktree (build/babysit-pr-*.json, gitignored) matches the pushed branch
 file in the outgoing delta must be inside the source/test allowlist AND inside the scope
 the marker declares. Non-babysit pushes are never restricted: no matching running marker
 means exit 0. A matching marker that cannot be verified fails closed — the guard exists
-because agent-made pushes need a machine-checked scope, not judgment."""
+because agent-made pushes need a machine-checked scope, not judgment.
+
+Accepted limit: the marker is worker-side bookkeeping, so a worker that rewrites it can
+disable this check — the guard is defense-in-depth against accidental scope drift, not
+against a malicious agent (which has shell access regardless)."""
 
 import glob
 import json
@@ -13,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 # The fix universe: production source and tests. Everything else — skills, hooks, agent
 # personas, CI, build system, docs — is banned by omission.
@@ -37,15 +42,32 @@ def delta_files(local_sha, remote_sha):
     return None if out is None else [f for f in out.splitlines() if f]
 
 
+# A marker older than this is a dead run (the cap is two hours; the margin covers a
+# long final push) and must not gate pushes, including human ones, forever.
+STALE_AFTER_S = 26 * 3600
+
+
 def matching_marker(branch):
-    """The running marker for this branch, or None. Old-format markers without a
-    `branch` field cannot match and are not enforced (transition fail-open)."""
+    """The running marker for this branch, or None. An unreadable or stale marker is
+    skipped with a warning — an unrelated corrupt file must not block a human push,
+    and the loop continues so a valid marker later in the glob order still gates.
+    Old-format markers without a `branch` field cannot match (transition fail-open)."""
     for path in sorted(glob.glob("build/babysit-pr-*.json")):
         try:
             with open(path, errors="replace") as f:
                 marker = json.load(f)
         except (OSError, ValueError) as err:
-            return {"error": "cannot read %s: %s" % (path, err)}
+            print("pre-push: skipping unreadable babysit marker %s: %s" % (path, err),
+                  file=sys.stderr)
+            continue
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:
+            age = 0
+        if age > STALE_AFTER_S:
+            print("pre-push: ignoring stale babysit marker %s (age %dh; a dead run must "
+                  "not gate this branch forever)" % (path, age // 3600), file=sys.stderr)
+            continue
         if not isinstance(marker, dict) or marker.get("status") != "running":
             continue
         if marker.get("branch") == branch:
@@ -64,10 +86,6 @@ def main():
     marker = matching_marker(args.branch)
     if marker is None:
         return 0
-    if "error" in marker:
-        print("pre-push: babysit marker is unreadable, refusing the push: %s" % marker["error"],
-              file=sys.stderr)
-        return 1
 
     files = delta_files(args.local_sha, args.remote_sha)
     if files is None:

@@ -90,10 +90,34 @@ marker '{"pr":1001,"branch":"fix","status":"running"}'
 run_guard fix "$FIX" "$BASE"
 if [ $? -eq 1 ]; then pass; else fail "running marker without scope should be rejected"; fi
 
-# 9. Unreadable marker JSON: rejected.
+# 9. Unreadable marker JSON: skipped with a warning — an unrelated corrupt file must not
+#    block a push with no other marker (never restrict humans).
 marker 'not json'
 run_guard fix "$FIX" "$BASE"
-if [ $? -eq 1 ]; then pass; else fail "unreadable marker should be rejected"; fi
+if [ $? -eq 0 ]; then pass; else fail "unreadable marker should be skipped, not block"; fi
+
+# 9a. Unreadable marker plus a valid running marker later in glob order: the valid one
+#     still gates (the early-return bug is gone).
+printf 'not json' > "$R/build/babysit-pr-0999.json"
+marker '{"pr":1001,"branch":"fix","status":"running","scope":[]}'
+run_guard fix "$FIX" "$BASE"
+if [ $? -eq 1 ]; then pass; else fail "valid marker after corrupt one should still gate"; fi
+marker '{"pr":1001,"branch":"fix","status":"running","scope":["ddprof-lib/src/main/cpp/a.cpp"]}'
+run_guard fix "$FIX" "$BASE"
+if [ $? -eq 0 ]; then pass; else fail "valid marker after corrupt one should allow in-scope"; fi
+rm -f "$R/build/babysit-pr-0999.json"
+
+# 9b. A stale marker (mtime beyond the 26h age-out) does not gate — a dead run must not
+#     block pushes on its branch forever, including human ones.
+marker '{"pr":1001,"branch":"fix","status":"running","scope":[]}'
+python3 -c 'import os,sys; os.utime(sys.argv[1], (0, 0))' "$R/build/babysit-pr-1001.json"
+run_guard fix "$FIX" "$BASE"
+if [ $? -eq 0 ]; then pass; else fail "stale marker should be ignored (dead run)"; fi
+
+# 9c. A fresh marker (mtime now) still gates.
+touch "$R/build/babysit-pr-1001.json"
+run_guard fix "$FIX" "$BASE"
+if [ $? -eq 1 ]; then pass; else fail "fresh running marker with empty scope should still gate"; fi
 
 # 10. A git failure (unknown remote sha) fails closed, not open.
 marker '{"pr":1001,"branch":"fix","status":"running","scope":["ddprof-lib/src/main/cpp/a.cpp"]}'

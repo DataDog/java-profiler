@@ -120,7 +120,9 @@ def main():
             blocked = True
             continue
         if guard is not None:  # agent-made pushes get a machine-checked scope, no-op for humans
-            res = subprocess.run([sys.executable, "-I", "-c", guard, "--branch", remote_branch,
+            # Keyed on the local branch, not the remote name: a worker pushing
+            # HEAD:<other-remote> still carries the babysat local branch.
+            res = subprocess.run([sys.executable, "-I", "-c", guard, "--branch", branch,
                                   "--local-sha", local_sha, "--remote-sha", remote_sha],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             if res.returncode != 0:
