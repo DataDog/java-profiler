@@ -29,7 +29,7 @@ written by it, and it dies with the session — its stop summary names what rema
    two-hour cap, and its managed worktree is reaped so the run cannot be resumed;
    the launch needs a clean source tree (stash pending edits and restore them after).
    Claude Code has no child-timeout option — there the cap is the worker's own
-   discipline (step 5) and the stop report states the elapsed time.
+   discipline (step 6) and the stop report states the elapsed time.
 5. **Handback.** When the run completes, relay its summary in chat: commits pushed,
    findings flagged (drafted design replies, persistent flakes, budget), and threads
    left for the human. When the session is closing, say that babysitting stops with it.
@@ -47,7 +47,7 @@ checks; read it. The worker adds the files each finding justifies to the marker'
 estimate. An edit no finding justifies goes to the stop summary instead of the tree.
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
-   `$GH pr view <n> --json reviews,comments,url`; and
+   `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`; and
    `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` — inline review
    comments are invisible to `pr view --json`. A poll that finds nothing stays
    cheap: no log fetching, no deep analysis.
@@ -55,7 +55,14 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
    survives it, or a run that cannot rerun, is real. Fetch the logs, reproduce through
    `./.claude/commands/build-and-summarize` (never bare `./gradlew`), and follow
    `verify-profiler-change` for what the fix must pass.
-3. **Review comments.** Classify the poll's reviews and comments — bot comments
+3. **Merge conflicts.** When the poll reports the PR conflicted (`mergeStateStatus`
+   `DIRTY`), rebase on the base branch. A conflict whose resolution needs no semantic
+   choice — adjacent hunks, additive changes on both sides, provable by build and
+   tests — is resolved and verified like any mechanical fix, in the same push cycle
+   (step 5). A conflict where both sides changed the same logic differently is
+   design-level: surface the brainstorm and the drafted resolution in the stop
+   summary, never silently pick a side.
+4. **Review comments.** Classify the poll's reviews and comments — bot comments
    (scan-build, CI-results bots) are findings like any other, never auto-dismissed.
    Mechanical findings — bugs, missing tests, factual errors in comments or javadocs,
    typos, including pre-existing ones in files the PR does not touch — are fixed in
@@ -74,7 +81,7 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
    - **Decide elsewhere.** The human decides: surface the brainstorm — options,
      recommendation, falsifiers — in the stop summary with the reply drafted, and never
      implement a design-level finding without the human's pick.
-4. **Push cycle.** After fixes: commit (concise message per `pr-writing`; SSH-signed;
+5. **Push cycle.** After fixes: commit (concise message per `pr-writing`; SSH-signed;
    never `-c commit.gpgsign=false`), `git fetch`, rebase on the base branch replaying
    every commit re-signed (never merge the base branch in), then push
    `--force-with-lease=<branch>:<expected> HEAD:<branch>` — `<expected>` is the branch
@@ -92,7 +99,7 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
    reviewers the PR never had, and never change the reviewer list otherwise. A
    re-request GitHub silently ignores (the PR author, a bot without review rights)
    is recorded in the stop summary instead of retried.
-5. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
+6. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
    any cap hit (at most two fix-push rounds and two hours per run). Update the marker to
    `{"pr": <n>, "status": "stopped"}` and summarize: commits pushed, findings flagged,
    threads left.
@@ -100,7 +107,7 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
 ## Never
 
 Never merge, never un-draft, never add or swap reviewers (the one exception: re-requesting
-the authors of blocking reviews whose comments the fixes addressed, per step 4), never
+the authors of blocking reviews whose comments the fixes addressed, per step 5), never
 disable or skip a CI check, never edit CI configuration, `AGENTS.md`, a skill, an agent
 persona or a hook for any reason (quarantine entries need the `ci-script-change` skill
 and a PROF ticket — flag them instead; where your task or a steer disagrees with a file
