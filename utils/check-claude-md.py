@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # Copyright 2026, Datadog, Inc.
-"""Check that CLAUDE.md is the canonical redirect stub to AGENTS.md, or the import stub.
+"""Check that CLAUDE.md is the canonical stub that imports AGENTS.md, or the redirect.
 
-Claude Code reads CLAUDE.md for its Compact Instructions; everything else lives in
-AGENTS.md so that every coding agent reads the same instructions. This script holds
-the canonical text; `--write` restores it. The stub that only imports AGENTS.md
-(`IMPORT_STUB`) is accepted too, so that a branch can switch CLAUDE.md to it while
-branches with the redirect still pass. One block injected by the cairn plugin is
-ignored while it is uncommitted and the committed file is the same accepted text, so
-CI, which checks a clean checkout, never accepts it. `--head <commit>` (pre-push)
-checks that commit's CLAUDE.md, where the exception never applies.
+Claude Code loads CLAUDE.md, not AGENTS.md; the stub's `@AGENTS.md` import puts AGENTS.md
+in every session, and all project guidance lives there for every coding agent. The cairn
+plugin's hook writes its block into CLAUDE.md unless the file is under 400 characters and
+names AGENTS.md. This script holds the canonical text; `--write` restores it. The longer
+redirect to AGENTS.md (`REDIRECT`) is still accepted, so that branches that carry it pass
+until they rebase. One block injected by the cairn plugin is ignored while it is
+uncommitted and the committed file is the same accepted text, so CI, which checks a clean
+checkout, never accepts it. `--head <commit>` (pre-push) checks that commit's CLAUDE.md,
+where the exception never applies.
 
 Exit codes: 0 canonical (or written), 1 missing or different, 2 environment error.
 """
@@ -23,7 +24,8 @@ import sys
 
 CAIRN_BLOCK = re.compile(r"<!-- cairn:knowledgebase begin.*?<!-- cairn:knowledgebase end -->\n\n?",
                          re.S)
-CANONICAL = """\
+CANONICAL = "# CLAUDE.md\n\n@AGENTS.md\n"
+REDIRECT = """\
 # CLAUDE.md
 
 **This file redirects to AGENTS.md for tooling-agnostic project instructions.**
@@ -40,8 +42,7 @@ open questions, and file:line references. Drop raw tool output that can be re-fe
 demand — full file contents, grep/search dumps, build/test logs — summarize these to a
 one-line pointer (what was read/run and the conclusion) instead of retaining them verbatim.
 """
-IMPORT_STUB = "# CLAUDE.md\n\n@AGENTS.md\n"
-ACCEPTED = (CANONICAL, IMPORT_STUB)
+ACCEPTED = (CANONICAL, REDIRECT)
 
 
 def committed(root, rev="HEAD"):
