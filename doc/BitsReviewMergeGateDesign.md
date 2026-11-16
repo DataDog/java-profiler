@@ -350,8 +350,9 @@ write. Read back and compare the settings against the fresh baseline after the c
 Bind the context to app `5784409`. A binding to any source accepts the
 same-repository `GITHUB_TOKEN` spoof. A binding to the shared `dd-octo-sts` app
 accepts statuses that the app's other holders post. Before the change, dispatch
-the gate, then read back that every open PR targeting `main` has a
-`bits-review/head` status from app `5784409` on its head. A dispatch run resolves
+the gate on `main`, then read back that every open PR targeting `main` has a
+`bits-review/head` status created by `java-profiler-bits-gate-c5a8bc[bot]` on its
+head. The statuses API reports the creator login, not the app ID. A dispatch run resolves
 only those PRs, fails above 256 heads, and writes nothing for an empty or unstable
 snapshot. A head without the status blocks its PR after the change.
 
@@ -411,8 +412,8 @@ remain open until activation is separately authorized.
 | AC8 | test-drive | A push invalidates an earlier PASS; submission, edit, dismissal, and retry update the head status; an actual bot body edit exposes the edit signal used by the evaluator |
 | AC9 | test-drive | A branch workflow cannot obtain publisher authority; each shared-head PR needs its own PASS; a missing-review duplicate blocks and closing it reevaluates the SHA |
 | AC10 | production-check | Over a controlled test PR lifecycle, an ordinary non-bypass actor cannot merge without PASS and becomes eligible with PASS, subject to other checks; a same-repository branch workflow posting `bits-review/head: success` with its own `GITHUB_TOKEN` does not satisfy the required check |
-| AC11 | production-check | Read-back confirms the required publisher app ID `5784409`, main-only scope, unchanged unrelated protections, and preserved admin bypass |
-| AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation; a caller outside the pool allow list is denied the pool's token; `GET /apps/java-profiler-bits-gate-c5a8bc` returns ID `5784409`, and the app installation has only `statuses: write` and `metadata: read` and covers only this repository |
+| AC11 | production-check | Read-back confirms the required publisher app ID `5784409`, main-only scope, unchanged unrelated protections, and preserved admin bypass; the app installation still covers only this repository |
+| AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation; a caller outside the pool allow list is denied the pool's token; `GET /apps/java-profiler-bits-gate-c5a8bc` returns ID `5784409`; the pool configuration holds exactly one app; `GET /repos/DataDog/java-profiler/installation` for that app shows only `statuses: write` and `metadata: read`, and an org-admin installation read shows that it covers only this repository |
 
 Run the repository's adjacent script tests and CI safety checks for implementation
 changes. Run `:ddprof-lib:qualityChecks` through the documented build wrapper for
@@ -462,7 +463,7 @@ The following material refinements are approved and reflected in the contract ab
 | Eight-account allowlist; unknown marked bots block | All eight are observed Bits authors on this repository; excluding one false-blocks every PR whose latest result is from it. Copied bot markers may cause false blocks | Identity, ordering, unknown-origin, and marker-copy cases |
 | Conservative edited-bot candidates, including unknown origins | Erased metadata must not uncover an older PASS; unrelated edited bot reviews may block | Actual-edit detection, unknown-origin erasure, and live bot-edit signal |
 | No edited summary can pass | Original author identity does not authenticate later text; even original-bot edits require a fresh review | Valid-looking edited PASS, original-author edit, and fresh-review recovery cases |
-| Main-workflow-bound publisher from a dedicated Octo-STS pool | Branch workflows can share the Actions identity; dd-octo-sts administrators, pool-configuration approvers, and change control on `main` remain trusted | Token-claim restrictions, pool allow-list denial, and attempted branch-workflow spoofing |
+| Main-workflow-bound publisher from a dedicated Octo-STS pool | Branch workflows can share the Actions identity; dd-octo-sts administrators, pool-configuration approvers, and change control on `main` remain trusted | Token-claim restrictions, pool allow-list denial, installation permission and scope, and attempted branch-workflow spoofing |
 | Shared-SHA conjunction | Statuses cannot express independent PR approval; a duplicate PR may block other PRs on the same head | Separate results per PR, duplicate closure and retargeting |
 
 The implementation also includes event-driven updates, a 30-minute recovery sweep,
