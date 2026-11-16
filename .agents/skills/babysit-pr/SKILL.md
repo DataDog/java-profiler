@@ -37,7 +37,9 @@ written by it, and it dies with the session — its stop summary names what rema
    discipline (step 6) and the stop report states the elapsed time.
 5. **Handback.** When the run completes, relay its summary in chat: commits pushed,
    findings flagged (drafted design replies, persistent flakes, budget), and threads
-   left for the human. When the session is closing, say that babysitting stops with it.
+   left for the human. Update the session's own dedupe marker copy to
+   `{"pr": <n>, "status": "stopped"}` — the worker never writes this checkout.
+   When the session is closing, say that babysitting stops with it.
 
 ## The loop (the worker's task)
 
@@ -117,9 +119,10 @@ justifies goes to the stop summary instead of the tree.
    re-request GitHub silently ignores (the PR author, a bot without review rights)
    is recorded in the stop summary instead of retried.
 6. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
-   any cap hit (at most two fix-push rounds and two hours per run). Update the marker
-   to `{"pr": <n>, "status": "stopped"}` in **both** the worker worktree and the
-   session's checkout, and summarize: commits pushed, findings flagged, threads left.
+   any cap hit (at most two fix-push rounds and two hours per run). Update the worker
+   worktree's marker to `{"pr": <n>, "status": "stopped"}` and summarize: commits
+   pushed, findings flagged, threads left. The session updates its own dedupe copy
+   at handback — the worker never writes the session's checkout.
 
 ## Never
 

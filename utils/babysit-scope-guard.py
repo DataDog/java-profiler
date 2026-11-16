@@ -32,16 +32,14 @@ def git_out(*args):
 
 
 def delta_files(local_sha, remote_sha):
-    """Files changed by the push: the diff from the merge-base of the replaced remote tip
-    and the local tip (three-dot), so a mandatory rebase onto an advanced base branch
-    does not drag the base's own changes into the delta. A branch creation (all-zero
-    remote) diffs from the merge-base with origin/main."""
+    """Files changed by the push, against the replaced remote tip. Deliberate
+    limitation, documented here because it is fail-closed: when the base branch
+    advanced and the push replays a rebase, the base's own file changes appear in
+    this delta and the push is refused — the skill turns a refused push into
+    stop-and-report. A branch creation (all-zero remote) diffs from the merge-base
+    with origin/main."""
     base = remote_sha if set(remote_sha) != ZERO else git_out(
         "merge-base", "refs/remotes/origin/main", local_sha)
-    if set(remote_sha) != ZERO:
-        merge_base = git_out("merge-base", remote_sha, local_sha)
-        if merge_base is not None:
-            base = merge_base
     if base is None:
         return None
     out = git_out("diff", "--name-only", base, local_sha)
