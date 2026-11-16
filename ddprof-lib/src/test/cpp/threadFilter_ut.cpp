@@ -18,6 +18,7 @@
 #include "counters.h"
 #include "callTraceStorage.h"
 #include "nativeMem.h"
+#include "profiler.h"
 #include "threadFilter.h"
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
@@ -32,6 +33,16 @@
 #include <random>
 #include <limits>
 #include <memory>
+#include <future>
+
+class ThreadFilterTestAccessor {
+public:
+    static std::unique_lock<std::mutex> lock(ThreadFilter& filter) {
+        return std::unique_lock<std::mutex>(filter._registry_lock);
+    }
+    static int retired(const ThreadFilter& filter) { return filter._retired_count.load(std::memory_order_acquire); }
+    static int free(const ThreadFilter& filter) { return filter._free_count.load(std::memory_order_acquire); }
+};
 
 // Test name for crash handler
 static constexpr char THREAD_FILTER_TEST_NAME[] = "ThreadFilterTest";
@@ -934,6 +945,146 @@ static std::array<int, ThreadFilter::kTidIndexSize> tidsByIndexBucket() {
     return tids;
 }
 
+TEST_F(ThreadRegistryTest, WallPrecheckBoundsRealWrappedCollisionChain) {
+    auto counter_names = Counters::describeCounters();
+    ASSERT_LT(static_cast<size_t>(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED), counter_names.size());
+    EXPECT_STREQ("wc_precheck_registry_probe_exhausted",
+                 counter_names[WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED]);
+    auto tids = tidsByIndexBucket();
+    int base = tids[ThreadFilter::kTidIndexSize - 2];
+    int last_slot = -1;
+    for (int i = 0; i < 513; ++i) {
+        last_slot = registry.registerThread(base + i * ThreadFilter::kTidIndexSize);
+        ASSERT_GE(last_slot, 0);
+    }
+    int last_tid = base + 512 * ThreadFilter::kTidIndexSize;
+    ASSERT_EQ(registry.slotForId(last_slot), registry.lookupByTid(last_tid));
+    unsigned probes = registry.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = last_slot;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(last_tid, registry.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted + 1, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+
+    probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(registry.slotForId(last_slot), registry.lookupByTid(last_tid, registry.recordingEpoch()));
+    EXPECT_EQ(513u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(last_slot, registry.registerThread(last_tid));
+    registry.unregisterThreadByTid(last_tid);
+    EXPECT_EQ(nullptr, registry.lookupByTid(last_tid));
+    EXPECT_NE(nullptr, registry.lookupByTid(base + 511 * ThreadFilter::kTidIndexSize));
+    EXPECT_EQ(exhausted + 1, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckIncludesFinalBudgetBucketAndCountsTombstones) {
+    auto tids = tidsByIndexBucket();
+    int base = tids[ThreadFilter::kTidIndexSize - 2];
+    std::array<int, 257> slots{};
+    for (int i = 0; i < 257; ++i) {
+        slots[i] = registry.registerThread(base + i * ThreadFilter::kTidIndexSize);
+        ASSERT_GE(slots[i], 0);
+    }
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    for (int position : {1, 255, 256, 257}) {
+        unsigned probes = registry.tidIndexProbesForTest();
+        ThreadFilter::SlotID found = 99;
+        int tid = base + (position - 1) * ThreadFilter::kTidIndexSize;
+        auto* slot = registry.lookupForWallPrecheck(tid, registry.recordingEpoch(), &found);
+        EXPECT_EQ(position <= 256 ? registry.slotForId(slots[position - 1]) : nullptr, slot);
+        EXPECT_EQ(position <= 256 ? slots[position - 1] : -1, found);
+        EXPECT_EQ(static_cast<unsigned>(std::min(position, 256)),
+                  registry.tidIndexProbesForTest() - probes);
+    }
+    EXPECT_EQ(exhausted + 1, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+    for (int i = 0; i < 255; ++i) registry.unregisterThread(slots[i]);
+    ASSERT_EQ(-1, registry.tidIndexEntryForTest(ThreadFilter::kTidIndexSize - 2));
+    unsigned probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(registry.slotForId(slots[255]), registry.lookupForWallPrecheck(
+        base + 255 * ThreadFilter::kTidIndexSize, registry.recordingEpoch()));
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(
+        base + 256 * ThreadFilter::kTidIndexSize, registry.recordingEpoch()));
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted + 2, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+    probes = registry.tidIndexProbesForTest();
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(
+        base + 300 * ThreadFilter::kTidIndexSize, registry.recordingEpoch()));
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted + 3, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckEmptyFinalBucketIsNotExhaustion) {
+    auto tids = tidsByIndexBucket();
+    int base = tids.back();
+    for (int i = 0; i < 255; ++i) {
+        ASSERT_GE(registry.registerThread(base + i * ThreadFilter::kTidIndexSize), 0);
+    }
+    unsigned probes = registry.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = 99;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(
+        base + 255 * ThreadFilter::kTidIndexSize, registry.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckRejectsAbsentIndexInvalidTidAndEpochWithoutExhaustion) {
+    ThreadFilter inactive;
+    unsigned probes = inactive.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, 1, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    inactive.init("", true);
+    probes = inactive.tidIndexProbesForTest();
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(-1, inactive.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, 0, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, inactive.recordingEpoch() + 1, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, inactive.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, inactive.lookupForWallPrecheck(123, inactive.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes + 1, inactive.tidIndexProbesForTest());
+    EXPECT_EQ(exhausted, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
+TEST_F(ThreadRegistryTest, WallPrecheckPreservesLazyRecordingRefresh) {
+    constexpr int tid = 12345;
+    int slot_id = registry.registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+    auto epoch = registry.recordingEpoch();
+    ASSERT_NE(nullptr, registry.lookupForWallPrecheck(tid, epoch));
+    registry.deactivateRecording();
+    registry.init("", true);
+    ASSERT_NE(epoch, registry.recordingEpoch());
+    unsigned probes = registry.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    ThreadFilter::SlotID found = 99;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(tid, epoch, &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes, registry.tidIndexProbesForTest());
+    found = 99;
+    EXPECT_EQ(nullptr, registry.lookupForWallPrecheck(tid, registry.recordingEpoch(), &found));
+    EXPECT_EQ(-1, found);
+    EXPECT_EQ(probes + 1, registry.tidIndexProbesForTest());
+    EXPECT_EQ(slot_id, registry.registerThread(tid));
+    EXPECT_EQ(registry.slotForId(slot_id),
+              registry.lookupForWallPrecheck(tid, registry.recordingEpoch(), &found));
+    EXPECT_EQ(slot_id, found);
+    EXPECT_EQ(exhausted, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+}
+
 static int emptyIndexBuckets(const ThreadFilter& registry) {
     int empty = 0;
     for (int bucket = 0; bucket < ThreadFilter::kTidIndexSize; ++bucket) {
@@ -1278,6 +1429,96 @@ static void fillRegistry(ThreadFilter& registry, int first_tid, std::vector<int>
             slot_ids->push_back(slot_id);
         }
     }
+}
+
+TEST(ThreadFilterRetirementTest, TlsDestructionDoesNotWaitForRegistryMutex) {
+    auto& registry = *Profiler::instance()->threadFilter();
+    registry.init("", true);
+    struct Deactivate {
+        ThreadFilter& registry;
+        ~Deactivate() { registry.deactivateRecording(); }
+    } deactivate{registry};
+    std::promise<int> registered;
+    std::promise<void> exit;
+    auto exit_signal = exit.get_future();
+    std::thread owner([&] {
+        auto* current = ProfiledThread::initCurrentThreadSignalSafe();
+        if (current == nullptr || registry.ensureOwnerSlot(*current) < 0) {
+            registered.set_value(-1);
+            return;
+        }
+        registered.set_value(current->tid());
+        exit_signal.wait();
+        // The pthread-key destructor, not an explicit release, retires this TLS.
+    });
+    auto joined = std::async(std::launch::async, [&] { owner.join(); });
+    const int tid = registered.get_future().get();
+    std::future_status status;
+    {
+        auto lock = ThreadFilterTestAccessor::lock(registry);
+        exit.set_value();
+        status = joined.wait_for(std::chrono::seconds(5));
+    }
+    joined.get();
+    ASSERT_GE(tid, 0);
+    EXPECT_EQ(std::future_status::ready, status) << "TLS destruction blocked on the held registry mutex";
+    EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+    EXPECT_EQ(1, ThreadFilterTestAccessor::retired(registry));
+    registry.unregisterThreadByTid(tid);
+    // A fresh lock holder drains even when the old TID is already invisible.
+    registry.unregisterThread(-1);
+    EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+}
+
+TEST_F(ThreadRegistryTest, RetiredListDrainRecoversEverySlotAtCapacity) {
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 10000));
+    ASSERT_EQ(-1, registry.registerThread(20000));
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        registry.retireThreadByTid(10000 + i);
+        ASSERT_EQ(nullptr, registry.lookupByTid(10000 + i));
+    }
+    ASSERT_EQ(ThreadFilter::kMaxThreads, ThreadFilterTestAccessor::retired(registry));
+    ASSERT_EQ(0, ThreadFilterTestAccessor::free(registry));
+    std::vector<int> recovered;
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 20000, &recovered));
+    EXPECT_EQ(ThreadFilter::kMaxThreads, std::set<int>(recovered.begin(), recovered.end()).size());
+    EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+    EXPECT_EQ(0, ThreadFilterTestAccessor::free(registry));
+    EXPECT_EQ(-1, registry.registerThread(30000));
+}
+
+TEST_F(ThreadRegistryTest, RetireVersusUnregisterReclaimsEachOwnershipOnce) {
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        const int tid = 10000 + attempt;
+        const int slot = registry.registerThread(tid);
+        ASSERT_GE(slot, 0);
+        if (attempt == 0) {
+            registry.retireThreadByTid(tid);
+            registry.unregisterThread(slot, tid);
+        } else if (attempt == 1) {
+            registry.unregisterThread(slot, tid);
+            registry.retireThreadByTid(tid);
+        } else {
+            std::promise<void> start;
+            auto go = start.get_future().share();
+            auto retire = std::async(std::launch::async, [&] { go.wait(); registry.retireThreadByTid(tid); });
+            auto unregister = std::async(std::launch::async, [&] { go.wait(); registry.unregisterThread(slot, tid); });
+            start.set_value();
+            EXPECT_EQ(std::future_status::ready, retire.wait_for(std::chrono::seconds(5)));
+            EXPECT_EQ(std::future_status::ready, unregister.wait_for(std::chrono::seconds(5)));
+            retire.get();
+            unregister.get();
+        }
+        EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+        EXPECT_EQ(1, ThreadFilterTestAccessor::retired(registry) + ThreadFilterTestAccessor::free(registry));
+        registry.unregisterThread(-1);
+        EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+        EXPECT_EQ(1, ThreadFilterTestAccessor::free(registry));
+    }
+    std::vector<int> slots;
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 20000, &slots));
+    EXPECT_EQ(ThreadFilter::kMaxThreads, std::set<int>(slots.begin(), slots.end()).size());
+    EXPECT_EQ(-1, registry.registerThread(30000));
 }
 
 TEST_F(ThreadRegistryTest, FullRegistryRejectsUnknownTidWithoutLocking) {

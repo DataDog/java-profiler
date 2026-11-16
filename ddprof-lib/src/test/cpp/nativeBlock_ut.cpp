@@ -137,6 +137,7 @@ protected:
     int slot_id = filter->registerThread(thread->tid());
     EXPECT_GE(slot_id, 0);
     thread->setJavaThread(true);
+    thread->setJvmInternalThread(false);
     thread->setFilterSlotId(slot_id);
 
     return slot_id;
@@ -202,6 +203,7 @@ TEST_F(NativeBlockScopeTest, FirstNativeHookProjectsOwnerLazilyAndPreservesErrno
   CurrentThreadScope current;
   ScopedTaskBlockEnabled task_block_enabled(true);
   current.thread()->setJavaThread(true);
+  current.thread()->setJvmInternalThread(false);
   current.thread()->setFilterSlotId(-1);
 
   errno = E2BIG;
@@ -273,6 +275,7 @@ TEST_F(NativeBlockScopeTest, AllThreadRegistryWorksWithoutLegacyContextFilter) {
   int slot_id = filter->registerThread(current.thread()->tid());
   ASSERT_GE(slot_id, 0);
   current.thread()->setJavaThread(true);
+  current.thread()->setJvmInternalThread(false);
   current.thread()->setFilterSlotId(slot_id);
   ASSERT_FALSE(filter->enabled());
   ASSERT_TRUE(filter->registryActive());
@@ -529,6 +532,8 @@ TEST_F(NativeBlockScopeTest, SurvivingOldOwnerCannotTearDownNewWorkersRun) {
   std::thread new_worker([&] {
     CurrentThreadScope current;
     current.thread()->setJavaThread(true);
+    // No JVM is attached; classify without pre-registering the lazy owner slot.
+    current.thread()->setJvmInternalThread(false);
     NativeBlockScope scope(NativeBlockKind::EPOLL_WAIT, 42);
     new_entered.set_value(scope.active() ? current.thread()->filterSlotId() : -1);
     new_release.wait();

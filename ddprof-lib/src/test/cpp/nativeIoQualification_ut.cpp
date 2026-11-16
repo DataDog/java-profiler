@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <initializer_list>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -420,6 +421,12 @@ TEST_F(NativeIoForwardingQualificationTest, SamplerOnlyTransientClassificationPr
 }
 
 TEST_F(NativeIoForwardingQualificationTest, RawCloseAndReuseLeaveIndependentCachesStaleUntilExplicitRepair) {
+  struct rlimit limit;
+  ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+  if (limit.rlim_max <= 65536u) {
+    GTEST_SKIP() << "requires RLIMIT_NOFILE > 65536; runner hard limit is "
+                 << limit.rlim_max << " — see the CI runner image configuration";
+  }
   NativeFdClassifier::setProbeOverrideForTest(nullptr);
   NativeSocketInterposer* interposer = NativeSocketInterposer::instance();
   NativeSocketSampler* sampler = NativeSocketSampler::instance();

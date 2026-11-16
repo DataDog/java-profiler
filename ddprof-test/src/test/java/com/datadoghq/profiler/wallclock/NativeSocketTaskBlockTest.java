@@ -7,9 +7,13 @@ package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import java.io.InputStream;
@@ -25,6 +29,8 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -35,6 +41,41 @@ import org.junit.jupiter.api.Test;
 public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
   private static final int BLOCK_HOLD_MILLIS = 250;
   private static final int NATIVE_BLOCK_ATTEMPTS = 5;
+  private Thread preExistingPlatformPoller;
+
+  @Override
+  protected void beforeProfilerStart() throws Exception {
+    System.loadLibrary("ddproftest");
+    if (testInfo
+        .getTestMethod()
+        .get()
+        .getName()
+        .equals("preExistingPlatformPollerDoesNotEmitTaskBlock")) {
+      Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(21), "virtual threads require JDK 21");
+      runVirtualSocketRead();
+      for (Thread thread : Thread.getAllStackTraces().keySet()) {
+        // JDK 25's default topology uses a platform MasterPoller and virtual SubPollers.
+        if (thread.getName().equals("MasterPoller") || thread.getName().equals("Read-Poller")) {
+          preExistingPlatformPoller = thread;
+          break;
+        }
+      }
+      assertNotNull(
+          preExistingPlatformPoller,
+          "virtual socket read must create a platform poller before recording");
+      assertEquals(
+          "jdk.internal.misc.InnocuousThread", preExistingPlatformPoller.getClass().getName());
+      assertTrue(
+          preExistingPlatformPoller.isAlive(), "pre-recording platform poller must be alive");
+      System.out.println(
+          "PLATFORM_POLLER_OBSERVED name="
+              + preExistingPlatformPoller.getName()
+              + " id="
+              + preExistingPlatformPoller.getId()
+              + " class="
+              + preExistingPlatformPoller.getClass().getName());
+    }
+  }
 
   @Test
   public void blockingSocketReadEmitsIoWaitTaskBlock() throws Exception {
@@ -224,7 +265,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
   }
 
   @Test
-  public void blockingSocketReadFromVirtualThreadIdentifiesCarrierThread() throws Exception {
+  public void unpinnedVirtualSocketReadDoesNotAttributeTaskBlockToVirtualThread() throws Exception {
     Method startVirtualThread;
     try {
       startVirtualThread = Thread.class.getMethod("startVirtualThread", Runnable.class);
@@ -265,14 +306,13 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
       assertCompleted(virtual, error);
     }
 
-    // Positive control: a platform thread blocking on the same native path proves the
-    // producer is alive, so the check below isn't vacuously true. Virtual-thread I/O alone
-    // legitimately emits no TaskBlock: it never enters epoll_wait itself, and the JDK's
-    // internal Read-Poller thread that does is excluded from attribution.
+    // Unpinned virtual I/O need not enter a native wait on its carrier. The platform
+    // control verifies production is enabled; carrier attribution is tested separately.
     runBlockingSocketReadOnce();
 
     stopProfiler();
     JfrEvents taskBlocks = verifyEvents("datadog.TaskBlock");
+    assertIoWaitTaskBlockSelfContained(taskBlocks, "taskblock-native-socket-read");
     long virtualThreadId = virtualThreadRef.get().getId();
     for (long blocker : TaskBlockAssertions.distinctBlockers(taskBlocks)) {
       TaskBlockAssertions.assertBlockerEventThreadDiffers(taskBlocks, blocker, virtualThreadId);
@@ -292,18 +332,16 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
           new Thread(
               () -> {
                 try {
+                  profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
                   try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
                     InputStream input = socket.getInputStream();
-                    profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
-                    try {
-                      readAttempted.countDown();
-                      int value = input.read();
-                      if (value != 1) {
-                        throw new AssertionError("unexpected socket byte: " + value);
-                      }
-                    } finally {
-                      profiler.clearTraceContext();
+                    readAttempted.countDown();
+                    int value = input.read();
+                    if (value != 1) {
+                      throw new AssertionError("unexpected socket byte: " + value);
                     }
+                  } finally {
+                    profiler.clearTraceContext();
                   }
                 } catch (Throwable t) {
                   error.set(t);
@@ -341,58 +379,144 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
   }
 
   @Test
-  public void virtualThreadReadPollerDoesNotEmitTaskBlock() throws Exception {
-    Method startVirtualThread;
-    try {
-      startVirtualThread = Thread.class.getMethod("startVirtualThread", Runnable.class);
-    } catch (NoSuchMethodException unavailableBeforeJdk21) {
-      Assumptions.assumeTrue(false, "virtual threads require JDK 21");
-      return;
+  public void preExistingPlatformPollerDoesNotEmitTaskBlock() throws Exception {
+    assertTrue(
+        preExistingPlatformPoller.isAlive(), "pre-recording platform poller must still be alive");
+    long skippedBefore =
+        profiler.getDebugCounters().getOrDefault("task_block_skipped_jvm_internal_thread", 0L);
+    for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+      runVirtualSocketRead();
     }
+    runBlockingSocketReadOnce();
+    assertTrue(preExistingPlatformPoller.isAlive(), "test must exercise the pre-recording poller");
+    long skippedAfter =
+        profiler.getDebugCounters().getOrDefault("task_block_skipped_jvm_internal_thread", 0L);
+    stopProfiler();
+    JfrEvents taskBlocks = verifyEvents("datadog.TaskBlock", false);
+    assertIoWaitTaskBlockSelfContained(taskBlocks, "taskblock-native-socket-read");
+    for (JfrEvent event : taskBlocks) {
+      assertNotNull(event.getThreadJavaId("eventThread"));
+      assertNotEquals(
+          Long.valueOf(preExistingPlatformPoller.getId()),
+          event.getThreadJavaId("eventThread"),
+          "the actual pre-recording platform poller must not emit TaskBlocks");
+    }
+    assertTrue(
+        skippedAfter > skippedBefore, "native admission must observe and reject JVM-internal work");
+  }
 
+  private void runVirtualSocketRead() throws Exception {
+    Method startVirtualThread = Thread.class.getMethod("startVirtualThread", Runnable.class);
     CountDownLatch readAttempted = new CountDownLatch(1);
     AtomicReference<Throwable> error = new AtomicReference<>();
-
     try (ServerSocket server = new ServerSocket(0)) {
-      Runnable task =
-          () -> {
-            try {
-              try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
-                InputStream input = socket.getInputStream();
-                readAttempted.countDown();
-                int value = input.read();
-                if (value != 1) {
-                  throw new AssertionError("unexpected socket byte: " + value);
-                }
-              }
-            } catch (Throwable t) {
-              error.set(t);
-            }
-          };
-      // Starting a virtual thread that performs blocking socket I/O causes the JDK
-      // to spin up its internal Read-Poller (jdk.internal.misc.InnocuousThread), which
-      // then loops calling epoll_wait for the remainder of the JVM's lifetime.
-      Thread virtual = (Thread) startVirtualThread.invoke(null, task);
+      Thread virtual =
+          (Thread)
+              startVirtualThread.invoke(
+                  null,
+                  (Runnable)
+                      () -> {
+                        try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
+                          readAttempted.countDown();
+                          assertEquals(1, socket.getInputStream().read());
+                        } catch (Throwable t) {
+                          error.set(t);
+                        }
+                      });
       try (Socket accepted = server.accept()) {
-        assertTrue(readAttempted.await(5, TimeUnit.SECONDS), "reader did not enter socket read");
+        assertTrue(readAttempted.await(5, TimeUnit.SECONDS), "virtual read did not start");
         Thread.sleep(BLOCK_HOLD_MILLIS);
-        OutputStream output = accepted.getOutputStream();
-        output.write(1);
-        output.flush();
+        accepted.getOutputStream().write(1);
       }
       assertCompleted(virtual, error);
     }
-
-    // Give Read-Poller a chance to cycle through epoll_wait a few times while the
-    // profiler is still running, so a pre-fix build would have emitted TaskBlocks for it.
-    Thread.sleep(BLOCK_HOLD_MILLIS);
-
-    stopProfiler();
-    JfrEvents taskBlocks = verifyEvents("datadog.TaskBlock", false);
-    assertFalse(
-        TaskBlockAssertions.containsEventThread(taskBlocks, "Read-Poller"),
-        "JDK-internal Read-Poller thread must not emit TaskBlock events");
   }
+
+  @Test
+  public void pinnedJniSocketReadIdentifiesObservedCarrierAndNativeThread() throws Exception {
+    Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(21), "virtual threads require JDK 21");
+    Method startVirtualThread = Thread.class.getMethod("startVirtualThread", Runnable.class);
+    int[] sockets = openPinnedSocket0();
+    assertNotNull(sockets);
+    assertEquals(2, sockets.length);
+    long[] observed = new long[5];
+    CountDownLatch entered = new CountDownLatch(1);
+    AtomicReference<Throwable> error = new AtomicReference<>();
+    Thread virtual =
+        (Thread)
+            startVirtualThread.invoke(
+                null,
+                (Runnable)
+                    () -> {
+                      try {
+                        int result = pinnedRead0(sockets[0], observed, entered);
+                        assertEquals(
+                            1,
+                            result,
+                            "carrier, tid, read result, errno, byte: " + Arrays.toString(observed));
+                      } catch (Throwable t) {
+                        error.set(t);
+                      }
+                    });
+    try {
+      assertTrue(entered.await(5, TimeUnit.SECONDS), "JNI read did not publish carrier identity");
+      Thread.sleep(BLOCK_HOLD_MILLIS);
+      assertEquals(1, releasePinnedRead0(sockets[1]));
+      assertCompleted(virtual, error);
+    } finally {
+      closePinnedSocket0(sockets[1]);
+      virtual.join(5_000L);
+      closePinnedSocket0(sockets[0]);
+      assertFalse(virtual.isAlive(), "pinned JNI worker did not terminate");
+    }
+    assertTrue(observed[0] > 0, "JNI must observe an actual carrier Java id");
+    assertTrue(observed[1] > 0, "JNI must observe an actual Linux tid");
+    assertNotEquals(virtual.getId(), observed[0]);
+    stopProfiler();
+    int matching = 0;
+    long blocker = (8L << 32) | (sockets[0] & 0xffffffffL);
+    for (JfrEvent event : verifyEvents("datadog.TaskBlock", false)) {
+      assertNotNull(event.getLong("blocker"));
+      if (event.getLong("blocker") != blocker) continue;
+      matching++;
+      assertEquals(Long.valueOf(observed[0]), event.getThreadJavaId("eventThread"));
+      assertNotNull(event.get("eventThread"));
+      Map<?, ?> eventThread = (Map<?, ?>) event.get("eventThread");
+      assertNotNull(eventThread.get("osThreadId"));
+      assertEquals(observed[1], ((Number) eventThread.get("osThreadId")).longValue());
+      assertEquals("IO_WAIT", event.getEnumName("observedBlockingState"));
+      assertNotNull(event.getLong("duration"));
+      assertTrue(event.getLong("duration") >= TimeUnit.MILLISECONDS.toNanos(1));
+      assertNotNull(event.get("stackTrace"));
+      assertTrue(
+          event.getStackTrace().frames().stream()
+              .anyMatch(frame -> "pinnedRead0".equals(frame.methodName())),
+          "the matching native interval must retain its pinned JNI workload frame");
+    }
+    assertEquals(1, matching, "the pinned JNI read must emit exactly its own TaskBlock");
+    System.out.println("PINNED_READ_OBSERVED carrier=" + observed[0] + " tid=" + observed[1]);
+  }
+
+  /** Validation runs inside pinnedRead0, so a virtual-thread migration cannot change the record. */
+  private static void assertCleanPinnedReadContext() throws Exception {
+    for (String accessor : new String[] {"testGetSpanId", "testGetRootSpanId"}) {
+      Method read = JavaProfiler.class.getDeclaredMethod(accessor);
+      read.setAccessible(true);
+      assertEquals(
+          0L,
+          read.invoke(JavaProfiler.getInstance()),
+          "pinned JNI read requires clean carrier context: " + accessor);
+    }
+  }
+
+  private static native int[] openPinnedSocket0();
+
+  /** Observes the JDK carrier id and Linux tid before entering an installed native read hook. */
+  private static native int pinnedRead0(int fd, long[] observed, CountDownLatch entered);
+
+  private static native int releasePinnedRead0(int fd);
+
+  private static native void closePinnedSocket0(int fd);
 
   @Override
   protected boolean isPlatformSupported() {

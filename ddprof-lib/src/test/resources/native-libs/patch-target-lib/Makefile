@@ -25,3 +25,5 @@ all:
 	# Omit unused CRT imports so both real imports occupy the same GOT slot.
 	cc $(CFLAGS) $(LDFLAGS) -nostartfiles -Wl,--build-id=none -o $(TARGET_DIR)/libnoid-pthread.so noid_thread_target.c
 	cc $(CFLAGS) $(LDFLAGS) -nostartfiles -Wl,--build-id=none -DIMPORT_POSIX -o $(TARGET_DIR)/libnoid-posix.so noid_thread_target.c
+	cc $(CFLAGS) $(LDFLAGS) -Wl,--build-id=none -DIMPORT=malloc -o $(TARGET_DIR)/libnoid-malloc.so noid_malloc_target.c
+	cc $(CFLAGS) $(LDFLAGS) -Wl,--build-id=none -DIMPORT=valloc -o $(TARGET_DIR)/libnoid-valloc.so noid_malloc_target.c

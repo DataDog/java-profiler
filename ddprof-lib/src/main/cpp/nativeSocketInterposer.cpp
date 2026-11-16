@@ -19,6 +19,8 @@
 #include "vmEntry.h"
 
 #include <errno.h>
+#include <new>
+#include <type_traits>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -44,6 +46,53 @@ static NOINLINE bool nonZeroTimespec(const struct timespec* timeout) {
       (value.tv_sec != 0 || value.tv_nsec != 0);
 }
 
+// Manual lifetime is required: automatic C++ cleanup across libc cancellation
+// points can abort with static-libgcc and glibc's dynamic forced unwinder.
+// run_with_cleanup registers the destructor through libc's cancellation chain.
+template <typename Ret, typename Fn, typename Call>
+static Ret runNativeBlockCall(NativeBlockKind kind, int fd, Fn fn, Call& call,
+                               u64* start_ticks = nullptr, u64* end_ticks = nullptr) {
+  struct CallState {
+    alignas(NativeBlockScope) unsigned char storage[sizeof(NativeBlockScope)];
+    Fn fn;
+    Call* call;
+    Ret result;
+    int cancel_state;
+    u64* start_ticks;
+    u64* end_ticks;
+  } state{};
+  static_assert(std::is_trivially_destructible<CallState>::value &&
+                std::is_trivially_destructible<Call>::value,
+                "native I/O cancellation frames must not own C++ cleanup actions");
+  state.fn = fn;
+  state.call = &call;
+  state.start_ticks = start_ticks;
+  state.end_ticks = end_ticks;
+  // Install cleanup before restoring cancellation, including an already pending request.
+  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &state.cancel_state);
+  new (state.storage) NativeBlockScope(kind, fd);
+  run_with_cleanup([](void* raw) -> void* {
+    auto* state = static_cast<CallState*>(raw);
+    pthread_setcancelstate(state->cancel_state, nullptr);
+    if (state->start_ticks != nullptr) {
+      ErrnoGuard errno_guard;
+      *state->start_ticks = TSC::ticks();
+    }
+    state->result = (*state->call)(state->fn);
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, nullptr);
+    if (state->end_ticks != nullptr) {
+      ErrnoGuard errno_guard;
+      *state->end_ticks = TSC::ticks();
+    }
+    return nullptr;
+  }, &state, [](void* raw) {
+    auto* state = static_cast<CallState*>(raw);
+    reinterpret_cast<NativeBlockScope*>(state->storage)->~NativeBlockScope();
+  }, &state);
+  pthread_setcancelstate(state.cancel_state, nullptr);
+  return state.result;
+}
+
 template <typename Ret, typename Fn, typename Call>
 static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind, int fd,
                                   Fn fn, Call call) {
@@ -55,9 +104,7 @@ static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind, int fd,
     return call(fn);
   }
 
-  NativeBlockScope block(kind, fd);
-  Ret ret = call(fn);
-  return ret;
+  return runNativeBlockCall<Ret>(kind, fd, fn, call);
 }
 
 template <typename Fn, typename Call>
@@ -85,18 +132,8 @@ static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op,
     return call(fn);
   }
 
-  ssize_t ret;
   u64 t0, t1;
-  {
-    NativeBlockScope block(block_kind, fd);
-    {
-      ErrnoGuard errno_guard;
-      t0 = TSC::ticks();
-    }
-    ret = call(fn);
-    ErrnoGuard errno_guard;
-    t1 = TSC::ticks();
-  }
+  ssize_t ret = runNativeBlockCall<ssize_t>(block_kind, fd, fn, call, &t0, &t1);
   if (sampler_active) {
     ErrnoGuard errno_guard;
     return NativeSocketSampler::recordHookResult(fd, ret, t0, t1, op);

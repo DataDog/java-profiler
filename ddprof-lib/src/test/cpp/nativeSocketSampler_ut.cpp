@@ -24,6 +24,7 @@
 #include <atomic>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
@@ -686,6 +687,12 @@ TEST(NativeSocketSamplerFdTypeTest, RevalidationDoesNotCacheClosedFdAsNonSocket)
 }
 
 TEST(NativeSocketSamplerFdTypeTest, HighFdRevalidationDoesNotCacheClosedFdAsNonSocket) {
+    struct rlimit limit;
+    ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+    if (limit.rlim_max <= 65607u) {
+        GTEST_SKIP() << "requires RLIMIT_NOFILE >= 65608; runner hard limit is "
+                     << limit.rlim_max << " — see the CI runner image configuration";
+    }
     NativeSocketSampler* inst = NativeSocketSampler::instance();
     inst->clearFdCache();
     int stream_fds[2];
@@ -719,6 +726,12 @@ int blocking_revalidation_probe(int, int* so_type, int* probe_errno) {
 } // namespace
 
 TEST(NativeSocketSamplerFdTypeTest, RevalidationCannotPublishAcrossLowOrHighFdReuse) {
+    struct rlimit limit;
+    ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+    if (limit.rlim_max <= 65609u) {
+        GTEST_SKIP() << "requires RLIMIT_NOFILE >= 65610; runner hard limit is "
+                     << limit.rlim_max << " — see the CI runner image configuration";
+    }
     NativeSocketSampler* inst = NativeSocketSampler::instance();
     for (bool high : {false, true}) {
         inst->clearFdCache();
@@ -1045,6 +1058,12 @@ TEST(NativeSocketSamplerFdTypeTest,
 
 TEST(NativeSocketSamplerFdTypeTest,
      ForcedRevalidationRecoversUnpatchedPipeToStreamReuse) {
+    struct rlimit limit;
+    ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
+    if (limit.rlim_max <= 65536u) {
+        GTEST_SKIP() << "requires RLIMIT_NOFILE > 65536; runner hard limit is "
+                     << limit.rlim_max << " — see the CI runner image configuration";
+    }
     NativeSocketSampler* inst = NativeSocketSampler::instance();
     for (int minimum : {0, kSamplerFdTypeCacheSizeForTest}) {
         SCOPED_TRACE(minimum);

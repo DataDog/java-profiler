@@ -59,6 +59,10 @@ typedef struct _libraryRef {
 typedef void (*LiveLibraryCollector)(void* ctx);
 typedef void (*LiveLibraryVisitor)(CodeCache* lib, int tag);
 
+// Uses libc cancellation cleanup, not a C++ destructor action across routine().
+void run_with_cleanup(void* (*routine)(void*), void* params,
+                      void (*cleanup_fn)(void*), void* cleanup_arg);
+
 class LibraryPatcher {
   friend class LibraryPatcherTestAccessor;
 

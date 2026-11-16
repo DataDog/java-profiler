@@ -5,6 +5,8 @@
 
 package com.datadoghq.profiler;
 
+import java.util.Objects;
+
 /**
  * Test bridge for {@link JavaProfiler}'s package-private wall-clock test seams (same pattern as
  * {@link ReferenceChainTestHooks}). The seams mutate or inspect the process-wide profiler
@@ -71,4 +73,15 @@ public final class JavaProfilerTestSupport {
 
   private static native boolean recordUnownedWallTailBeforeOwnedBlockForTest0(
       Thread thread, String snapshot, int producer);
+
+  /**
+   * Seeds a PARKED stack with five same-epoch units, then runs a bounded owner transition with
+   * profiling signals blocked and no recording stripe held. Returns false outside debug builds.
+   * Rejects null callbacks and propagates callback failures.
+   */
+  public static boolean withUnownedWallTailForTest(Runnable transition) {
+    return withUnownedWallTailForTest0(Thread.currentThread(), Objects.requireNonNull(transition));
+  }
+
+  private static native boolean withUnownedWallTailForTest0(Thread thread, Runnable transition);
 }

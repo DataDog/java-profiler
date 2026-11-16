@@ -39,6 +39,18 @@ same generation-qualified block tracker and recording-activity gate as Java and
 JVMTI producers. Entry requires no active span or context window. Exit captures
 one synchronous IO_WAIT stack for an eligible completed interval.
 
+Native admission classifies the owner's JDK housekeeping status on first use.
+The cached `InnocuousThread` verdict also covers threads created before recording.
+Synthetic thread-start callbacks preserve a known verdict.
+
+Active calls use `run_with_cleanup` to end intervals on return or cancellation.
+The scope uses explicit storage, so no automatic C++ destructor spans libc's
+cancellation point. This avoids static-libgcc forced-unwind cleanup actions.
+
+Cancellation is disabled during admission and cleanup, not during application I/O.
+Each admitted call adds cancellation-state transitions and a libc cleanup registration.
+The original cancellation state is restored before calling libc and before returning.
+
 A live dump emits no prefix for an open native interval. An exit after the dump
 writes the full interval. An exit during closed rotation clears its owner and
 increments `task_block_dropped_rotation` without retaining an event. Stop/start
@@ -173,7 +185,16 @@ new hook fault or of successful EFAULT recovery.
 - `libraryPatcherUnload_ut.cpp`: pin/restore socket safety, pthread live-walk
   fingerprint identity, foreign-loader-lock order and same-layout replacement.
 
-- `nativeSocketInterposer_ut.cpp`: inactive stream forwarding without probes or
+- `nativeIoCancellation_ut.cpp`: contained release-mode pthread cancellation of
+  read, recv, poll and accept, including pending cancellation, join and owner/TLS cleanup.
+- `JvmInternalThreadClassificationTest`: cached positive/negative housekeeping
+  verdicts, JNI/JVMTI failure cleanup and synthetic-start preservation.
+- `NativeSocketTaskBlockTest`: pre-recording platform poller exclusion (Read-Poller
+  or MasterPoller) with a platform control; clean-context pinned JNI read attribution
+  against observed carrier Java id and Linux tid.
+- `NativeSocketCarrierReuseTest`: ordered context-writer and pinned-read lifecycles
+  in one JVM with a single reused carrier.
+- `nativeSocketInterposer_ut.cpp`: zero-slot incomplete-import rejection and inactive stream forwarding without probes or
   TaskBlock entry, active block kinds, sampler-only/combined forwarding,
   close/dup invalidation and production patch rollback.
 - `nativeSocketSampler_ut.cpp`: low/high-FD transient revalidation and real reuse,

@@ -9,6 +9,7 @@
 
 #include "context_api.h"
 #include "errnoGuard.h"
+#include "jvmSupport.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
 #include "threadLocalData.h"
@@ -56,7 +57,7 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
     return;
   }
 
-  if (current->isJvmInternalThread()) {
+  if (JVMSupport::isJvmInternalThread(current)) {
     Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
     return;
   }

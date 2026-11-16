@@ -22,6 +22,7 @@ enum StackRecovery {
 };
 
 class HotspotSupport;
+class ProfiledThread;
 class ResolvedMethod;
 
 class JVMSupport {
@@ -55,6 +56,11 @@ public:
     // JNI >= 19 uses IsVirtualThread across VMs; a missing entry fails closed,
     // increments TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED and warns once.
     static bool isPlatformThread(JNIEnv* jni, jthread thread);
+
+    // Owner-side, non-signal admission caches the JDK housekeeping marker.
+    // Unavailable JNI/JVMTI rejects this admission without caching a verdict.
+    static bool isJvmInternalThread(ProfiledThread* current, JNIEnv* jni = nullptr,
+                                    jthread thread = nullptr);
 
     // Initialize JVM support - check JVM related resources are available.
     // Return false if any critical resource is not available, which should

@@ -6,6 +6,7 @@ package com.datadoghq.profiler.nativesocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
@@ -19,6 +20,8 @@ import org.junit.jupiter.api.Test;
 
 /** Qualifies errno across all four real installed imports and actual sampled JFR recording. */
 public class NativeIoErrnoTest extends AbstractProfilerTest {
+  private static final int INSUFFICIENT_FILE_DESCRIPTOR_LIMIT = -2;
+
   @Override
   protected boolean isPlatformSupported() {
     return Platform.isLinux();
@@ -45,7 +48,12 @@ public class NativeIoErrnoTest extends AbstractProfilerTest {
    */
   @Test
   public void preservesErrnoDuringPreOriginalLoggingAndSampledRecording() throws Exception {
-    assertEquals(0, exerciseImports(), "native import/errno qualification failure code");
+    int result = exerciseImports();
+    assumeTrue(
+        result != INSUFFICIENT_FILE_DESCRIPTOR_LIMIT,
+        "requires RLIMIT_NOFILE > 65536; runner hard limit is at most 65536"
+            + " — see the CI runner image configuration");
+    assertEquals(0, result, "native import/errno qualification failure code");
     stopProfiler();
     Set<String> operations = new HashSet<>();
     for (JfrEvent event : verifyEvents("datadog.NativeSocketEvent")) {
@@ -56,6 +64,6 @@ public class NativeIoErrnoTest extends AbstractProfilerTest {
         "Each actual sampled hook must record, observed: " + operations);
   }
 
-  /** Calls installed JDK import targets; returns a source-named setup or errno failure code. */
+  /** Returns -2 for a hard FD limit at most 65536; other nonzero codes fail qualification. */
   private static native int exerciseImports();
 }

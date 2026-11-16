@@ -13,15 +13,38 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <condition_variable>
 #include <cstdio>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
+
+static_assert(!std::is_copy_constructible<TaskBlockActivity>::value,
+              "TaskBlockActivity must not duplicate its inflight decrement");
+static_assert(!std::is_copy_assignable<TaskBlockActivity>::value,
+              "TaskBlockActivity must not overwrite activity ownership");
 
 class ProfilerTestAccessor {
 public:
+  class TaskBlockActivityStateScope {
+    Profiler* _profiler;
+    u64 _previous;
+
+  public:
+    TaskBlockActivityStateScope(Profiler* profiler, u64 count, bool closed)
+        : _profiler(profiler),
+          _previous(profiler->_task_block_activity_state.exchange(
+              count | (closed ? Profiler::TASK_BLOCK_CLOSED : 0), std::memory_order_acq_rel)) {}
+    ~TaskBlockActivityStateScope() {
+      _profiler->_task_block_activity_state.store(_previous, std::memory_order_release);
+    }
+    TaskBlockActivityStateScope(const TaskBlockActivityStateScope&) = delete;
+    TaskBlockActivityStateScope& operator=(const TaskBlockActivityStateScope&) = delete;
+  };
+
   static bool omit(Profiler* p) { return p->_omit_stacktraces; }
   static void setOmit(Profiler* p, bool omit) { p->_omit_stacktraces = omit; }
   static int depth(Profiler* p) { return p->_max_stack_depth; }
@@ -42,6 +65,9 @@ public:
     bool previous = profiler->_omit_stacktraces;
     profiler->_omit_stacktraces = omit;
     return previous;
+  }
+  static void reserveCompetingTaskBlockActivity() {
+    Profiler::instance()->_task_block_activity_state.fetch_add(1, std::memory_order_acq_rel);
   }
   static FlightRecorder& recorder() { return Profiler::instance()->_jfr; }
   static SpinLock& lock(int stripe) { return Profiler::instance()->_locks[stripe]; }
@@ -194,6 +220,122 @@ TEST_F(TaskBlockRecorderTest, ShortContentionIsNotRecordedAndDoesNotSuppressNext
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
 }
 
+namespace {
+// Use the signal-handler shared-lock budget as the admission retry contract.
+constexpr int ADMISSION_RETRY_BUDGET = SpinLock::DEFAULT_SHARED_SPIN_BUDGET;
+int admission_attempts = 0;
+int competing_reservations = 0;
+int forced_admission_failures = 0;
+
+void contendAdmission(Profiler::TaskBlockActivityStage stage) {
+  if (stage != Profiler::TaskBlockActivityStage::BEFORE_RESERVATION_CAS) return;
+  ++admission_attempts;
+  if (competing_reservations < forced_admission_failures) {
+    // Change the real atomic after the caller loads its expected state, exactly
+    // as another exit's admission would. Each following CAS must fail. Stop
+    // injecting after a finite number so the unbounded baseline also returns.
+    ProfilerTestAccessor::reserveCompetingTaskBlockActivity();
+    ++competing_reservations;
+  }
+}
+
+void startAdmissionContention(int failures) {
+  admission_attempts = 0;
+  competing_reservations = 0;
+  forced_admission_failures = failures;
+  Profiler::setTaskBlockActivityHookForTest(contendAdmission);
+}
+
+void finishAdmissionContention() {
+  Profiler::setTaskBlockActivityHookForTest(nullptr);
+  for (int i = 0; i < competing_reservations; ++i) {
+    Profiler::instance()->leaveTaskBlockActivity();
+  }
+}
+} // namespace
+
+TEST_F(TaskBlockRecorderTest, AdmissionContentionDropsWithinSharedSpinBudget) {
+  startAdmissionContention(ADMISSION_RETRY_BUDGET + 1);
+  bool admitted = Profiler::instance()->tryEnterTaskBlockActivity();
+  if (admitted) Profiler::instance()->leaveTaskBlockActivity();
+  finishAdmissionContention();
+
+  EXPECT_FALSE(admitted);
+  EXPECT_EQ(ADMISSION_RETRY_BUDGET, competing_reservations)
+      << "the test must reach actual CAS contention through the entire budget";
+  EXPECT_EQ(ADMISSION_RETRY_BUDGET, admission_attempts);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ADMISSION));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
+  EXPECT_TRUE(Profiler::instance()->beginTaskBlockRotationForTest());
+  Profiler::instance()->endTaskBlockRotationForTest();
+}
+
+TEST_F(TaskBlockRecorderTest, AdmissionRetriesTransientContentionWithoutDropping) {
+  for (int failures : {0, 1, ADMISSION_RETRY_BUDGET / 2}) {
+    SCOPED_TRACE(failures);
+    startAdmissionContention(failures);
+    bool admitted = Profiler::instance()->tryEnterTaskBlockActivity();
+    EXPECT_EQ(competing_reservations + (admitted ? 1 : 0),
+              Profiler::instance()->taskBlockInflightForTest());
+    if (admitted) Profiler::instance()->leaveTaskBlockActivity();
+    finishAdmissionContention();
+
+    EXPECT_TRUE(admitted);
+    EXPECT_EQ(failures, competing_reservations);
+    EXPECT_GT(admission_attempts, failures);
+    EXPECT_LE(admission_attempts, ADMISSION_RETRY_BUDGET);
+    EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_DROPPED_ADMISSION));
+    EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+    EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
+  }
+}
+
+TEST_F(TaskBlockRecorderTest, AdmissionBudgetDropStillCompletesExitLifecycle) {
+  constexpr int tid = 12345;
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+  ASSERT_GE(slot_id, 0);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot_id);
+  Context context{};
+  ASSERT_EQ(TaskBlockDurationCheck::ELIGIBLE, checkTaskBlockDuration(1, TSC::ticks()));
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  u64 token = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0ULL, token);
+  ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+
+  startAdmissionContention(ADMISSION_RETRY_BUDGET + 1);
+  bool recorded = recordTaskBlockAtExit(
+      current.get(), &filter, &tracker, nullptr, 0, token, 0, 0);
+  finishAdmissionContention();
+
+  EXPECT_FALSE(recorded);
+  EXPECT_EQ(ADMISSION_RETRY_BUDGET, admission_attempts);
+  EXPECT_EQ(ADMISSION_RETRY_BUDGET, competing_reservations);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ADMISSION));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
+  EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot_id)->activeBlockOwner());
+  EXPECT_EQ(OSThreadState::UNKNOWN, tracker.slotForId(slot_id)->activeBlockState());
+
+  token = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0ULL, token);
+  ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+  EXPECT_TRUE(recordTaskBlockAtExit(
+      current.get(), &filter, &tracker, nullptr, 0, token, 0, 0));
+  EXPECT_EQ(1, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+  EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
+}
+
 TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
   Profiler* profiler = Profiler::instance();
   profiler->beginTaskBlockRotationForTest();
@@ -201,7 +343,8 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
   EXPECT_FALSE(profiler->tryEnterTaskBlockActivity());
   TaskBlockActivity activity;
   EXPECT_FALSE(activity.active());
-  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  EXPECT_EQ(2, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_DROPPED_ADMISSION));
 
   profiler->endTaskBlockRotationForTest();
   ASSERT_TRUE(profiler->tryEnterTaskBlockActivity());
@@ -335,6 +478,19 @@ TEST_F(AbandonedTaskBlockTest, RunOnAnotherSlotIsNotClosed) {
       << "the TLS interval is cleared even when its run is not closed";
   EXPECT_TRUE(tracker.exitBlockedRun(
       slot_id, WallClockBlockTracker::tokenGeneration(abandoned)));
+}
+
+TEST_F(TaskBlockRecorderTest, InflightAccessorPreservesWideCountsAndMasksClosure) {
+  Profiler* profiler = Profiler::instance();
+  const u64 counts[] = {0, INT_MAX, static_cast<u64>(INT_MAX) + 1, (1ULL << 32) + 7,
+                        (1ULL << 62) + 9};
+  for (u64 count : counts) {
+    for (bool closed : {false, true}) {
+      ProfilerTestAccessor::TaskBlockActivityStateScope state(profiler, count, closed);
+      EXPECT_EQ(closed, profiler->taskBlockRotationActiveForTest());
+      EXPECT_EQ(count, profiler->taskBlockInflightForTest());
+    }
+  }
 }
 
 TEST_F(TaskBlockRecorderTest, RotationWaitsForInflightActivity) {
@@ -698,6 +854,8 @@ TEST_F(TaskBlockRecorderTest, ClosedAndDrainedRotationCannotGainAReservation) {
   barrier.resume(2);
   recorder.join();
   EXPECT_FALSE(entered);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_DROPPED_ADMISSION));
   profiler->endTaskBlockRotationForTest();
   Profiler::setTaskBlockActivityHookForTest(nullptr);
   admission_barrier = nullptr;

@@ -118,6 +118,23 @@ bool WallClockBlockTracker::snapshotAndExitBlockedRun(ThreadFilter* registry,
     return true;
 }
 
+bool WallClockBlockTracker::flushUnownedTail(ThreadFilter::SlotID slot_id, int tid) {
+    auto* block = slotForId(slot_id);
+    if (block == nullptr ||
+        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
+    // Standalone trackers have no recorder; their synthetic state needs no emission.
+    return !_tail_flush || _tail_flush(slot_id, tid);
+}
+
+bool WallClockBlockTracker::retireSlot(ThreadFilter::SlotID slot_id, int tid) {
+    auto* block = slotForId(slot_id);
+    if (block == nullptr) return true;
+    block->clearActiveBlockRun();
+    if (!flushUnownedTail(slot_id, tid)) return false;
+    resetSlot(slot_id);
+    return true;
+}
+
 void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
     if (s != nullptr) {
@@ -155,13 +172,6 @@ void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
 bool WallClockBlockTracker::hasActiveBlockRun(ThreadFilter::SlotID slot_id) const {
     const BlockState* s = slotForId(slot_id);
     return s != nullptr && s->activeBlockOwner() != BlockRunOwner::NONE;
-}
-
-bool WallClockBlockTracker::activeOwnedBlockGeneration(ThreadFilter* registry,
-                                                       const ThreadEntry& entry,
-                                                       u64& generation) const {
-    bool already_sampled = false;
-    return ownedBlockGeneration(registry, entry, generation, already_sampled);
 }
 
 bool WallClockBlockTracker::isOwnedBlockSuppressionCandidate(ThreadFilter* registry,
@@ -211,13 +221,9 @@ bool WallClockBlockTracker::ownedBlockGeneration(ThreadFilter* registry,
     }
 #endif
 
-    // The payload is spread across independent atomics. Accept it only if the
-    // slot still represents the lifecycle and block run captured earlier in
-    // this wall-clock timer-thread pass, when `entry` was populated — either
-    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
-    // or by the lazy registry lookup at the top of sampleThreadCommon() —
-    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
-    // template defined in wallClock.h).
+    // entry supplies native identity, lifecycle and recording epoch, not block payload.
+    // Revalidate that identity and the block payload sampled within this call before
+    // accepting a snapshot assembled from independent atomics.
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
         slot->activeBlockState() != state ||
@@ -471,6 +477,24 @@ void WallClockBlockTracker::collectLiveTraceIds(CallTraceIdSet& live) {
                 storage->roots[word].fetch_and(~mask, std::memory_order_release);
             } else if (id != CallTraceStorage::DROPPED_TRACE_ID) {
                 live.insert(id);
+            }
+            bits &= bits - 1;
+        }
+    }
+}
+
+void WallClockBlockTracker::collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    SlotStorage* storage = _storage.load(std::memory_order_acquire);
+    if (storage == nullptr) return;
+    for (size_t word = 0; word < storage->roots.size(); ++word) {
+        u64 bits = storage->roots[word].load(std::memory_order_acquire);
+        while (bits != 0) {
+            const size_t slot_id = word * 64 + __builtin_ctzll(bits);
+            if (storage->slots[slot_id].unowned_blocked_call_trace_id.load(std::memory_order_acquire) != 0) {
+                WeightSegment segments[kMaxWeightSegments];
+                size_t count = copyUnownedWeightSegments(slot_id, segments);
+                for (size_t i = 0; i < count; ++i) epochs.insert(segments[i].epoch_start);
             }
             bits &= bits - 1;
         }

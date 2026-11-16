@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -27,6 +28,32 @@ public class HotSpotDelegatedProducerLifecycleTest extends RealVmProducerTest {
   private Object jvmRecording;
   private Path jvmRecordingPath;
   private boolean jvmDumpAttempted;
+  private static final String EXTENSION_UNAVAILABLE =
+      "HOTSPOT_REQUEST_STACK_TRACE_UNAVAILABLE: this JVM lacks the unreleased extension"
+          + " (OpenJDK PR https://github.com/openjdk/jdk/pull/31059); stock JDKs do not provide it";
+
+  /** Probe the selected engine before creating a JVM recording with unreleased event types. */
+  @Override
+  protected void beforeProfilerStart() throws Exception {
+    Path probe =
+        Files.createTempFile(Paths.get("/tmp/recordings"), "delegated-extension-probe-", ".jfr");
+    boolean available;
+    try {
+      profiler.execute("start,wall=1ms,jvmtistacks=true,jfr,file=" + probe.toAbsolutePath());
+      try {
+        available = profiler.getStatus().contains("WallClock Engine : WallClock (JVMTI)");
+      } finally {
+        profiler.stop();
+      }
+    } finally {
+      Files.deleteIfExists(probe);
+    }
+    if (!available) {
+      System.out.println(EXTENSION_UNAVAILABLE);
+    }
+    Assumptions.assumeTrue(available, EXTENSION_UNAVAILABLE);
+    super.beforeProfilerStart();
+  }
 
   /** Requires real completed JVM stacks and direct TaskBlocks in both retained-worker sessions. */
   @Test

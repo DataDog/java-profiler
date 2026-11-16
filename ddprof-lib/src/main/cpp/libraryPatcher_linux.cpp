@@ -466,11 +466,9 @@ void run_with_cleanup(func_start_routine routine, void* params,
         // should a future/variant glibc ever return from it.
         __builtin_unreachable();
     }
-    // Callers must not have a pending pthread_cancel when they enter
-    // run_with_cleanup: a cancellation arriving between __sigsetjmp returning
-    // and __pthread_register_cancel below would unwind this frame before
-    // cancel_buf is registered, silently skipping cleanup_fn.  All current
-    // callers are JVM/native start routines with no pending cancellation.
+    // Callers disable cancellation around resource acquisition and registration,
+    // or enter as a new thread without a pending cancellation request.
+    // The routine may restore cancellation only after this registration.
     __pthread_register_cancel(&cancel_buf);
     routine(params);
     __pthread_unregister_cancel(&cancel_buf);
@@ -1103,15 +1101,13 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
          hook_index++) {
       ImportId import_id = hooks[hook_index].import_id;
-      size_t count = lib->importCount(import_id);
-      if (count == 0) {
-        continue;
-      }
       if (!lib->importsComplete(import_id)) {
         Log::warn("native I/O hooks disabled: incomplete %s imports in %s",
                   hooks[hook_index].name, lib->name());
         return disable_and_unpatch();
       }
+      size_t count = lib->importCount(import_id);
+      if (count == 0) continue;
       if (hook_index == NativeSocketInterposer::HOOK_EPOLL_PWAIT2) {
         for (size_t i = 0; i < lib->importCount(import_id); i++) {
           void** location = lib->findImport(import_id, i);

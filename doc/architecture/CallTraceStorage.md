@@ -124,6 +124,10 @@ in [RefCountGuard](RefCountGuard.md).
   `CallTraceStorage` object itself freed; the table-level drains only cover a
   straggler that already holds a guard.
 
+ASan builds poison cleared allocator payload while its chunk remains owned.
+Both individual and detached-list chunk reclamation remove that poison before
+raw unmap, so unrelated mappings at the same address do not inherit it.
+
 Today `Profiler` excludes `put()` from `processTraces()` and `clear()`, and never
 destroys its `CallTraceStorage`: every `put()` runs under one of the stripe
 locks, and every `processTraces()` / `clear()` caller (`FlightRecorder::stop()` /
