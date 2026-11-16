@@ -108,8 +108,9 @@ findings are surfaced to the author, never auto-implemented."
    its finding is resolved, never deferred to the stop summary: a refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply; an
    already-fixed or stale finding gets one line naming the fix (the commit or the
-   current text); a design-level finding gets its brainstorm surfaced with the drafted
-   reply. Never resolve a thread — the human resolves. A finding that needs a design
+   current text); a design-level finding is never left lingering — its brainstorm is
+   brought to the operator live and the reply posted per the decision (below). Never
+   resolve a thread — the human resolves. A finding that needs a design
    decision drives a brainstorm, never a silent implementation:
    - **Ground it.** Read the code the comment touches; the finding's premise is a claim
      to verify, not a fact. A comment wrong about the code gets a one-line factual
@@ -119,9 +120,12 @@ findings are surfaced to the author, never auto-implemented."
      code paths that would host it.
    - **Recommend.** Name the variant you consider sound, with the evidence that
      discriminates it from the others and what would falsify it.
-   - **Decide elsewhere.** The human decides: surface the brainstorm — options,
-     recommendation, falsifiers — in the stop summary with the reply drafted, and never
-     implement a design-level finding without the human's pick.
+   - **Decide elsewhere.** The human decides: ask the operator through the supervisor
+     channel (the blocking request/reply link; bounded by the run cap as in step 3)
+     with the brainstorm — options, recommendation, falsifiers, and the drafted
+     reply — and post the reply on the thread per the answer. Still unanswered when
+     the cap hits, the question goes to the stop summary. Never implement a
+     design-level finding without the human's pick.
 5. **Push cycle.** After fixes: commit (concise message per `pr-writing`; SSH-signed;
    never `-c commit.gpgsign=false`), `git fetch`, rebase on the base branch replaying
    every commit re-signed (never merge the base branch in), then push
