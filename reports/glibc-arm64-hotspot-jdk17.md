@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk17
 
 ## glibc-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-16 13:03:12 EST
+**Date:** 2026-11-16 13:04:54 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 101 |
-| Sample Rate | 1.68/sec |
-| Health Score | 105% |
-| Threads | 7 |
-| Allocations | 75 |
+| CPU Samples | 100 |
+| Sample Rate | 1.67/sec |
+| Health Score | 104% |
+| Threads | 8 |
+| Allocations | 71 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 94 |
-| Sample Rate | 1.57/sec |
-| Health Score | 98% |
-| Threads | 12 |
-| Allocations | 49 |
+| CPU Samples | 12 |
+| Sample Rate | 0.20/sec |
+| Health Score | 12% |
+| Threads | 6 |
+| Allocations | 12 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 39-39 cores)</summary>
 
 ```
-1794851925 39
-1794851930 39
-1794851935 39
-1794851940 39
-1794851945 39
-1794851950 39
-1794851955 39
-1794851960 39
-1794851965 39
-1794851970 39
-1794851975 39
-1794851980 39
-1794851985 39
-1794851990 39
-1794851995 39
-1794852000 39
-1794852005 39
-1794852010 39
-1794852015 39
-1794852020 39
+1794851904 39
+1794851909 39
+1794851914 39
+1794851919 39
+1794851924 39
+1794851929 39
+1794851934 39
+1794851939 39
+1794851944 39
+1794851949 39
+1794851954 39
+1794851959 39
+1794851964 39
+1794851969 39
+1794851974 39
+1794851979 39
+1794851984 39
+1794851989 39
+1794851994 39
+1794851999 39
 ```
 </details>
 
