@@ -333,7 +333,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             CacheInvalidationMode::DEFERRED, ctx->resolved_chain_tags,
             ctx->resolved_chain_tag_count);
       }
-      if (ctx->batch_tags != nullptr) {
+      if (ctx->batch != nullptr) {
         // Same batching gate as the ordinary admission path below: under array-holder batching,
         // descent stays gated on _pending_expand's own re-walk of this entry, not on inline
         // descent from this callback.
@@ -505,8 +505,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     }
   }
 
-  if (ctx->batch_tags != nullptr) {
-    // ARRAY-HOLDER BATCHING one-hop descent control (see ReferenceChainPassContext:: batch_tags).
+  if (ctx->batch != nullptr) {
+    // ARRAY-HOLDER BATCHING one-hop descent control (see ReferenceChainPassContext::batch).
     //
     // Completion tracking is driven by the REFERRER of each edge, not by which batch entry is
     // currently being visited: HotSpot's iterate_over_array() (jvmtiTagMap.cpp) reports every
@@ -516,20 +516,21 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // early (see _last_visited_batch_tag's own comment).
     if (referrer_tag_ptr != nullptr) {
       jlong referrer_tag = *referrer_tag_ptr;
-      if (referrer_tag > 0 && ctx->batch_tags->count(referrer_tag) != 0 &&
+      if (referrer_tag > 0 && ctx->batch->isMember(referrer_tag) &&
           referrer_tag != ctx->_last_visited_batch_tag) {
         // The referrer changed to a different batch entry: the previous one (if any) has had
-        // every child edge FollowReferences will ever report for it delivered already.
-        if (ctx->_last_visited_batch_tag != 0 &&
-            ctx->_completed_batch_tags != nullptr) {
-          ctx->_completed_batch_tags->insert(ctx->_last_visited_batch_tag);
+        // every child edge FollowReferences will ever report for it delivered already. The
+        // cursor was a member when assigned, and the set is reset only between batches (never
+        // during this synchronous walk), so markCompleted never sees an absent tag here.
+        if (ctx->_last_visited_batch_tag != 0) {
+          ctx->batch->markCompleted(ctx->_last_visited_batch_tag);
         }
         ctx->_last_visited_batch_tag = referrer_tag;
       }
     }
 
     jlong my_tag = *tag_ptr;
-    if (my_tag > 0 && ctx->batch_tags->count(my_tag) != 0) {
+    if (my_tag > 0 && ctx->batch->isMember(my_tag)) {
       return JVMTI_VISIT_OBJECTS;
     }
     return 0;
@@ -651,12 +652,16 @@ void ReferenceChainTracker::trackLeakAccumulation(FrontierTable *frontier,
       if (!locked->lookupLocked(ancestor, &ancestor_entry)) {
         break;
       }
-      auto inserted = _leak_parent_fanout.emplace(ancestor, LeakParentFanoutEntry{key, 1, true});
-      if (!inserted.second) {
-        if (inserted.first->second.ancestors_recorded) {
+      // Duplicates are the normal early-stop path here; emplace may allocate a node before it
+      // detects one, so find first and allocate only on a genuine miss.
+      auto existing = _leak_parent_fanout.find(ancestor);
+      if (existing == _leak_parent_fanout.end()) {
+        _leak_parent_fanout.emplace(ancestor, LeakParentFanoutEntry{key, 1, true});
+      } else {
+        if (existing->second.ancestors_recorded) {
           break; // its ancestors were recorded with it
         }
-        inserted.first->second.ancestors_recorded = true;
+        existing->second.ancestors_recorded = true;
       }
       if (ancestor_entry.parent_tag == 0) {
         break; // root-attached: the holder chain ends here
