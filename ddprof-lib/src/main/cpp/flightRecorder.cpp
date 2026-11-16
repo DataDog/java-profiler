@@ -23,6 +23,7 @@
 #include "mallocInfo.h"
 #include "os.h"
 #include "profiler.h"
+#include "referenceChainFrontier.h"
 #include "signalSafety.h"
 #include "rustDemangler.h"
 #include "safeAccess.h"
@@ -2670,6 +2671,10 @@ void Recording::recordReferenceChainAbandoned(
   static const char *const kReasons[] = {"none", "frontier_cap", "ttl",
                                          "canary_stuck", "unknown",
                                          "root_enum_error"};
+  static_assert(SearchAbandonReason::RECORDING_END == 4 &&
+                        SearchAbandonReason::ROOT_ENUM_ERROR ==
+                            sizeof(kReasons) / sizeof(kReasons[0]) - 1,
+                "kReasons is positionally indexed by SearchAbandonReason");
   buf->putUtf8(event->_reason < sizeof(kReasons) / sizeof(kReasons[0])
                    ? kReasons[event->_reason]
                    : "unknown");

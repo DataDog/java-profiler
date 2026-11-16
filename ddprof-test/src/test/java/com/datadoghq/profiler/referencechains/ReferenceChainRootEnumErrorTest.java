@@ -54,12 +54,12 @@ public class ReferenceChainRootEnumErrorTest extends AbstractProfilerTest {
   public void shouldReportRootEnumErrorOnAbandonedSearch() throws Exception {
     assumeDebugBuild();
 
-    // The tracker is process-wide and may retain another test's search state.
-    // Reset it before enabling injection.
-    ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
-
-    ReferenceChainTestHooks.setRootEnumErrorInjection0(true);
+    // Enable injection BEFORE the reset: resetSearchStateForTest() ends with startThread(), so
+    // the background thread can run one real pass in the window after the reset - a completed
+    // search would make every later driven pass a no-op. The reset does not touch the flag.
     try {
+      ReferenceChainTestHooks.setRootEnumErrorInjection0(true);
+      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
       // Drive the tracker directly instead of waiting for background scheduling.
       // Failed enumeration marks work incomplete, preventing the empty frontier
       // from completing this search before the error limit is reached.
@@ -75,25 +75,21 @@ public class ReferenceChainRootEnumErrorTest extends AbstractProfilerTest {
         }
       }
 
-      // Abandonment queues an event; dump() writes and drains that queue.
-      // Read the recording rather than asserting only on native tracker state.
+      // The final driven pass enqueues the abandonment event synchronously inside
+      // runPass(); one dump drains the pending-event queue and writes the chunk.
       Path dumpPath = Files.createTempFile("referencechains-rootenum-error-test-", ".jfr");
       Files.deleteIfExists(dumpPath);
       try {
-        JfrEvents abandoned = null;
-        for (int attempt = 0; attempt < 8; attempt++) {
-          dump(dumpPath);
-          abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", false);
-          if (abandoned.hasItems() && sawRootEnumErrorReason(abandoned)) {
-            break;
-          }
-          Thread.sleep(1000);
-        }
+        dump(dumpPath);
+        JfrEvents abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", false);
         assertTrue(
-            abandoned != null && abandoned.hasItems(),
+            abandoned.hasItems(),
             "Expected at least one datadog.ReferenceChainAbandoned event after "
                 + MAX_DRIVEN_PASSES
-                + " inject-failing passes");
+                + " inject-failing passes; if the native MAX_CONSECUTIVE_ENUM_ERRORS grew "
+                + "beyond "
+                + MAX_CONSECUTIVE_ENUM_ERRORS
+                + ", update this test's mirror");
         assertTrue(
             sawRootEnumErrorReason(abandoned), "Expected abandonment reason \"root_enum_error\"");
       } finally {

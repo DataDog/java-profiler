@@ -797,8 +797,10 @@ private:
   u32 _consecutive_enum_errors = 0;
 
   // JNI tests toggle this flag while the BFS thread can read it; keep accesses atomic.
-  // Only DEBUG builds consult it to bypass the root-enumeration JVMTI call.
+  // DEBUG-only: no release code reads it, so it is compiled out entirely.
+#ifdef DEBUG
   std::atomic<bool> _root_enum_error_injection{false};
+#endif
 
   ReferenceChainTracker()
       : _enabled(false),
@@ -1312,9 +1314,11 @@ public:
   }
   // Takes effect when an enumeration attempt reads the flag; it does not cancel an in-flight walk.
   // Tests must disable injection before resetting the shared search.
+#ifdef DEBUG
   void setRootEnumErrorInjectionForTest(bool enabled) {
     _root_enum_error_injection.store(enabled, std::memory_order_release);
   }
+#endif
   bool shouldRunRootEnumForTest(u64 now_ns, bool manual_first_pass) const {
     MutexLocker engine_guard(_engine_lock);
     return shouldRunRootEnum(now_ns, manual_first_pass);

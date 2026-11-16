@@ -548,6 +548,11 @@ TEST_F(ReferenceChainJfrRoundtripTest,
     // Java parser tests consume the chain fixture at chainRoundtripJfrPath().
     // Use a separate file so these events cannot replace that fixture.
     const std::string path = chainRoundtripJfrPath() + ".abandoned";
+    // ASSERT_* below returns early on failure; this guard keeps the file from leaking.
+    struct UnlinkOnExit {
+        const std::string &path;
+        ~UnlinkOnExit() { unlink(path.c_str()); }
+    } unlink_guard{path};
     int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
     ASSERT_GE(fd, 0) << "could not open " << path << " for writing";
 
@@ -594,6 +599,4 @@ TEST_F(ReferenceChainJfrRoundtripTest,
             << "reason " << (int)c.reason << " must serialize as "
             << c.expected;
     }
-
-    unlink(path.c_str());
 }
