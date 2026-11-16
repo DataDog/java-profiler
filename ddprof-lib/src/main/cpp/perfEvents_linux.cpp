@@ -712,7 +712,10 @@ int PerfEvents::registerThread(int tid) {
 }
 
 void PerfEvents::unregisterThread(int tid) {
-  if (tid >= _max_events) {
+  // start()'s table resize runs without a freeze, so a hook unregister can race
+  // the window where a failed allocation has nulled _events but _max_events
+  // still holds the old size.
+  if (_events == NULL || tid < 0 || tid >= _max_events) {
     return;
   }
 
