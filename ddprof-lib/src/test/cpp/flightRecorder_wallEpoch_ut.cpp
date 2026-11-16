@@ -232,7 +232,7 @@ TEST_P(WallEpochRecordingTest, ClosedOriginsFollowPendingSegmentsAcrossDumpsAndP
   for (int dump = 0; dump < 2; ++dump) {
     WallEpochFile snapshot;
     ASSERT_GE(snapshot.fd, 0);
-    recording.switchChunk(snapshot.fd);
+    ASSERT_TRUE(recording.switchChunk(dup(snapshot.fd)));
     EXPECT_TRUE(decodeWallEpochs(snapshot.fd).weights.empty());
     EXPECT_EQ(2U, RecordingTestAccessor::epochCount(recording));
   }
@@ -241,7 +241,7 @@ TEST_P(WallEpochRecordingTest, ClosedOriginsFollowPendingSegmentsAcrossDumpsAndP
   EXPECT_EQ(5ULL, profiler->blockTracker()->slotForId(slot)->unowned_blocked_pending_weight.load());
   WallEpochFile partial;
   ASSERT_GE(partial.fd, 0);
-  recording.switchChunk(partial.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(partial.fd)));
   auto partial_events = decodeWallEpochs(partial.fd);
   ASSERT_EQ(1U, partial_events.weights.size());
   EXPECT_EQ(3ULL, partial_events.weights.at(first));
@@ -251,7 +251,7 @@ TEST_P(WallEpochRecordingTest, ClosedOriginsFollowPendingSegmentsAcrossDumpsAndP
   EXPECT_FALSE(flushTail().tail_recorded) << "Committed segments must not replay";
   WallEpochFile final;
   ASSERT_GE(final.fd, 0);
-  recording.switchChunk(final.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(final.fd)));
   auto final_events = decodeWallEpochs(final.fd);
   ASSERT_EQ(1U, final_events.weights.size());
   EXPECT_EQ(5ULL, final_events.weights.at(second));
@@ -308,7 +308,7 @@ void WallEpochRecordingTest::checkOrdinaryAfterEpochRotation(bool fail_deferral)
     WallClockCounters::beginSamplingEpoch(second);
     WallEpochFile snapshot;
     ASSERT_GE(snapshot.fd, 0);
-    recording.switchChunk(snapshot.fd);
+    ASSERT_TRUE(recording.switchChunk(dup(snapshot.fd)));
     ASSERT_EQ(1U, decodeWallEpochs(snapshot.fd).epochs.count(first));
     ASSERT_EQ(0U, RecordingTestAccessor::epochCount(recording));
   }
@@ -324,7 +324,7 @@ void WallEpochRecordingTest::checkOrdinaryAfterEpochRotation(bool fail_deferral)
   recording.recordWallClockEpoch(recording.buffer(0), &epoch);
   WallEpochFile final;
   ASSERT_GE(final.fd, 0);
-  recording.switchChunk(final.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(final.fd)));
   const auto events = decodeWallEpochs(final.fd);
   ASSERT_EQ(1U, events.weights.size());
   EXPECT_EQ(0U, events.weights.count(first)) << "Pruned epoch must not be resurrected by an ordinary write";
@@ -460,7 +460,7 @@ TEST_P(WallEpochRecordingTest, TimerExitClosesFinalWindowBeforeFinalSeal) {
   ASSERT_TRUE(RecordingTestAccessor::hasEpoch(recording, origin));
   WallEpochFile final;
   ASSERT_GE(final.fd, 0);
-  recording.switchChunk(final.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(final.fd)));
   const auto events = decodeWallEpochs(final.fd);
   ASSERT_EQ(1U, events.weights.size());
   EXPECT_EQ(1ULL, events.weights.at(origin));
