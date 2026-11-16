@@ -27,15 +27,19 @@ fi
 
 # The driver replays events against one extension instance and prints one line per
 # tool_result: "inject <first item kept> <instructions text present> <structuredContent kept>",
-# or "none" when the handler leaves the result alone.
+# or "none" when the handler leaves the result alone. A step "rm:<path>" deletes a file,
+# and "cd:<dir>" changes the cwd that later events pass.
 cat > "$TEMP_DIR/driver.mjs" <<'EOF'
-const [ext, cwd, ...steps] = process.argv.slice(2);
+const [ext, cwd0, ...steps] = process.argv.slice(2);
 const mod = await import(ext);
 const handlers = {};
 mod.default({ on: (name, fn) => { handlers[name] = fn; } });
 const out = [];
+let cwd = cwd0;
 for (const step of steps) {
   const [ev, tool, path] = step.split(":");
+  if (ev === "rm") { (await import("node:fs")).rmSync(tool); continue; }
+  if (ev === "cd") { cwd = tool; continue; }
   if (ev !== "tool_result") { await handlers[ev]({ type: ev }, { cwd }); continue; }
   const content = [{ type: "text", text: "ORIGINAL" }];
   const structuredContent = { kept: true };
@@ -96,6 +100,19 @@ check "bash and grep are not covered" "none,none" "$REPO" \
   tool_result:bash:ddprof-lib/src/main/cpp/a.cpp tool_result:grep:ddprof-lib/src/main/cpp/a.cpp
 check "empty path" "none" "$REPO" tool_result:read:
 HOME="$TEMP_DIR" check "~ expands to HOME" "$HIT" "$REPO" tool_result:read:"~/repo/ddprof-lib/src/main/cpp/a.cpp"
+
+LIST="$REPO/.pi/native-agents.json"
+check "the list is read once per session" "none,$HIT" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/java/A.java rm:"$LIST" tool_result:read:ddprof-lib/src/main/cpp/a.cpp
+cp "$ROOT/.pi/native-agents.json" "$LIST"
+check "session_start drops the cached list" "none,none" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/java/A.java rm:"$LIST" session_start \
+  tool_result:read:ddprof-lib/src/main/cpp/a.cpp
+cp "$ROOT/.pi/native-agents.json" "$LIST"
+check "the cache is per cwd" "none,none" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/java/A.java rm:"$LIST" cd:"$REPO/ddprof-lib/src/main/java" \
+  tool_result:read:../cpp/a.cpp
+cp "$ROOT/.pi/native-agents.json" "$LIST"
 
 mv "$REPO/$INSTRUCTIONS" "$TEMP_DIR/instructions.bak"
 check "missing instruction file" "none" "$REPO" tool_result:read:ddprof-lib/src/main/cpp/a.cpp
