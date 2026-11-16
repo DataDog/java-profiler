@@ -499,8 +499,9 @@ A contended stripe or failed write keeps the slot retired with its original trac
 context, state and epoch weights. Registry drains retry these bounded retained slots.
 
 Recording stop flushes live and retired tails after signal and TaskBlock drains,
-before engine teardown. A failed flush leaves teardown retryable and retains only
-uncommitted segments; it does not synthesize an owned TaskBlock duration.
+before engine teardown. A failed flush with healthy output leaves teardown retryable.
+Quarantined output completes producer teardown and retains uncommitted segments in
+non-restartable `ERROR`; no stop path synthesizes an owned TaskBlock duration.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.

@@ -9,8 +9,10 @@
 #include "tsc.h"
 #include <memory>
 #include <future>
+#include <array>
 #include <chrono>
 #include <thread>
+#include <tuple>
 
 
 
@@ -190,7 +192,7 @@ protected:
     ASSERT_TRUE(profiler->blockTracker()->readUnownedContext(request.slot_id, context, publication));
     EXPECT_EQ(111ULL, context.spanId);
     EXPECT_EQ(222ULL, context.rootSpanId);
-    EXPECT_EQ(11U, context.getTag(0));
+    for (int i = 0; i < DD_TAGS_CAPACITY; ++i) EXPECT_EQ(11U + i, context.getTag(i));
   }
 };
 
@@ -337,7 +339,10 @@ TEST_F(WallTailRecordingTest, ActiveOutputFlushFailureRetainsEpochUnitsContextAn
   EXPECT_EQ(1u, roots.count(origin)) << "failed delivery must retain the original trace root";
 }
 
-TEST_F(WallTailRecordingTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRejectsRestart) {
+class QuarantinedWallTailStopTest : public WallTailRecordingTest,
+                                    public ::testing::WithParamInterface<std::tuple<bool, bool>> {};
+
+TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRejectsRestart) {
   class StopObserver : public Engine {
   public:
     unsigned stops = 0;
@@ -345,6 +350,8 @@ TEST_F(WallTailRecordingTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRe
     void enableEvents(bool value) override { enabled = value; }
     void stop() override { ++stops; }
   } cpu, wall, alloc;
+  const bool quarantine_before_stop = std::get<0>(GetParam());
+  const bool pending_tail = std::get<1>(GetParam());
   VMTestAccessor vm;
   RecordingWriteFailureFixture output;
   ASSERT_TRUE(output.valid());
@@ -353,17 +360,38 @@ TEST_F(WallTailRecordingTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRe
   auto* recorder = ProfilerTestAccessor::recorder(profiler.get());
   FlightRecorderTestAccessor active(recorder, recording.get());
   RecordingBuffer* buffer = recording->buffer(ProfilerTestAccessor::stripe(profiler.get(), request.tid));
-  buffer->skip(JFR_EVENT_FLUSH_THRESHOLD - 1);
-  auto* classes = profiler->classMap();
-  constexpr char class_name[] = "RetainedTailClass";
-  const u32 class_id = classes->lookup(class_name, sizeof(class_name) - 1);
-  ASSERT_NE(0U, class_id);
-  const u64 dictionary_generation = classes->generation();
+  const u64 second_epoch = request.sampling_epoch_start + 100;
+  if (pending_tail) {
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+        request.slot_id, request.sampling_epoch_start));
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(request.slot_id, second_epoch));
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(request.slot_id, second_epoch));
+  } else {
+    ASSERT_TRUE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  }
+  buffer->skip(JFR_EVENT_FLUSH_THRESHOLD - 1 - buffer->offset());
+  std::array<StringDictionary*, 3> dictionaries{{
+      profiler->classMap(), profiler->stringLabelMap(), profiler->contextValueMap()}};
+  std::array<u32, 3> dictionary_ids{};
+  std::array<u64, 3> dictionary_generations{};
+  constexpr char retained_value[] = "RetainedTailValue";
+  for (size_t i = 0; i < dictionaries.size(); ++i) {
+    dictionary_ids[i] = dictionaries[i]->lookup(retained_value, sizeof(retained_value) - 1);
+    ASSERT_NE(0U, dictionary_ids[i]);
+    dictionary_generations[i] = dictionaries[i]->generation();
+  }
   ASSERT_TRUE(output.failWrites());
-  EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
-  ASSERT_FALSE(recording->outputGood());
-  ASSERT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD);
-  const int retained_bytes = buffer->offset();
+  if (quarantine_before_stop) {
+    ExecutionEvent event;
+    event._thread_state = OSThreadState::SLEEPING;
+    ASSERT_FALSE(recorder->recordWallSample(
+        ProfilerTestAccessor::stripe(profiler.get(), request.tid), request.tid,
+        origin, &event, request.context));
+    ASSERT_FALSE(recording->outputGood());
+  } else {
+    ASSERT_TRUE(recording->outputGood());
+  }
+  const int bytes_before_stop = buffer->offset();
   ProfilerTestAccessor::prepareStop(profiler.get(), &cpu, &wall, &alloc);
 
   Error error = profiler->stop();
@@ -380,12 +408,28 @@ TEST_F(WallTailRecordingTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRe
   EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
   EXPECT_EQ(0ULL, profiler->threadFilter()->recordingEpoch());
   EXPECT_TRUE(recorder->active());
-  EXPECT_EQ(retained_bytes, buffer->offset());
-  expectOriginRetained();
+  ASSERT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD);
+  const int retained_bytes = buffer->offset();
+  if (quarantine_before_stop) EXPECT_EQ(bytes_before_stop, retained_bytes);
+  else EXPECT_GT(retained_bytes, bytes_before_stop);
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  if (pending_tail) {
+    expectOriginRetained(4);
+    ASSERT_EQ(2u, profiler->blockTracker()->copyUnownedWeightSegments(request.slot_id, segments));
+    EXPECT_EQ(request.sampling_epoch_start, segments[0].epoch_start);
+    EXPECT_EQ(2ULL, segments[0].weight);
+    EXPECT_EQ(second_epoch, segments[1].epoch_start);
+    EXPECT_EQ(2ULL, segments[1].weight);
+  } else {
+    EXPECT_EQ(0u, profiler->blockTracker()->copyUnownedWeightSegments(request.slot_id, segments));
+  }
   CallTraceIdSet roots;
   profiler->blockTracker()->collectLiveTraceIds(roots);
-  EXPECT_EQ(1U, roots.count(origin));
-  EXPECT_EQ(class_id, classes->standby()->lookup(class_name, sizeof(class_name) - 1));
+  EXPECT_EQ(pending_tail ? 1U : 0U, roots.count(origin));
+  for (size_t i = 0; i < dictionaries.size(); ++i) {
+    EXPECT_EQ(dictionary_ids[i],
+              dictionaries[i]->standby()->lookup(retained_value, sizeof(retained_value) - 1));
+  }
 
   Arguments args;
   for (bool reset : {false, true}) {
@@ -393,8 +437,10 @@ TEST_F(WallTailRecordingTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRe
     ASSERT_TRUE(restart);
     EXPECT_STREQ("Profiler encountered fatal error", restart.message());
     EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler.get()));
-    EXPECT_EQ(dictionary_generation, classes->generation());
-    expectOriginRetained();
+    for (size_t i = 0; i < dictionaries.size(); ++i) {
+      EXPECT_EQ(dictionary_generations[i], dictionaries[i]->generation());
+    }
+    if (pending_tail) expectOriginRetained(4);
   }
   EXPECT_TRUE(profiler->stop());
   EXPECT_EQ(1U, cpu.stops);
@@ -402,6 +448,15 @@ TEST_F(WallTailRecordingTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRe
   EXPECT_EQ(1U, alloc.stops);
   EXPECT_EQ(retained_bytes, buffer->offset());
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    OutputFailureTiming, QuarantinedWallTailStopTest,
+    ::testing::Values(std::make_tuple(true, true), std::make_tuple(false, true),
+                      std::make_tuple(true, false)),
+    [](const ::testing::TestParamInfo<std::tuple<bool, bool>>& info) {
+      return std::string(std::get<0>(info.param) ? "BeforeStop" : "DuringTailFlush") +
+             (std::get<1>(info.param) ? "PendingTail" : "NoTail");
+    });
 
 TEST_F(WallTailRecordingTest, ProducerFlushRetriesOnlyFailedEpochWithOriginalContext) {
   u64 second_epoch = request.sampling_epoch_start + 100;

@@ -342,6 +342,7 @@ unchanged. Events queued since the last `dump()` must be written before
 
 **Reusable wall-clock roots.** Hold the recording stripe through capture, cached-ID publication and tail commit.
 Do not consume a deferred segment after a failed write or apply a later sampling epoch's scale.
+A failed stop flush is retryable only while output is healthy; quarantine still stops producers.
 Retained units serialize at their original epoch-window start. See [CallTraceStorage](doc/architecture/CallTraceStorage.md#reusable-unowned-wall-clock-roots).
 
 **Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.

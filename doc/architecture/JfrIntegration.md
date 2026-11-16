@@ -219,7 +219,8 @@ and latches the profiler's non-restartable `ERROR` state. Recording buffers,
 dictionary roots and uncommitted wall tails stay owned.
 
 `FlightRecorder::outputQuarantined()` checks this terminal condition under the
-shared recorder lock on normal threads. Lock contention is not quarantine.
+shared recorder lock on normal threads. Stop checks it after a failed tail flush,
+including failures first observed during that flush. Lock contention is not quarantine.
 A failed close is not retried because descriptor ownership is platform-dependent.
 
 ### `finishChunk()`

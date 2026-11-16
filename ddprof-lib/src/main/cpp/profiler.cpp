@@ -2618,7 +2618,8 @@ Error Profiler::stop() {
     return Error("task-block rotation did not drain; teardown skipped, retry stop()");
   }
 
-  if (!_thread_filter.flushUnownedTails()) {
+  // A tail flush can poison output; terminal quarantine must still stop producers.
+  if (!_thread_filter.flushUnownedTails() && !_jfr.outputQuarantined()) {
     endTaskBlockRotation();
     return Error("pending wall-clock tails could not be written; teardown skipped");
   }
