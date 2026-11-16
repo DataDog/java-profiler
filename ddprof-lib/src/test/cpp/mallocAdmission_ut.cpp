@@ -23,6 +23,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
+    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+#define ADMISSIONS_UT_SANITIZER 1
+#endif
+
 #include "libraries.h"
 #include "mallocTracer.h"
 
@@ -275,6 +280,7 @@ enum AdmissionsChildExit {
   ADMISSIONS_CHILD_OK = 0,
   ADMISSIONS_CHILD_FAIL = 20,
   ADMISSIONS_CHILD_NO_OWN_LIB = 10,
+  ADMISSIONS_CHILD_SKIP = 77,
 };
 
 // The forked own-image scenarios run the production initialize(), which
@@ -293,6 +299,9 @@ void runInChild(Scenario scenario) {
   ASSERT_EQ(waitpid(pid, &status, 0), pid);
   ASSERT_TRUE(WIFEXITED(status)) << "child crashed with signal "
                                  << (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+  if (WEXITSTATUS(status) == ADMISSIONS_CHILD_SKIP) {
+    GTEST_SKIP() << "sanitizer runtime defines malloc in the test executable; own image has no allocator import";
+  }
   ASSERT_EQ(WEXITSTATUS(status), ADMISSIONS_CHILD_OK) << "forked own-image scenario failed, exit code "
                                                       << WEXITSTATUS(status);
 }
@@ -310,6 +319,13 @@ TEST_F(AdmissionsTest, ForkedFreshAndCachedInitializeOnOwnImageAdmits) {
 
   runInChild([]() {
     Libraries::instance()->updateSymbols(false);
+    CodeCache* own = Libraries::instance()->findLibraryByAddress((void*)MallocTracer::recordMalloc);
+    if (own == NULL) _exit(ADMISSIONS_CHILD_NO_OWN_LIB);
+#ifdef ADMISSIONS_UT_SANITIZER
+    // The sanitizer runtime can define malloc in the executable, leaving this
+    // image with no malloc import for the production initializer to resolve.
+    if (own->peekImport(im_malloc, PRIMARY) == NULL) _exit(ADMISSIONS_CHILD_SKIP);
+#endif
     MallocHookerTestAccessor::setInitialized(false);
     Error e = MallocHooker::initialize();
     if (e) _exit(ADMISSIONS_CHILD_FAIL);

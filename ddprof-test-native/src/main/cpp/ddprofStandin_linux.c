@@ -77,6 +77,26 @@ struct ProfilerImage {
   ElfW(Half) phnum;
 };
 
+// glibc relocates dynamic-section pointers in place; musl leaves them as
+// image-relative virtual addresses. Normalize both forms using the lowest
+// PT_LOAD page, matching the profiler's read-only ELF view.
+static uintptr_t dynamicPointer(uintptr_t raw, const struct ProfilerImage* image) {
+  uintptr_t min_vaddr = UINTPTR_MAX;
+  for (ElfW(Half) i = 0; i < image->phnum; i++) {
+    if (image->phdr[i].p_type == PT_LOAD && image->phdr[i].p_vaddr < min_vaddr) {
+      min_vaddr = image->phdr[i].p_vaddr;
+    }
+  }
+  if (min_vaddr == UINTPTR_MAX) return raw;
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size <= 0) return raw;
+  uintptr_t base_page;
+  if (__builtin_add_overflow(image->bias, min_vaddr & ~((uintptr_t)page_size - 1), &base_page)) return raw;
+  if (raw >= base_page) return raw;
+  uintptr_t absolute;
+  return __builtin_add_overflow(image->bias, raw, &absolute) ? raw : absolute;
+}
+
 static int findProfilerImage(struct dl_phdr_info* info, size_t size, void* data) {
   (void)size;
   struct ProfilerImage* image = (struct ProfilerImage*)data;
@@ -113,22 +133,22 @@ static int locateOperationSlots(struct ProfilerImage* image) {
   for (const ElfW(Dyn)* d = dyn; d->d_tag != DT_NULL; d++) {
     switch (d->d_tag) {
       case DT_JMPREL:
-        jmprel = (uintptr_t)d->d_un.d_ptr;
+        jmprel = dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
         break;
       case DT_PLTRELSZ:
         pltrelsz = (size_t)d->d_un.d_val;
         break;
       case DT_RELA:
-        rela = (uintptr_t)d->d_un.d_ptr;
+        rela = dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
         break;
       case DT_RELASZ:
         relasz = (size_t)d->d_un.d_val;
         break;
       case DT_SYMTAB:
-        symtab = (const ElfW(Sym)*)d->d_un.d_ptr;
+        symtab = (const ElfW(Sym)*)dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
         break;
       case DT_STRTAB:
-        strtab = (const char*)d->d_un.d_ptr;
+        strtab = (const char*)dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
         break;
       default:
         break;
