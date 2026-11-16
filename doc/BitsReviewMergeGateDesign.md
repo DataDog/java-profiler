@@ -353,11 +353,15 @@ accepts statuses that the app's other holders post. Before the change, dispatch
 the gate on `main`, then read back that every open PR targeting `main` has a
 `bits-review/head` status created by `java-profiler-bits-gate-c5a8bc[bot]` on its
 head. Read every page of `GET /repos/DataDog/java-profiler/commits/{sha}/statuses`
-with `per_page=100`. Take the newest `bits-review/head` entry and compare its
-`creator.login`. That endpoint reports no app ID. Its `creator.id` is the bot user
-ID, not `5784409`. The combined `/status` endpoint reports no creator. A dispatch
-run resolves only those PRs. It fails above 256 heads, and it writes nothing for an
-empty or unstable snapshot. A head without the status blocks its PR after the
+with `per_page=100`. Keep only the `bits-review/head` entries whose
+`creator.login` is `java-profiler-bits-gate-c5a8bc[bot]`, then select the newest
+by creation time and ID, as the publisher does. A newer entry from another creator
+must not fail the read-back: the publisher suppresses an unchanged write, so a new
+dispatch does not post a newer entry. That endpoint
+reports no app ID. Its `creator.id` is the bot user ID, not `5784409`. The combined
+`/status` endpoint reports no creator. A dispatch run resolves only open PRs that
+target `main`. It fails above 256 heads, and it writes nothing for an empty or
+unstable snapshot. A head without the status blocks its PR after the
 change.
 
 GitHub status storage is commit-scoped. The conjunction across shared-head PRs is
