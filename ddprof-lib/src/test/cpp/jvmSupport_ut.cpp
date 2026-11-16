@@ -9,7 +9,7 @@
 #include "jvmThread.h"
 #include "vmEntry.h"
 #include "profiler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "gtest_crash_handler.h"
 
 // Regression/contract tests for JVMSupport::initialize() and its callers.
