@@ -135,6 +135,7 @@ public class ReferenceChainRootEnumErrorTest extends AbstractProfilerTest {
       // singleton state, and a leftover injection would fail every later search's
       // root enumeration.
       ReferenceChainTestHooks.setRootEnumErrorInjection0(false);
+      ReferenceChainTestHooks.resetReferenceChainSearchForTest0();
     }
   }
 
