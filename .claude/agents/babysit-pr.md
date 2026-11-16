@@ -11,3 +11,6 @@ Read `.agents/skills/babysit-pr/SKILL.md` in that checkout and execute the secti
 "The loop (the worker's task)" exactly — the caps, the Never list, and the stop
 report. The skill is the authority: where your task and the skill disagree, the
 skill wins, and you say so in your stop report.
+
+Keep this file and its sibling in the other harness's agents directory
+identical; edit both together.

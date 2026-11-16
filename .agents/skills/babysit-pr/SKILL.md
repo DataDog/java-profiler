@@ -28,6 +28,8 @@ written by it, and it dies with the session — its stop summary names what rema
    the default async timeout kills the worker at 30 minutes, well inside the
    two-hour cap, and its managed worktree is reaped so the run cannot be resumed;
    the launch needs a clean source tree (stash pending edits and restore them after).
+   Claude Code has no child-timeout option — there the cap is the worker's own
+   discipline (step 5) and the stop report states the elapsed time.
 5. **Handback.** When the run completes, relay its summary in chat: commits pushed,
    findings flagged (drafted design replies, persistent flakes, budget), and threads
    left for the human. When the session is closing, say that babysitting stops with it.
@@ -71,7 +73,9 @@ dogbrew shim where it exists (required on Datadog workstations), bare `gh` other
    block clears when they re-review:
    `$GH api -X POST repos/datadog/java-profiler/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'`.
    Re-request only authors whose blocking comments the fixes addressed — never add
-   reviewers the PR never had, and never change the reviewer list otherwise.
+   reviewers the PR never had, and never change the reviewer list otherwise. A
+   re-request GitHub silently ignores (the PR author, a bot without review rights)
+   is recorded in the stop summary instead of retried.
 5. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
    any cap hit (at most two fix-push rounds and two hours per run). Update the marker to
    `{"pr": <n>, "status": "stopped"}` and summarize: commits pushed, findings flagged,
