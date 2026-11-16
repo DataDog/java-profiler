@@ -189,6 +189,9 @@ public:
     // Clears per-recording membership and suppression state while keeping
     // process-lifetime slot ownership intact. Threads must opt in again with add().
     void clearActive();
+    // Drops every slot's pending unowned-blocked tail, whether or not the filter
+    // is enabled: its cached call trace id is meaningless once the storage is released.
+    void resetUnownedBlockedTails();
     void resetSlotRunState(SlotID slot_id);
     u64 enterBlockedRun(SlotID slot_id, OSThreadState state,
                         BlockRunOwner owner = BlockRunOwner::JAVA);

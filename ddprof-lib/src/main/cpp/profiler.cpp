@@ -7,6 +7,7 @@
 #include <cassert>
 #include <climits>
 #include "profiler.h"
+#include "signalSafety.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
@@ -198,12 +199,14 @@ int Profiler::skippedUnregistration(int index) {
   return g_skipped_tids[index].load(std::memory_order_acquire);
 }
 
+int Profiler::droppedSkippedUnregistrations() {
+  return g_skipped_dropped.load(std::memory_order_relaxed);
+}
+
 void Profiler::clearSkippedUnregistrations() {
-  int dropped = g_skipped_dropped.exchange(0, std::memory_order_relaxed);
-  if (dropped > 0) {
-    Log::warn("Profiler: %d skipped thread unregistration(s) did not fit the "
-              "record; their timers or fds may stay until stop()", dropped);
-  }
+  // Silent: records left by stop()'s freeze name timers it already deleted.
+  // The replay, the only consumer, warns about drops that matter.
+  g_skipped_dropped.store(0, std::memory_order_relaxed);
   g_skipped_count.store(0, std::memory_order_relaxed);
 }
 
@@ -344,10 +347,17 @@ void Profiler::unregisterThreadInEngines(int tid) {
 #endif
   // start() may replace the engine slots concurrently. Either engine is safe
   // to call: unregisterThread() releases only the exiting thread's own slot.
-  __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE)
-      ->unregisterThread(tid);
-  __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE)
-      ->unregisterThread(tid);
+  // A NULL slot is skipped: the persistent hook is normally installed by the
+  // first start(), but any Libraries::updateSymbols() ->
+  // LibraryPatcher::patch_libraries() after init() may install it earlier.
+  Engine *cpu = __atomic_load_n(&_instance->_cpu_engine, __ATOMIC_ACQUIRE);
+  Engine *wall = __atomic_load_n(&_instance->_wall_engine, __ATOMIC_ACQUIRE);
+  if (cpu != NULL) {
+    cpu->unregisterThread(tid);
+  }
+  if (wall != NULL) {
+    wall->unregisterThread(tid);
+  }
 }
 
 const char *Profiler::asgctError(int code) {
@@ -753,7 +763,8 @@ void Profiler::verifyAllocStack(const ASGCT_CallFrame* frames, int num_frames, j
   }
 }
 
-u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event,
+                                bool deferred, u32 recording_session) {
   // Called from non-signal based sampler
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
   if (prof_thread == nullptr) {
@@ -774,11 +785,18 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 
     return 0;
   }
+  // The caller resolved event's ids before a stop: they may be stale in the
+  // current recording. Checked and emitted under the same stripe lock, which
+  // the bump in releaseRecordingMemory() excludes.
+  if (__atomic_load_n(&_session, __ATOMIC_RELAXED) != recording_session) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    _locks[lock_index].unlock();
+    return 0;
+  }
   u64 call_trace_id = 0;
   if (!_omit_stacktraces) {
-    // Defensive: the buffer slot can be observed as nullptr in pathological
-    // start sequences (e.g. a calloc failure path in Profiler::start before
-    // engines are enabled). Drop the sample rather than dereferencing.
+    // Null while idle: stop() frees the buffers, and an allocation callback can
+    // still be running after the engine stopped. Drop the sample.
     CallTraceBuffer *buf = _calltrace_buffer[lock_index];
     if (buf == nullptr) {
       atomicIncRelaxed(_failures[-ticks_skipped]);
@@ -894,22 +912,31 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
 
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event,
-                            u64 *recorded_call_trace_id) {
+                            u64 *recorded_call_trace_id,
+                            const u32 *recording_session) {
   atomicIncRelaxed(_total_samples);
-
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    // Too many concurrent signals already
+  auto drop = [&]() {
     atomicIncRelaxed(_failures[-ticks_skipped]);
-
     if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
       // Need to reset PerfEvents ring buffer, even though we discard the
       // collected trace
       PerfEvents::resetBuffer(tid);
     }
     return false;
+  };
+
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    // Too many concurrent signals already
+    return drop();
+  }
+  // Checked under the stripe lock, which the bump in releaseRecordingMemory() excludes.
+  if (recording_session != nullptr &&
+      __atomic_load_n(&_session, __ATOMIC_RELAXED) != *recording_session) {
+    _locks[lock_index].unlock();
+    return drop();
   }
 
   bool truncated = false;
@@ -919,10 +946,17 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // call_trace_id determined to be reusable at a higher level
 
   if (!_omit_stacktraces && call_trace_id == 0) {
+    // Null while the profiler is idle (stop() frees the buffers); like the
+    // other readers, drop the sample rather than dereference it.
+    CallTraceBuffer *buf = _calltrace_buffer[lock_index];
+    if (buf == nullptr) {
+      _locks[lock_index].unlock();
+      return drop();
+    }
 #ifdef COUNTERS
     u64 startTime = TSC::ticks();
 #endif // COUNTERS
-    ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
+    ASGCT_CallFrame *frames = buf->_asgct_frames;
 
     int num_frames = 0;
 
@@ -1270,10 +1304,11 @@ void Profiler::rollBackStart() {
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
-  lockAll();
-  _jfr.stop();
-  unlockAll();
-  LibraryPatcher::unpatch_libraries();
+  {
+    AllStripesLock stripes(this);
+    _jfr.stop();
+  }
+  LibraryPatcher::unpatch_recording_hooks();
 }
 
 // stop() leaves an engine's per-thread resources in place (PerfEvents keeps
@@ -1738,6 +1773,18 @@ Error Profiler::init() {
       _state.store(ERROR, std::memory_order_release);
       return Error("Profiler encountered fatal error");
     }
+
+    // Arms the persistent pthread_create patch (the first start() installs it).
+    // After JVMSupport::initialize(): the hook needs ProfiledThread TLS.
+    // On glibc the hooked threads end with pthread_exit(), which loads libgcc_s
+    // lazily: do not arm the hook unless prewarmUnwinder() has loaded it, as
+    // checkState() requires before start() arms it.
+    if (prewarmUnwinder() || OS::isMusl()) {
+      LibraryPatcher::initialize_persistent();
+    }
+
+    // The idle footprint before the first start().
+    NativeMem::logLive("after init");
   }
   // Unlike checkState(), init() does not reject a RUNNING/TERMINATED
   // profiler: it is idempotent per-thread setup for the Java API
@@ -1756,6 +1803,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
+
+  // The idle footprint this start() begins from.
+  NativeMem::logLive("before start");
 
   // Sanity checks run at most once per process, across start and stop cycles.
   // Profiler::start() sets sanity_checked to true before it checks
@@ -1838,16 +1888,42 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_info.clearAll();
   }
 
-  // (Re-)allocate calltrace buffers
+  // Storage stop() or the reset above released. After Counters::reset(), so
+  // the storage counters count exactly this allocation.
+  if (!acquireRecordingMemory()) {
+    return Error("Failed to allocate call trace storage; retry start()");
+  }
+  // Every failed start() from here on gives the recording memory back (and
+  // closes the intern gate); disarmed once the recording runs.
+  struct RecordingMemoryScope {
+    Profiler *profiler;
+    bool armed;
+    explicit RecordingMemoryScope(Profiler *p) : profiler(p), armed(true) {}
+    RecordingMemoryScope(const RecordingMemoryScope &) = delete;
+    RecordingMemoryScope &operator=(const RecordingMemoryScope &) = delete;
+    ~RecordingMemoryScope() {
+      if (armed) {
+        profiler->releaseRecordingMemory();
+      }
+    }
+  } recording_memory(this);
+  // Before any engine starts, so no call trace id is cached under the old value.
+  __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
+  // Defensive: a cached tail id names call-trace storage released at stop();
+  // drop it before an engine can flush it into this recording.
+  _thread_filter.resetUnownedBlockedTails();
+  // Open before any engine starts, so early allocation callbacks can intern.
+  _intern_open.store(true, std::memory_order_release);
+
+  // (Re-)allocate calltrace buffers, also after stop() freed them
   size_t nelem = CallTraceBuffer::capacity(args._jstackdepth, args._alloc_stack);
-  if (_max_stack_depth != args._jstackdepth || _calltrace_buffer_capacity[0] != nelem) {
+  if (_max_stack_depth != args._jstackdepth || _calltrace_buffer_capacity[0] != nelem ||
+      _calltrace_buffer[0] == NULL) {
     size_t prev_nelem = _calltrace_buffer_capacity[0];
 
-    // Phase 1: allocate all replacements up front. If any allocation fails,
-    // roll back the ones already made and leave the profiler unchanged — old
-    // buffers, _max_stack_depth, and all accounting stay consistent. (The old
-    // code swapped shard-by-shard and reset _max_stack_depth to 0 on failure,
-    // leaving a partially-swapped, mis-accounted state.)
+    // Phase 1: allocate all replacements up front; on a failure free them and
+    // fail with no partial swap. recording_memory then releases the old
+    // buffers too, leaving the idle state stop() leaves.
     CallTraceBuffer *fresh[CONCURRENCY_LEVEL];
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       fresh[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
@@ -1855,6 +1931,8 @@ Error Profiler::start(Arguments &args, bool reset) {
         for (int j = 0; j < i; j++) {
           free(fresh[j]);
         }
+        // recording_memory frees what acquireRecordingMemory() allocated
+        // above and the old buffers, back to the idle state.
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
@@ -1872,8 +1950,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       _calltrace_buffer[i] = fresh[i];
       _calltrace_buffer_capacity[i] = nelem;
       _locks[i].unlock();
-      free(prev);
       if (prev != NULL) {
+        free(prev);
         // Account the free after it has happened, consistent with the other
         // decrement sites (FlightRecorder::stop, ~ThreadFilter).
         NativeMem::record(NM_CALLTRACE, -(long long)(prev_nelem * sizeof(CallTraceBuffer)));
@@ -1943,6 +2021,11 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   args._cstack = _cstack;
 
+  // Before initExecution(): its jmethodID preload snapshots the loaded
+  // classes, so CLASS_PREPARE must be on by then. Events before it sets the
+  // load state are ignored; the snapshot covers those classes.
+  enablePersistentJvmtiEvents();
+
   // Allocation/live-heap stacks: the VM walker needs the VMStructs stack walking
   // cstack=vm uses, so by default it follows cstack.
   _alloc_stack = args._alloc_stack;
@@ -1957,9 +2040,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   // above: initExecution() picks the jmethodID mode from cstackMode().
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
-  // Must precede the first updateSymbols(): it is what allows LibraryPatcher to
-  // start patching, and the hooks it installs assume a running profiler.
-  LibraryPatcher::initialize();
+  // An -agentpath session never calls init(). Idempotent; before the first
+  // updateSymbols(), so its scan installs the persistent patches.
+  LibraryPatcher::initialize_persistent();
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
@@ -2124,7 +2207,9 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
-    __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
+    // What the recording allocated on top of "before start".
+    recording_memory.armed = false;
+    NativeMem::logLive("after start");
     return Error::OK;
   }
   // no engine was activated; perform cleanup
@@ -2159,8 +2244,8 @@ Error Profiler::stop() {
   // Close the registration gate and wait for the calls already past it, so no
   // thread arms a timer or opens an fd after the engines below stop.
   // Unregistration stays open (see _thread_tables_stable). The engine stops
-  // below tolerate a concurrent unregisterThread() because none of them frees
-  // a per-thread table: CTimer releases slots with a per-slot CAS, and
+  // below tolerate a concurrent unregisterThread(): CTimer releases slots with a
+  // per-slot CAS and frees its table only under its own ThreadTablesFreeze, and
   // PerfEvents::stop() is a no-op. For the same reason the stop still
   // completes if a registration call is stuck inside an engine after the wait
   // budget. Only an engine whose table outlives stop() can have that table
@@ -2211,14 +2296,16 @@ Error Profiler::stop() {
     // now instead of leaking until (and across) the next recording.
     ReferenceChainTracker::instance()->releaseAllThreadObjects(VM::jni());
   }
-  if (_event_mask & EM_NATIVEMEM)
-    malloc_tracer.stop();
-  // Stop the refresher BEFORE socket unpatch: the refresher calls
+  // Stop the refresher BEFORE malloc and socket unpatch: the refresher calls
   // install_socket_hooks() which re-reads _socket_active before acquiring the
   // patch lock.  If the refresher runs concurrently with unpatch_socket_functions()
   // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
+  // The refresher also re-installs malloc hooks (MallocTracer::installHooks()).
+  if (_event_mask & EM_NATIVEMEM) {
+    malloc_tracer.stop();
+  }
   if (_event_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
@@ -2283,11 +2370,14 @@ Error Profiler::stop() {
   _thread_info.reportCounters();
 
   rotateDictsAndRun([&]{ _jfr.stop(); });
+  // The final chunk is written: nothing reads the call traces or the
+  // dictionaries until the next start().
+  releaseRecordingMemory();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
-  LibraryPatcher::unpatch_libraries();
+  LibraryPatcher::unpatch_recording_hooks();
 
   if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
     _state.store(ERROR, std::memory_order_release);
@@ -2464,6 +2554,59 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
   }
 }
 
+void Profiler::enablePersistentJvmtiEvents() {
+  // Never disabled once on. Each event is enabled, then replayed, on its own,
+  // so one failure blocks no other; a failed step is retried by the next start().
+  struct PersistentEvent {
+    jvmtiEvent event;
+    const char *name;
+    bool needed;
+    bool replay;
+  };
+  // NATIVE_METHOD_BIND is enabled at agent load instead (VM::initProfilerBridge()):
+  // bindings cannot be replayed.
+  const PersistentEvent events[] = {
+      // jmethodID preloading for AsyncGetCallTrace (JVMSupport::loadMethodIDsIfNeeded).
+      {JVMTI_EVENT_CLASS_LOAD, "CLASS_LOAD", true, false},
+      {JVMTI_EVENT_CLASS_PREPARE, "CLASS_PREPARE", true, false},
+      // Stubs and adapters, including HotSpot's bootstrap stubs generated before
+      // any loading mode gets here: call_stub bounds and stub unwind info.
+      {JVMTI_EVENT_DYNAMIC_CODE_GENERATED, "DYNAMIC_CODE_GENERATED", true, true},
+      // JIT-compiled methods, only without CodeHeap (JDK-8173361 workaround).
+      {JVMTI_EVENT_COMPILED_METHOD_LOAD, "COMPILED_METHOD_LOAD",
+       VM::hotspot_version() == 0 || !CodeHeap::available(), true},
+  };
+  static_assert(sizeof(events) / sizeof(events[0]) <= 8, "one bit per event");
+
+  jvmtiEnv *jvmti = VM::jvmti();
+  for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); i++) {
+    const PersistentEvent &e = events[i];
+    const u8 bit = static_cast<u8>(1u << i);
+    if (!e.needed || (_persistent_jvmti_events & bit) != 0) {
+      continue;
+    }
+    if (e.event == JVMTI_EVENT_COMPILED_METHOD_LOAD) {
+      TEST_LOG("CompiledMethodLoad workaround: hotspot_version=%d CodeHeap::available=%d",
+               VM::hotspot_version(), CodeHeap::available());
+    }
+    jvmtiError err = jvmti->SetEventNotificationMode(JVMTI_ENABLE, e.event, NULL);
+    const char *step = "enabling";
+    if (err == JVMTI_ERROR_NONE && e.replay) {
+      err = jvmti->GenerateEvents(e.event);
+      step = "replaying";
+    }
+    if (err != JVMTI_ERROR_NONE) {
+      Log::warn("Persistent JVMTI events: %s %s failed (error %d); will retry on next start",
+                step, e.name, static_cast<int>(err));
+      continue;
+    }
+    _persistent_jvmti_events |= bit;
+    if (e.event == JVMTI_EVENT_CLASS_PREPARE) {
+      TEST_LOG("Persistent JVMTI events: CLASS_PREPARE enabled");
+    }
+  }
+}
+
 Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   switch (args._action) {
   case ACTION_START:
@@ -2560,6 +2703,73 @@ void Profiler::shutdown(Arguments &args) {
   _state.store(TERMINATED, std::memory_order_release);
 }
 
+void Profiler::releaseRecordingMemory() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  // Close the intern gate first (_state is still RUNNING during stop()): new
+  // callers see the flag; the exclusive acquire waits for those holding the
+  // lock, and a later acquirer re-checks the flag under it.
+  _intern_open.store(false, std::memory_order_seq_cst);
+  {
+    ExclusiveLockGuard drain(&_intern_lock);
+  }
+
+  // First, while getLiveTraceIds() is no longer consulted (the final chunk is
+  // written) and the reference-chain BFS thread is joined. A no-op if nothing
+  // was allocated (a start() that failed before LivenessTracker::start()).
+  LivenessTracker::instance()->release(VM::jni());
+
+  // Detach the stripe buffers under the stripe locks (readers check for NULL
+  // under them) and free them after: signal handlers share these locks.
+  CallTraceBuffer *buffers[CONCURRENCY_LEVEL];
+  size_t capacities[CONCURRENCY_LEVEL];
+  {
+    AllStripesLock stripes(this);
+    // Invalidates ids resolved or cached (wall-clock call_trace_id) against the
+    // storage freed below; start() bumps again before its engines start.
+    __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
+    // Release: a callback that acquires the new value sees the closed gate.
+    __atomic_add_fetch(&_session, 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      buffers[i] = _calltrace_buffer[i];
+      capacities[i] = _calltrace_buffer_capacity[i];
+      _calltrace_buffer[i] = NULL;
+      _calltrace_buffer_capacity[i] = 0;
+    }
+  }
+  // Outside the locks too: release() unpublishes each table and drains its
+  // guards before deleting it, so a late put() just drops its trace.
+  _call_trace_storage.release();
+  // A cached tail id names the call-trace storage released just above.
+  _thread_filter.resetUnownedBlockedTails();
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    if (buffers[i] != NULL) {
+      free(buffers[i]);
+      NativeMem::record(NM_CALLTRACE,
+                        -static_cast<long long>(capacities[i] * sizeof(CallTraceBuffer)));
+    }
+  }
+
+  // StringDictionary::release() drains its accessors itself; callers outside
+  // the engines intern only through the intern gate closed above. A dictionary
+  // whose drain times out keeps its storage until the next stop().
+  if (!_class_map.release()) {
+    reportDrainTimeout("Class map not released");
+  }
+  if (!_string_label_map.release()) {
+    reportDrainTimeout("String label map not released");
+  }
+  // Not _context_value_map: threads cache its encodings (the tag-encoding
+  // sidecar) across stop()/start(); rotate() carries every entry into the next
+  // constant pool, and only a fresh start's clearAll() resets it.
+}
+
+bool Profiler::acquireRecordingMemory() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  // The dictionaries need nothing here: they allocate on demand.
+  AllStripesLock stripes(this);
+  return _call_trace_storage.acquire();
+}
+
 int Profiler::resetRecordingState() {
   // StringDictionary::clearAll() manages its own synchronisation (RefCountGuard
   // drain) internally; no external lock is needed.  A dictionary whose drain
@@ -2574,11 +2784,10 @@ int Profiler::resetRecordingState() {
     _context_value_dict_reset.store(true, std::memory_order_release);
   }
 
-  if (!_omit_stacktraces) {
-    lockAll();
-    _call_trace_storage.clear();
-    unlockAll();
-  }
+  // Normally a no-op. A table still allocated must go before Counters::reset(),
+  // or freeing it later drives the CALLTRACE_STORAGE_* counters negative.
+  // No lockAll(): see releaseRecordingMemory().
+  _call_trace_storage.release();
 
   Counters::reset();
   // Counters::reset() zeroes the dictionary memory gauges, but the dictionaries

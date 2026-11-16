@@ -170,6 +170,16 @@ Tag encodings are integer IDs from the profiler's `Dictionary` constant
 pool — the signal handler writes them directly into JFR events without
 any string lookup.
 
+Because the sidecar caches encodings for as long as a span's context stays
+unchanged, the context-value dictionary (`Profiler::_context_value_map`) is
+**not** released when a recording stops: a span active across stop/resume
+keeps sampling its cached encodings, which still resolve in the resumed
+recording's constant pool (see
+[StringDictionary.md](StringDictionary.md#release-protocol)). A fresh `start`
+does reset it (`clearAll()`, ids restart at 1); the Java `ContextValueCache` is
+dropped on the next `execute()`, but a sidecar written before the reset keeps
+its old encodings until the context is rewritten.
+
 ### attrs_data TLV Encoding
 
 Each entry in `attrs_data` is encoded as:

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstring>
 #include "../../main/cpp/objectSampler.h"
+#include "../../main/cpp/profiler.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include "vmEntry.h"
 
@@ -264,4 +265,113 @@ TEST_F(ObjectSamplerDeallocateTest, DeallocateNotCalledWhenSuccessButNullName) {
 // Deallocate MUST NOT be called.
 TEST_F(ObjectSamplerDeallocateTest, DeallocateNotCalledWhenNotActive) {
     runAndExpect(mock_GetClassSignature_success, false, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Recording-session snapshot: taken at callback entry, before any JVMTI call
+// ---------------------------------------------------------------------------
+
+class ProfilerTestAccessor {
+public:
+  static void setInternOpen(bool open) {
+    Profiler::instance()->_intern_open.store(open, std::memory_order_release);
+  }
+  static bool omitStacktraces() { return Profiler::instance()->_omit_stacktraces; }
+  static void setOmitStacktraces(bool omit) {
+    Profiler::instance()->_omit_stacktraces = omit;
+  }
+  // What releaseRecordingMemory() does to the session at a stop.
+  static void bumpSession() {
+    __atomic_add_fetch(&Profiler::instance()->_session, 1, __ATOMIC_RELEASE);
+  }
+  static u64 skipped() {
+    return __atomic_load_n(&Profiler::instance()->_failures[-ticks_skipped],
+                           __ATOMIC_RELAXED);
+  }
+};
+
+// A stop()/start() that completes while the callback is inside GetClassSignature(), which
+// returns a class no other test interns, so its presence in the class map is attributable.
+static char g_stale_session_class_name[] = "Lcom/dd/test/StaleSessionClass;";
+static const char kStaleSessionClassInMap[] = "com/dd/test/StaleSessionClass";
+
+static jvmtiError JNICALL mock_GetClassSignature_unique_class_across_stop(
+    jvmtiEnv * /*env*/, jclass /*klass*/, char **signature_ptr, char ** /*generic_ptr*/) {
+  ProfilerTestAccessor::bumpSession();
+  if (signature_ptr) {
+    *signature_ptr = g_stale_session_class_name;
+  }
+  return JVMTI_ERROR_NONE;
+}
+
+class ObjectSamplerSessionTest : public ObjectSamplerDeallocateTest {
+protected:
+  bool old_omit = false;
+
+  void SetUp() override {
+    ObjectSamplerDeallocateTest::SetUp();
+    old_omit = ProfilerTestAccessor::omitStacktraces();
+    // Deferred liveness-only path: no stack walk, no JFR event.
+    ProfilerTestAccessor::setOmitStacktraces(true);
+    ProfilerTestAccessor::setInternOpen(true);
+    ObjectSamplerTestAccessor::setSessionFlags(ObjectSampler::instance(), false, true, false);
+  }
+
+  void TearDown() override {
+    ObjectSamplerTestAccessor::setSessionFlags(ObjectSampler::instance(), false, false, false);
+    ProfilerTestAccessor::setInternOpen(false);
+    ProfilerTestAccessor::setOmitStacktraces(old_omit);
+    ObjectSamplerDeallocateTest::TearDown();
+  }
+
+  u64 skippedAfter(jvmtiError(JNICALL *mock)(jvmtiEnv *, jclass, char **, char **)) {
+    u64 before = ProfilerTestAccessor::skipped();
+    runAndExpect(mock, true, 1);
+    return ProfilerTestAccessor::skipped() - before;
+  }
+};
+
+TEST_F(ObjectSamplerSessionTest, SampleWithinOneSessionIsRecorded) {
+  EXPECT_EQ(0u, skippedAfter(mock_GetClassSignature_success));
+}
+
+// The allocation predates the stop, so the callback must not intern its class
+// into the new recording's class map, and its sample is dropped before it is
+// recorded (so the skipped counter does not move).
+TEST_F(ObjectSamplerSessionTest, StopDuringClassLookupDropsSample) {
+  ASSERT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kStaleSessionClassInMap, strlen(kStaleSessionClassInMap)));
+
+  EXPECT_EQ(0u, skippedAfter(mock_GetClassSignature_unique_class_across_stop));
+
+  EXPECT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kStaleSessionClassInMap, strlen(kStaleSessionClassInMap)))
+      << "a stale callback interned its class into the next recording's map";
+}
+
+// Returns a class no other test interns, with the session left unchanged.
+static char g_gate_closed_class_name[] = "Lcom/dd/test/GateClosedClass;";
+static const char kGateClosedClassInMap[] = "com/dd/test/GateClosedClass";
+
+static jvmtiError JNICALL mock_GetClassSignature_unique_class_same_session(
+    jvmtiEnv * /*env*/, jclass /*klass*/, char **signature_ptr, char ** /*generic_ptr*/) {
+  if (signature_ptr) {
+    *signature_ptr = g_gate_closed_class_name;
+  }
+  return JVMTI_ERROR_NONE;
+}
+
+// A callback that passed _active before stop() sees the intern gate closed but
+// the session unchanged: only the gate keeps it from re-allocating the class
+// map stop() released.
+TEST_F(ObjectSamplerSessionTest, ClosedInternGateDoesNotInternClass) {
+  ProfilerTestAccessor::setInternOpen(false);
+  ASSERT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kGateClosedClassInMap, strlen(kGateClosedClassInMap)));
+
+  runAndExpect(mock_GetClassSignature_unique_class_same_session, true, 1);
+
+  EXPECT_EQ(0u, Profiler::instance()->classMap()->bounded_lookup(
+                    kGateClosedClassInMap, strlen(kGateClosedClassInMap)))
+      << "a callback interned its class through a closed intern gate";
 }

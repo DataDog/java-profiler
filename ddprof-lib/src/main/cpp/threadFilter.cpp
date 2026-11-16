@@ -336,6 +336,19 @@ void ThreadFilter::clearActive() {
     }
 }
 
+void ThreadFilter::resetUnownedBlockedTails() {
+    int num_chunks = _num_chunks.load(std::memory_order_acquire);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) {
+            continue;
+        }
+        for (auto& slot : chunk->slots) {
+            slot.resetUnownedBlockedSampling();
+        }
+    }
+}
+
 void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     if (slot_id < 0) return;
     int chunk_idx = slot_id >> kChunkShift;

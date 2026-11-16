@@ -511,6 +511,19 @@ public final class JavaProfiler {
 
   private static native String[] describeDebugCounters0();
 
+  /**
+   * Test seam: the names of the native-memory categories the profiler accounts its own allocations
+   * under (NativeMem), in the order {@link #getNativeMemLive0()} reports them.
+   */
+  static native String[] describeNativeMemCategories0();
+
+  /**
+   * Test seam: the profiler's live native memory in bytes per category, read from the always-on
+   * gauges at the moment of the call. Works in every build and whether or not a recording is
+   * running. Tests reach it via {@code NativeMemTestHooks}.
+   */
+  static native long[] getNativeMemLive0();
+
   private static native void recordSettingEvent0(String name, String value, String unit);
 
   private static native void recordQueueEnd0(
