@@ -2413,6 +2413,9 @@ Error LivenessTracker::initialize(Arguments &args) {
   // tracking table. Update it before the _initialized guard so each profiler
   // start gets the correct setting, also when the table is kept.
   _record_heap_usage = args._record_heap_usage;
+  // Same for the live-samples ratio: also on the early returns below, so the
+  // recording settings report the ratio this start() was given.
+  setSubsampleRate(SubsampleRate(args._live_samples_ratio));
 
   // Fresh recording: no chase is open, so no watched tids and no urgency
   // boost may leak in from a previous recording's lifecycle. This MUST run on
@@ -2497,10 +2500,6 @@ Error LivenessTracker::initialize(Arguments &args) {
     return _stored_error = Error::OK;
   }
 
-  // Both halves replaced together; the threshold exists so the per-allocation
-  // decision in track() is an integer compare rather than a double multiply.
-  setSubsampleRate(SubsampleRate(args._live_samples_ratio));
-
   int cap = std::min(2048, max_cap); // with default 512k sampling interval,
                                      // it's enough for 1G of heap
   TrackingEntry *table = static_cast<TrackingEntry *>(malloc(sizeof(TrackingEntry) * cap));
@@ -2516,13 +2515,15 @@ Error LivenessTracker::initialize(Arguments &args) {
   }
   // Published together under the exclusive lock: an allocation callback still
   // in flight from the previous recording (see release()) may be in track(),
-  // and must never see a capacity without the table it belongs to.
+  // and must never see a capacity without its table, or the old table's GC epoch.
   {
     ExclusiveLockGuard guard(&_table_lock);
     _table = table;
     _table_size = 0;
     _table_cap = cap;
     _table_max_cap = table != NULL ? max_cap : 0;
+    store(_gc_epoch, (u64)0);
+    store(_last_gc_epoch, (u64)0);
     _table_generation.fetch_add(1, std::memory_order_release);
   }
   if (table == NULL) {
@@ -2532,9 +2533,6 @@ Error LivenessTracker::initialize(Arguments &args) {
               "allocation failed");
     _initialized = false;
   }
-
-  _gc_epoch = 0;
-  _last_gc_epoch = 0;
 
   return _stored_error = Error::OK;
 }

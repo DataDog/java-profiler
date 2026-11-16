@@ -346,6 +346,9 @@ private:
   // UINT64_MAX admits every allocation without a draw.
   std::atomic<u64> _subsample_threshold;
   std::atomic<double> _subsample_ratio;  // reported in the recording settings
+  static_assert(std::atomic<u64>::is_always_lock_free &&
+                    std::atomic<double>::is_always_lock_free,
+                "admitForTracking() runs in JVMTI allocation callbacks");
 
   // Chase-phase admission-boost state (admitForTracking()'s declaration
   // comment below). _watched_tids is two-phase-published: slots first, then
