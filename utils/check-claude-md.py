@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # Copyright 2026, Datadog, Inc.
-"""Check that CLAUDE.md is the canonical redirect stub to AGENTS.md.
+"""Check that CLAUDE.md is the canonical redirect stub to AGENTS.md, or the import stub.
 
 Claude Code reads CLAUDE.md for its Compact Instructions; everything else lives in
 AGENTS.md so that every coding agent reads the same instructions. This script holds
-the canonical text; `--write` restores it. One block injected by the cairn plugin is
-ignored while it is uncommitted and the committed file is canonical, so CI, which
-checks a clean checkout, never accepts it. `--head <commit>` (pre-push) checks that
-commit's CLAUDE.md, where the exception never applies.
+the canonical text; `--write` restores it. The stub that only imports AGENTS.md
+(`IMPORT_STUB`) is accepted too, so that a branch can switch CLAUDE.md to it while
+branches with the redirect still pass. One block injected by the cairn plugin is
+ignored while it is uncommitted and the committed file is the same accepted text, so
+CI, which checks a clean checkout, never accepts it. `--head <commit>` (pre-push)
+checks that commit's CLAUDE.md, where the exception never applies.
 
 Exit codes: 0 canonical (or written), 1 missing or different, 2 environment error.
 """
@@ -38,6 +40,8 @@ open questions, and file:line references. Drop raw tool output that can be re-fe
 demand — full file contents, grep/search dumps, build/test logs — summarize these to a
 one-line pointer (what was read/run and the conclusion) instead of retaining them verbatim.
 """
+IMPORT_STUB = "# CLAUDE.md\n\n@AGENTS.md\n"
+ACCEPTED = (CANONICAL, IMPORT_STUB)
 
 
 def committed(root, rev="HEAD"):
@@ -78,14 +82,15 @@ def main(argv):
     except OSError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
-    if actual == CANONICAL:
+    if actual in ACCEPTED:
         print("CLAUDE.md: OK")
         return 0
     # The cairn plugin's SessionStart hook injects one managed block into the working copy.
-    # Accept that only while the committed file is canonical, so CI (a clean checkout)
-    # never lets a committed block, or anything placed inside one, through.
-    if not args.head and len(CAIRN_BLOCK.findall(actual)) == 1 and CAIRN_BLOCK.sub("", actual) == CANONICAL \
-            and committed(args.root) == CANONICAL:
+    # Accept that only while the committed file is the same accepted text, so CI (a clean
+    # checkout) never lets a committed block, or anything placed inside one, through.
+    stripped = CAIRN_BLOCK.sub("", actual)
+    if not args.head and len(CAIRN_BLOCK.findall(actual)) == 1 and stripped in ACCEPTED \
+            and committed(args.root) == stripped:
         print("CLAUDE.md: OK (uncommitted cairn block ignored)")
         return 0
     sys.stdout.writelines(difflib.unified_diff(actual.splitlines(True), CANONICAL.splitlines(True),

@@ -544,6 +544,61 @@ add_cairn 1 && (cd "$CM_ROOT" && git commit -qam "cairn block")
 python3 "$CM" --root "$CM_ROOT" --write >/dev/null && (cd "$CM_ROOT" && git commit -qam canonical)
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" --head HEAD~1 2>&1) || rc=$?
 expect "T6n --head never ignores a committed cairn block" 1 "$rc" "$out" "differs from the canonical stub"
+# Both accepted texts, pinned as literals rather than through the script's own constants.
+REDIRECT_TEXT="$TEMP_DIR/redirect.md"
+cat > "$REDIRECT_TEXT" <<'EOF'
+# CLAUDE.md
+
+**This file redirects to AGENTS.md for tooling-agnostic project instructions.**
+
+Read and follow all instructions in [AGENTS.md](AGENTS.md) in this directory.
+
+All project guidance, build commands, architecture details, and development guidelines
+are maintained in AGENTS.md to support multiple AI coding tools.
+
+## Compact Instructions
+
+When compacting this conversation, prioritize keeping: decisions made, code/config diffs,
+open questions, and file:line references. Drop raw tool output that can be re-fetched on
+demand — full file contents, grep/search dumps, build/test logs — summarize these to a
+one-line pointer (what was read/run and the conclusion) instead of retaining them verbatim.
+EOF
+STUB_TEXT="$TEMP_DIR/stub.md"
+printf '# CLAUDE.md\n\n@AGENTS.md\n' > "$STUB_TEXT"
+CM_ROOT="$TEMP_DIR/claude-md-literal"
+mkdir -p "$CM_ROOT" && (cd "$CM_ROOT" && git init -q && git config user.email t@example.com && git config user.name t)
+python3 "$CM" --root "$CM_ROOT" --write >/dev/null
+if cmp -s "$CM_ROOT/CLAUDE.md" "$REDIRECT_TEXT"; then pass; else fail "T6o --write does not write the redirect text"; fi
+cm_commit() {  # cm_commit <file>: commits <file> as CLAUDE.md
+  cp "$1" "$CM_ROOT/CLAUDE.md" && (cd "$CM_ROOT" && git add CLAUDE.md && git commit -qm "$(basename "$1")")
+}
+for text in "$REDIRECT_TEXT" "$STUB_TEXT"; do
+  t=$(basename "$text" .md)
+  cm_commit "$text"
+  rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+  expect "T6o committed $t text" 0 "$rc" "$out" "CLAUDE.md: OK"
+  rc=0; out=$(python3 -I -c "$(cat "$CM")" --root "$CM_ROOT" --head HEAD 2>&1) || rc=$?
+  expect "T6o --head on the committed $t text" 0 "$rc" "$out" "CLAUDE.md: OK"
+  add_cairn 1
+  rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+  expect "T6o $t text with one uncommitted cairn block" 0 "$rc" "$out" "uncommitted cairn block ignored"
+  (cd "$CM_ROOT" && git commit -qam "commit the block")
+  rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+  expect "T6o $t text with a committed cairn block" 1 "$rc" "$out" "differs from the canonical stub"
+done
+# A block is ignored only over the committed text itself, not over the other accepted text.
+cm_commit "$REDIRECT_TEXT" && cp "$STUB_TEXT" "$CM_ROOT/CLAUDE.md" && add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6p stub plus a block over a committed redirect" 1 "$rc" "$out" "differs from the canonical stub"
+cm_commit "$STUB_TEXT" && cp "$REDIRECT_TEXT" "$CM_ROOT/CLAUDE.md" && add_cairn 1
+rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+expect "T6p redirect plus a block over a committed stub" 1 "$rc" "$out" "differs from the canonical stub"
+for variant in '# CLAUDE.md\n\nAGENTS.md\n' '# CLAUDE.md\n\n@AGENTS.md' '# CLAUDE.md\n\n@AGENTS.md\n\n## Build\n' \
+               '# CLAUDE.md\n@AGENTS.md\n'; do
+  printf "$variant" > "$CM_ROOT/CLAUDE.md"
+  rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
+  expect "T6q near-stub '$variant'" 1 "$rc" "$out" "differs from the canonical stub"
+done
 
 # --- T7: check-knowledgebase.py ------------------------------------------------
 
