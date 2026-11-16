@@ -73,7 +73,9 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
       return;
     }
     Assumptions.assumeFalse(
-        "replaced-allocator".equals(status) || "hugetlb-tunable".equals(status),
+        "replaced-allocator".equals(status)
+            || "hugetlb-tunable".equals(status)
+            || "no-seed".equals(status),
         "arena walk disabled by the process environment: " + status);
     assertEquals("ok", status);
     assertTrue(last.getLong("arenaCount", 0) >= 2, "arenaCount: " + last);

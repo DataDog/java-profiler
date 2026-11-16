@@ -126,6 +126,11 @@ TEST(MallocArenaRule, UnknownMemoryLimitNeverWarns) {
   EXPECT_EQ(0u, ev.nativeHeadroom);
   EXPECT_FALSE(ev.cond2);
   EXPECT_FALSE(ev.active);
+  in.memoryLimit = 0;
+  ev = evaluateMallocArenaRule(in);
+  EXPECT_EQ(0u, ev.nativeHeadroom);
+  EXPECT_FALSE(ev.cond2);
+  EXPECT_FALSE(ev.active);
 }
 
 TEST(MallocArenaRule, CommittedFallbackWithoutFreeHeld) {
