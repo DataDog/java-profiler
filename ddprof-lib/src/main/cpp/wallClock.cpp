@@ -283,6 +283,20 @@ bool BaseWallClock::awaitInitialSamplingEpochForTest(u64 timeout_nanos) {
   }
   return true;
 }
+
+std::unique_lock<std::mutex> BaseWallClock::samplingOpportunityLockForTest(u64 timeout_nanos) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  const u64 start = OS::nanotime();
+  for (;;) {
+    {
+      auto lock = samplingEpochLock();
+      if (_active_epoch_timer != nullptr && _active_epoch_timer->_have_epoch_stats &&
+          _active_epoch_timer->_sampling_epoch._num_successful_samples > 0) return lock;
+    }
+    if (OS::nanotime() - start >= timeout_nanos) return {};
+    OS::sleep(1000000);
+  }
+}
 #endif
 
 #ifdef DEBUG
@@ -376,6 +390,8 @@ bool BaseWallClock::seedUnownedWallTailForTest(jthread thread, OSThreadState sta
   if (trace_id == 0 || !profiler->recordWallSample(
       nullptr, 1, trace_id, &event, first.transaction).ordinary_recorded) return false;
   finishWallPrecheck(first, true);
+  auto epoch_lock = samplingOpportunityLockForTest(5 * NANOTIME_FREQ);
+  if (!epoch_lock.owns_lock()) return false;
   auto locks = profiler->recordingLocksForTest();
   const u64 epoch = WallClockCounters::samplingEpochStart();
   for (int i = 0; i < 5; i++) {

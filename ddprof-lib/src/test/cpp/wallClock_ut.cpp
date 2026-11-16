@@ -56,6 +56,57 @@ TEST_F(WallClockInitialEpochTest, TimeoutLeavesZeroEpochUnchanged) {
     EXPECT_EQ(0ULL, WallClockCounters::samplingEpochStart());
 }
 
+class WallClockSamplingOpportunityTestAccessor {
+    WallClockASGCT timer;
+    BaseWallClock* previous;
+public:
+    WallClockSamplingOpportunityTestAccessor() {
+        auto lock = BaseWallClock::samplingEpochLock();
+        previous = BaseWallClock::_active_epoch_timer;
+        BaseWallClock::_active_epoch_timer = &timer;
+        timer._sampling_epoch = WallClockEpochEvent(TSC::ticks());
+    }
+    ~WallClockSamplingOpportunityTestAccessor() {
+        auto lock = BaseWallClock::samplingEpochLock();
+        BaseWallClock::_active_epoch_timer = previous;
+    }
+    void publish(bool have_stats, u32 successes) {
+        auto lock = BaseWallClock::samplingEpochLock();
+        timer._have_epoch_stats = have_stats;
+        timer._sampling_epoch.updateNumSuccessfulSamples(successes);
+    }
+    WallClockSamplingOpportunityTestAccessor(const WallClockSamplingOpportunityTestAccessor&) = delete;
+    WallClockSamplingOpportunityTestAccessor& operator=(const WallClockSamplingOpportunityTestAccessor&) = delete;
+};
+
+TEST(WallClockSamplingOpportunityTest, MissingTimerCannotQualify) {
+    EXPECT_FALSE(BaseWallClock::samplingOpportunityLockForTest(0).owns_lock());
+}
+
+TEST(WallClockSamplingOpportunityTest, EmptyWindowCannotSupplyScaleEvenWithAnEpochStart) {
+    WallClockSamplingOpportunityTestAccessor timer;
+    timer.publish(true, 0);
+    EXPECT_FALSE(BaseWallClock::samplingOpportunityLockForTest(0).owns_lock());
+    timer.publish(false, 1);
+    EXPECT_FALSE(BaseWallClock::samplingOpportunityLockForTest(0).owns_lock());
+    timer.publish(true, 1);
+    EXPECT_TRUE(BaseWallClock::samplingOpportunityLockForTest(0).owns_lock());
+}
+
+TEST(WallClockSamplingOpportunityTest, PublishedSuccessReleasesWaitingDriver) {
+    WallClockSamplingOpportunityTestAccessor timer;
+    timer.publish(true, 0);
+    std::promise<void> started;
+    auto result = std::async(std::launch::async, [&] {
+        started.set_value();
+        return BaseWallClock::samplingOpportunityLockForTest(5 * NANOTIME_FREQ).owns_lock();
+    });
+    started.get_future().wait();
+    EXPECT_EQ(std::future_status::timeout, result.wait_for(std::chrono::milliseconds(10)));
+    timer.publish(true, 1);
+    EXPECT_TRUE(result.get());
+}
+
 TEST(WallClockTimerTest, WorkAndWakeLatenessDoNotAccumulate) {
     WallClockTimer timer(1000000);
     EXPECT_EQ(900000ULL, timer.nextSleep(1100000, 1000000));
