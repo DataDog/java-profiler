@@ -470,13 +470,16 @@ bool ThreadFilter::indexOrRollback(Slot& slot, SlotID slot_id, int tid) {
     return true;
 }
 
-ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
+ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid, int probe_budget) const {
     TidIndex* tid_index = _tid_index.load(std::memory_order_acquire);
     if (tid < 0 || tid_index == nullptr) return -1;
     unsigned start = hashTid(tid) & kTidIndexMask;
-    for (int probe = 0; probe < kTidIndexSize; ++probe) {
+    for (int probe = 0; probe < probe_budget; ++probe) {
         int index = (start + probe) & kTidIndexMask;
         int value = tid_index->entries[index].load(std::memory_order_acquire);
+#ifdef UNIT_TEST
+        _tid_index_probes_for_test.fetch_add(1, std::memory_order_relaxed);
+#endif
         if (value == 0) return -1;
         if (value > 0) {
             Slot* slot = slotForId(value - 1);
@@ -484,6 +487,9 @@ ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
                 return value - 1;
             }
         }
+    }
+    if (probe_budget == kWallPrecheckProbeBudget) {
+        Counters::increment(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
     }
     return -1;
 }
@@ -506,14 +512,19 @@ ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, SlotID* out_slot_id) cons
 
 ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
                                              SlotID* out_slot_id) const {
+    return lookupByTid(tid, epoch, out_slot_id, kTidIndexSize);
+}
+
+ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
+                                             SlotID* out_slot_id, int probe_budget) const {
     if (out_slot_id != nullptr) {
         *out_slot_id = -1;
     }
     if (epoch == 0 || recordingEpoch() != epoch) {
         return nullptr;
     }
-    SlotID slot_id = -1;
-    Slot* slot = lookupByTid(tid, &slot_id);
+    SlotID slot_id = lookupSlotIdByTid(tid, probe_budget);
+    Slot* slot = slot_id < 0 ? nullptr : slotForId(slot_id);
     if (slot == nullptr || slot->recordingEpoch() != epoch) {
         return nullptr;
     }
@@ -521,6 +532,11 @@ ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
         *out_slot_id = slot_id;
     }
     return slot;
+}
+
+ThreadFilter::Slot* ThreadFilter::lookupForWallPrecheck(int tid, RecordingEpoch epoch,
+                                                       SlotID* out_slot_id) const {
+    return lookupByTid(tid, epoch, out_slot_id, kWallPrecheckProbeBudget);
 }
 
 ThreadFilter::Slot* ThreadFilter::activeSlotForId(SlotID slot_id,

@@ -22,3 +22,5 @@ all:
 	# Two builds without a build-id that differ only in importing write() or read().
 	cc $(CFLAGS) $(LDFLAGS) -Wl,--build-id=none -DIMPORT=write -o $(TARGET_DIR)/libnoid-write.so noid_target.c
 	cc $(CFLAGS) $(LDFLAGS) -Wl,--build-id=none -DIMPORT=read -o $(TARGET_DIR)/libnoid-read.so noid_target.c
+	cc $(CFLAGS) $(LDFLAGS) -Wl,--build-id=none -DIMPORT=malloc -o $(TARGET_DIR)/libnoid-malloc.so noid_malloc_target.c
+	cc $(CFLAGS) $(LDFLAGS) -Wl,--build-id=none -DIMPORT=valloc -o $(TARGET_DIR)/libnoid-valloc.so noid_malloc_target.c

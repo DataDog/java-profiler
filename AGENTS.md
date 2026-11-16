@@ -124,6 +124,10 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   Full flags in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
 
+GitLab dd-trace integration selects and verifies the labeled JVM and JDK major;
+OpenJ9 uses Semeru on glibc and fails explicitly on musl (no runtime configured).
+See [TestingGuide](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
+
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:
 debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 `gradle/sanitizers/*.supp`, and `sudo sysctl vm.mmap_rnd_bits=28` if ASan crashes occur.
@@ -156,10 +160,10 @@ before working on a subsystem.
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; lazy wall-block backing survives recording resets; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
+| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; timer TID metadata lookup is capped at 256 probes and fails open to ordinary signals; lazy wall-block backing survives recording resets; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
-| Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
+| Native memory profiling (malloc interception, pinned Linux import-layout validation, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |

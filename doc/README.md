@@ -22,8 +22,8 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, recordings, buffers, metadata and constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
-- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception and allocation sampling
-- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir and retained-weight epoch provenance; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
+- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, pinned Linux import-layout validation and allocation sampling
+- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir and retained-weight epoch provenance; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness
@@ -38,7 +38,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
-- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, and local workflows
+- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, integration JVM identity checks, and local workflows
 - [Versioning](building/Versioning.md) - Version computation from git tags
 
 ### Reference

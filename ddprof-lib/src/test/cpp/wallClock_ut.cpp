@@ -596,6 +596,95 @@ TEST_F(WallClockCapacityTest, ExhaustionKeepsSendingSignalsAcrossRecordings) {
     }
 }
 
+TEST_F(WallClockCapacityTest, ProbeExhaustionDropsOptimizationNotSignal) {
+    ThreadFilter registry;
+    registry.init("", true);
+    int tid = OS::threadId();
+    int base = tid & ThreadFilter::kTidIndexMask;
+    for (int i = 0, predecessors = 0; predecessors < 256; ++i) {
+        int collider = base + i * ThreadFilter::kTidIndexSize;
+        if (collider == tid) continue;
+        ASSERT_GE(registry.registerThread(collider), 0);
+        ++predecessors;
+    }
+    int slot_id = registry.registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+    ASSERT_EQ(registry.slotForId(slot_id), registry.lookupByTid(tid));
+    unsigned probes = registry.tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    sampling_signal_received = 0;
+    AccountingWallClock clock;
+    ThreadEntry entry{tid, nullptr, -1, 0, 0};
+    int failures = 0, exited = 0, denied = 0, lookups = 0;
+    EXPECT_EQ(WallClockCandidateOutcome::SIGNAL_SENT,
+              clock.sampleThreadCommon(entry, failures, exited, denied, lookups,
+                                       true, true, &registry, registry.recordingEpoch()));
+    EXPECT_EQ(256u, registry.tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted + 1, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+    EXPECT_EQ(0, failures);
+    EXPECT_EQ(0, exited);
+    EXPECT_EQ(0, denied);
+    EXPECT_EQ(1, lookups);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (sampling_signal_received == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(1, sampling_signal_received);
+}
+
+class WallClockPrecheckSignalTest : public WallClockCapacityTest {
+protected:
+    void SetUp() override {
+        WallClockCapacityTest::SetUp();
+        ASSERT_FALSE(HasFatalFailure());
+        registry->init("", true);
+        slot_id = registry->registerThread(OS::threadId());
+        ASSERT_GE(slot_id, 0);
+    }
+
+    void TearDown() override {
+        registry->unregisterThread(slot_id);
+        registry->deactivateRecording();
+        WallClockCapacityTest::TearDown();
+    }
+
+    ThreadFilter* registry = Profiler::instance()->threadFilter();
+    WallClockBlockTracker* tracker = Profiler::instance()->blockTracker();
+    int slot_id = -1;
+};
+
+TEST_F(WallClockPrecheckSignalTest, InBudgetMetadataSuppressesOnlySampledOwnedRun) {
+    ASSERT_NE(0u, tracker->enterBlockedRun(registry, slot_id, OSThreadState::SLEEPING));
+    ASSERT_NE(nullptr, tracker->slotForId(slot_id));
+    AccountingWallClock clock;
+    ThreadEntry entry{OS::threadId(), nullptr, -1, 0, 0};
+    int failures = 0, exited = 0, denied = 0, lookups = 0;
+    unsigned probes = registry->tidIndexProbesForTest();
+    long long exhausted = Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED);
+    sampling_signal_received = 0;
+    EXPECT_EQ(WallClockCandidateOutcome::SIGNAL_SENT,
+              clock.sampleThreadCommon(entry, failures, exited, denied, lookups,
+                                       true, true, registry, registry->recordingEpoch()));
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (sampling_signal_received == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(1, sampling_signal_received);
+    EXPECT_EQ(1u, registry->tidIndexProbesForTest() - probes);
+    tracker->slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+    sampling_signal_received = 0;
+    EXPECT_EQ(WallClockCandidateOutcome::PRECHECK_REJECTED,
+              clock.sampleThreadCommon(entry, failures, exited, denied, lookups,
+                                       true, true, registry, registry->recordingEpoch()));
+    EXPECT_EQ(0, sampling_signal_received);
+    EXPECT_EQ(2u, registry->tidIndexProbesForTest() - probes);
+    EXPECT_EQ(exhausted, Counters::getCounter(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED));
+    EXPECT_EQ(0, failures);
+    EXPECT_EQ(0, exited);
+    EXPECT_EQ(0, denied);
+    EXPECT_EQ(2, lookups);
+}
+
 // Exercise selection and epoch accounting in the production loop without kernel signals.
 class FilteredPrecheckWallClock : public BaseWallClock {
 public:

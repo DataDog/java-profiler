@@ -49,6 +49,7 @@ public:
     static constexpr int kShardCount    = 64;          // power-of-two for fast modulo
     static constexpr int kTidIndexSize  = 8192;        // 4x maximum live slots
     static constexpr int kTidIndexMask  = kTidIndexSize - 1;
+    static constexpr int kWallPrecheckProbeBudget = 256;
 
     // One cache line per slot to avoid false sharing. Slot instances are freed
     // only by ~ThreadFilter, which requires quiescence (see the destructor), so a
@@ -172,6 +173,10 @@ public:
 #ifdef UNIT_TEST
     // Expose published bucket state for reclamation tests without timing assertions.
     int tidIndexEntryForTest(int bucket) const;
+    // Observation only: counts actual bucket reads, including full identity lookups.
+    unsigned tidIndexProbesForTest() const {
+        return _tid_index_probes_for_test.load(std::memory_order_relaxed);
+    }
     static unsigned tidIndexBucketForTest(int tid) {
         return hashTid(tid) & kTidIndexMask;
     }
@@ -223,6 +228,9 @@ public:
     void retireThreadByTid(int tid);
     Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;
     Slot* lookupByTid(int tid, RecordingEpoch epoch, SlotID* out_slot_id = nullptr) const;
+    // Timer-only metadata lookup inspects at most 256 buckets; exhaustion counts
+    // wc_precheck_registry_probe_exhausted and leaves ordinary sampling eligible.
+    Slot* lookupForWallPrecheck(int tid, RecordingEpoch epoch, SlotID* out_slot_id = nullptr) const;
     Slot* activeSlotForId(SlotID slot_id, int tid) const;
     void deactivateRecording();
 
@@ -298,6 +306,8 @@ private:
     WallClockBlockTracker* _block_tracker = nullptr;
 
 #ifdef UNIT_TEST
+    // Test-only observation has no dependent data or publication ordering.
+    mutable std::atomic<unsigned> _tid_index_probes_for_test{0};
     PostActiveCheckHook _post_active_check_hook = nullptr;
     void* _post_active_check_hook_arg = nullptr;
 #endif
@@ -331,7 +341,8 @@ private:
                                   u64 logical_window_state);
     void ensureTidIndexLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
-    SlotID lookupSlotIdByTid(int tid) const;
+    SlotID lookupSlotIdByTid(int tid, int probe_budget = kTidIndexSize) const;
+    Slot* lookupByTid(int tid, RecordingEpoch epoch, SlotID* out_slot_id, int probe_budget) const;
     static inline unsigned hashTid(int tid) {
         return static_cast<unsigned>(tid) * 2654435761u;
     }

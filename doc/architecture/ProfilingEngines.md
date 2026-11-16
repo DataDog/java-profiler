@@ -457,6 +457,13 @@ is retained; epochs are not emitted unconditionally on every timer pass.
 `wc_unowned_blocked_tail_recorded` counts successful deferred-segment writes,
 not ordinary periodic samples or failed writes.
 
+The timer's TID metadata lookup inspects at most 256 hash buckets per candidate,
+including tombstones. Exhaustion increments `wc_precheck_registry_probe_exhausted`
+and attempts the ordinary signal; handler-side suppression remains available.
+
+Deep collisions can therefore cause extra signals, not dropped selections.
+Identity registration, deduplication and teardown keep full-table lookup semantics.
+
 Omitting `filter` defaults to context filtering (`filter=0`); an explicit empty
 `filter=` disables it. With empty `filter=`, an activated, supported wall engine,
 and `wallprecheck=true`, thread identities register lazily on their first context,
@@ -711,7 +718,7 @@ category list.
 |--------|-----------------------------------------------|--------------------|
 | CTimer / CTimerJvmti | `CTIMER_SIGNAL_OWN`, `CTIMER_SIGNAL_FOREIGN` | `SP_CPU` |
 | PerfEvents, ITimer, ITimerJvmti | none (the guard may increment `SAMPLES_DROPPED_THREAD_LOCAL`) | `SP_CPU` |
-| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_SIGNAL_SUPPRESSED_SAMPLED_RUN`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
+| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED` (TID lookup helper), `WC_SIGNAL_SUPPRESSED_SAMPLED_RUN`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
 | J9WallClock | none | `SP_CPU` and `SP_WALL` |
 | ObjectSampler | none | `SP_ALLOC` (includes `SP_LIVENESS`) |
 | LivenessTracker | `LIVENESS_URGENT_BOOST_ADMITS`, `LIVENESS_URGENT_BOOST_BACKED_OFF` | `SP_LIVENESS` |
