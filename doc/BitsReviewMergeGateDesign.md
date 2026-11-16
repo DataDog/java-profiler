@@ -352,9 +352,10 @@ same-repository `GITHUB_TOKEN` spoof. A binding to the shared `dd-octo-sts` app
 accepts statuses that the app's other holders post. Before the change, dispatch
 the gate on `main`, then read back that every open PR targeting `main` has a
 `bits-review/head` status created by `java-profiler-bits-gate-c5a8bc[bot]` on its
-head. The statuses API reports the creator login, not the app ID. A dispatch run resolves
-only those PRs, fails above 256 heads, and writes nothing for an empty or unstable
-snapshot. A head without the status blocks its PR after the change.
+head. Read `GET /repos/DataDog/java-profiler/commits/{sha}/statuses` and compare
+`creator.login`. That endpoint reports no app ID, and the combined `/status`
+endpoint reports no creator. A dispatch run resolves only those PRs, fails above
+256 heads, and writes nothing for an empty or unstable snapshot. A head without the status blocks its PR after the change.
 
 GitHub status storage is commit-scoped. The conjunction across shared-head PRs is
 the approved isolation policy. Prove that one PR's review cannot satisfy another
@@ -412,8 +413,8 @@ remain open until activation is separately authorized.
 | AC8 | test-drive | A push invalidates an earlier PASS; submission, edit, dismissal, and retry update the head status; an actual bot body edit exposes the edit signal used by the evaluator |
 | AC9 | test-drive | A branch workflow cannot obtain publisher authority; each shared-head PR needs its own PASS; a missing-review duplicate blocks and closing it reevaluates the SHA |
 | AC10 | production-check | Over a controlled test PR lifecycle, an ordinary non-bypass actor cannot merge without PASS and becomes eligible with PASS, subject to other checks; a same-repository branch workflow posting `bits-review/head: success` with its own `GITHUB_TOKEN` does not satisfy the required check |
-| AC11 | production-check | Read-back confirms the required publisher app ID `5784409`, main-only scope, unchanged unrelated protections, and preserved admin bypass; the app installation still covers only this repository |
-| AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation; a caller outside the pool allow list is denied the pool's token; `GET /apps/java-profiler-bits-gate-c5a8bc` returns ID `5784409`; the pool configuration holds exactly one app; `GET /repos/DataDog/java-profiler/installation` for that app shows only `statuses: write` and `metadata: read`, and an org-admin installation read shows that it covers only this repository |
+| AC11 | production-check | Read-back confirms the required publisher app ID `5784409`, main-only scope, unchanged unrelated protections, and preserved admin bypass; the DataDog organization's GitHub App settings for `java-profiler-bits-gate-c5a8bc` still list only this repository |
+| AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation; a caller outside the pool allow list is denied the pool's token; `GET /apps/java-profiler-bits-gate-c5a8bc` returns ID `5784409`; the pool's `apps.json` under `domains/seceng/sit/apps/source-security/dd-octo-sts/cmd/app/static-config/enterprises/datadog-inc/pools/java-profiler-bits-gate/` in `ddoghq/dd-source` lists exactly one app; an organization owner confirms in the DataDog organization's GitHub App settings for `java-profiler-bits-gate-c5a8bc` that the installation grants only `statuses: write` and `metadata: read` and lists only this repository |
 
 Run the repository's adjacent script tests and CI safety checks for implementation
 changes. Run `:ddprof-lib:qualityChecks` through the documented build wrapper for
