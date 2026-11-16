@@ -2233,7 +2233,6 @@ ArenaWalkStatus Recording::gateStatus(bool fault_recovery, bool glibc_active,
 void Recording::writeMallocArenaEvents(Buffer *buf) {
 #if defined(__linux__) && defined(__GLIBC__)
   const bool reemit = _arena_reemit;
-  _arena_reemit = false;
 
   ArenaWalkResult res;
   memset(&res, 0, sizeof(res));
@@ -2253,6 +2252,9 @@ void Recording::writeMallocArenaEvents(Buffer *buf) {
 
   MallocArenaRuleInput in;
   in.walkOk = res.status == ARENA_WALK_OK;
+  if (in.walkOk) {
+    _arena_reemit = false;  // a failed walk keeps the re-emit armed for the next chunk
+  }
   in.arenaCount = res.arenaCount;
   in.nonMainArenaBytes = res.nonMainBytes;
   in.hasFreeHeld = _has_malloc_free_held;

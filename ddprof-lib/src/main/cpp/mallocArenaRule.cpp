@@ -8,6 +8,10 @@
 // glibc caps the number of arenas at 8 x online CPUs by default on 64-bit.
 static const int ARENAS_PER_CPU = 8;
 
+// WORSENED needs measure >= 125% of the last emitted measure.
+static const unsigned WORSEN_NUM = 5;
+static const unsigned WORSEN_DEN = 4;
+
 static const long long MAX_HEAP_UNLIMITED = 0x7fffffffffffffffLL;
 
 MallocArenaEvaluation evaluateMallocArenaRule(const MallocArenaRuleInput& in) {
@@ -70,7 +74,7 @@ MallocArenaWarningState::Transition MallocArenaWarningState::step(bool valid, bo
     _last_measure = 0;
     return CLEARED;
   }
-  if ((unsigned __int128)measure * 4 >= (unsigned __int128)_last_measure * 5) {
+  if ((unsigned __int128)measure * WORSEN_DEN >= (unsigned __int128)_last_measure * WORSEN_NUM) {
     _current = WORSENED;
     _last_measure = measure;
     return WORSENED;
