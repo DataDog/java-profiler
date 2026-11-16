@@ -939,6 +939,7 @@ u32 Lookup::getPackage(const char *class_name) {
   if (class_name[0] == '[') {
     class_name = strchr(class_name, 'L') + 1;
   }
+  // A failed insert also yields 0, which means "no package".
   return _packages.lookup(class_name, package - class_name);
 }
 
@@ -1788,7 +1789,12 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   pool_count += writeMethods(buf, &lookup);
   pool_count += writeClasses(buf, &lookup);
   pool_count += writePackages(buf, &lookup);
-  pool_count += writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+  std::map<u32, const char *> symbols;
+  lookup._symbols.collect(symbols);
+  if (lookup._symbols.failed()) {
+    symbols[SymbolDictionary::UNRESOLVED_ID] = "<unresolved>";
+  }
+  pool_count += writeConstantPoolSection(buf, T_SYMBOL, symbols);
   pool_count += writeConstantPoolSection(
       buf, T_STRING, Profiler::instance()->stringLabelMap()->standby());
   pool_count += writeConstantPoolSection(

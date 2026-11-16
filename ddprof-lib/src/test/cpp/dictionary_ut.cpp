@@ -130,3 +130,29 @@ TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
     d.failTableAllocationForTest(false);
     EXPECT_GT(d.lookup("after_recovery", 14), 0U);
 }
+
+// A failed insert must never hand a caller id 0: it resolves to UNRESOLVED_ID,
+// and the dictionary reports the failure so the owner can emit that entry.
+TEST(DictionaryTest, SymbolDictionaryResolvesFailedInsertsToUnresolvedId) {
+#ifdef __FAULT_INJECTION__
+    GTEST_SKIP() << "needs a deterministic fill; key allocation fails at random here";
+#endif
+    SymbolDictionary d;
+    char key[32];
+    for (int i = 0; i < 3 * TABLE_CAPACITY; i++) {
+        snprintf(key, sizeof(key), "fill_%d", i);
+        ASSERT_NE(0U, d.lookup(key, strlen(key)));
+    }
+    EXPECT_FALSE(d.failed());
+
+    d.failTableAllocationForTest(true);
+    int unresolved = 0;
+    for (int i = 0; i < 20000; i++) {
+        snprintf(key, sizeof(key), "new_%d", i);
+        unsigned int id = d.lookup(key, strlen(key));
+        ASSERT_NE(0U, id);
+        if (id == SymbolDictionary::UNRESOLVED_ID) unresolved++;
+    }
+    EXPECT_GT(unresolved, 0);
+    EXPECT_TRUE(d.failed());
+}

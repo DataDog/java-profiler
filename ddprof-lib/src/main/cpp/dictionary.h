@@ -22,6 +22,7 @@
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define ROW_BITS 7
 #define ROWS (1 << ROW_BITS)
@@ -99,6 +100,29 @@ public:
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);
 
   void collect(std::map<unsigned int, const char *> &map);
+};
+
+// A Dictionary whose failed inserts resolve to UNRESOLVED_ID, an id outside the
+// table, so a caller never stores 0 (no entry) as a reference. The owner emits
+// UNRESOLVED_ID as a pool entry when failed() is set.
+class SymbolDictionary : public Dictionary {
+private:
+  bool _failed = false;
+
+public:
+  static constexpr unsigned int UNRESOLVED_ID = 0xFFFFFFFFU;
+
+  unsigned int lookup(const char *key, size_t length) {
+    unsigned int id = Dictionary::lookup(key, length);
+    if (id == 0) {
+      _failed = true;
+      return UNRESOLVED_ID;
+    }
+    return id;
+  }
+  unsigned int lookup(const char *key) { return lookup(key, strlen(key)); }
+
+  bool failed() const { return _failed; }
 };
 
 #endif // _DICTIONARY_H
