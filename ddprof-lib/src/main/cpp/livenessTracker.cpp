@@ -2413,9 +2413,6 @@ Error LivenessTracker::initialize(Arguments &args) {
   // tracking table. Update it before the _initialized guard so each profiler
   // start gets the correct setting, also when the table is kept.
   _record_heap_usage = args._record_heap_usage;
-  // Same for the live-samples ratio: also on the early returns below, so the
-  // recording settings report the ratio this start() was given.
-  setSubsampleRate(SubsampleRate(args._live_samples_ratio));
 
   // Fresh recording: no chase is open, so no watched tids and no urgency
   // boost may leak in from a previous recording's lifecycle. This MUST run on
@@ -2500,6 +2497,9 @@ Error LivenessTracker::initialize(Arguments &args) {
     return _stored_error = Error::OK;
   }
 
+  // Only with a fresh table: a kept table would mix entries admitted at two ratios.
+  setSubsampleRate(SubsampleRate(args._live_samples_ratio));
+
   int cap = std::min(2048, max_cap); // with default 512k sampling interval,
                                      // it's enough for 1G of heap
   TrackingEntry *table = static_cast<TrackingEntry *>(malloc(sizeof(TrackingEntry) * cap));
@@ -2515,7 +2515,9 @@ Error LivenessTracker::initialize(Arguments &args) {
   }
   // Published together under the exclusive lock: an allocation callback still
   // in flight from the previous recording (see release()) may be in track(),
-  // and must never see a capacity without its table, or the old table's GC epoch.
+  // and must never see a capacity without the table it belongs to. The GC epochs
+  // restart with the table; a cleanup_table() already past its epoch snapshot
+  // is not fenced by this.
   {
     ExclusiveLockGuard guard(&_table_lock);
     _table = table;
