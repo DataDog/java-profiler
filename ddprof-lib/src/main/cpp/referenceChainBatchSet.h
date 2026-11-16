@@ -17,8 +17,9 @@
 // per-tag flags: never thread_local, owned by ReferenceChainTracker and
 // reset per batch. Valid batch bookkeeping never heap-allocates.
 
-// Out-of-contract marker calls on absent tags are a program bug: assert in
-// debug builds, abort in release ones - never a silent out-of-bounds write.
+// Out-of-contract calls (markers on absent tags; a full-table probe cycle in
+// addResolved) are a program bug: assert in debug builds, abort in release
+// ones - never a silent out-of-bounds write or a wrong "set full" return.
 
 // Actors: the BFS thread writes before FollowReferences(); the callback on
 // the JVM's VM thread reads and records completion during that synchronous
@@ -53,7 +54,11 @@ class ReferenceChainBatchSet {
       if (_keys[i] == tag) { _flags[i] |= RESOLVED; return true; }
       i = (i + 1) & (SLOTS - 1);
     } while (i != start);
-    return false; // unreachable: _count <= CAPACITY < SLOTS leaves an empty slot
+    // Unreachable: _count <= CAPACITY < SLOTS leaves an empty slot for every
+    // absent tag. NDEBUG compiles the assert out; abort keeps a broken
+    // occupancy invariant from surfacing as a false "set full" return.
+    assert(false);
+    abort();
   }
 
   // Sets the descent-gate flag of a present tag. An absent tag breaks the

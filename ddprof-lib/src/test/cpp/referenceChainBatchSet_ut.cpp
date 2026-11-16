@@ -86,7 +86,9 @@ TEST(ReferenceChainBatchSetTest, CompletionIsPerTagAndAnyCompletedTracksIt) {
 
 // An unresolved tag is a caller-contract violation: both markers assert (debug)
 // or abort (release) instead of corrupting the set. Pinned via SIGABRT, which
-// both paths raise; any other exit fails the check.
+// both paths raise; any other exit fails the check. The abort() fallback alone
+// (what release builds actually run) is pinned with assertions disabled in
+// referenceChainBatchSet_ndebug_ut.cpp.
 TEST(ReferenceChainBatchSetDeathTest, MarkUnresolvedTagAborts) {
   ReferenceChainBatchSet set;
   set.reset();
