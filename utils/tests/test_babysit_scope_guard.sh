@@ -134,5 +134,40 @@ marker '{"pr":1001,"branch":"new","status":"running","scope":[]}'
 run_guard new "$FIX" "0000000000000000000000000000000000000000"
 if [ $? -eq 1 ]; then pass; else fail "branch-creation delta without declared scope should be rejected"; fi
 
+# --- .githooks/pre-push wiring (local-branch keying) — distinct local and remote
+# branch names through the real hook; a stub origin/main provides the trusted
+# review-marker (exit 0) and the real scope guard, as the hook's trusted_source does.
+H="$TEMP_DIR/hookrepo"
+mkdir -p "$H"
+git -C "$H" init -q
+git -C "$H" -c user.email=t -c user.name=t commit -q --allow-empty -m base
+mkdir -p "$H/ddprof-lib/src/main/cpp" "$H/utils" "$H/.githooks" "$H/build"
+echo x > "$H/ddprof-lib/src/main/cpp/a.cpp"
+git -C "$H" add ddprof-lib
+# A stub origin/main carrying a no-op review marker and the real guard.
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > "$H/utils/review-marker.py"
+cp "$(dirname "$0")/../../utils/babysit-scope-guard.py" "$H/utils/"
+git -C "$H" add utils
+git -C "$H" -c user.email=t -c user.name=t commit -q -m gates
+git -C "$H" update-ref refs/remotes/origin/main HEAD
+HB=$(git -C "$H" rev-parse HEAD)
+git -C "$H" checkout -q -b fix HEAD
+echo y >> "$H/ddprof-lib/src/main/cpp/a.cpp"
+git -C "$H" -c user.email=t -c user.name=t commit -q -am fixwork
+HFX=$(git -C "$H" rev-parse HEAD)
+cp "$(dirname "$0")/../../.githooks/pre-push" "$H/.githooks/"
+
+# 12. The hook gates on the LOCAL branch: pushing local fix -> remote other with a
+# running marker for fix (empty scope) is rejected; reverting the wiring to the remote
+# name would pass and fail this case.
+printf '%s' '{"pr":1001,"branch":"fix","status":"running","scope":[]}' > "$H/build/babysit-pr-1001.json"
+OUT=$( (cd "$H" && printf 'refs/heads/fix %s refs/heads/other %s\n' "$HFX" "$HB" | python3 .githooks/pre-push) 2>&1 )
+if [ $? -eq 1 ] && grep -q "never declared" <<<"$OUT"; then pass; else fail "hook should gate on the local branch (got: $OUT)"; fi
+
+# 13. Control: a marker for the remote name only (other) does not gate a fix push.
+printf '%s' '{"pr":1001,"branch":"other","status":"running","scope":[]}' > "$H/build/babysit-pr-1001.json"
+OUT=$( (cd "$H" && printf 'refs/heads/fix %s refs/heads/other %s\n' "$HFX" "$HB" | python3 .githooks/pre-push) 2>&1 )
+if [ $? -eq 0 ]; then pass; else fail "marker keyed on the remote name should not gate a local-branch push (got: $OUT)"; fi
+
 echo "$0: $TESTS tests, $FAILED failed"
 exit $((FAILED > 0))

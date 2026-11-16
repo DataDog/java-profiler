@@ -4,12 +4,13 @@
 in this worktree (build/babysit-pr-*.json, gitignored) matches the pushed branch, every
 file in the outgoing delta must be inside the source/test allowlist AND inside the scope
 the marker declares. Non-babysit pushes are never restricted: no matching running marker
-means exit 0. A matching marker that cannot be verified fails closed — the guard exists
-because agent-made pushes need a machine-checked scope, not judgment.
+means exit 0. A git failure or a matching marker without a scope array fails closed.
 
-Accepted limit: the marker is worker-side bookkeeping, so a worker that rewrites it can
-disable this check — the guard is defense-in-depth against accidental scope drift, not
-against a malicious agent (which has shell access regardless)."""
+Accepted limit: the marker is worker-side bookkeeping, so a worker that rewrites it —
+including corrupting it to unreadable JSON, which this guard skips with a warning — can
+disable this check. The guard is defense-in-depth against accidental scope drift, not
+against a malicious agent (which has shell access regardless); a stale marker (a dead
+run) is likewise ignored after STALE_AFTER_S so it cannot gate a branch forever."""
 
 import glob
 import json
@@ -42,8 +43,9 @@ def delta_files(local_sha, remote_sha):
     return None if out is None else [f for f in out.splitlines() if f]
 
 
-# A marker older than this is a dead run (the cap is two hours; the margin covers a
-# long final push) and must not gate pushes, including human ones, forever.
+# mtime is the marker's creation time (the file is never rewritten during a run), so
+# the age-out must exceed the two-hour run cap by a wide margin to be safe for a long
+# final push; a dead run must not gate its branch forever.
 STALE_AFTER_S = 26 * 3600
 
 
@@ -78,7 +80,8 @@ def matching_marker(branch):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--branch", required=True, help="the pushed remote branch")
+    parser.add_argument("--branch", required=True,
+                        help="the push's local branch; markers name the babysat local branch")
     parser.add_argument("--local-sha", required=True)
     parser.add_argument("--remote-sha", required=True)
     args = parser.parse_args()
