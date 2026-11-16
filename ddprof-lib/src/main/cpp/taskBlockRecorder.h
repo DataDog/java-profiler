@@ -55,17 +55,14 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            int start_depth, u64 block_token, u64 blocker,
                            u64 unblocking_span_id);
 
-// Completes block-run lifecycle cleanup for an already-exited producer and
-// records its event only when dump/stop rotation admits the recording work.
-// Cleanup is deliberately performed even when admission is rejected so an
-// application thread never waits for rotation and suppression cannot be left
-// armed.
+// Completes lifecycle cleanup even when dump/stop denies recording activity.
+// end_ticks == 0 reads the native clock; nonzero supplies a lifecycle-test timestamp.
 bool finishTaskBlockAtExit(ProfiledThread* current,
                            ThreadFilter* thread_filter,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
-                           u64 unblocking_span_id);
+                           u64 unblocking_span_id, u64 end_ticks = 0);
 
 class TaskBlockActivity {
  private:
@@ -77,13 +74,14 @@ class TaskBlockActivity {
   explicit TaskBlockActivity(bool already_active = false)
       : _profiler(Profiler::instance()),
         _active(already_active || _profiler->tryEnterTaskBlockActivity()),
-        _owns_activity(!already_active && _active) {
-    if (!_active) Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-  }
+        _owns_activity(!already_active && _active) {}
 
   ~TaskBlockActivity() {
     if (_owns_activity) _profiler->leaveTaskBlockActivity();
   }
+
+  TaskBlockActivity(const TaskBlockActivity&) = delete;
+  TaskBlockActivity& operator=(const TaskBlockActivity&) = delete;
 
   bool active() const { return _active; }
 };

@@ -9,10 +9,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -29,6 +32,15 @@ final class TaskBlockAssertions {
   private static final String DURATION = "duration";
 
   private TaskBlockAssertions() {}
+
+  /** Probes native engine support without turning library-load failures into skips. */
+  static boolean isSupported() {
+    try {
+      return ProfilerOwnedBlockHooks.taskBlockSupported(JavaProfiler.getInstance());
+    } catch (IOException e) {
+      throw new IllegalStateException("Could not load profiler for TaskBlock capability probe", e);
+    }
+  }
 
   /**
    * Value of {@code OSThreadState::SLEEPING} in {@code ddprof-lib/src/main/cpp/threadState.h}. Keep

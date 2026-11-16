@@ -47,6 +47,7 @@
 #include "utils.h"
 #include "wallClock.h"
 #include "wallClockCounters.h"
+#include "signalSafety.h"
 #include "frames.h"
 #include "sanityCheck.h"
 
@@ -944,6 +945,50 @@ WallClockBlockTracker::BlockState* Profiler::wallSampleSlot(const WallSampleRequ
   return _block_tracker.slotForId(request.slot_id);
 }
 
+bool Profiler::flushWallTail(ThreadFilter::SlotID slot_id, int tid) {
+  if (tid < 0) return false;
+  // Stop and owner teardown can race; the same TID must use one exact stripe.
+  // Signal writers have drained at stop, or lost registry visibility at retirement.
+  RecordingStripe stripe(_locks, getLockIndex(tid), false);
+  return stripe.owned() && flushWallTailLocked(stripe.index(), tid, slot_id, false);
+}
+
+bool Profiler::flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                                  bool preserve_cadence) {
+  auto* block = _block_tracker.slotForId(slot_id);
+  if (block == nullptr ||
+      block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
+  u64 trace_id = 0, weight = 0, publication = 0;
+  OSThreadState state = OSThreadState::UNKNOWN;
+  Context origin{};
+  if (!block->peekUnownedBlockedTail(trace_id, weight, state) ||
+      !_block_tracker.readUnownedContext(slot_id, origin, publication)) return false;
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  size_t count = _block_tracker.copyUnownedWeightSegments(slot_id, segments);
+  bool all_recorded = count != 0;
+  for (size_t i = 0; i < count; ++i) {
+    ExecutionEvent deferred;
+    deferred._thread_state = state;
+    deferred._execution_mode = ExecutionMode::UNKNOWN;
+    deferred._weight = segments[i].weight;
+    deferred._sample_ticks = segments[i].epoch_start;
+    atomicIncRelaxed(_total_samples);
+    if (writeSampleEvent(lock_index, tid, trace_id, BCI_WALL, &deferred, &origin)) {
+      _block_tracker.commitUnownedWeightSegment(slot_id, segments[i]);
+      Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+    } else {
+      all_recorded = false;
+    }
+  }
+  bool complete = all_recorded &&
+      block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+  if (complete) {
+    if (preserve_cadence) block->clearUnownedBlockedTailKeepingCadence();
+    else block->resetUnownedBlockedSampling();
+  }
+  return complete;
+}
+
 WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
                                            ExecutionEvent* event, const WallSampleRequest& request) {
   WallSampleResult result;
@@ -954,6 +999,9 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
     return result;
   }
 
+  // Dump holds every stripe while pruning. Use the current window, not a
+  // precheck snapshot that may precede a completed close and chunk switch.
+  const u64 sampling_epoch_start = WallClockCounters::samplingEpochStart();
   auto* block = wallSampleSlot(request);
   Context origin{};
   u64 publication = 0;
@@ -964,11 +1012,11 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   bool matching_periodic = request.unowned_sample && origin_readable && publishable &&
       !request.force_unowned_ordinary && publication == request.context_publication &&
       origin.equals(request.context) &&
-      _block_tracker.unownedWeightMatchesEpoch(request.slot_id, request.sampling_epoch_start);
+      _block_tracker.unownedWeightMatchesEpoch(request.slot_id, sampling_epoch_start);
   if (block != nullptr && request.unowned_sample) {
     event->_weight = matching_periodic
         ? block->unowned_blocked_pending_weight.load(std::memory_order_acquire) + 1 : 1;
-    if (matching_periodic) event->_sample_ticks = request.sampling_epoch_start;
+    if (matching_periodic && event->_weight > 1) event->_sample_ticks = sampling_epoch_start;
   }
   // A dump can invalidate the ordinary collapsing cache before this stripe
   // is acquired. Preserved unowned roots, unlike that cache, survive a dump.
@@ -998,35 +1046,9 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   bool has_tail = block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state);
   if (!matching_periodic && origin_readable && has_tail &&
       (request.flush_tail || request.unowned_sample)) {
-    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
-    size_t count = _block_tracker.copyUnownedWeightSegments(request.slot_id, segments);
-    bool all_recorded = count != 0;
-    for (size_t i = 0; i < count; ++i) {
-      ExecutionEvent deferred;
-      deferred._thread_state = tail_state;
-      deferred._execution_mode = ExecutionMode::UNKNOWN;
-      deferred._weight = segments[i].weight;
-      deferred._sample_ticks = segments[i].epoch_start;
-      atomicIncRelaxed(_total_samples);
-      bool recorded = writeSampleEvent(stripe.index(), request.tid, tail_id,
-                                      BCI_WALL, &deferred, &origin);
-      if (wallSampleSlot(request) != block) return result;
-      if (recorded) {
-        _block_tracker.commitUnownedWeightSegment(request.slot_id, segments[i]);
-        Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
-      } else {
-        all_recorded = false;
-      }
-    }
-    result.tail_recorded = all_recorded &&
-        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
-    if (result.tail_recorded) {
-      if (request.unowned_sample) {
-        block->clearUnownedBlockedTailKeepingCadence();
-      } else {
-        block->resetUnownedBlockedSampling();
-      }
-    }
+    result.tail_recorded = flushWallTailLocked(stripe.index(), request.tid,
+                                              request.slot_id, request.unowned_sample);
+    if (wallSampleSlot(request) != block) return result;
   }
   if (request.unowned_sample && result.ordinary_recorded) {
     // Never replace A's positive tail merely because B's ordinary write worked.
@@ -1159,15 +1181,30 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   return recorded;
 }
 
-void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    return;
+bool Profiler::deferUnownedWallSample(WallSampleRequest& request) {
+  RecordingStripe stripe(_locks, getLockIndex(request.tid));
+  if (!stripe.owned() || wallSampleSlot(request) == nullptr) return false;
+  // Dump pruning holds every stripe. Re-read after acquisition so a paused
+  // precheck cannot publish a segment whose closed metadata was already pruned.
+  request.sampling_epoch_start = WallClockCounters::samplingEpochStart();
+  return _block_tracker.deferUnownedWeight(request.slot_id, request.sampling_epoch_start);
+}
+
+void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start,
+                                   bool stripes_held) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  SignalBlocker signals;
+  auto publish = [&] {
+    _jfr.wallClockEpoch(getLockIndex(tid), event);
+    // Publish the successor before dump can prune this epoch without pending units.
+    WallClockCounters::beginSamplingEpoch(next_epoch_start);
+  };
+  if (stripes_held) {
+    publish();
+  } else {
+    ExclusiveLockGuard stripe(&_locks[getLockIndex(tid)]);
+    publish();
   }
-  _jfr.wallClockEpoch(lock_index, event);
-  _locks[lock_index].unlock();
 }
 
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
@@ -1202,18 +1239,16 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
   }
 #endif
   CriticalSection cs;
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+  RecordingStripe stripe(_locks, getLockIndex(tid));
+  if (!stripe.owned()) {
     return TaskBlockRecordResult::RECORD_FAILED;
   }
+  u32 lock_index = stripe.index();
 
   // Lightweight recordings intentionally encode an absent stack trace as
   // constant-pool ID 0, as the regular CPU and wall-clock sample paths do.
   if (!_omit_stacktraces) {
     if (_max_stack_depth <= 0 || _calltrace_buffer[lock_index] == nullptr) {
-      _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1224,7 +1259,6 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     bool truncated = false;
     int num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
     if (num_frames <= 0) {
-      _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1237,34 +1271,49 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     }
 #endif
     if (call_trace_id == 0) {
-      _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
     event->_callTraceId = call_trace_id;
   }
   bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
-  _locks[lock_index].unlock();
   return recorded ? TaskBlockRecordResult::RECORDED
                   : TaskBlockRecordResult::RECORD_FAILED;
 }
 
 bool Profiler::tryEnterTaskBlockActivity() {
   u64 state = _task_block_activity_state.load(std::memory_order_acquire);
-  if (state & TASK_BLOCK_CLOSED) return false;
+  if (state & TASK_BLOCK_CLOSED) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return false;
+  }
 #ifdef UNIT_TEST
   runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION);
 #endif
   // Admission and closure share one atomic modification order. A successful
   // CAS before closure contributes to the count rotation drains; a CAS after
   // closure fails and cannot add a reservation while the closed bit is set.
+  // Match SpinLock's 256-attempt signal-handler shared-acquisition budget.
+  // Exhaustion drops only this observation: failed CAS attempts never reserve
+  // activity, so there is no count to release or for rotation to drain. This
+  // bounds retries, not wall-clock latency, without waiting or taking a lock.
   bool admitted = false;
-  while (!(state & TASK_BLOCK_CLOSED)) {
+  int failures = 0;
+  while (!(state & TASK_BLOCK_CLOSED) &&
+         failures < SpinLock::DEFAULT_SHARED_SPIN_BUDGET) {
+#ifdef UNIT_TEST
+    runTaskBlockActivityHookForTest(TaskBlockActivityStage::BEFORE_RESERVATION_CAS);
+#endif
     if (_task_block_activity_state.compare_exchange_weak(
             state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
       admitted = true;
       break;
     }
+    ++failures;
+  }
+  if (!admitted) {
+    Counters::increment((state & TASK_BLOCK_CLOSED) ? TASK_BLOCK_DROPPED_ROTATION
+                                                 : TASK_BLOCK_DROPPED_ADMISSION);
   }
 #ifdef UNIT_TEST
   runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);
@@ -1906,6 +1955,14 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
+bool Profiler::taskBlockSupportedForTest(JNIEnv* env, jthread thread) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  Arguments args;
+  args._wall = 1000000;
+  return selectWallEngine(args)->supportsUnfilteredThreadRegistryTracking() &&
+      JVMSupport::isPlatformThread(env, thread);
+}
+
 Engine *Profiler::selectWallEngine(Arguments &args) {
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
@@ -2492,6 +2549,11 @@ Error Profiler::stop() {
     return Error("task-block rotation did not drain; teardown skipped, retry stop()");
   }
 
+  if (!_thread_filter.flushUnownedTails()) {
+    endTaskBlockRotation();
+    return Error("pending wall-clock tails could not be written; teardown skipped");
+  }
+
   // Close the registration gate and wait for the calls already past it, so no
   // thread arms a timer or opens an fd after the engines below stop.
   // Unregistration stays open (see _thread_tables_stable). The engine stops
@@ -2760,15 +2822,17 @@ Error Profiler::dump(const char *path, const int length) {
     updateNativeLibMemStats();
 
     Error err = Error::OK;
-    // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
-    // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
-    // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination.
+    // Normal-thread order: epoch mutex -> all recording stripes -> _rec_lock.
+    // TaskBlock rotation drains paired writers before settlement and sealing.
     if (beginTaskBlockRotation()) {
-      rotateDictsAndRun([&]{
-        err = _jfr.dump(path, length);
-        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
-      });
+      {
+        auto epoch_lock = BaseWallClock::samplingEpochLock();
+        rotateDictsAndRun([&]{
+          BaseWallClock::settleSamplingEpoch();
+          err = _jfr.dump(path, length);
+          __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+        });
+      }
       endTaskBlockRotation();
     } else {
       err = Error("task-block rotation did not drain; dump skipped");

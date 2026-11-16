@@ -70,7 +70,7 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
 
   @Override
   protected boolean isPlatformSupported() {
-    return TaskBlockAssertions.platformThreadClassificationSupported();
+    return TaskBlockAssertions.isSupported();
   }
 
   @Override

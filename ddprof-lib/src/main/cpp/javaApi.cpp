@@ -464,6 +464,12 @@ static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
   return same;
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_taskBlockSupportedForTest0(
+    JNIEnv* env, jclass unused, jthread thread) {
+  return Profiler::instance()->taskBlockSupportedForTest(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
@@ -591,6 +597,31 @@ Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
       block_token, static_cast<u64>(blocker),
       static_cast<u64>(unblockingSpanId));
   return recorded ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_endTaskBlockAtTicksForTest0(
+    JNIEnv* env, jclass unused, jthread thread, jlong token, jlong start_ticks,
+    jlong end_ticks, jlong blocker, jlong unblocking_span_id) {
+#ifdef DEBUG
+  if (!isCurrentJniThread(env, thread) ||
+      !JVMSupport::isPlatformThread(env, thread)) return JNI_FALSE;
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) return JNI_FALSE;
+  u64 original_start = 0;
+  Context context{};
+  if (!current->taskBlockExit(static_cast<u64>(token), original_start, context)) {
+    return JNI_FALSE;
+  }
+  Profiler* profiler = Profiler::instance();
+  return finishTaskBlockAtExit(
+      current, profiler->threadFilter(), profiler->blockTracker(), thread, 1,
+      static_cast<u64>(token), static_cast<u64>(start_ticks), context,
+      static_cast<u64>(blocker), static_cast<u64>(unblocking_span_id),
+      static_cast<u64>(end_ticks)) ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
 }
 
 extern "C" DLLEXPORT jlong JNICALL

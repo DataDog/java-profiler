@@ -84,7 +84,7 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
 
   @Override
   protected boolean isPlatformSupported() {
-    return TaskBlockAssertions.platformThreadClassificationSupported();
+    return TaskBlockAssertions.isSupported();
   }
 
   @Override

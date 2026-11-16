@@ -128,6 +128,10 @@ The GOT-patching state lives in `MallocHooker` (`_patch_lock`, `_patched_libs`,
    `_patched_libs` is a monotonic index, so already-patched libraries are skipped on
    subsequent calls.
 
+   On Linux, each pinned image must match the cached fingerprint before any import access.
+   The fingerprint covers relocation slots and symbol names.
+   Missing fingerprints and replacement images are skipped.
+
 `patchLibraries()` is called again on every `start()` to pick up any libraries
 loaded between profiler sessions.
 
@@ -362,7 +366,7 @@ writeCurrentContext(buf);
 | Concern | Mechanism |
 |---------|-----------|
 | GOT patching across threads | `MallocHooker::_patch_lock` (Mutex) in `patchLibraries()` |
-| Library unload during patching | `UnloadProtection` handle per library |
+| Library unload or replacement during patching | `UnloadProtection` pin per library; Linux validates the live import-layout fingerprint before accessing cached slots |
 | Allocation byte counter | Lock-free CAS loop in `shouldSample` |
 | Reentrant allocations from the profiler | `CriticalSection` in `maybeRecord` — nested calls do not record |
 | Recording / JFR buffer writes | Per-lock-index try-lock with 3 attempts in `Profiler::recordSample`; samples dropped on contention |
