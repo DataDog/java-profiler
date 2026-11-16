@@ -261,12 +261,9 @@ assert_eq "passed subtracts both kinds from the expected total" "31" \
 
 # --- archive extraction: colliding root build.env and per-row copies ---------
 
-# The publish job downloads every matrix row's artifacts into one workspace.
-# Root-level build.env files overwrite each other (last download wins), so
-# every row also carries its own build-env/<row>/build.env copy. The same row
-# can therefore arrive twice — once through the surviving root file, once
-# through its row copy — and the dedup must count it exactly once while rows
-# whose root file was overwritten still surface through their copies.
+# The publish job downloads every row's artifacts into one workspace: the
+# root-level build.env files overwrite each other, so each row also carries
+# a per-row copy and the same row can arrive twice; it must be counted once.
 CASE="${WORK}/extraction"
 mkdir -p "${CASE}/build-env/profiler_gmalloc_amd64Xjit" \
          "${CASE}/build-env/profiler_tracer_jemalloc_amd64Xmemory" \

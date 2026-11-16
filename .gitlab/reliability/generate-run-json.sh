@@ -102,10 +102,9 @@ def config_label(entry):
     return entry.get("reason", "Unknown")
 
 def dedupe(entries):
-    """Drop repeat rows by label. Every matrix row also lands in its own
-    build-env/<row key>/build.env copy, and the root-level build.env files of
-    the downloaded archives overwrite each other, so the same row can arrive
-    both ways; the count must not depend on which copy the walk sees first."""
+    """Drop repeat rows by label: every matrix row lands both in the root-level
+    build.env and its own build-env/<row>/build.env copy, and the count must
+    not depend on which copy the artifact walk sees first."""
     seen = set()
     unique = []
     for entry in entries:
