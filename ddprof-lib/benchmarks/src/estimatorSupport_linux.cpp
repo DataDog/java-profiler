@@ -87,9 +87,205 @@ std::string parseThrottled(const char *path) {
     return e == p ? "" : s.substr(p, e - p);
 }
 
-// cgroup v2 is detected by the presence of cgroup.controllers, mirroring
-// count_cpus; v1 falls back to the two legacy mount points.
+// Unescapes the mountinfo escapes (\040 space, \011 tab, \012 newline,
+// \134 backslash); these four are the only ones mount(5) defines, so any
+// other backslash sequence passes through unchanged.
+std::string unescapeMountInfo(const std::string &s) {
+    static const struct {
+        const char *seq;
+        char c;
+    } escapes[] = {{"040", ' '}, {"011", '\t'}, {"012", '\n'}, {"134", '\\'}};
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); i++) {
+        bool matched = false;
+        if (s[i] == '\\' && i + 3 < s.size()) {
+            for (const auto &esc : escapes) {
+                if (s.compare(i + 1, 3, esc.seq) == 0) {
+                    out.push_back(esc.c);
+                    i += 3;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if (!matched) {
+            out.push_back(s[i]);
+        }
+    }
+    return out;
+}
+
+// Whether a comma-separated controller list contains "cpu" (a combined
+// cpu,cpuacct controller list or mount serves cpu too).
+bool hasCpuController(const std::string &opts) {
+    size_t c = 0;
+    while (c <= opts.size()) {
+        size_t n = opts.find(',', c);
+        if (n == std::string::npos) {
+            n = opts.size();
+        }
+        if (n > c && opts.compare(c, n - c, "cpu") == 0) {
+            return true;
+        }
+        c = n + 1;
+    }
+    return false;
+}
+
+// The unified (v2, the "0::" line) or cpu-controller (v1) membership path of
+// this process from /proc/self/cgroup; "" when neither is listed.
+std::string selfCgroupPath(bool &isV2) {
+    std::string s;
+    if (!readFile("/proc/self/cgroup", s)) {
+        return "";
+    }
+    size_t p = 0;
+    while (p < s.size()) {
+        size_t e = s.find('\n', p);
+        if (e == std::string::npos) {
+            e = s.size();
+        }
+        std::string line = s.substr(p, e - p);
+        p = e + 1;
+        size_t c1 = line.find(':');
+        if (c1 == std::string::npos) {
+            continue;
+        }
+        size_t c2 = line.find(':', c1 + 1);
+        if (c2 == std::string::npos) {
+            continue;
+        }
+        std::string hierarchy = line.substr(0, c1);
+        std::string controllers = line.substr(c1 + 1, c2 - c1 - 1);
+        std::string path = line.substr(c2 + 1);
+        if (path.empty() || path[0] != '/') {
+            continue;
+        }
+        if (hierarchy == "0" && controllers.empty()) {
+            isV2 = true;
+            return path;
+        }
+        // v1 lists comma-separated controllers; the mount serving "cpu"
+        // carries the cpu.stat to read.
+        if (hasCpuController(controllers)) {
+            isV2 = false;
+            return path;
+        }
+    }
+    return "";
+}
+
+// nth space-separated field of a mountinfo line; the first five fields
+// (id parent major:minor root mountpoint) contain no raw spaces, only the
+// octal escapes unescapeMountInfo removes.
+std::string mountInfoField(const std::string &line, int n) {
+    int field = 0;
+    size_t p = 0;
+    while (p <= line.size()) {
+        size_t e = line.find(' ', p);
+        if (e == std::string::npos) {
+            e = line.size();
+        }
+        if (field == n) {
+            return line.substr(p, e - p);
+        }
+        field++;
+        p = e + 1;
+    }
+    return "";
+}
+
+// The mount point serving the process's own cgroup hierarchy, with the
+// subtree of the cgroup filesystem the mount exposes: the cgroup2 mount, or
+// the v1 cgroup mount whose super options carry the cpu controller; false
+// when no matching mount is listed.
+struct CgroupMount {
+    std::string mountPoint;
+    std::string root;
+};
+
+bool cgroupMount(bool isV2, CgroupMount &out) {
+    std::string s;
+    if (!readFile("/proc/self/mountinfo", s)) {
+        return "";
+    }
+    size_t p = 0;
+    while (p < s.size()) {
+        size_t e = s.find('\n', p);
+        if (e == std::string::npos) {
+            e = s.size();
+        }
+        std::string line = s.substr(p, e - p);
+        p = e + 1;
+        size_t dash = line.find(" - ");
+        if (dash == std::string::npos) {
+            continue;
+        }
+        std::string tail = line.substr(dash + 3);
+        size_t sp1 = tail.find(' ');
+        if (sp1 == std::string::npos) {
+            continue;
+        }
+        std::string fstype = tail.substr(0, sp1);
+        bool match = isV2 ? fstype == "cgroup2"
+                          : fstype == "cgroup" &&
+                                hasCpuController(mountInfoField(tail.substr(sp1 + 1), 1));
+        if (!match) {
+            continue;
+        }
+        out.root = unescapeMountInfo(mountInfoField(line, 3));
+        out.mountPoint = unescapeMountInfo(mountInfoField(line, 4));
+        return !out.root.empty() && !out.mountPoint.empty();
+    }
+    return false;
+}
+
+// The cpu.stat path of this process's own cgroup: the membership path from
+// /proc/self/cgroup joined onto the matching cgroup mount; "" when either
+// side cannot be resolved. With a shared mount (no cgroup namespace) the
+// membership path is absolute within the filesystem while the mount serves
+// only the subtree named by its root field, so that subtree is stripped
+// first; inside a cgroup namespace both sides are namespace-relative and the
+// root field is already "/".
+std::string resolveOwnCpuStatPath() {
+    bool isV2 = true;
+    std::string path = selfCgroupPath(isV2);
+    if (path.empty()) {
+        return "";
+    }
+    CgroupMount mount;
+    if (!cgroupMount(isV2, mount)) {
+        return "";
+    }
+    if (mount.root != "/") {
+        if (path == mount.root) {
+            path = "/";
+        } else if (path.rfind(mount.root, 0) == 0 && path[mount.root.size()] == '/') {
+            path = path.substr(mount.root.size());
+        } else {
+            return "";
+        }
+    }
+    if (path == "/") {
+        return mount.mountPoint + "/cpu.stat";
+    }
+    return mount.mountPoint + path + "/cpu.stat";
+}
+
+// cpu.stat of the process's own cgroup first: /sys/fs/cgroup describes the
+// hierarchy root when the process sits in a child cgroup without a cgroup
+// namespace (a systemd scope on a host), hiding its throttling counter. A
+// resolved but unreadable cpu.stat reports NA rather than falling back to
+// the root's counter, which belongs to a different cgroup. The legacy fixed
+// paths remain the fallback for systems where the membership or the mount
+// cannot be resolved.
 std::string readNrThrottled() {
+    std::string own = resolveOwnCpuStatPath();
+    if (!own.empty()) {
+        std::string v = parseThrottled(own.c_str());
+        return v.empty() ? "NA" : v;
+    }
     if (fileExists("/sys/fs/cgroup/cgroup.controllers")) {
         std::string v = parseThrottled("/sys/fs/cgroup/cpu.stat");
         return v.empty() ? "NA" : v;

@@ -170,6 +170,94 @@ interface EstimatorExecServices {
   @get:Inject val exec: ExecOperations
 }
 
+// The unified (v2, the "0::" line) or cpu-controller (v1) cgroup path of this
+// process, or null when neither is listed. Mirrors the estimator's own
+// resolution so the verification can check its marker against an
+// independently read counter.
+fun selfCgroupPath(): Pair<Boolean, String>? {
+  val text = File("/proc/self/cgroup").takeIf { it.isFile }?.readText() ?: return null
+  for (line in text.lineSequence()) {
+    val parts = line.split(":", limit = 3)
+    if (parts.size < 3 || !parts[2].startsWith("/")) continue
+    if (parts[0] == "0" && parts[1].isEmpty()) return true to parts[2]
+    if (parts[1].split(",").contains("cpu")) return false to parts[2]
+  }
+  return null
+}
+
+// Unescapes the mountinfo escapes (\040 space, \011 tab, \012 newline,
+// \134 backslash); these four are the only ones mount(5) defines, so any
+// other backslash sequence passes through unchanged.
+fun unescapeMountInfo(s: String): String {
+  val escapes = mapOf("040" to ' ', "011" to '\t', "012" to '\n', "134" to '\\')
+  if (!s.contains('\\')) return s
+  val out = StringBuilder(s.length)
+  var i = 0
+  while (i < s.length) {
+    val c = if (s[i] == '\\' && i + 3 < s.length) escapes[s.substring(i + 1, i + 4)] else null
+    if (c != null) {
+      out.append(c)
+      i += 4
+    } else {
+      out.append(s[i])
+      i++
+    }
+  }
+  return out.toString()
+}
+
+// The mount point serving the process's own cgroup hierarchy, with the
+// subtree of the cgroup filesystem the mount exposes.
+data class CgroupMount(val mountPoint: String, val root: String)
+
+// The cgroup2 mount, or the v1 cgroup mount whose super options carry the
+// cpu controller; null when no matching mount is listed.
+fun cgroupMount(isV2: Boolean): CgroupMount? {
+  val text = File("/proc/self/mountinfo").takeIf { it.isFile }?.readText() ?: return null
+  for (line in text.lineSequence()) {
+    val dash = line.indexOf(" - ")
+    if (dash < 0) continue
+    val tail = line.substring(dash + 3).split(" ")
+    if (tail.size < 3) continue
+    val matches = if (isV2) {
+      tail[0] == "cgroup2"
+    } else {
+      tail[0] == "cgroup" && tail[2].split(",").contains("cpu")
+    }
+    if (!matches) continue
+    val fields = line.split(" ")
+    if (fields.size > 4) {
+      val root = unescapeMountInfo(fields[3])
+      val mountPoint = unescapeMountInfo(fields[4])
+      if (root.isNotEmpty() && mountPoint.isNotEmpty()) return CgroupMount(mountPoint, root)
+    }
+  }
+  return null
+}
+
+// The nr_throttled counter of this process's own cgroup, read independently
+// of the estimator; null when the path cannot be resolved or read.
+fun ownCgroupNrThrottled(): String? {
+  val (isV2, path) = selfCgroupPath() ?: return null
+  val mount = cgroupMount(isV2) ?: return null
+  // With a shared mount the membership path is absolute within the
+  // filesystem while the mount serves only the subtree named by its root
+  // field; strip that subtree, refusing a membership outside it.
+  val relative = if (mount.root != "/") {
+    when {
+      path == mount.root -> "/"
+      path.startsWith(mount.root) && path.length > mount.root.length && path[mount.root.length] == '/' ->
+        path.substring(mount.root.length)
+      else -> return null
+    }
+  } else {
+    path
+  }
+  val stat = File(if (relative == "/") "${mount.mountPoint}/cpu.stat" else "${mount.mountPoint}$relative/cpu.stat")
+  if (!stat.isFile) return null
+  return Regex("nr_throttled (\\d+)").find(stat.readText())?.groupValues?.get(1)
+}
+
 // Verification for the estimator itself: each test-only fault option must
 // exit non-zero, and the demo-length normal run must exit 0 with the full
 // report. Advisory, like the estimator: not wired into any CI gate.
@@ -242,6 +330,18 @@ tasks.register("verifyNativeMemEstimator") {
       }
       if (report.lines().none { it.startsWith("markers: ") }) {
         failed += "normal run reports no window markers"
+      }
+      // The marker must read throttling from the process's own cgroup, not
+      // the hierarchy root. nr_throttled is monotonic and the two processes
+      // sample it at different times, so a correct marker value is at most
+      // the oracle's; a greater one means the wrong cgroup was read.
+      val ownThrottled = ownCgroupNrThrottled()
+      if (ownThrottled != null) {
+        val markerThrottled = Regex("cpu_nr_throttled=(\\S+)").find(report)?.groupValues?.get(1)
+        val markerValue = markerThrottled?.toLongOrNull()
+        if (markerValue == null || markerValue > ownThrottled.toLong()) {
+          failed += "cpu_nr_throttled=$markerThrottled is not within the process's own cgroup counter $ownThrottled"
+        }
       }
       logger.lifecycle("verifyNativeMemEstimator: normal run exited 0 with ${report.lines().size} report lines")
     }
