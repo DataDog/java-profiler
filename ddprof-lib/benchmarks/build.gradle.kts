@@ -10,6 +10,7 @@ import com.datadoghq.native.tasks.NativeCompileTask
 import com.datadoghq.native.tasks.NativeLinkExecutableTask
 import com.datadoghq.native.util.PlatformUtils
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 plugins {
   base
@@ -255,7 +256,14 @@ fun ownCgroupNrThrottled(): String? {
   }
   val stat = File(if (relative == "/") "${mount.mountPoint}/cpu.stat" else "${mount.mountPoint}$relative/cpu.stat")
   if (!stat.isFile) return null
-  return Regex("nr_throttled (\\d+)").find(stat.readText())?.groupValues?.get(1)
+  // isFile does not guarantee readability; an unreadable counter is the
+  // estimator's NA case, so the oracle skips instead of aborting the task.
+  val text = try {
+    stat.readText()
+  } catch (e: IOException) {
+    return null
+  }
+  return Regex("nr_throttled (\\d+)").find(text)?.groupValues?.get(1)
 }
 
 // Verification for the estimator itself: each test-only fault option must
@@ -341,7 +349,11 @@ tasks.register("verifyNativeMemEstimator") {
       // sample it at different times, so a correct marker value is at most
       // the oracle's; a greater one means the wrong cgroup was read.
       val ownThrottled = ownCgroupNrThrottled()
-      if (ownThrottled != null) {
+      if (ownThrottled == null) {
+        logger.lifecycle(
+          "verifyNativeMemEstimator: cgroup oracle unresolved; cpu_nr_throttled cross-check skipped",
+        )
+      } else {
         val markerThrottled = Regex("cpu_nr_throttled=(\\S+)").find(report)?.groupValues?.get(1)
         val markerValue = markerThrottled?.toLongOrNull()
         if (markerValue == null || markerValue > ownThrottled.toLong()) {

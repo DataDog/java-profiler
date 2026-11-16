@@ -208,7 +208,7 @@ struct CgroupMount {
 bool cgroupMount(bool isV2, CgroupMount &out) {
     std::string s;
     if (!readFile("/proc/self/mountinfo", s)) {
-        return "";
+        return false;
     }
     size_t p = 0;
     while (p < s.size()) {
@@ -234,9 +234,14 @@ bool cgroupMount(bool isV2, CgroupMount &out) {
         if (!match) {
             continue;
         }
-        out.root = unescapeMountInfo(mountInfoField(line, 3));
-        out.mountPoint = unescapeMountInfo(mountInfoField(line, 4));
-        return !out.root.empty() && !out.mountPoint.empty();
+        std::string root = unescapeMountInfo(mountInfoField(line, 3));
+        std::string mountPoint = unescapeMountInfo(mountInfoField(line, 4));
+        if (root.empty() || mountPoint.empty()) {
+            continue;
+        }
+        out.root = root;
+        out.mountPoint = mountPoint;
+        return true;
     }
     return false;
 }
@@ -281,7 +286,13 @@ std::string resolveOwnCpuStatPath() {
 // paths remain the fallback for systems where the membership or the mount
 // cannot be resolved.
 std::string readNrThrottled() {
-    std::string own = resolveOwnCpuStatPath();
+    // Membership and mount layout are stable for a live process, so the
+    // first successful resolution is kept; a failed one is retried on the
+    // next window instead of latching the legacy-root fallback.
+    static std::string own;
+    if (own.empty()) {
+        own = resolveOwnCpuStatPath();
+    }
     if (!own.empty()) {
         std::string v = parseThrottled(own.c_str());
         return v.empty() ? "NA" : v;
