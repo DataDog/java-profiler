@@ -21,22 +21,13 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests the glibc malloc arena events {@code datadog.MallocArenaStats} and {@code
- * datadog.MallocArenaWarning}.
+ * Tests {@code datadog.MallocArenaStats} (one per chunk on Linux glibc) and {@code
+ * datadog.MallocArenaWarning}. The quota tests skip without a cgroup CPU quota; run them with
+ * {@code --cpus=2 --memory=2g} so the churn exceeds 1% of the native headroom ({@code
+ * arenawarn=1}).
  *
- * <p>The profiler writes one Stats event per JFR chunk on Linux with glibc. The Warning event needs
- * a CPU quota from cgroup v2 {@code cpu.max} or the cgroup v1 CFS files, so the quota tests skip
- * when the test process has none. To run them, give the test a quota and a modest memory limit, for
- * example {@code podman run --cpus=2 --memory=2g ...} through {@code
- * utils/run-containers-tests.sh}. Each of the {@code 8 * quota + 32} churn threads allocates 4 MiB
- * in 1 KiB blocks and keeps every 8th block, so the arenas hold several hundred MiB. The profiler
- * command sets {@code arenawarn=1}, so the memory limit must be small enough for that amount to
- * exceed 1 percent of the native headroom.
- *
- * <p>The test that expects no warning needs the arena limit set in the environment of the test JVM,
- * for example {@code MALLOC_ARENA_MAX=16} with {@code --cpus=2}. It skips when the variable does
- * not equal 8 times the quota CPUs, rounded up. The test that expects a warning skips when the
- * variable is set to a value that does not exceed that number.
+ * <p>The no-warning test needs {@code MALLOC_ARENA_MAX} = 8 * ceil(quota) in the JVM environment.
+ * The warning test skips when the variable is set to that value or less.
  */
 public class MallocArenaWarningTest extends AbstractProfilerTest {
   private static final String STATS = "datadog.MallocArenaStats";

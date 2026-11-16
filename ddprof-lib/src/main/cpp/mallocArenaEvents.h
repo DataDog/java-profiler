@@ -10,8 +10,8 @@
 #include "buffers.h"
 #include "mallocArenaRule.h"
 
-// Payload of datadog.MallocArenaStats, one event per JFR chunk. A value that
-// is not available is -1.
+// Payload of datadog.MallocArenaStats, one event per JFR chunk. Fields marked
+// -1 are unavailable; walk-derived counts are 0 unless walkStatus is "ok".
 struct MallocArenaStatsRecord {
   int arenaCount;
   long long nonMainArenaBytes;
@@ -25,7 +25,8 @@ struct MallocArenaStatsRecord {
 
 // Payload of datadog.MallocArenaWarning. The derived values (headroom, its
 // source, the compared measure, the recommended arena limit) come from
-// evaluation. A value that is not available is -1.
+// evaluation. Fields marked -1 are unavailable; walk-derived counts are 0
+// unless walkStatus is "ok".
 struct MallocArenaWarningRecord {
   int arenaCount;
   int arenaLimit;
@@ -47,10 +48,8 @@ struct MallocArenaWarningRecord {
   MallocArenaEvaluation evaluation;
 };
 
-// Serializers of the arena events. Each writer emits the complete event,
-// including its size prefix, and does not flush: the caller calls
-// flushIfNeeded(). String fields are written inline (no constant pool),
-// truncated to MAX_STRING_BYTES; a null string is written as "".
+// Writers emit the complete event including its size prefix; the caller calls
+// flushIfNeeded(). Strings are inline, truncated to MAX_STRING_BYTES; null is "".
 namespace MallocArenaEvents {
 
 static const u32 MAX_STRING_BYTES = 32;

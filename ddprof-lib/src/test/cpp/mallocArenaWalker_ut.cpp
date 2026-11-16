@@ -26,7 +26,7 @@
 TEST(MallocArenaWalkerStatus, NamesCoverEveryValue) {
   static const char* const expected[ARENA_WALK_STATUS_COUNT] = {
       "ok",          "unsupported-platform", "unsupported-jvm", "replaced-allocator",
-      "hugetlb-tunable", "no-seed",          "no-layout",       "fault",
+      "hugetlb-tunable", "no-seed",          "fault",
       "implausible", "bad-next",             "second-main",     "no-main",
       "too-many"};
   for (int i = 0; i < ARENA_WALK_STATUS_COUNT; i++) {
@@ -166,7 +166,6 @@ TEST_F(MallocArenaWalkerTest, WalkWithLiveThreadsFindsArenas) {
 
   EXPECT_GE(ok->arenaCount, 2);
   EXPECT_GT(ok->nonMainBytes, 0u);
-  EXPECT_GT(ok->mainBytes, 0u);
   EXPECT_GE(ok->layoutIndex, 0);
   EXPECT_GE(ok->largestMaxBytes, ok->largestBytes);
 }

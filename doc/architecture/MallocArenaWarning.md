@@ -116,7 +116,6 @@ for layout `2.17-2.22`, which has no such field.
 | `replaced-allocator` | A replacement allocator is active, or an ASan/TSan build |
 | `hugetlb-tunable` | `glibc.malloc.hugetlb` is 2 or more in `GLIBC_TUNABLES`, so the heap size is not 64 MiB |
 | `no-seed` | No non-main-arena chunk was available |
-| `no-layout` | No candidate layout was tried |
 | `fault` | A read of arena memory faulted |
 | `implausible` | `system_mem` or `max_system_mem` failed the checks |
 | `bad-next` | A `next` pointer was unreadable or null |
