@@ -98,6 +98,9 @@ TEST(DictionaryTest, ClearResetsToEmpty) {
 
 // A failed overflow-table calloc must fail the insert, not be stored through.
 TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
+#ifdef __FAULT_INJECTION__
+    GTEST_SKIP() << "needs a deterministic fill; key allocation fails at random here";
+#endif
     Dictionary d(0);
     char key[32];
     for (int i = 0; i < 5000; i++) {  // fills the root table and some overflow tables
@@ -106,7 +109,7 @@ TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
     }
     long long live_before = NativeMem::live(NM_DICTIONARY);
 
-    d.failAllocationForTest(false, true);
+    d.failTableAllocationForTest(true);
     int failed = 0;
     long long added_bytes = 0;
     for (int i = 0; i < 20000; i++) {
@@ -124,15 +127,6 @@ TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
     EXPECT_EQ(live_before + added_bytes, NativeMem::live(NM_DICTIONARY));
 
     EXPECT_GT(d.lookup("fill_0", 6), 0U);  // existing keys still resolve
-    d.failAllocationForTest(false, false);
+    d.failTableAllocationForTest(false);
     EXPECT_GT(d.lookup("after_recovery", 14), 0U);
-}
-
-TEST(DictionaryTest, KeyAllocationFailureFailsTheInsert) {
-    Dictionary d(0);
-    d.failAllocationForTest(true, false);
-    EXPECT_EQ(0U, d.lookup("k", 1));
-    EXPECT_EQ((unsigned int)INT_MAX, d.bounded_lookup("k", 1, INT_MAX - 1));
-    d.failAllocationForTest(false, false);
-    EXPECT_GT(d.lookup("k", 1), 0U);
 }

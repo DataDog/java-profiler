@@ -52,12 +52,9 @@ private:
   volatile unsigned int _base_index;
   volatile int _size;
 #ifdef UNIT_TEST
-  bool _fail_key_alloc_for_test = false;
   bool _fail_table_alloc_for_test = false;
-  bool failKeyAlloc() const { return _fail_key_alloc_for_test; }
   bool failTableAlloc() const { return _fail_table_alloc_for_test; }
 #else
-  bool failKeyAlloc() const { return false; }
   bool failTableAlloc() const { return false; }
 #endif
 
@@ -86,9 +83,8 @@ public:
   void clear();
 
 #ifdef UNIT_TEST
-  void failAllocationForTest(bool keys, bool tables) {
-    _fail_key_alloc_for_test = keys;
-    _fail_table_alloc_for_test = tables;
+  void failTableAllocationForTest(bool fail) {
+    _fail_table_alloc_for_test = fail;
   }
 #endif
 

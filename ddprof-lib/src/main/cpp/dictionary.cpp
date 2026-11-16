@@ -17,16 +17,17 @@
 #include "dictionary.h"
 #include "arch.h"
 #include "counters.h"
+#include "faultInjection.h"
 #include "signalSafety.h"
 #include <cassert>
 #include <climits>
 #include <stdlib.h>
 #include <string.h>
 
-static inline char *allocateKey(const char *key, size_t length,
-                                bool fail_for_test) {
-  char *result = fail_for_test ? NULL : (char *)malloc(length + 1);
-  if (result == NULL) {
+static inline char *allocateKey(const char *key, size_t length) {
+  char *result = (char *)malloc(length + 1);
+  if (!INJECT_FAULT_BOOL_UNLIKELY(result != NULL)) {
+    free(result);
     return NULL;  // OOM: the caller fails the insert
   }
   memcpy(result, key, length);
@@ -124,7 +125,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
     DictRow *row = &table->rows[h % ROWS];
     for (int c = 0; c < CELLS; c++) {
       if (for_insert && row->keys[c] == NULL) {
-        char *new_key = allocateKey(key, length, failKeyAlloc());
+        char *new_key = allocateKey(key, length);
         if (new_key == NULL) {
           return sentinel;  // OOM: fail the insert instead of dereferencing NULL
         }
