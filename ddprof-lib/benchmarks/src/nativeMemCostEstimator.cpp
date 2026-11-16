@@ -45,6 +45,12 @@ constexpr int kBootstrapResamples = 10000;
 // the size of an estimate.
 constexpr double kInjectedTargetNanosPerOp = 128.0;
 
+// Fault-injection values driving the real self-test rejection conditions:
+// --inject-zero-ia zeroes every recorded I-A delta (CI collapses onto 0),
+// --inject-offset-aa replaces every A-A delta with this fixed offset
+// (CI excludes 0). Neither short-circuits the decision.
+constexpr double kInjectedAaOffsetNanosPerOp = 1000.0;
+
 // Expected FNV-1a 64 hash of the default trace's op stream.
 constexpr uint64_t kExpectedTraceHash = 0x9d32481bad903951ULL;
 // Expected hash of the demo-length trace from the same seed.
@@ -254,9 +260,11 @@ double signTestP(const std::vector<double> &deltas) {
 }
 
 // Runs one I-A pair in seed-drawn order and appends its delta; used for
-// both the calibration pairs and the reported I-A sample.
+// both the calibration pairs and the reported I-A sample. zeroDeltas is the
+// --inject-zero-ia fault: the pair still replays, only the recorded delta
+// is forced to 0 so the bootstrap CI and the rejection compare run on it.
 bool runIAPair(const std::vector<TraceOp> &ops, std::mt19937_64 &orderRng,
-               std::vector<double> &deltas) {
+               std::vector<double> &deltas, bool zeroDeltas) {
     ReplayResult ri;
     ReplayResult ra;
     bool iFirst = (orderRng() & 1) == 0;
@@ -271,7 +279,7 @@ bool runIAPair(const std::vector<TraceOp> &ops, std::mt19937_64 &orderRng,
         fprintf(stderr, "error=unbalanced trace replay\n");
         return false;
     }
-    deltas.push_back(ri.nsPerOp - ra.nsPerOp);
+    deltas.push_back(zeroDeltas ? 0.0 : ri.nsPerOp - ra.nsPerOp);
     return true;
 }
 
@@ -285,6 +293,11 @@ void printUsage(FILE *out) {
                  "  --skip-accounting-call   drop one B-mode accounting call\n"
                  "  --inject-zero            inject a zero-cost spin, forcing "
                  "the\n                           self-test to fail deterministically\n"
+                 "  --inject-zero-ia         force every I-A delta to zero, "
+                 "failing through\n                           the real CI rejection\n"
+                 "  --inject-offset-aa       force every A-A delta to a fixed "
+                 "offset, failing\n                           through the real CI "
+                 "rejection\n"
                  "  --demo                   test/demo only: replay 200000 ops "
                  "instead of 2000000\n"
                  "  --help                   print this usage\n");
@@ -296,6 +309,8 @@ int main(int argc, char **argv) {
     bool forceBadHash = false;
     bool skipAccountingCall = false;
     bool injectZero = false;
+    bool injectZeroIa = false;
+    bool injectOffsetAa = false;
     bool demo = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -305,6 +320,10 @@ int main(int argc, char **argv) {
             skipAccountingCall = true;
         } else if (arg == "--inject-zero") {
             injectZero = true;
+        } else if (arg == "--inject-zero-ia") {
+            injectZeroIa = true;
+        } else if (arg == "--inject-offset-aa") {
+            injectOffsetAa = true;
         } else if (arg == "--demo") {
             demo = true;
         } else if (arg == "--help") {
@@ -409,8 +428,10 @@ int main(int argc, char **argv) {
         }
         // The seed flips the subtraction direction: under the null the two
         // replays are exchangeable, so the flip centers position drift at 0.
-        deltaAA.push_back((orderRng() & 1) == 0 ? r2.nsPerOp - r1.nsPerOp
-                                                : r1.nsPerOp - r2.nsPerOp);
+        bool flip = (orderRng() & 1) == 0;
+        deltaAA.push_back(injectOffsetAa ? kInjectedAaOffsetNanosPerOp
+                                         : (flip ? r2.nsPerOp - r1.nsPerOp
+                                                 : r1.nsPerOp - r2.nsPerOp));
     }
 
     for (int i = 0; i < kIAPairCount; i++) {
@@ -419,12 +440,12 @@ int main(int argc, char **argv) {
         // span the same drift; a zero injection has the exact magnitude 0.
         if (!injectZero) {
             for (int c = 0; c < kSpinCalibrationPairsPerWindow; c++) {
-                if (!runIAPair(ops, orderRng, calibDelta)) {
+                if (!runIAPair(ops, orderRng, calibDelta, injectZeroIa)) {
                     return 1;
                 }
             }
         }
-        if (!runIAPair(ops, orderRng, deltaIA)) {
+        if (!runIAPair(ops, orderRng, deltaIA, injectZeroIa)) {
             return 1;
         }
     }

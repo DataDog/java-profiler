@@ -278,6 +278,11 @@ tasks.register("verifyNativeMemEstimator") {
       listOf("--demo", "--force-bad-hash") to "trace hash mismatch",
       listOf("--demo", "--skip-accounting-call") to "accounting mismatch",
       listOf("--demo", "--inject-zero") to "self-test",
+      // The two injections below drive the real rejection conditions; their
+      // needle is the rejection message, not the forced-failure one, so a
+      // removed iaIncludesZero/aaExcludesZero branch exits 0 and fails here.
+      listOf("--demo", "--inject-zero-ia") to "self-test failed",
+      listOf("--demo", "--inject-offset-aa") to "self-test failed",
     )
     for ((faultArgs, needle) in faultCases) {
       val stderr = ByteArrayOutputStream()

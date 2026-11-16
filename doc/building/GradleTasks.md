@@ -129,11 +129,16 @@ measurement of the per-op cost of the production `NativeMem::recordAlloc` /
   magnitude — a calibration field, never an exit condition.
 - **Test-only fault options**: `--force-bad-hash` (wrong expected hash),
   `--skip-accounting-call` (drop one accounting call), `--inject-zero`
-  (zero-cost spin, forcing the self-test to fail), `--demo` (shorter replay for
-  quick runs).
-- `verifyNativeMemEstimator` runs each fault option (asserting a non-zero exit)
-  and a `--demo` normal run (asserting exit 0 and the report fields above);
-  Linux-only and advisory like the estimator itself.
+  (zero-cost spin, forcing the self-test to fail), `--inject-zero-ia` (zero
+  every I–A delta, failing through the real I–A CI rejection),
+  `--inject-offset-aa` (fixed offset on every A–A delta, failing through the
+  real A–A CI rejection), `--demo` (shorter replay for quick runs).
+- `verifyNativeMemEstimator` runs each fault option (asserting a non-zero
+  exit; the two CI injections assert the rejection message, so a removed
+  rejection branch fails the verification) and a `--demo` normal run
+  (asserting exit 0, the report fields above, and that the marker's
+  `cpu_nr_throttled` matches the counter read independently from the
+  process's own cgroup); Linux-only and advisory like the estimator itself.
 
 ## Application Tasks
 
