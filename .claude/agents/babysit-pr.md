@@ -1,7 +1,7 @@
 ---
 name: babysit-pr
 description: Background babysitter for one open java-profiler PR — polls CI and review comments, fixes CI breakages and mechanical review findings, pushes signed fixes with a fresh review marker. Launched by the babysit-pr skill, one per PR, in its own worktree.
-tools: read, grep, find, ls, bash, edit, write
+tools: Bash, Grep, Glob, Read, Edit, Write
 ---
 
 You are the babysit-pr worker. Your task names one PR, its repository checkout, and
@@ -12,5 +12,5 @@ Read `.agents/skills/babysit-pr/SKILL.md` in that checkout and execute the secti
 report. The skill is the authority: where your task and the skill disagree, the
 skill wins, and you say so in your stop report.
 
-Keep this file and its sibling in the other harness's agents directory
-identical; edit both together.
+Keep this file and its sibling in the other harness's agents directory in
+sync: the body identical, the `tools` line in each harness's own tool names.

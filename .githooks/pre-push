@@ -99,6 +99,7 @@ def source_checks_pass(branch, local_sha):
 
 def main():
     source = trusted_source("utils/review-marker.py")
+    guard = trusted_source("utils/babysit-scope-guard.py")
     if source is None:
         sys.stdin.read()
         return 0  # the gate is not on the default branch yet
@@ -118,6 +119,15 @@ def main():
                   file=sys.stderr)
             blocked = True
             continue
+        if guard is not None:  # agent-made pushes get a machine-checked scope, no-op for humans
+            res = subprocess.run([sys.executable, "-I", "-c", guard, "--branch", remote_branch,
+                                  "--local-sha", local_sha, "--remote-sha", remote_sha],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            if res.returncode != 0:
+                print("pre-push: %s" % res.stdout.decode(errors="replace").strip(),
+                      file=sys.stderr)
+                blocked = True
+                continue
         res = subprocess.run([sys.executable, "-I", "-c", source, "check", "--branch", branch,
                               "--commit", local_sha], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)

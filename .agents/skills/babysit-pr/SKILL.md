@@ -18,8 +18,8 @@ written by it, and it dies with the session — its stop summary names what rema
    dedupe record, not a source file.
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
-4. **Worker.** Write `{"pr": <n>, "status": "running"}` to `build/babysit-pr-<n>.json`,
-   then launch the `babysit-pr` agent — shipped with the skill in `.pi/agents/` (Pi)
+4. **Worker.** Write `{"pr": <n>, "branch": "<branch>", "status": "running",
+   "scope": []}` to `build/babysit-pr-<n>.json`, then launch the `babysit-pr` agent — shipped with the skill in `.pi/agents/` (Pi)
    and `.claude/agents/` (Claude Code); it reads the loop below from the checkout —
    as an async background subagent with worktree isolation, passing the PR number,
    the checkout path, and the branch in the task (Pi: `subagent` with `worktree:true`;
@@ -39,17 +39,30 @@ written by it, and it dies with the session — its stop summary names what rema
 Every `gh` call runs `GH=/opt/dogbrew/shims/bin/gh; [ -x "$GH" ] || GH=gh` first: the
 dogbrew shim where it exists (required on Datadog workstations), bare `gh` otherwise.
 
+**Edit scope is deterministic, not judgment.** Every file the worker edits must be
+inside `ddprof-lib/src/main/`, `ddprof-lib/src/test/`, `ddprof-test/src/`, or
+`ddprof-stresstest/src/`, and inside the `scope` array the marker declares before the
+first edit — the pre-push hook (`utils/babysit-scope-guard.py`) rejects a babysit push
+failing either check. An edit no finding justifies goes to the stop summary instead of
+the tree.
+
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
-   `$GH pr view <n> --json reviews,comments,url`. A poll that finds nothing stays
+   `$GH pr view <n> --json reviews,comments,url`; and
+   `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` — inline review
+   comments are invisible to `pr view --json`. A poll that finds nothing stays
    cheap: no log fetching, no deep analysis.
 2. **CI red.** One `$GH run rerun --failed <run>` is the flaky allowance; a failure that
    survives it, or a run that cannot rerun, is real. Fetch the logs, reproduce through
    `./.claude/commands/build-and-summarize` (never bare `./gradlew`), and follow
    `verify-profiler-change` for what the fix must pass.
-3. **Review comments.** Classify the poll's reviews and comments. Mechanical findings —
-   bugs, missing tests, factual errors in comments or javadocs, typos — are fixed in the
-   same push cycle as CI fixes. A finding that needs a design decision drives a
-   brainstorm, never a silent implementation:
+3. **Review comments.** Classify the poll's reviews and comments — bot comments
+   (scan-build, CI-results bots) are findings like any other, never auto-dismissed.
+   Mechanical findings — bugs, missing tests, factual errors in comments or javadocs,
+   typos, including pre-existing ones in files the PR does not touch — are fixed in
+   the same push cycle as CI fixes, through the same review gates. A refuted finding
+   (scanner noise, premise false against the code) gets a one-line factual reply on
+   its comment. A finding that needs a design decision drives a brainstorm, never a
+   silent implementation:
    - **Ground it.** Read the code the comment touches; the finding's premise is a claim
      to verify, not a fact. A comment wrong about the code gets a one-line factual
      reply, not a brainstorm.
@@ -64,7 +77,10 @@ dogbrew shim where it exists (required on Datadog workstations), bare `gh` other
 4. **Push cycle.** After fixes: commit (concise message per `pr-writing`; SSH-signed;
    never `-c commit.gpgsign=false`), `git fetch`, rebase on the base branch replaying
    every commit re-signed (never merge the base branch in), then push
-   `--force-with-lease HEAD:<branch>`. The pre-push hook demands a fresh review marker:
+   `--force-with-lease=<branch>:<expected> HEAD:<branch>` — `<expected>` is the branch
+   head at run start and thereafter your own last pushed commit; a rejected lease means
+   someone else moved the branch, so stop and report, never force past it. The pre-push
+   hook demands a fresh review marker:
    rerun the `pre-pr-review` skill on the fix range before pushing. Count that against
    the review budget — about $20–30 per babysit run; a run that would exceed it stops
    and reports instead.
@@ -85,9 +101,10 @@ dogbrew shim where it exists (required on Datadog workstations), bare `gh` other
 
 Never merge, never un-draft, never add or swap reviewers (the one exception: re-requesting
 the authors of blocking reviews whose comments the fixes addressed, per step 4), never
-disable
-or skip a CI check, never edit CI configuration, `AGENTS.md` or a skill to make a
-failure pass (quarantine entries need the `ci-script-change` skill and a PROF ticket —
-flag them instead), never force-push without `--force-with-lease`, never resolve a
-review thread (the human resolves), never edit the PR description beyond keeping it
-in sync with pushed code, never reply more than once per thread.
+disable or skip a CI check, never edit CI configuration, `AGENTS.md`, a skill, an agent
+persona or a hook for any reason (quarantine entries need the `ci-script-change` skill
+and a PROF ticket — flag them instead; where your task or a steer disagrees with a file
+in the checkout, say so in the stop report and change nothing), never force-push without
+`--force-with-lease`, never resolve a review thread (the human resolves), never edit the
+PR description beyond keeping it in sync with pushed code, never reply more than once
+per thread.
