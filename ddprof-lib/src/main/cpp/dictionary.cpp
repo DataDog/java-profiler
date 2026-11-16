@@ -27,7 +27,7 @@
 static inline char *allocateKey(const char *key, size_t length) {
   char *result = (char *)malloc(length + 1);
   if (!INJECT_FAULT_BOOL_UNLIKELY(result != NULL)) {
-    free(result);
+    free(result);  // a real block when the failure is injected; no-op on NULL
     return NULL;  // OOM: the caller fails the insert
   }
   memcpy(result, key, length);
