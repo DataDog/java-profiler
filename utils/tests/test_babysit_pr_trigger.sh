@@ -76,8 +76,7 @@ if [ $? -eq 0 ]; then pass; else fail "pr ready with URL should exit 0 (got: $OU
 # 6. A command in another checkout — a real second git repository whose common dir
 #    differs from the project's — does not trigger. This exercises the distinct-
 #    common-dir comparison, not just the not-a-checkout shortcut.
-git -C "$TEMP_DIR/other" init -q 2>/dev/null || mkdir -p "$TEMP_DIR/other"
-git -C "$TEMP_DIR/other" init -q
+git init -q "$TEMP_DIR/other"
 git -C "$TEMP_DIR/other" -c user.email=t -c user.name=t commit -q --allow-empty -m init
 run_hook "gh pr create --draft" "https://github.com/datadog/java-profiler/pull/1234" "$TEMP_DIR/other"
 if [ $? -eq 0 ]; then pass; else fail "other-checkout create should exit 0 (got: $OUT_ERR)"; fi
@@ -147,7 +146,7 @@ run_hook "gh pr create --draft" "https://github.com/datadog/java-profiler/pull/1
   "$TEMP_DIR/other" "$TEMP_DIR/repo"
 if [ $? -eq 0 ]; then pass; else fail "payload cwd in another checkout should exit 0 (got: $OUT_ERR)"; fi
 
-# 16. A payload cwd that is not a git checkout at all fails closed without a crash:
+# 16. A payload cwd that is not a git checkout at all fails open (skipped, no crash):
 #     `top` is None, and dropping the `top and` guard would resolve the common dir
 #     against the process cwd (the project checkout) and trigger.
 mkdir -p "$TEMP_DIR/plain"
