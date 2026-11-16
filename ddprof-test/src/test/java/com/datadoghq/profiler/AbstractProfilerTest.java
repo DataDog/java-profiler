@@ -283,7 +283,7 @@ public abstract class AbstractProfilerTest {
         throw e;
       }
       try {
-        stopRetryingOnDrainTimeout(profiler);
+        stopRetryingOnTransientFailure(profiler);
         // Resync: the singleton is really stopped now. Without this, a failed retry
         // leaves stopped==false and cleanup()'s stopProfiler() throws a misleading
         // "not active" that masks the setup failure.
@@ -413,7 +413,7 @@ public abstract class AbstractProfilerTest {
 
   public final void stopProfiler() {
     if (!stopped) {
-      profiler.stop();
+      stopRetryingOnTransientFailure(profiler);
       stopped = true;
       checkConfig();
     }
@@ -425,20 +425,23 @@ public abstract class AbstractProfilerTest {
     }
   }
 
-  /**
-   * Stops the profiler, retrying the documented-retryable "signal handlers did not drain" outcome
-   * of {@code Profiler::stop()} (state stays RUNNING, teardown skipped, retry is idempotent).
-   * Bounded: 10 attempts x 10ms covers observed drain times; exceeding it rethrows the last drain
-   * failure instead of masking it.
-   */
-  public static void stopRetryingOnDrainTimeout(JavaProfiler profiler) {
-    for (int attempt = 0; attempt < 10; attempt++) {
+  /** Stops with at most ten attempts, retrying only native errors that leave teardown pending. */
+  public static void stopRetryingOnTransientFailure(JavaProfiler profiler) {
+    stopRetryingOnTransientFailure(profiler::stop);
+  }
+
+  // Runnable seam lets lifecycle regressions reject a stop without poisoning the native singleton.
+  static void stopRetryingOnTransientFailure(Runnable stop) {
+    for (int attempt = 1; ; attempt++) {
       try {
-        profiler.stop();
+        stop.run();
         return;
       } catch (IllegalStateException e) {
         String msg = e.getMessage();
-        if (msg == null || !msg.contains("did not drain")) {
+        if (attempt == 10
+            || !("signal handlers did not drain; teardown skipped, retry stop()".equals(msg)
+                || "task-block rotation did not drain; teardown skipped, retry stop()".equals(msg)
+                || "pending wall-clock tails could not be written; teardown skipped".equals(msg))) {
           throw e;
         }
         try {
@@ -449,7 +452,6 @@ public abstract class AbstractProfilerTest {
         }
       }
     }
-    throw new IllegalStateException("stop() did not drain signal handlers after 10 retries");
   }
 
   /**
