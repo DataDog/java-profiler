@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-11-16 00:05:28 EST
+**Date:** 2026-11-16 05:16:19 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 39 |
-| CPU Cores (end) | 68 |
+| CPU Cores (start) | 89 |
+| CPU Cores (end) | 91 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 508 |
-| Sample Rate | 8.47/sec |
-| Health Score | 529% |
-| Threads | 8 |
-| Allocations | 352 |
+| CPU Samples | 562 |
+| Sample Rate | 9.37/sec |
+| Health Score | 586% |
+| Threads | 9 |
+| Allocations | 339 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 856 |
-| Sample Rate | 14.27/sec |
-| Health Score | 892% |
-| Threads | 11 |
-| Allocations | 467 |
+| CPU Samples | 573 |
+| Sample Rate | 9.55/sec |
+| Health Score | 597% |
+| Threads | 10 |
+| Allocations | 480 |
 
 <details>
-<summary>CPU Timeline (4 unique values: 39-68 cores)</summary>
+<summary>CPU Timeline (2 unique values: 89-91 cores)</summary>
 
 ```
-1794805312 39
-1794805317 64
-1794805322 64
-1794805327 64
-1794805332 64
-1794805337 64
-1794805342 64
-1794805347 64
-1794805352 64
-1794805357 47
-1794805362 47
-1794805367 47
-1794805372 47
-1794805377 47
-1794805382 47
-1794805387 47
-1794805392 47
-1794805397 47
-1794805402 47
-1794805407 47
+1794823709 89
+1794823714 89
+1794823719 89
+1794823724 89
+1794823729 89
+1794823734 89
+1794823739 89
+1794823744 89
+1794823749 89
+1794823754 89
+1794823759 89
+1794823764 89
+1794823769 89
+1794823774 89
+1794823779 89
+1794823784 89
+1794823789 89
+1794823794 91
+1794823799 91
+1794823804 91
 ```
 </details>
 
