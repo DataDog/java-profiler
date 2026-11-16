@@ -640,7 +640,11 @@ Each category is exported per chunk as
 (`Recording::writeNativeMem()`), with names taken from
 `DD_NATIVE_MEM_CATEGORY_TABLE`. The set grows when categories are added, so
 consumers should match these counters by prefix rather than hard-code the
-category list.
+category list. The `chunk_overhead` counter
+(`native_mem_chunk_overhead_bytes.<category>`) is per-object allocator accounting
+-- the excess of usable size plus the probed chunk header over the requested
+bytes -- never a resident or attributable
+RSS figure.
 
 ## Counters by Engine
 

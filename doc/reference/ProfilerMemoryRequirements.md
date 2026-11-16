@@ -10,7 +10,11 @@ bytes for each category (`calltrace`, `dictionary`, `line_tables`, `thread_local
 `jfr_buffers`, `method_map`, `perf`, `ctimer`, ...), and every chunk carries them as
 `datadog.ProfilerCounter` events named
 `native_mem_{live,avg,max,chunk_overhead,post_flush_live,post_flush_max}_bytes.<category>`
-(`Recording::writeNativeMem()`). jmethodIDs are allocated by the JVM and are
+(`Recording::writeNativeMem()`). The `chunk_overhead` gauge
+(`native_mem_chunk_overhead_bytes.<category>`) is per-object allocator accounting
+-- the excess of usable size plus the probed chunk header over the requested
+bytes the logical counters record -- never a resident or attributable
+RSS figure. jmethodIDs are allocated by the JVM and are
 not part of these figures. The category set is not fixed, so match these counters by
 prefix rather than by a fixed list. The `ctimer` gauge and the
 table part of the `perf` gauge count reserved, mostly untouched tid-indexed tables

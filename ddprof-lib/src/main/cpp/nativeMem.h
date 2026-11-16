@@ -86,8 +86,9 @@ private:
   static volatile long long _max[NM_NUM_CATEGORIES];
   // Allocator overhead on the live allocations: rounding to the size quantum
   // plus the per-chunk header. Kept SEPARATE from _live rather than folded in,
-  // so _live stays directly comparable to sizeof() arithmetic while the amount
-  // RSS additionally pays stays visible. Maintained only by recordAlloc/
+  // so _live stays directly comparable to sizeof() arithmetic while the
+  // per-object allocator accounting (usable size plus the probed header)
+  // stays visible. Maintained only by recordAlloc/
   // recordFreeBefore/recordOverhead; call sites using plain record()
   // contribute nothing here.
   static volatile long long _overhead[NM_NUM_CATEGORIES];
@@ -129,9 +130,10 @@ public:
   //
   // Prefer this over record() wherever the pointer is in hand: it keeps the
   // logical byte count in _live (comparable to sizeof()) while accumulating the
-  // rounding-plus-header cost that RSS actually pays. Overhead is a function of
-  // per-allocation size, so it cannot be recovered later from a byte total --
-  // a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
+  // per-object allocator accounting -- the excess of usable size plus the
+  // probed header over the requested bytes -- as overhead. Overhead is a
+  // function of per-allocation size, so it cannot be recovered later from a
+  // byte total -- a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
   //
   // Not async-signal-safe on first call (the header probe allocates); every
   // current call site runs on a normal thread.
