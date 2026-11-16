@@ -715,6 +715,10 @@ private:
   std::vector<jlong> _pending_chain_invalidations;
   std::vector<jlong> _draining_chain_invalidations;
   SpinLock _pending_chain_invalidations_lock;
+#ifdef DEBUG
+  // Test hook for evicting a scanned chain before write-back; absent from release builds.
+  void (*_between_invalidation_scan_and_writeback_for_test)() = nullptr;
+#endif
 
   // Abandoned-search events awaiting Profiler::dump() (profiler.cpp).
   static constexpr int MAX_PENDING_ABANDONED_EVENTS = 16;
@@ -1410,13 +1414,6 @@ public:
   // Test accessor for _passes_since_last_progress.
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
 
-  // Test hook, null unless a gtest sets it: runs between applyPendingChainInvalidations()'s
-  // REBUILD scan and its write-back loop, so a gtest can evict a scanned entry in that window and
-  // pin the write-back's replace-only recheck (a dump can evict there; never resurrect it). Like
-  // FrontierTable::resetCapacityForTest(), it ships unconditionally and is written only by test
-  // code before any BFS thread reads it; the hook runs on the caller's thread and must take
-  // _resolved_chains_lock itself.
-  void (*betweenInvalidationScanAndWritebackForTest)() = nullptr;
   // Canary-lane backoff state - see _canary_backoff_mult's own comment.
   int canaryBackoffMultForTest() const { return _canary_backoff_mult; }
   u64 canaryPassEmaMsForTest() const { return _canary_pass_ema_ms; }

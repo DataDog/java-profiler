@@ -1988,10 +1988,9 @@ TEST_F(ReferenceChainsBfsTest, RebuildScanLeavesStaleGenerationChainAlone) {
     tracker->stop();
 }
 
-// The write-back after a REBUILD scan is replace-only: a concurrent dump can evict the scanned
-// entry between the scan and the write-back, and the rebuild must never resurrect it. Driven via
-// the debug-only betweenInvalidationScanAndWritebackForTest hook, which evicts in exactly that
-// window.
+#ifdef DEBUG
+// The debug hook evicts a cached entry after the REBUILD scan but before write-back. This verifies
+// that the replacement does not resurrect an entry removed in that window.
 TEST_F(ReferenceChainsBfsTest, RebuildWritebackNeverResurrectsDumpEvictedEntry) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -2034,6 +2033,7 @@ TEST_F(ReferenceChainsBfsTest, RebuildWritebackNeverResurrectsDumpEvictedEntry) 
 
     tracker->stop();
 }
+#endif
 
 // heapRootCallback()'s local-holder guard: only a positive tag with a class tag may reach
 // noteLocalRootHolder(). A non-positive tag identifies no allocatable object; a leak tag can never

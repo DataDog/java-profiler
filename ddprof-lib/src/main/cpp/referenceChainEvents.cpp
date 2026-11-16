@@ -687,9 +687,11 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
     _draining_chain_invalidations.clear();
   }
 
-  if (betweenInvalidationScanAndWritebackForTest != nullptr) {
-    betweenInvalidationScanAndWritebackForTest();
+#ifdef DEBUG
+  if (_between_invalidation_scan_and_writeback_for_test != nullptr) {
+    _between_invalidation_scan_and_writeback_for_test();
   }
+#endif
 
   for (int i = 0; i < rebuild_count; i++) {
     const jlong tag = rebuild_tags[i];

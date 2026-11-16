@@ -125,7 +125,9 @@ public:
         t->_gotw_batch_size = 0;
         t->_pass_deadline_ns = 0;
         t->_expand_lane_prefer_priority = true;
-        t->betweenInvalidationScanAndWritebackForTest = nullptr;
+#ifdef DEBUG
+        t->_between_invalidation_scan_and_writeback_for_test = nullptr;
+#endif
     }
 
     static bool canAffordNewSearch(u64 now_ns) {
@@ -366,11 +368,13 @@ public:
         return ReferenceChainTracker::pendingChainInvalidationTag(encoded);
     }
 
-    // Sets/clears the debug-only write-back recheck hook (see the member's comment).
-    static void setBetweenInvalidationScanAndWritebackForTest(
-        void (*hook)()) {
-        ReferenceChainTracker::instance()->betweenInvalidationScanAndWritebackForTest = hook;
+#ifdef DEBUG
+    // Sets/clears the debug-only write-back recheck hook.
+    static void setBetweenInvalidationScanAndWritebackForTest(void (*hook)()) {
+        ReferenceChainTracker::instance()->_between_invalidation_scan_and_writeback_for_test =
+            hook;
     }
+#endif
 
     static bool hasResolvedChainForTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
