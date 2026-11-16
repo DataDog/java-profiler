@@ -10,6 +10,7 @@ import com.datadoghq.profiler.JavaProfiler;
 import com.sun.management.ThreadMXBean;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.management.ManagementFactory;
 import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
@@ -20,20 +21,60 @@ import org.objectweb.asm.Opcodes;
 
 /** Guards the Java blocking-hook gate independently of JNI/JVM allocation during native hooks. */
 public class BlockingHookAllocationTest {
+  private static final int GATE_ITERATIONS = 100_000;
+  private static volatile Object allocationSink;
+
   @Test
   public void warmedVirtualThreadGateAllocatesNoJavaObjects() throws Throwable {
     Method method = JavaProfiler.class.getDeclaredMethod("isVirtualThread", Thread.class);
     method.setAccessible(true);
     MethodHandle gate = MethodHandles.lookup().unreflect(method);
+    ThreadMXBean bean = allocationBean();
+    Thread thread = Thread.currentThread();
+    assertEquals(
+        0L,
+        measureCalibratedGateAllocations(gate, bean, thread, GATE_ITERATIONS),
+        "The warmed primitive gate must not allocate varargs arrays or boxed results");
+  }
+
+  @Test
+  public void accountingCalibrationPreservesGateAllocations() throws Throwable {
+    MethodHandle gate =
+        MethodHandles.lookup()
+            .findStatic(
+                BlockingHookAllocationTest.class,
+                "allocatingGate",
+                MethodType.methodType(boolean.class, Thread.class));
+    ThreadMXBean bean = allocationBean();
+    Thread thread = Thread.currentThread();
+    // OpenJ9 reports allocations in batches. Match the zero-allocation gate's iteration count
+    // so the escaping objects exceed that reporting granularity.
+    assertTrue(
+        measureCalibratedGateAllocations(gate, bean, thread, GATE_ITERATIONS) > 0,
+        "Subtracting accounting overhead must not hide the gate's escaping allocations");
+  }
+
+  private static boolean allocatingGate(Thread thread) {
+    allocationSink = new Object();
+    return false;
+  }
+
+  private static ThreadMXBean allocationBean() {
     ThreadMXBean bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
     assertTrue(bean.isThreadAllocatedMemorySupported(), "Allocation accounting is required");
     bean.setThreadAllocatedMemoryEnabled(true);
-    Thread thread = Thread.currentThread();
-    for (int i = 0; i < 10; i++) measureGateAllocations(gate, bean, thread, 100_000);
-    assertEquals(
-        0L,
-        measureGateAllocations(gate, bean, thread, 100_000),
-        "The warmed primitive gate must not allocate varargs arrays or boxed results");
+    return bean;
+  }
+
+  private static long measureCalibratedGateAllocations(
+      MethodHandle gate, ThreadMXBean bean, Thread thread, int iterations) throws Throwable {
+    for (int i = 0; i < 10; i++) {
+      measureGateAllocations(gate, bean, thread, 0);
+      measureGateAllocations(gate, bean, thread, iterations);
+    }
+    // Some JDK 8 accounting calls allocate arrays. Use the same warmed call sites without the gate.
+    long accountingBytes = measureGateAllocations(gate, bean, thread, 0);
+    return measureGateAllocations(gate, bean, thread, iterations) - accountingBytes;
   }
 
   private static long measureGateAllocations(
