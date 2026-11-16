@@ -5,17 +5,21 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
-type List = { instructions: string; dirs: string[] };
-
-// The checkout root for cwd and its parsed list, or null when the checkout has no list.
-function loadConfig(cwd: string): { root: string; list: List | null } {
-  // Pi may run in a subdirectory: the list and its paths are relative to the checkout's top level.
+// Pi may run in a subdirectory: the list and its paths are relative to the checkout's top level.
+function checkoutRoot(cwd: string): string {
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
-  const root = top.status === 0 ? top.stdout.trim() : cwd;
+  return top.status === 0 ? top.stdout.trim() : cwd;
+}
+
+// The instructions for rel, a path relative to root, if it is below a directory listed in
+// root's .pi/native-agents.json; null for any other path or a missing or malformed file.
+function instructionsFor(root: string, rel: string): { path: string; text: string } | null {
   try {
-    return { root, list: JSON.parse(readFileSync(join(root, ".pi", "native-agents.json"), "utf8")) };
+    const list = JSON.parse(readFileSync(join(root, ".pi", "native-agents.json"), "utf8"));
+    if (!list.dirs.some((dir: string) => rel.startsWith(dir + "/"))) return null;
+    return { path: list.instructions, text: readFileSync(join(root, list.instructions), "utf8") };
   } catch {
-    return { root, list: null }; // a checkout without the list
+    return null; // a missing list or instructions file, or a list of the wrong shape
   }
 }
 
@@ -24,12 +28,12 @@ function loadConfig(cwd: string): { root: string; list: List | null } {
 // Once per session, and again after a compaction drops them from the context.
 export default function (pi: ExtensionAPI) {
   let injected = false;
-  // loadConfig per cwd, kept for the session: file tool calls outside the native directories
-  // would otherwise run git and re-read the list every time until the first injection.
-  let configs = new Map<string, { root: string; list: List | null }>();
+  // checkoutRoot per cwd, kept for the session, so that file tool calls before the first
+  // injection do not each spawn git. The list is re-read on each call: it is one small file.
+  let roots = new Map<string, string>();
   pi.on("session_start", async () => {
     injected = false;
-    configs = new Map();
+    roots = new Map();
   });
   pi.on("session_compact", async () => {
     injected = false;
@@ -39,20 +43,13 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName !== "read" && event.toolName !== "edit" && event.toolName !== "write") return undefined;
     let path = String(event.input.path ?? "").replace(/^@/, "");
     if (path.startsWith("~/")) path = join(homedir(), path.slice(1));
-    let config = configs.get(ctx.cwd);
-    if (!config) configs.set(ctx.cwd, (config = loadConfig(ctx.cwd)));
-    const { root, list } = config;
-    if (!list) return undefined;
+    let root = roots.get(ctx.cwd);
+    if (root === undefined) roots.set(ctx.cwd, (root = checkoutRoot(ctx.cwd)));
     const rel = relative(root, resolve(ctx.cwd, path)).split(sep).join("/");
-    let text: string;
-    try {
-      if (!list.dirs.some((dir) => rel.startsWith(dir + "/"))) return undefined;
-      text = readFileSync(join(root, list.instructions), "utf8");
-    } catch {
-      return undefined; // a malformed list, or a checkout without the instructions file
-    }
+    const found = instructionsFor(root, rel);
+    if (!found) return undefined;
     injected = true;
-    const note = `Instructions from ${list.instructions}, which apply to the file above:\n\n${text}`;
+    const note = `Instructions from ${found.path}, which apply to the file above:\n\n${found.text}`;
     return {
       content: [...event.content, { type: "text", text: note }],
       structuredContent: event.structuredContent,

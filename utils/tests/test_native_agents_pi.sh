@@ -27,8 +27,8 @@ fi
 
 # The driver replays events against one extension instance and prints one line per
 # tool_result: "inject <first item kept> <instructions text present> <structuredContent kept>",
-# or "none" when the handler leaves the result alone. A step "rm:<path>" deletes a file,
-# and "cd:<dir>" changes the cwd that later events pass.
+# or "none" when the handler leaves the result alone. A step "sh:<command>" runs a shell
+# command, and "cd:<dir>" changes the cwd that later events pass.
 cat > "$TEMP_DIR/driver.mjs" <<'EOF'
 const [ext, cwd0, ...steps] = process.argv.slice(2);
 const mod = await import(ext);
@@ -37,10 +37,13 @@ mod.default({ on: (name, fn) => { handlers[name] = fn; } });
 const out = [];
 let cwd = cwd0;
 for (const step of steps) {
-  const [ev, tool, path] = step.split(":");
-  if (ev === "rm") { (await import("node:fs")).rmSync(tool); continue; }
-  if (ev === "cd") { cwd = tool; continue; }
+  const ev = step.split(":", 1)[0];
+  const arg = step.slice(ev.length + 1);
+  if (ev === "sh") { (await import("node:child_process")).execSync(arg, { shell: "/bin/bash", stdio: "pipe" }); continue; }
+  if (ev === "cd") { cwd = arg; continue; }
   if (ev !== "tool_result") { await handlers[ev]({ type: ev }, { cwd }); continue; }
+  const tool = arg.split(":", 1)[0];
+  const path = arg.slice(tool.length + 1);
   const content = [{ type: "text", text: "ORIGINAL" }];
   const structuredContent = { kept: true };
   const r = await handlers.tool_result({ type: ev, toolName: tool, input: { path, command: path },
@@ -99,20 +102,38 @@ check "a path outside the checkout" "none" "$REPO" \
 check "bash and grep are not covered" "none,none" "$REPO" \
   tool_result:bash:ddprof-lib/src/main/cpp/a.cpp tool_result:grep:ddprof-lib/src/main/cpp/a.cpp
 check "empty path" "none" "$REPO" tool_result:read:
+mkdir -p "$REPO/ddprof-lib/src/main/x:y"
+check "a cd step to a path with a colon" "$HIT" "$REPO" cd:"$REPO/ddprof-lib/src/main/x:y" \
+  tool_result:read:../cpp/a.cpp
 HOME="$TEMP_DIR" check "~ expands to HOME" "$HIT" "$REPO" tool_result:read:"~/repo/ddprof-lib/src/main/cpp/a.cpp"
 
 LIST="$REPO/.pi/native-agents.json"
-check "the list is read once per session" "none,$HIT" "$REPO" \
-  tool_result:read:ddprof-lib/src/main/java/A.java rm:"$LIST" tool_result:read:ddprof-lib/src/main/cpp/a.cpp
+check "the list is re-read on each call" "none,none" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/java/A.java sh:"rm '$LIST'" tool_result:read:ddprof-lib/src/main/cpp/a.cpp
 cp "$ROOT/.pi/native-agents.json" "$LIST"
-check "session_start drops the cached list" "none,none" "$REPO" \
-  tool_result:read:ddprof-lib/src/main/java/A.java rm:"$LIST" session_start \
+mv "$LIST" "$TEMP_DIR/list.bak"
+check "a list missing at the first call and present later" "none,$HIT" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/cpp/a.cpp sh:"cp '$TEMP_DIR/list.bak' '$LIST'" \
+  tool_result:read:ddprof-lib/src/main/cpp/a.cpp
+echo '{"instructions": "x"}' > "$LIST"
+check "a list of the wrong shape, then fixed" "none,$HIT" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/cpp/a.cpp sh:"cp '$TEMP_DIR/list.bak' '$LIST'" \
   tool_result:read:ddprof-lib/src/main/cpp/a.cpp
 cp "$ROOT/.pi/native-agents.json" "$LIST"
-check "the cache is per cwd" "none,none" "$REPO" \
-  tool_result:read:ddprof-lib/src/main/java/A.java rm:"$LIST" cd:"$REPO/ddprof-lib/src/main/java" \
-  tool_result:read:../cpp/a.cpp
-cp "$ROOT/.pi/native-agents.json" "$LIST"
+
+# A tree that becomes a git checkout after the first call: the root found for a cwd sticks.
+late_tree() {
+  mkdir -p "$1/.pi" "$1/ddprof-lib/src/main/cpp" "$1/ddprof-lib/src/main/java"
+  cp "$LIST" "$1/.pi/"
+  cp "$REPO/$INSTRUCTIONS" "$1/$INSTRUCTIONS"
+}
+late_tree "$TEMP_DIR/late1"
+check "the checkout root is cached per cwd" "none,none,$HIT" "$TEMP_DIR/late1/ddprof-lib/src/main/java" \
+  tool_result:read:../cpp/a.cpp sh:"git init -q '$TEMP_DIR/late1'" tool_result:read:../cpp/a.cpp \
+  cd:"$TEMP_DIR/late1/ddprof-lib/src/main/cpp" tool_result:read:a.cpp
+late_tree "$TEMP_DIR/late2"
+check "session_start drops the cached root" "none,$HIT" "$TEMP_DIR/late2/ddprof-lib/src/main/java" \
+  tool_result:read:../cpp/a.cpp sh:"git init -q '$TEMP_DIR/late2'" session_start tool_result:read:../cpp/a.cpp
 
 mv "$REPO/$INSTRUCTIONS" "$TEMP_DIR/instructions.bak"
 check "missing instruction file" "none" "$REPO" tool_result:read:ddprof-lib/src/main/cpp/a.cpp
