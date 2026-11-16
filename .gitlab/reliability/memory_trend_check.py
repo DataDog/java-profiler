@@ -120,6 +120,11 @@ def compute_verdict(memory_log, sample_markers, probe, allocator):
     """First-match verdict over the row's own series; returns (verdict, reason)."""
     if len(memory_log) < 5:
         return "inconclusive", f"Only {len(memory_log)} memory samples were recorded, at least 5 are needed"
+    # The NA-share gates and the throttle span assume one marker slot per
+    # memory sample; a marker list that does not cover the series would
+    # dilute the missing shares and let an empty reading set slip through.
+    if len(sample_markers) != len(memory_log):
+        return "inconclusive", "Marker records do not cover every memory sample"
 
     psi_missing = 0
     throttle_missing = 0

@@ -373,6 +373,37 @@ expect_verdict "growth_kb of one kB passes when released" pass growth-one.log gm
 
 expect_verdict "interleaved grow-then-release passes" pass interleaved.log gmalloc
 
+# --- marker coverage: the NA-share gates assume one slot per sample ----------
+
+# The share gates divide by the series length but count over the marker
+# list, so a short marker list diluted the missing share and an empty psi
+# reading set slipped through as a pass. compute_verdict is called directly:
+# read_marker_records always returns one slot per mem sample, so a mismatched
+# list can only come from a broken caller, and the verdict must be
+# inconclusive instead of a silently unguarded pass.
+if "${PYTHON_BIN}" - "${SCRIPT}" <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("memory_trend_check", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+mem = [500000] * 10
+probe = {"status": "ok", "before_rss": 500000, "after_rss": 480000}
+short = [{"cpu_nr_throttled": "4"}] * 4
+verdict, reason = module.compute_verdict(mem, short, probe, "gmalloc")
+if verdict != "inconclusive" or "do not cover every memory sample" not in reason:
+    print(f"short marker list verdict was ({verdict}, {reason})")
+    sys.exit(1)
+verdict, reason = module.compute_verdict(mem, [], probe, "gmalloc")
+if verdict != "inconclusive" or "do not cover every memory sample" not in reason:
+    print(f"empty marker list verdict was ({verdict}, {reason})")
+    sys.exit(1)
+PYEOF
+then
+  pass "a marker list shorter than the series is inconclusive, never an unguarded pass"
+else
+  fail_case "a marker list shorter than the series bypassed the NA-share gates"
+fi
+
 # --- constants and forbidden inputs -------------------------------------------
 
 if "${PYTHON_BIN}" - "${SCRIPT}" <<'PYEOF'
