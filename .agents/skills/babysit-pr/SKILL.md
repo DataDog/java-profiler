@@ -54,6 +54,15 @@ justifies to that marker's `scope` array before its first edit, and updates it i
 grows beyond the first estimate (atomically: temp file plus rename). An edit no finding
 justifies goes to the stop summary instead of the tree.
 
+**Run signals.** At start the worker adds the `dog-sitter` label to the PR and posts
+one status comment; at stop it removes the label and edits that same comment with the
+outcome — one timeline entry per run, never a reply. A missing label is flagged in the
+stop report, never created (the worker does not create repo labels). The status comment
+is fixed boilerplate: "🐶 babysit-pr is watching this PR: CI breakages and mechanical
+findings are fixed and pushed through the repo's review gates (caps: two fix-push
+rounds, two hours; stops with its session). Design-level findings are surfaced to the
+author, never auto-implemented."
+
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`; and
    `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` — inline review
@@ -124,8 +133,9 @@ justifies goes to the stop summary instead of the tree.
    is recorded in the stop summary instead of retried.
 6. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
    any cap hit (at most two fix-push rounds and two hours per run). Update the worker
-   worktree's marker to `{"pr": <n>, "status": "stopped"}` and summarize: commits
-   pushed, findings flagged, threads left. The session updates its own dedupe copy
+   worktree's marker to `{"pr": <n>, "status": "stopped"}`, remove the `dog-sitter`
+   label, and edit the status comment to append the stop summary (commits pushed,
+   findings flagged, threads left). The session updates its own dedupe copy
    at handback — the worker never writes the session's checkout.
 
 ## Never
