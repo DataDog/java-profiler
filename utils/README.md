@@ -233,13 +233,14 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
 | `check-knowledgebase.py` | Every tracked `.knowledgebase/memories/` file carries cairn's required memory frontmatter. |
 | `check-skills.py` | Every tracked `.agents/skills/` skill has loadable frontmatter, `.claude/skills` links to it, and `AGENTS.md` names only existing skills. |
+| `check-native-agents.py` | The native-code instruction file named in `.pi/native-agents.json` reaches Claude Code and Pi from the same directory list: each listed directory has a `CLAUDE.md` stub that imports the file, every nested `CLAUDE.md` is listed, and the root `AGENTS.md` names the file and each directory. |
 
 `.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch. A push to a branch with an open PR that passes those gates warns to re-verify the PR description against the pushed commits; the warning never blocks.
 
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all seven; run by CI (ci.yml source-invariant-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all nine; run by CI (ci.yml source-invariant-checks job)
 ```
 
 CI runs every `utils/tests/*.sh` suite in the `script-tests` job of `.github/workflows/ci.yml`, with Node.js 22 for the Pi adapter cases.

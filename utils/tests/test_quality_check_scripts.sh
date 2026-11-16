@@ -102,6 +102,18 @@ rc=0; out=$(python3 "$SIGSETJMP" 2>&1) || rc=$?
 # Pins the exception count, not the call count: a new compliant sigsetjmp site must not fail this.
 expect "T1g tracked tree" 0 "$rc" "$out" " calls, 1 known exception(s))"
 
+# Tracked mode reads C/C++ sources only: the native AGENTS.md quotes sigsetjmp(ctx, 1).
+SJ_GIT="$TEMP_DIR/sigsetjmp-tracked"
+mkdir -p "$SJ_GIT/$SRC" && git -C "$SJ_GIT" init -q
+printf 'void f() {\n  if (sigsetjmp(ctx, 1) != 0) { return; }\n}\n' > "$SJ_GIT/$SRC/bad.cpp"
+cp "$SJ_GIT/$SRC/bad.cpp" "$SJ_GIT/$SRC/bad.h"
+cp "$SJ_GIT/$SRC/bad.cpp" "$SJ_GIT/$SRC/notes.md"
+git -C "$SJ_GIT" add -f "$SRC"
+rc=0; out=$(python3 "$SIGSETJMP" --root "$SJ_GIT" 2>&1) || rc=$?
+expect "T1h tracked mode checks .cpp files" 1 "$rc" "$out" "$SRC/bad.cpp:2: no JmpCtxScope"
+expect "T1h tracked mode checks .h files" 1 "$rc" "$out" "$SRC/bad.h:2: no JmpCtxScope"
+if [[ "$out" == *notes.md* ]]; then fail "T1h tracked mode reads a non-source file:"$'\n'"$out"; else pass; fi
+
 # --- T2: check-jvm-boundary-includes.py include forms --------------------------
 
 # boundary_repo <name> <file> <include line> [<file> <include line> ...]; prints the repo dir.
@@ -363,7 +375,7 @@ if [ "$n" -lt 2 ]; then fail "T4 RefCountGuard.md mentions REFCOUNT_NESTED_OVERF
 rc=0; out=$(python3 "$ROOT/utils/check-claude-md.py" 2>&1) || rc=$?
 expect "T4 tracked CLAUDE.md is canonical" 0 "$rc" "$out" "CLAUDE.md: OK"
 
-for s in check-copyright.py check-claude-md.py check-knowledgebase.py check-skills.py; do
+for s in check-copyright.py check-claude-md.py check-knowledgebase.py check-skills.py check-native-agents.py; do
   if grep -q "\"$s\"" "$GRADLE"; then pass; else fail "T4 qualityChecks does not run $s"; fi
 done
 
@@ -372,6 +384,9 @@ expect "T4 tracked memories carry cairn frontmatter" 0 "$rc" "$out" "knowledgeba
 
 rc=0; out=$(python3 "$ROOT/utils/check-skills.py" 2>&1) || rc=$?
 expect "T4 tracked skills load and AGENTS.md names only existing skills" 0 "$rc" "$out" "skills: OK"
+
+rc=0; out=$(python3 "$ROOT/utils/check-native-agents.py" 2>&1) || rc=$?
+expect "T4 native-code stubs match the Pi directory list" 0 "$rc" "$out" "native agents: OK"
 
 # --- T5: check-copyright.py over a branch's added and modified files ---------
 
@@ -748,6 +763,62 @@ sk_reset; skill good-one "name: good-one" "$(printf 'description: caf\xe9')"
 sk; expect "T8at SKILL.md that is not valid UTF-8" 1 "$rc" "$out" "good-one/SKILL.md: not valid UTF-8 at byte"
 sk_reset; skill good-one "name: good-one" "$(printf '"description": x')"
 sk; expect "T8au quoted key" 1 "$rc" "$out" "line 3: expected \`key: value\` at column 0"
+
+# --- T9: check-native-agents.py ------------------------------------------------
+
+NA="$ROOT/utils/check-native-agents.py"
+NA_ROOT="$TEMP_DIR/native-agents"
+na() { rc=0; out=$(python3 "$NA" --root "$NA_ROOT" 2>&1) || rc=$?; }
+na_track() { git -C "$NA_ROOT" add -f "$@"; }
+na_reset() {  # a valid tree: the list, the instruction file, two stubs, the root line
+  rm -rf "$NA_ROOT" && mkdir -p "$NA_ROOT/.pi" "$NA_ROOT/lib/cpp" "$NA_ROOT/lib/test"
+  git -C "$NA_ROOT" init -q
+  printf '{"instructions": "lib/cpp/AGENTS.md", "dirs": ["lib/cpp", "lib/test"]}\n' > "$NA_ROOT/.pi/native-agents.json"
+  echo rules > "$NA_ROOT/lib/cpp/AGENTS.md"
+  echo '@AGENTS.md' > "$NA_ROOT/lib/cpp/CLAUDE.md"
+  echo '@../cpp/AGENTS.md' > "$NA_ROOT/lib/test/CLAUDE.md"
+  echo 'Before you change `lib/cpp` or `lib/test`, read [lib/cpp/AGENTS.md](lib/cpp/AGENTS.md).' > "$NA_ROOT/AGENTS.md"
+  echo '@AGENTS.md' > "$NA_ROOT/CLAUDE.md"
+  na_track .pi lib AGENTS.md CLAUDE.md
+}
+na_reset
+na; expect "T9a valid list, stubs and root line" 0 "$rc" "$out" "native agents: OK"
+na_reset; git -C "$NA_ROOT" rm -q --cached lib/test/CLAUDE.md
+na; expect "T9b covered dir without a tracked stub" 1 "$rc" "$out" "lib/test/CLAUDE.md: missing"
+na_reset; rm "$NA_ROOT/lib/test/CLAUDE.md"
+na; expect "T9c tracked stub missing from the working tree" 1 "$rc" "$out" "lib/test/CLAUDE.md: cannot read"
+na_reset; printf '@../cpp/AGENTS.md\nmore guidance\n' > "$NA_ROOT/lib/test/CLAUDE.md"
+na; expect "T9d stub with a second line" 1 "$rc" "$out" "lib/test/CLAUDE.md: must hold only the line"
+na_reset; echo '../cpp/AGENTS.md' > "$NA_ROOT/lib/test/CLAUDE.md"
+na; expect "T9e stub line without @" 1 "$rc" "$out" "lib/test/CLAUDE.md: must hold only the line"
+na_reset; echo '@../gone/AGENTS.md' > "$NA_ROOT/lib/test/CLAUDE.md"
+na; expect "T9f stub imports a missing file" 1 "$rc" "$out" "imports lib/gone/AGENTS.md, expected lib/cpp/AGENTS.md"
+na_reset; echo '@AGENTS.md' > "$NA_ROOT/lib/test/CLAUDE.md"
+na; expect "T9g stub imports another file" 1 "$rc" "$out" "imports lib/test/AGENTS.md, expected lib/cpp/AGENTS.md"
+na_reset; mkdir -p "$NA_ROOT/other" && echo '@../lib/cpp/AGENTS.md' > "$NA_ROOT/other/CLAUDE.md" && na_track other
+na; expect "T9h nested stub not in the Pi list" 1 "$rc" "$out" "other/CLAUDE.md: not in .pi/native-agents.json"
+na_reset; mkdir -p "$NA_ROOT/draft" && echo x > "$NA_ROOT/draft/CLAUDE.md"
+na; expect "T9i untracked nested CLAUDE.md is ignored" 0 "$rc" "$out" "native agents: OK"
+na_reset; printf '{"instructions": "lib/cpp/AGENTS.md", "dirs": ["lib/cpp", "lib/test", "lib/cpp"]}\n' > "$NA_ROOT/.pi/native-agents.json"
+na; expect "T9j directory listed twice" 1 "$rc" "$out" "lib/cpp is listed twice"
+na_reset; git -C "$NA_ROOT" rm -q --cached lib/cpp/AGENTS.md
+na; expect "T9k untracked instruction file" 1 "$rc" "$out" "instruction file lib/cpp/AGENTS.md is not tracked"
+na_reset; echo 'Before you change `lib/cpp`, read [lib/cpp/AGENTS.md](lib/cpp/AGENTS.md).' > "$NA_ROOT/AGENTS.md"
+na; expect "T9l root AGENTS.md omits a covered dir" 1 "$rc" "$out" "AGENTS.md: does not name lib/test"
+na_reset; echo 'Before you change `lib/cpp` or `lib/test`, read the native file.' > "$NA_ROOT/AGENTS.md"
+na; expect "T9m root AGENTS.md omits the instruction file" 1 "$rc" "$out" "AGENTS.md: does not name lib/cpp/AGENTS.md"
+na_reset; rm "$NA_ROOT/.pi/native-agents.json"
+na; expect "T9n list missing" 2 "$rc" "$out" "error: cannot read .pi/native-agents.json"
+na_reset; echo '{"dirs": ' > "$NA_ROOT/.pi/native-agents.json"
+na; expect "T9o list is not JSON" 2 "$rc" "$out" "not valid JSON"
+for bad in '[]' '{"dirs": []}' '{"instructions": "x", "dirs": "lib/cpp"}' '{"instructions": "x", "dirs": [1]}'; do
+  na_reset; echo "$bad" > "$NA_ROOT/.pi/native-agents.json"
+  na; expect "T9p list of the wrong shape <$bad>" 2 "$rc" "$out" "expected {\"instructions\""
+done
+na_reset; rm "$NA_ROOT/AGENTS.md"
+na; expect "T9q root AGENTS.md missing" 2 "$rc" "$out" "error: cannot read AGENTS.md"
+rm -rf "$NA_ROOT/.git"
+na; expect "T9r environment error outside a checkout" 2 "$rc" "$out" "error:"
 
 # --- Summary -----------------------------------------------------------------
 
