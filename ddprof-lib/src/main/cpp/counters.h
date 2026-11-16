@@ -91,6 +91,7 @@
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
+  X(WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED, "wc_precheck_registry_probe_exhausted") \
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
   X(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK, "wc_signals_suppressed_owned_block")     \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
@@ -107,6 +108,7 @@
   X(TASK_BLOCK_STACK_CAPTURE_FAILED, "task_block_stack_capture_failed")      \
   X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                     \
   X(TASK_BLOCK_DROPPED_ROTATION, "task_block_dropped_rotation")               \
+  X(TASK_BLOCK_DROPPED_ADMISSION, "task_block_dropped_admission")             \
   X(TASK_BLOCK_SKIPPED_THREAD_MISMATCH, "task_block_skipped_thread_mismatch") \
   X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
   X(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED, "task_block_virtual_thread_detection_failed") \

@@ -29,6 +29,10 @@ UnloadProtection::~UnloadProtection() {
     }
 }
 
+bool UnloadProtection::importsAreCurrent(const CodeCache* /*cc*/) const {
+    return _valid;
+}
+
 class MachOParser {
   private:
     CodeCache* _cc;

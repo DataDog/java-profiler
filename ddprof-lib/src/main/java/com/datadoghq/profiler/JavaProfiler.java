@@ -572,6 +572,11 @@ public final class JavaProfiler {
     return endTaskBlock0(Thread.currentThread(), token, blocker, unblockingSpanId);
   }
 
+  /** Test-only probe of default wall-engine and current platform-thread support. */
+  boolean taskBlockSupportedForTest() {
+    return taskBlockSupportedForTest0(Thread.currentThread());
+  }
+
   /**
    * Test-only hook exercising {@link #beginTaskBlock0} with an explicit {@code thread}, to cover
    * the rejection path when it does not identify the calling thread.
@@ -587,6 +592,15 @@ public final class JavaProfiler {
   boolean endTaskBlockForThread(Thread thread, long token, long blocker, long unblockingSpanId) {
     return endTaskBlock0(thread, token, blocker, unblockingSpanId);
   }
+
+  /** Test-only native timestamps; the lifecycle seam is disabled outside DEBUG builds. */
+  static native boolean endTaskBlockAtTicksForTest0(
+      Thread thread,
+      long token,
+      long startTicks,
+      long endTicks,
+      long blocker,
+      long unblockingSpanId);
 
   /**
    * Get the ticks for the current thread.
@@ -670,6 +684,8 @@ public final class JavaProfiler {
 
   private static native void blockExit0(
       boolean isVirtual, long token, long blocker, long unblockingSpanId);
+
+  private static native boolean taskBlockSupportedForTest0(Thread thread);
 
   private static native long beginTaskBlock0(Thread thread);
 

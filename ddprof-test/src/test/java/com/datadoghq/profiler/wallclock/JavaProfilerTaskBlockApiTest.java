@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.NativeBuildConfig;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
@@ -113,22 +114,32 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     assertTrue(getRecordedCounterValue("task_block_recovered_abandoned") > 0);
   }
 
-  @Test
-  public void tooShortIntervalStillClearsLifecycle() throws Exception {
+  @ParameterizedTest
+  @ValueSource(longs = {0L, 20L})
+  public void tooShortIntervalStillClearsLifecycle(long schedulingPauseMillis) throws Exception {
+    Assumptions.assumeTrue(
+        NativeBuildConfig.isDebugInstrumented(), "native timestamp seam requires DEBUG");
     AtomicBoolean recorded = new AtomicBoolean(true);
     AtomicLong secondToken = new AtomicLong();
     runWorker(
         () -> {
           long token = profiler.beginTaskBlock();
-          recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+          assertTrue(token != 0);
+          Thread.sleep(schedulingPauseMillis);
+          recorded.set(
+              ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
+                  token, 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
           secondToken.set(profiler.beginTaskBlock());
-          profiler.endTaskBlock(secondToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+          assertTrue(secondToken.get() != 0);
+          assertFalse(
+              ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
+                  secondToken.get(), 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
         });
 
     assertFalse(recorded.get());
     assertTrue(secondToken.get() != 0);
     stopProfiler();
-    assertTrue(getRecordedCounterValue("task_block_skipped_too_short") > 0);
+    assertEquals(2L, getRecordedCounterValue("task_block_skipped_too_short"));
   }
 
   @Test
@@ -390,6 +401,11 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(snapshot);
       else System.out.println("TASK_BLOCK snapshot recording=" + snapshot.toAbsolutePath());
     }
+  }
+
+  @Override
+  protected boolean isPlatformSupported() {
+    return TaskBlockAssertions.isSupported();
   }
 
   @Override

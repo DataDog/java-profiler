@@ -250,10 +250,13 @@ private:
     bool _owned;
 
   public:
-    RecordingStripe(SpinLock* locks, u32 index) : _locks(locks), _index(index) {
-      _owned = _locks[_index].tryLock() ||
-          _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
-          _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+    RecordingStripe(SpinLock* locks, u32 index, bool allow_fallback = true)
+        : _locks(locks), _index(index) {
+      _owned = _locks[_index].tryLock();
+      if (!_owned && allow_fallback) {
+        _owned = _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
+            _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+      }
     }
     ~RecordingStripe() { if (_owned) _locks[_index].unlock(); }
     RecordingStripe(const RecordingStripe&) = delete;
@@ -279,9 +282,14 @@ private:
                           u64* recorded_call_trace_id, const Context* context = nullptr);
   bool writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
                         const Context* context = nullptr);
+  // Partial writes consume only accepted segments, retaining the original payload for retries.
+  bool flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                           bool preserve_cadence);
+  bool flushWallTail(ThreadFilter::SlotID slot_id, int tid);
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
-  bool writeUnownedBlockedTail(u32 lock_index, const WallSampleRequest& request,
-                               WallClockBlockTracker::BlockState* block);
+  bool writeUnownedBlockedTail(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                               WallClockBlockTracker::BlockState* block,
+                               const WallSampleRequest* request);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
@@ -469,10 +477,16 @@ public:
       _calltrace_buffer[i] = NULL;
     }
     _thread_filter.setBlockTracker(&_block_tracker);
+    _block_tracker.setTailFlush([this](ThreadFilter::SlotID slot_id, int tid) {
+      return flushWallTail(slot_id, tid);
+    });
     _call_trace_storage.registerLivenessChecker(
         [this](CallTraceIdSet& live) { _block_tracker.collectLiveTraceIds(live); },
         [this](const CallTraceIdSet& failed) { _block_tracker.onUnpreservedTraceIds(failed); });
   }
+
+  // Test-only capability probe for the default synchronous wall-clock API tests.
+  bool taskBlockSupportedForTest(JNIEnv* env, jthread thread);
 
   static inline Profiler *instance() {
     return _instance;
@@ -719,7 +733,12 @@ public:
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,
                             jint event_type, Event *event);
-  void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
+  // Bounded signal-side publication; dump excludes it with all recording stripes.
+  bool deferUnownedWallSample(WallSampleRequest& request);
+  // Normal timer/dump threads: metadata and the successor start publish together.
+  // stripes_held requires every recording stripe, as held by chunk sealing.
+  void recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start,
+                            bool stripes_held = false);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   enum class TaskBlockRecordResult {
@@ -736,7 +755,7 @@ public:
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
   enum class TaskBlockActivityStage {
-    BEFORE_RESERVATION, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
+    BEFORE_RESERVATION, BEFORE_RESERVATION_CAS, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
   };
   using TaskBlockActivityHook = void (*)(TaskBlockActivityStage stage);
   static void setTaskBlockActivityHookForTest(TaskBlockActivityHook hook);

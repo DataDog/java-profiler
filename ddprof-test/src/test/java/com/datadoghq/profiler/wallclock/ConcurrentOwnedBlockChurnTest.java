@@ -27,15 +27,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 
 /**
- * Verifies owned-block once-per-run suppression stays correct under real thread churn, unlike
- * {@link UnfilteredWallPrecheckTest} and {@link UnfilteredWallPrecheckRestartTest}, which each pin
- * down one deterministic worker/interleaving. Many short-lived threads concurrently register a
- * registry slot, arm an owned SLEEPING block, block, and die (forcing JVMTI ThreadEnd / slot reuse)
- * while the wall-clock engine is sampling every thread ({@code filter=}), so this specifically
- * races {@code ThreadFilter} slot reuse against {@code WallClockBlockTracker} enter/exit - the
- * coupling introduced by splitting the tracker out of the registry. Unlike the chaos {@code
- * park-block-churn} antagonist, this asserts on actual sample counts and debug counters, so it also
- * catches silent over-/under-suppression regressions.
+ * Requires owned-method stack coverage in every round of thread churn and checks that once-per-run
+ * suppression limits repeated samples and increments its debug counter.
  */
 public class ConcurrentOwnedBlockChurnTest extends AbstractProfilerTest {
   private static final long BLOCK_MILLIS = 250;

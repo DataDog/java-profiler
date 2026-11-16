@@ -102,11 +102,9 @@ void ProfiledThread::freeValue(void* value) {
   // for every teardown route (including deleteForTest()) and not just this
   // call site.
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
-  // ThreadEnd notifications are disabled between recordings, so retire the
-  // identity here before pool reuse too. This runs in the pthread-key
-  // destructor and must never block: retirement is lock-free, and an unknown
-  // or already-unregistered TID is a no-op. The locked bookkeeping (index,
-  // free list) is deferred to the next _registry_lock holder.
+  // ThreadEnd is disabled between recordings; retire identity before pool reuse.
+  // Tail flushes try the writer stripe without waiting; failed writes retain
+  // the registry slot until a locked drain can finish teardown.
   Profiler::instance()->threadFilter()->retireThreadByTid(pt->tid());
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal

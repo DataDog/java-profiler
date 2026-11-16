@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 # dd-trace-java Integration Tests
 # Tests the java-profiler ddprof-lib artifact with patched dd-java-agent
 
@@ -93,6 +95,8 @@ prepare-patched-agent:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
+    - if: '$JVM_TYPE == "openj9" && $LIBC_VARIANT == "musl"'
+      allow_failure: false
     - when: on_success
   interruptible: true
   timeout: 10m
@@ -110,76 +114,83 @@ prepare-patched-agent:
         apk add --no-cache curl wget unzip bc bash ca-certificates
       fi
 
-      JDK_INSTALLED=false
-      if command -v apt-get &> /dev/null; then
-        if apt-get install -y -qq openjdk-${JAVA_VERSION}-jdk 2>/dev/null || apt-get install -y -qq openjdk-${JAVA_VERSION}-jre-headless 2>/dev/null; then
-          JDK_INSTALLED=true
-        fi
-      elif command -v apk &> /dev/null; then
+      if [ "${JVM_TYPE}" = "openj9" ]; then
+        source .gitlab/dd-trace-integration/install-openj9.sh /opt/java
+      elif [ "${JVM_TYPE}" = "hotspot" ]; then
         JDK_INSTALLED=false
-      fi
-
-      if [ "${JDK_INSTALLED}" = false ]; then
-        ARCH_NAME=$(uname -m)
-        case "${ARCH_NAME}" in
-          x86_64) JDK_ARCH="amd64" ;;
-          aarch64) JDK_ARCH="aarch64" ;;
-          *) echo "ERROR: Unsupported architecture: ${ARCH_NAME}"; exit 1 ;;
-        esac
-
-        if command -v apk &> /dev/null; then
-          JDK_LIBC="musl"
-        else
-          JDK_LIBC="glibc"
-        fi
-
-        JDK_DIR="/opt/java/jdk-${JAVA_VERSION}"
-        mkdir -p /opt/java
-
-        if [ "${JDK_LIBC}" = "musl" ]; then
-          case "${JAVA_VERSION}" in
-            8)  LIBERICA_VERSION="8u482+10" ;;
-            11) LIBERICA_VERSION="11.0.30+9" ;;
-            17) LIBERICA_VERSION="17.0.18+10" ;;
-            21) LIBERICA_VERSION="21.0.10+10" ;;
-            25) LIBERICA_VERSION="25.0.2+12" ;;
-            *) echo "ERROR: Unsupported JDK version: ${JAVA_VERSION}"; exit 1 ;;
-          esac
-          case "${JDK_ARCH}" in
-            amd64) LIBERICA_ARCH="x64" ;;
-            *) LIBERICA_ARCH="${JDK_ARCH}" ;;
-          esac
-          DOWNLOAD_URL="https://download.bell-sw.com/java/${LIBERICA_VERSION}/bellsoft-jdk${LIBERICA_VERSION}-linux-${LIBERICA_ARCH}-musl-lite.tar.gz"
-        else
-          case "${JDK_ARCH}" in
-            amd64) ADOPTIUM_ARCH="x64" ;;
-            *) ADOPTIUM_ARCH="${JDK_ARCH}" ;;
-          esac
-          DOWNLOAD_URL="https://api.adoptium.net/v3/binary/latest/${JAVA_VERSION}/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
-        fi
-
-        MAX_RETRIES=3
-        for attempt in $(seq 1 $MAX_RETRIES); do
-          if curl -Lk --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" | tar xzf - -C /opt/java; then
-            break
+        if command -v apt-get &> /dev/null; then
+          if apt-get install -y -qq openjdk-${JAVA_VERSION}-jdk 2>/dev/null || apt-get install -y -qq openjdk-${JAVA_VERSION}-jre-headless 2>/dev/null; then
+            JDK_INSTALLED=true
           fi
-          [ $attempt -lt $MAX_RETRIES ] && sleep 10 || exit 1
-        done
+        elif command -v apk &> /dev/null; then
+          JDK_INSTALLED=false
+        fi
 
-        EXTRACTED_DIR=$(find /opt/java -maxdepth 1 -type d \( -name "jdk-*" -o -name "jdk8u*" \) ! -name "jdk-${JAVA_VERSION}" | head -1)
-        [ -z "${EXTRACTED_DIR}" ] && exit 1
-        ln -sf "${EXTRACTED_DIR}" "${JDK_DIR}"
-        export JAVA_HOME="${JDK_DIR}"
+        if [ "${JDK_INSTALLED}" = false ]; then
+          ARCH_NAME=$(uname -m)
+          case "${ARCH_NAME}" in
+            x86_64) JDK_ARCH="amd64" ;;
+            aarch64) JDK_ARCH="aarch64" ;;
+            *) echo "ERROR: Unsupported architecture: ${ARCH_NAME}"; exit 1 ;;
+          esac
+
+          if command -v apk &> /dev/null; then
+            JDK_LIBC="musl"
+          else
+            JDK_LIBC="glibc"
+          fi
+
+          JDK_DIR="/opt/java/jdk-${JAVA_VERSION}"
+          mkdir -p /opt/java
+
+          if [ "${JDK_LIBC}" = "musl" ]; then
+            case "${JAVA_VERSION}" in
+              8)  LIBERICA_VERSION="8u482+10" ;;
+              11) LIBERICA_VERSION="11.0.30+9" ;;
+              17) LIBERICA_VERSION="17.0.18+10" ;;
+              21) LIBERICA_VERSION="21.0.10+10" ;;
+              25) LIBERICA_VERSION="25.0.2+12" ;;
+              *) echo "ERROR: Unsupported JDK version: ${JAVA_VERSION}"; exit 1 ;;
+            esac
+            case "${JDK_ARCH}" in
+              amd64) LIBERICA_ARCH="x64" ;;
+              *) LIBERICA_ARCH="${JDK_ARCH}" ;;
+            esac
+            DOWNLOAD_URL="https://download.bell-sw.com/java/${LIBERICA_VERSION}/bellsoft-jdk${LIBERICA_VERSION}-linux-${LIBERICA_ARCH}-musl-lite.tar.gz"
+          else
+            case "${JDK_ARCH}" in
+              amd64) ADOPTIUM_ARCH="x64" ;;
+              *) ADOPTIUM_ARCH="${JDK_ARCH}" ;;
+            esac
+            DOWNLOAD_URL="https://api.adoptium.net/v3/binary/latest/${JAVA_VERSION}/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
+          fi
+
+          MAX_RETRIES=3
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            if curl -Lk --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" | tar xzf - -C /opt/java; then
+              break
+            fi
+            [ $attempt -lt $MAX_RETRIES ] && sleep 10 || exit 1
+          done
+
+          EXTRACTED_DIR=$(find /opt/java -maxdepth 1 -type d \( -name "jdk-*" -o -name "jdk8u*" \) ! -name "jdk-${JAVA_VERSION}" | head -1)
+          [ -z "${EXTRACTED_DIR}" ] && exit 1
+          ln -sf "${EXTRACTED_DIR}" "${JDK_DIR}"
+          export JAVA_HOME="${JDK_DIR}"
+        else
+          export JAVA_HOME=$(find /usr/lib/jvm -name "java-${JAVA_VERSION}-*" -type d | head -1)
+          [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -name "openjdk-${JAVA_VERSION}" -type d | head -1)
+          [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -name "java-1.${JAVA_VERSION}*" -type d | head -1)
+          [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -maxdepth 1 -type d | grep -E "(jdk|java|openjdk)" | head -1)
+          [ -z "${JAVA_HOME}" ] && exit 1
+        fi
       else
-        export JAVA_HOME=$(find /usr/lib/jvm -name "java-${JAVA_VERSION}-*" -type d | head -1)
-        [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -name "openjdk-${JAVA_VERSION}" -type d | head -1)
-        [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -name "java-1.${JAVA_VERSION}*" -type d | head -1)
-        [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -maxdepth 1 -type d | grep -E "(jdk|java|openjdk)" | head -1)
-        [ -z "${JAVA_HOME}" ] && exit 1
+        echo "ERROR: Unsupported JVM_TYPE: ${JVM_TYPE}"
+        exit 1
       fi
 
       echo "Using JAVA_HOME: ${JAVA_HOME}"
-      ${JAVA_HOME}/bin/java -version
+      bash .gitlab/dd-trace-integration/verify-jvm.sh
 
       .gitlab/dd-trace-integration/install-prerequisites.sh
       .gitlab/dd-trace-integration/run-integration-test.sh

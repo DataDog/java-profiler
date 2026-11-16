@@ -311,6 +311,10 @@ private:
   RecordingOutput::Delivery closeOutput();
   off_t _chunk_start;
   MethodMap _method_map;
+  // Normal-thread writers hold _rec_lock exclusively; signals never access this map.
+  // Rotation keeps only closed epochs still referenced by retained wall segments.
+  std::map<u64, WallClockEpochEvent, std::less<u64>,
+           CountingAllocator<std::pair<const u64, WallClockEpochEvent>, NM_WALLCLOCK>> _wall_epochs;
 
   Arguments _args;
   u64 _start_time;
@@ -653,6 +657,7 @@ class FlightRecorder {
   friend Profiler;
 #ifdef UNIT_TEST
   friend class FlightRecorderTestAccessor;
+  friend class ProfilerTestAccessor;
 #endif
 
 private:
