@@ -121,7 +121,16 @@ PASS requires trusted origin and validated Bits summary metadata, including the
 
 A latest Bits-marked review from an unlisted bot blocks as untrusted origin, even
 if its text says PASS. This prevents an unlisted shard's FAIL from being ignored.
-A bot capable of copying the markers can cause a false block, not a false PASS.
+An unlisted bot that copies the markers can cause a false block, not a false PASS.
+
+The markers are constants in this repository, so they prove the format of a review
+body, not its provenance. The gate authenticates the reviewing app, not the feature
+that wrote the body. A listed app that writes user-controlled text into a review
+body, such as quoted PR content, can produce a copied marker set with
+`verdict=PASS`, and the gate accepts it. The gate does not replace human reviews, so
+it is a quality gate and not a security control. A verdict that a dedicated app
+publishes as a check run or status, or a signed verdict, would replace the marker
+trust. Either needs a change on the Bits side.
 
 A submitted Bot review on the exact head is a candidate when its body contains
 `autotest-meta`, `datadog-code-review`, or `datadog-autotest`, or when it was edited.
@@ -255,7 +264,9 @@ Resolver behavior is fixed:
   `GITHUB_PR_ACTION`, `GITHUB_CHANGES_BASE_REF`, and `GITHUB_CHANGES_BASE_SHA`, so
   only retarget edits resolve.
 - Receiver completion resolves its run head plus live open-main heads matching PR
-  numbers or head repository/branch. If none match, scan all open-main heads.
+  numbers or head repository/branch. If none match, resolve the run head only. Any
+  user can trigger the receiver, so an unmatched run must not fan out to every
+  open-main head; the scheduled sweep refreshes the other heads.
 - Schedule and input-free manual dispatch resolve all open-main heads.
 - Validate numbers and full SHAs, deduplicate, and fail rather than truncate if the
   result exceeds 256 distinct SHAs. Emit a JSON array through `GITHUB_OUTPUT`.
@@ -447,7 +458,10 @@ and workflow contracts, plus a hermetic runner; each file stays reviewable.
 
 Activation remains separate. It requires live proof of app-authored edit detection,
 API identity mapping, fork and dependency-bot delivery, token-claim restrictions,
-expected publisher binding, and non-bypass enforcement. If a technical constraint
+expected publisher binding, and non-bypass enforcement. It also requires
+confirmation from the Bits owners that only the code-review feature posts reviews
+through the listed apps and that no path writes user-controlled text into a review
+body. If a technical constraint
 requires changing the policy, stop and obtain approval before changing the design
 or implementing that deviation.
 

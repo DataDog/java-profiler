@@ -795,7 +795,7 @@ def _note_unmatched_summary(env, selector, numbers):
     try:
         with open(path, "a", encoding="utf-8") as handle:
             handle.write("bits gate: workflow_run selectors matched no open-main PR; "
-                         "scanning all open-main heads (numbers=%r)\n" % (numbers,))
+                         "resolving the run head only (numbers=%r)\n" % (numbers,))
     except OSError:
         # Best effort by the contract above: a failed summary write must
         # not change the exit code or stdout.
@@ -834,15 +834,12 @@ def resolve_shas(client, env):
         open_prs = _validated_open_main_prs(client)
         matched = [pr for pr in open_prs
                     if pr["number"] in numbers or _pr_selector(pr) == selector]
-        if matched:
-            selected = matched
-        else:
-            # Nothing matched — fork runs and stale number lists alike —
-            # so the full open-main fallback keeps every head monitored.
-            if numbers:
-                _note_unmatched_summary(env, selector, numbers)
-            selected = open_prs
-        shas = {head_sha} | {pr["head"]["sha"] for pr in selected}
+        if not matched and numbers:
+            _note_unmatched_summary(env, selector, numbers)
+        # An unmatched run resolves to its own head only: any user can trigger
+        # the receiver, so a fan-out to every open-main head would let one
+        # event spend the repository's API quota. The sweep covers the rest.
+        shas = {head_sha} | {pr["head"]["sha"] for pr in matched}
     elif event in ("schedule", "workflow_dispatch"):
         shas = {pr["head"]["sha"] for pr in _validated_open_main_prs(client)}
     else:

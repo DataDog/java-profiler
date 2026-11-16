@@ -1140,11 +1140,11 @@ class ResolveCommandTest(unittest.TestCase):
     def _schedule(self, prs):
         return testlib.FakeTransport([FakeResponse(200, prs)])
 
-    def test_workflow_run_fork_run_with_empty_pr_list_emits_run_head_and_all_open_main_heads(self):
+    def test_workflow_run_fork_run_with_empty_pr_list_emits_run_head_only(self):
         prs = [open_main_pr(968, PR968_HEAD), open_main_pr(985, PR985_HEAD)]
         code, out = self._run(self._schedule(prs), "workflow_run")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD, PR985_HEAD]))
+        self.assertEqual(json.loads(out), [SHA])
 
     def test_workflow_run_matches_open_main_prs_by_number(self):
         prs = [open_main_pr(968, PR968_HEAD), open_main_pr(985, PR985_HEAD)]
@@ -1161,14 +1161,14 @@ class ResolveCommandTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD]))
 
-    def test_workflow_run_non_matching_numbers_scan_all_open_main_heads(self):
-        # The contract's fallback: when nothing matches, the run head plus
-        # every open-main head is resolved — never the run head alone.
+    def test_workflow_run_non_matching_numbers_emit_run_head_only(self):
+        # Any user can trigger the receiver, so an unmatched run must not
+        # fan out to the open-main heads; the scheduled sweep covers them.
         prs = [open_main_pr(968, PR968_HEAD), open_main_pr(985, PR985_HEAD)]
         code, out = self._run(self._schedule(prs), "workflow_run",
                                GITHUB_PULL_REQUEST_NUMBERS="[7]")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD, PR985_HEAD]))
+        self.assertEqual(json.loads(out), [SHA])
 
     def test_workflow_run_number_list_with_null_padding_still_matches(self):
         prs = [open_main_pr(968, PR968_HEAD), open_main_pr(985, PR985_HEAD)]
@@ -1179,7 +1179,7 @@ class ResolveCommandTest(unittest.TestCase):
         code, out = self._run(self._schedule(prs), "workflow_run",
                                GITHUB_PULL_REQUEST_NUMBERS="[null]")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD, PR985_HEAD]))
+        self.assertEqual(json.loads(out), [SHA])
 
     def test_summary_write_failure_leaves_exit_code_and_stdout_untouched(self):
         prs = [open_main_pr(968, PR968_HEAD), open_main_pr(985, PR985_HEAD)]
@@ -1189,7 +1189,7 @@ class ResolveCommandTest(unittest.TestCase):
                                    GITHUB_PULL_REQUEST_NUMBERS="[7]",
                                    GITHUB_STEP_SUMMARY=summary)
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), sorted([SHA, PR968_HEAD, PR985_HEAD]))
+        self.assertEqual(json.loads(out), [SHA])
 
     def test_output_write_failure_exits_one(self):
         # The shas output is load-bearing: an I/O failure there fails the
