@@ -19,9 +19,15 @@ written by it, and it dies with the session — its stop summary names what rema
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
 4. **Worker.** Write `{"pr": <n>, "status": "running"}` to `build/babysit-pr-<n>.json`,
-   then launch the loop below verbatim as an async subagent with worktree isolation
-   (Pi: subagent async + `worktree:true`; Claude Code: a background subagent on a
-   `git worktree add` of `origin/<branch>`).
+   then launch the `babysit-pr` agent — shipped with the skill in `.pi/agents/` (Pi)
+   and `.claude/agents/` (Claude Code); it reads the loop below from the checkout —
+   as an async background subagent with worktree isolation, passing the PR number,
+   the checkout path, and the branch in the task (Pi: `subagent` with `worktree:true`;
+   Claude Code: the agent on a `git worktree add` of `origin/<branch>`). Give the
+   child a run timeout of at least the cap (Pi: `options: {timeoutMs: 7200000}`) —
+   the default async timeout kills the worker at 30 minutes, well inside the
+   two-hour cap, and its managed worktree is reaped so the run cannot be resumed;
+   the launch needs a clean source tree (stash pending edits and restore them after).
 5. **Handback.** When the run completes, relay its summary in chat: commits pushed,
    findings flagged (drafted design replies, persistent flakes, budget), and threads
    left for the human. When the session is closing, say that babysitting stops with it.
@@ -60,6 +66,12 @@ dogbrew shim where it exists (required on Datadog workstations), bare `gh` other
    rerun the `pre-pr-review` skill on the fix range before pushing. Count that against
    the review budget — about $20–30 per babysit run; a run that would exceed it stops
    and reports instead.
+   When the pushed fixes address the comments of a blocking review (`CHANGES_REQUESTED`
+   in `gh pr view --json reviews`), re-request review from that review's author so the
+   block clears when they re-review:
+   `$GH api -X POST repos/datadog/java-profiler/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'`.
+   Re-request only authors whose blocking comments the fixes addressed — never add
+   reviewers the PR never had, and never change the reviewer list otherwise.
 5. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
    any cap hit (at most two fix-push rounds and two hours per run). Update the marker to
    `{"pr": <n>, "status": "stopped"}` and summarize: commits pushed, findings flagged,
@@ -67,7 +79,9 @@ dogbrew shim where it exists (required on Datadog workstations), bare `gh` other
 
 ## Never
 
-Never merge, never un-draft, never request reviews or change reviewers, never disable
+Never merge, never un-draft, never add or swap reviewers (the one exception: re-requesting
+the authors of blocking reviews whose comments the fixes addressed, per step 4), never
+disable
 or skip a CI check, never edit CI configuration, `AGENTS.md` or a skill to make a
 failure pass (quarantine entries need the `ci-script-change` skill and a PROF ticket —
 flag them instead), never force-push without `--force-with-lease`, never resolve a
