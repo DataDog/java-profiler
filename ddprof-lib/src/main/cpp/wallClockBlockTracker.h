@@ -21,6 +21,7 @@
 #include <cassert>
 #include <cstdint>
 #include <functional>
+#include <utility>
 
 #include "arch.h"
 #include "counters.h"
@@ -170,7 +171,9 @@ public:
             unowned_blocked_state.store(state, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
         }
-        // Peek leaves the root and pending units intact until stripe-held commit.
+        // Transactional tails commit only successful writes; lifecycle resets
+        // invalidate the payload. Context/owned-run transitions retain it.
+        // Legacy flush validates the complete tail before consuming anything.
         inline bool peekUnownedBlockedTail(u64& call_trace_id, u64& weight,
                                            OSThreadState& state) const {
             call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
@@ -194,10 +197,6 @@ public:
             // A concurrent lifecycle reset may have intervened between the
             // loads and the exchanges.
             return call_trace_id != 0 && weight != 0 && state != OSThreadState::UNKNOWN;
-        }
-        inline void discardUnownedBlockedTail() {
-            unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
-            unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
         // identity_slot supplies the context-window state, which lives on
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
@@ -323,6 +322,7 @@ public:
 #endif
     // Normal-thread callbacks; all recording stripes must exclude publication.
     void collectLiveTraceIds(CallTraceIdSet& live);
+    void collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const;
     void onUnpreservedTraceIds(const CallTraceIdSet& failed);
 
     // Returns nullptr if slot_id is out of range or storage is not yet
@@ -362,6 +362,13 @@ public:
     // captures the run's state and context eligibility before clearing it.
     bool snapshotAndExitBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                                    u64 generation, BlockRunSnapshot* snapshot);
+    using TailFlush = std::function<bool(ThreadFilter::SlotID, int)>;
+    // Wired once before registry use; lock contention must retain the tail, not wait.
+    // Profiler wires this during static initialization, before TLS keys are guaranteed ready.
+    void setTailFlush(TailFlush flush) { _tail_flush = std::move(flush); }
+    // Teardown retains failed writes; registry reclamation must wait for success.
+    bool flushUnownedTail(ThreadFilter::SlotID slot_id, int tid);
+    bool retireSlot(ThreadFilter::SlotID slot_id, int tid);
     // Generation-checked exits preserve retained unowned context and epoch segments.
     // Clears stale suppression state so a new/reused slot cannot inherit a
     // predecessor's active block or sampled generation. Called by ThreadFilter
@@ -378,14 +385,9 @@ public:
     // Timer- and signal-side owned-block decisions. All of them read the
     // complete suppression payload and reject it if slot identity or block
     // lifecycle changes before final validation.
-    bool activeOwnedBlockGeneration(ThreadFilter* registry, const ThreadEntry& entry,
-                                    u64& generation) const;
     bool isOwnedBlockSuppressionCandidate(ThreadFilter* registry,
                                           const ThreadEntry& entry) const;
-    // Single-pass merge of activeOwnedBlockGeneration()/isOwnedBlockSuppressionCandidate():
-    // callers that need both the generation and the already-sampled state should use this
-    // instead of calling the two wrappers above in sequence, which would re-validate the
-    // same slot atomics twice.
+    // Returns the generation and sampled state from one validated payload snapshot.
     bool ownedBlockDecision(ThreadFilter* registry, const ThreadEntry& entry,
                             bool& already_sampled, u64& generation) const {
         return ownedBlockGeneration(registry, entry, generation, already_sampled);
@@ -431,6 +433,8 @@ public:
 #endif
 
 private:
+    TailFlush _tail_flush;
+
     bool ownedBlockGeneration(ThreadFilter* registry, const ThreadEntry& entry,
                               u64& generation, bool& already_sampled) const;
 

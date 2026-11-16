@@ -55,16 +55,40 @@ class FlightRecorderTestAccessor {
   FlightRecorder* _recorder;
 
 public:
-  FlightRecorderTestAccessor(FlightRecorder* recorder, Recording* recording)
+  FlightRecorderTestAccessor(FlightRecorder* recorder, Recording* recording, int uncertain_fd = -1)
       : _recorder(recorder) {
     setRecording(recorder, recording);
+    recorder->_uncertain_create_fd = uncertain_fd;
   }
-  ~FlightRecorderTestAccessor() { setRecording(_recorder, nullptr); }
+  ~FlightRecorderTestAccessor() {
+    setRecording(_recorder, nullptr);
+    _recorder->_uncertain_create_fd = -1;
+  }
+  FlightRecorderTestAccessor(const FlightRecorderTestAccessor&) = delete;
+  FlightRecorderTestAccessor& operator=(const FlightRecorderTestAccessor&) = delete;
 
   static void setRecording(FlightRecorder* recorder, Recording* recording) {
     recorder->_rec = recording;
   }
 };
+
+TEST(FlightRecorderResultTest, OutputQuarantineExcludesInactiveAndHealthyRecordings) {
+  FlightRecorder recorder;
+  EXPECT_FALSE(recorder.outputQuarantined());
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  auto recording = std::make_unique<Recording>(output.fd());
+  FlightRecorderTestAccessor active(&recorder, recording.get());
+  EXPECT_FALSE(recorder.outputQuarantined());
+}
+
+TEST(FlightRecorderResultTest, UncertainCreationCloseIsQuarantinedWithoutRecording) {
+  FlightRecorder recorder;
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  FlightRecorderTestAccessor uncertain(&recorder, nullptr, output.fd());
+  EXPECT_TRUE(recorder.outputQuarantined());
+}
 
 TEST(FlightRecorderResultTest, RecordWallSampleReturnsFalseWhenActiveOutputFlushFails) {
   RecordingWriteFailureFixture output;
@@ -82,6 +106,7 @@ TEST(FlightRecorderResultTest, RecordWallSampleReturnsFalseWhenActiveOutputFlush
   Context context{};
   EXPECT_FALSE(recorder.recordWallSample(0, 1, 42, &event, context));
   EXPECT_FALSE(recording->outputGood());
+  EXPECT_TRUE(recorder.outputQuarantined());
   EXPECT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD)
       << "the failed real pwrite must leave its serialized bytes owned";
 }
@@ -137,7 +162,14 @@ TEST(FlightRecorderResultTest, TaskBlockOverflowNeverSerializesAnUndefinedThread
   int before = buffer->offset();
   EXPECT_FALSE(recorder.recordTaskBlock(0, 257, &event));
   EXPECT_EQ(before, buffer->offset()) << "overflow must reject before any event bytes are written";
+  ExecutionEvent tail;
+  tail._thread_state = OSThreadState::SLEEPING;
+  tail._weight = 7;
+  Context context{};
+  EXPECT_FALSE(recorder.recordWallSample(0, 257, 42, &tail, context));
+  EXPECT_EQ(before, buffer->offset()) << "a rejected wall tail must not append event bytes";
   EXPECT_TRUE(recorder.recordTaskBlock(0, 1, &event)) << "a full table still represents existing tids";
+  EXPECT_TRUE(recorder.recordWallSample(0, 1, 42, &tail, context));
   std::unordered_set<int> tids;
   RecordingTestAccessor::collectThreads(recording.get(), 0, tids);
   EXPECT_EQ(256u, tids.size());
@@ -146,16 +178,20 @@ TEST(FlightRecorderResultTest, TaskBlockOverflowNeverSerializesAnUndefinedThread
   for (int start = 0; start < buffer->offset();) {
     int cursor = start;
     u64 size = readVar64(buffer, cursor);
-    readVar64(buffer, cursor); // type
+    u64 type = readVar64(buffer, cursor);
     readVar64(buffer, cursor); // start
-    readVar64(buffer, cursor); // duration
+    if (type == T_TASK_BLOCK) {
+      readVar64(buffer, cursor); // duration
+    } else {
+      EXPECT_EQ(T_METHOD_SAMPLE, type);
+    }
     int tid = static_cast<int>(readVar64(buffer, cursor));
     EXPECT_EQ(1u, tids.count(tid)) << "undefined serialized eventThread=" << tid;
     ASSERT_GT(size, 0u);
     start += size;
     ++events;
   }
-  EXPECT_EQ(257, events);
+  EXPECT_EQ(258, events);
   FlightRecorderTestAccessor::setRecording(&recorder, nullptr);
 }
 

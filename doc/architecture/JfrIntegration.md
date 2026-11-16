@@ -47,13 +47,15 @@ Profiler
 - `dump(filename)` calls `Recording::switchChunk()`; dumping to the recording's
   own file is rejected (`flightRecorder.cpp:2754-2776`).
 
-These three take `_rec_lock` exclusively. Every record path takes it shared
-through `OptionalSharedLockGuard`, which gives up after
-`DEFAULT_SHARED_SPIN_BUDGET` (256) failed CAS attempts or as soon as it sees the
-exclusive lock held (`spinLock.h:59`, `77-90`, `128-143`). `recordEvent()` and
-`recordEventDelegated()` count such drops in `SAMPLES_DROPPED_REC_LOCK`
-(`flightRecorder.cpp:2908-2910`, `2939-2941`); the other record paths skip the
-event silently.
+These three and the normal timer's `wallClockEpoch()` take `_rec_lock` exclusively.
+The timer waits for ownership so closed scaling metadata cannot be dropped.
+Other record paths take it shared through `OptionalSharedLockGuard`.
+
+Shared acquisition stops after `DEFAULT_SHARED_SPIN_BUDGET` (256) failed CAS
+attempts or when an exclusive owner is observed. `recordEvent()` and
+`recordEventDelegated()` count these drops in `SAMPLES_DROPPED_REC_LOCK`.
+
+Other shared record paths skip contention silently.
 
 ## Event Buffers
 
@@ -83,7 +85,8 @@ and the correlation ID (`flightRecorder.cpp:2914-2943`, `flightRecorder.h:646-65
 
 ASGCT wall sampling keeps the stripe through cached-ID publication and tail commit.
 Ordinary and deferred writes return independent success results. A failed tail write
-must not consume its retained ID, context, state or weight.
+must not consume its retained ID, context, state or weight. The explicit wall serializer
+rejects a thread-pool insertion failure before it appends event bytes.
 
 ### Buffer layout and thresholds
 
@@ -153,6 +156,17 @@ Each pending epoch segment also writes its original epoch-window start timestamp
 Consumers must apply the scale of the window containing that timestamp, not the
 later serialization time. Ordinary unit samples keep serialization timestamps;
 the MethodSample schema is unchanged.
+
+`Recording` keeps closed wall epochs under exclusive `_rec_lock` access.
+Dump locks the normal timer's epoch mutex before all recording stripes and closes
+the open window before sealing. Timer exit closes its final window before JFR stop.
+
+After extraction, the writer prunes epochs with no pending tail and replays the
+rest into its new chunk. Repeated dumps keep each retained tail's scale available.
+
+The map contains current-chunk epochs and retained origins, charged to `NM_WALLCLOCK`.
+Dump collects pending origins while all stripes exclude tail writes and deferred
+weight publication. Signal handlers never access or allocate this map.
 See [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 ### Writers outside `recordEvent()`
@@ -200,9 +214,14 @@ Dump rejects aliases to the source before truncating the destination. A failed
 copy keeps sealed chunks and starts the next chunk after them. A later successful
 dump delivers all retained chunks with their original clocks and constant pools.
 
-Write, patch and close failures quarantine the output. Recording buffers and
-dictionary roots stay owned; restart is refused. A failed close is not retried,
-because descriptor ownership after failure is platform-dependent.
+Write, patch and close failures quarantine the output. Stop shuts down producers
+and latches the profiler's non-restartable `ERROR` state. Recording buffers,
+dictionary roots and uncommitted wall tails stay owned.
+
+`FlightRecorder::outputQuarantined()` checks this terminal condition under the
+shared recorder lock on normal threads. Stop checks it after a failed tail flush,
+including failures first observed during that flush. Lock contention is not quarantine.
+A failed close is not retried because descriptor ownership is platform-dependent.
 
 ### `finishChunk()`
 

@@ -1219,6 +1219,16 @@ RecordingOutput::Delivery Recording::switchChunk(int fd) {
   ++_chunk_sequence;
   _chunk_open = true;
 
+  std::unordered_set<u64> pending_epochs;
+  Profiler::instance()->blockTracker()->collectUnownedEpochStarts(pending_epochs);
+  for (auto it = _wall_epochs.begin(); it != _wall_epochs.end();) {
+    if (pending_epochs.count(it->first) == 0) {
+      it = _wall_epochs.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
   _cold_io = true;
   try {
     writeHeader(_buf);
@@ -1234,6 +1244,9 @@ RecordingOutput::Delivery Recording::switchChunk(int fd) {
       writeNativeLibraries(_buf);
     } else {
       _recorded_lib_count = -1;
+    }
+    for (auto& entry : _wall_epochs) {
+      recordWallClockEpoch(_buf, &entry.second);
     }
     flush(_buf);
   } catch (const OutputFailure&) {
@@ -2514,6 +2527,8 @@ void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
 }
 
 void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  _wall_epochs.insert_or_assign(event->_start_time, *event);
   int start = buf->skip(1);
   buf->putVar64(T_WALLCLOCK_SAMPLE_EPOCH);
   buf->putVar64(event->_start_time);
@@ -2868,6 +2883,12 @@ Error FlightRecorder::newRecording(bool reset) {
   return Error::OK;
 }
 
+bool FlightRecorder::outputQuarantined() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  SharedLockGuard locker(&_rec_lock);
+  return _uncertain_create_fd >= 0 || (_rec != nullptr && !_rec->outputGood());
+}
+
 Error FlightRecorder::stop() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
@@ -2935,13 +2956,10 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 
 void FlightRecorder::wallClockEpoch(int lock_index,
                                     WallClockEpochEvent *event) {
-  OptionalSharedLockGuard locker(&_rec_lock);
-  if (locker.ownsLock()) {
-    Recording* rec = _rec;
-    if (rec != nullptr && rec->outputGood()) {
-      Buffer *buf = rec->buffer(lock_index);
-      rec->recordWallClockEpoch(buf, event);
-    }
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  ExclusiveLockGuard locker(&_rec_lock);
+  if (_rec != nullptr && _rec->outputGood()) {
+    _rec->recordWallClockEpoch(_rec->buffer(lock_index), event);
   }
 }
 
@@ -3095,10 +3113,11 @@ bool FlightRecorder::recordWallSample(int lock_index, int tid, u64 call_trace_id
   }
   Recording* rec = _rec;
   if (rec == nullptr || !rec->outputGood()) return false;
+  // A retained tail must keep its weight if eventThread cannot enter this chunk.
+  if (!rec->addThread(lock_index, tid)) return false;
   RecordingBuffer* buf = rec->buffer(lock_index);
   rec->recordMethodSample(buf, tid, call_trace_id, 0, event, &context);
   rec->flushIfNeeded(buf);
-  rec->addThread(lock_index, tid);
   return rec->outputGood();
 }
 

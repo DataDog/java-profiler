@@ -351,6 +351,27 @@ Java_com_datadoghq_profiler_JavaProfiler_recordUnownedWallTailAcrossDumpForTest0
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_withUnownedWallTailForTest0(
+    JNIEnv *env, jclass unused, jthread thread, jobject transition) {
+#ifdef DEBUG
+  SignalBlocker blocker;
+  if (!BaseWallClock::seedUnownedWallTailForTest(thread, OSThreadState::CONDVAR_WAIT)) {
+    return JNI_FALSE;
+  }
+  jclass runnable = env->GetObjectClass(transition);
+  if (runnable == nullptr) return JNI_FALSE;
+  jmethodID run = env->GetMethodID(runnable, "run", "()V");
+  env->DeleteLocalRef(runnable);
+  if (run == nullptr) return JNI_FALSE;
+  // Seeding released every stripe before Java can wait for a controller's dump.
+  env->CallVoidMethod(transition, run);
+  return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfilerTestSupport_recordUnownedWallTailBeforeOwnedBlockForTest0(
     JNIEnv *env, jclass unused, jthread thread, jstring snapshot, jint producer) {
 #ifdef DEBUG
@@ -546,6 +567,12 @@ static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
   return same;
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_taskBlockSupportedForTest0(
+    JNIEnv* env, jclass unused, jthread thread) {
+  return Profiler::instance()->taskBlockSupportedForTest(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jboolean isVirtual, jint state) {
@@ -654,23 +681,15 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
-    // Recovery of an abandoned interval is intentionally NOT run here: the
-    // beginTaskBlock() javadoc keeps the open interval on every 0 return, so
-    // dropping the token before this check would break endTaskBlock() for a
-    // live nested interval. The cost is a deferral window: a thread that
-    // loses its endTaskBlock (exception without finally) and then issues
-    // every later beginTaskBlock under an active span keeps its TASK_BLOCK
-    // run armed - and its wall-clock signals suppressed - until it calls
-    // beginTaskBlock outside a trace context. Native code cannot tell that
-    // abandoned case from a nested live interval (both show a pending
-    // token), so the caller-visible contract wins.
+    // A traced nested begin must preserve the pending interval for its end.
+    // An abandoned interval is indistinguishable here, so recovery also waits.
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
 
   WallClockBlockTracker *tracker = profiler->blockTracker();
-  // Supersede only after all zero-return admission checks, preserving a live
-  // interval when a nested begin is rejected under an active trace context.
+  // Supersede only after admission checks so a rejected traced nested begin
+  // preserves its pending interval. Recovery validates the slot and generation.
   recoverAbandonedTaskBlock(current, tracker, slot_id);
   u64 token = enterOwnedBlockRun(
       current, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
@@ -726,6 +745,31 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_wallclock_RealVmThreadClassifierTest_isPlatformThread0(
     JNIEnv *env, jclass unused, jthread thread) {
   return JVMSupport::isPlatformThread(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_endTaskBlockAtTicksForTest0(
+    JNIEnv* env, jclass unused, jthread thread, jlong token, jlong start_ticks,
+    jlong end_ticks, jlong blocker, jlong unblocking_span_id) {
+#ifdef DEBUG
+  if (!isCurrentJniThread(env, thread) ||
+      !JVMSupport::isPlatformThread(env, thread)) return JNI_FALSE;
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) return JNI_FALSE;
+  u64 original_start = 0;
+  Context context{};
+  if (!current->taskBlockExit(static_cast<u64>(token), original_start, context)) {
+    return JNI_FALSE;
+  }
+  Profiler* profiler = Profiler::instance();
+  return finishTaskBlockAtExit(
+      current, profiler->threadFilter(), profiler->blockTracker(), thread, 1,
+      static_cast<u64>(token), static_cast<u64>(start_ticks), context,
+      static_cast<u64>(blocker), static_cast<u64>(unblocking_span_id),
+      static_cast<u64>(end_ticks)) ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
 }
 
 extern "C" DLLEXPORT jlong JNICALL

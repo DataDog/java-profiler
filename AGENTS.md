@@ -16,7 +16,7 @@ or suggested edits on memory files.
 
 # AGENTS.md
 
-<!-- Copyright 2026, Datadog, Inc -->
+<!-- Copyright 2026, Datadog, Inc. -->
 
 This file provides guidance to AI coding assistants when working with code in this
 repository. It is deliberately a thin index: rules that must always be in context live
@@ -78,11 +78,12 @@ dependency-free leak-demo app; not published).
 
 - Never run `./gradlew` directly. Always invoke the wrapper:
   `./.claude/commands/build-and-summarize <gradle-task...>`. It runs Gradle with
-  `--console=plain -i`, captures the full output into `build/logs/<timestamp>-<task>.log`,
-  and prints only the status line. On failure, read the wrapper's extracted
-  "What went wrong" section and the failing task/test lines; grep the log for anything
-  rarer. If no log path is given, use the newest `build/logs/*.log`. In Claude Code and
-  Pi the `require-gradle-wrapper` hook denies direct `gradlew` calls, except
+  `--console=plain -i`, captures full output in a unique timestamped `build/logs/*.log`,
+  and streams bounded task/build progress. Deterministic summaries, including failures,
+  are written to `build/reports/claude/gradle-summary.md` and `gradle-summary.json`.
+  Read the summary's "What went wrong" and failing task/test lines first; grep the full
+  log for anything rarer. If no log path is given, use the newest `build/logs/*.log`.
+  In Claude Code and Pi the `require-gradle-wrapper` hook denies direct `gradlew` calls, except
   `--stop` and `--version`.
 - Never paste large log chunks into chat. If more than ~30 lines are needed, write to a
   file and point at it.
@@ -125,6 +126,9 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `podman info` / `docker info` and pick the runtime whose daemon answers).
   Full flags in
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
+- Real-VM qualification: the shared GitHub workflow's `qualify-real-vm` debug cells
+  require plain HotSpot 25 and genuine OpenJ9 17 lifecycle/classifier methods to pass without
+  skips; see [TestingGuide](doc/building/TestingGuide.md#real-vm-qualification).
 
 Full container flag reference: [TestingGuide](doc/building/TestingGuide.md#bounded-local-container-runs).
 Use `--mount --source-root=/absolute/path` for an exact local Git candidate.
@@ -136,6 +140,10 @@ Resource checks and execution approval remain separate; shared Git metadata is r
 `--mount --artifacts-dir=/absolute/existing/directory` retains per-cell gtest XML and JFRs.
 Use an approved evidence-only root under the selected source's `build/logs/`.
 The TestingGuide defines paths, restrictions and coverage boundaries.
+
+GitLab dd-trace integration selects and verifies the labeled JVM and JDK major;
+OpenJ9 uses Semeru on glibc and fails explicitly on musl (no runtime configured).
+See [TestingGuide](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
 
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:
 debug symbols via `buildDebug`, memory errors via ASan, suppressions in
@@ -165,15 +173,15 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
-| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, reusable unowned wall-clock roots) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
+| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, reusable unowned wall-clock roots, ASan-safe chunk reclamation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
 | String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
-| TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; lazy wall-block backing survives recording resets; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
-| JFR integration (FlightRecorder, metadata, constant pools, buffers; native delivery custody retains failed output) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
+| TLS context (thread-local tracing, owner context-window membership, paired TaskBlock interval recovery, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
+| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; timer TID metadata lookup is capped at 256 probes and fails open to ordinary signals; lazy wall-block backing survives recording resets; unowned teardown tails retain slot custody until written; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
+| JFR integration (FlightRecorder, metadata, constant pools, buffers; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; output quarantine retains custody and stops producers in non-restartable ERROR) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native I/O hooks (shared-owner JDK import patches, FD classification, cancellation-safe cleanup and synchronous physical-thread IO_WAIT TaskBlocks) | [doc/architecture/NativeIoHooks.md](doc/architecture/NativeIoHooks.md) |
-| Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
+| Native memory profiling (malloc interception, pinned Linux import-layout validation, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
@@ -335,6 +343,7 @@ unchanged. Events queued since the last `dump()` must be written before
 
 **Reusable wall-clock roots.** Hold the recording stripe through capture, cached-ID publication and tail commit.
 Do not consume a deferred segment after a failed write or apply a later sampling epoch's scale.
+A failed stop flush is retryable only while output is healthy; quarantine still stops producers.
 Retained units serialize at their original epoch-window start. See [CallTraceStorage](doc/architecture/CallTraceStorage.md#reusable-unowned-wall-clock-roots).
 
 **Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.
@@ -345,6 +354,14 @@ See [TLSContext](doc/architecture/TLSContext.md#context-window-membership).
 owners disable, entered stream hooks forward without classification, clock reads or block scopes.
 FD revalidation publishes only against the pre-probe epoch/incarnation; transient failures are not cached.
 See [NativeIoHooks](doc/architecture/NativeIoHooks.md).
+
+**Paired TaskBlock intervals.** Run begin admission checks before discarding a pending interval.
+Recovery emits no event and closes only the token's matching current slot and generation.
+See [TLSContext](doc/architecture/TLSContext.md#paired-taskblock-intervals).
+
+**Platform-thread classification.** Verify the caller before mutating Java-owned TaskBlock TLS.
+`JVMSupport::isPlatformThread()` checks the runtime JNI table on JNI >= 19 across JVM implementations.
+See [JvmSupportLayer](doc/architecture/JvmSupportLayer.md#platform-thread-classification).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

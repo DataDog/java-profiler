@@ -51,6 +51,23 @@ public:
     static void setVm(JavaVM* vm) { VM::_vm = vm; }
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+    struct Runtime {
+        bool openj9;
+        bool hotspot;
+        int version;
+        int update;
+        jvmtiEnv* jvmti;
+    };
+    static Runtime runtime() {
+        return {VM::_openj9, VM::_hotspot, VM::_java_version, VM::_java_update_version, VM::_jvmti};
+    }
+    static void runtime(const Runtime& runtime) {
+        VM::_openj9 = runtime.openj9;
+        VM::_hotspot = runtime.hotspot;
+        VM::_java_version = runtime.version;
+        VM::_java_update_version = runtime.update;
+        VM::_jvmti = runtime.jvmti;
+    }
     static bool getHotspot() { return VM::_hotspot; }
     static void setHotspot(bool v) { VM::_hotspot = v; }
 };
@@ -99,9 +116,9 @@ protected:
         return virtual_thread;
     }
 
-    void SetUp() override {
+    void initializeClassification(bool hotspot) {
         _orig_hotspot = VMTestAccessor::getHotspot();
-        VMTestAccessor::setHotspot(GetParam());
+        VMTestAccessor::setHotspot(hotspot);
         jni_version = 0x00150000;
         virtual_thread = JNI_FALSE;
         is_virtual_thread_calls = 0;
@@ -114,6 +131,8 @@ protected:
             reinterpret_cast<const JNINativeInterface_*>(function_table);
     }
 
+    void SetUp() override { initializeClassification(GetParam()); }
+
     void TearDown() override {
         VMTestAccessor::setHotspot(_orig_hotspot);
     }
@@ -121,6 +140,59 @@ protected:
 
 INSTANTIATE_TEST_SUITE_P(JvmImplementations, JvmSupportThreadClassificationTest,
                         ::testing::Bool());
+
+class TaskBlockRuntimeSupportTest : public JvmSupportThreadClassificationTest {
+protected:
+    VMTestAccessor::Runtime original{};
+    inline static bool jvmti_sampler = false;
+    jvmtiInterface_1_ jvmti_functions{};
+    jvmtiEnv jvmti{};
+    static jvmtiError JNICALL getSystemProperty(jvmtiEnv*, const char*, char** value) {
+        static char sampler[] = "jvmti";
+        *value = jvmti_sampler ? sampler : nullptr;
+        return jvmti_sampler ? JVMTI_ERROR_NONE : JVMTI_ERROR_NOT_AVAILABLE;
+    }
+    static jvmtiError JNICALL deallocate(jvmtiEnv*, unsigned char*) { return JVMTI_ERROR_NONE; }
+    void SetUp() override {
+        original = VMTestAccessor::runtime();
+        initializeClassification(true);
+        jni_version = JNI_VERSION_1_8;
+        jvmti_sampler = false;
+        jvmti_functions.GetSystemProperty = getSystemProperty;
+        jvmti_functions.Deallocate = deallocate;
+        jvmti.functions = &jvmti_functions;
+    }
+    void TearDown() override {
+        JvmSupportThreadClassificationTest::TearDown();
+        VMTestAccessor::runtime(original);
+    }
+};
+
+TEST_F(TaskBlockRuntimeSupportTest, OpenJ917BeforeSafeAsgctIsGatedRegardlessOfJniVersion) {
+    VMTestAccessor::runtime({true, false, 17, 14, &jvmti});
+    EXPECT_FALSE(Profiler::instance()->taskBlockSupportedForTest(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(TaskBlockRuntimeSupportTest, OpenJ917WithSafeAsgctIsSupported) {
+    VMTestAccessor::runtime({true, false, 17, 15, &jvmti});
+    EXPECT_TRUE(Profiler::instance()->taskBlockSupportedForTest(&jni, thread));
+}
+
+TEST_F(TaskBlockRuntimeSupportTest, OpenJ9JvmtiSelectionIsGatedEvenWithSafeAsgct) {
+    VMTestAccessor::runtime({true, false, 17, 15, &jvmti});
+    jvmti_sampler = true;
+    EXPECT_FALSE(Profiler::instance()->taskBlockSupportedForTest(&jni, thread));
+}
+
+TEST_F(TaskBlockRuntimeSupportTest, HotspotCapabilityStillRequiresPlatformThread) {
+    VMTestAccessor::runtime({false, true, 21, 0, &jvmti});
+    jni_version = 0x00150000;
+    virtual_thread = JNI_TRUE;
+    EXPECT_FALSE(Profiler::instance()->taskBlockSupportedForTest(&jni, thread));
+    virtual_thread = JNI_FALSE;
+    EXPECT_TRUE(Profiler::instance()->taskBlockSupportedForTest(&jni, thread));
+}
 
 TEST_P(JvmSupportThreadClassificationTest, NullInputsFailClosed) {
     EXPECT_FALSE(JVMSupport::isPlatformThread(nullptr, thread));

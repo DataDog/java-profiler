@@ -35,6 +35,14 @@
   #include <sanitizer/tsan_interface.h>
 #endif
 
+static void unmapChunk(Chunk* chunk, size_t size) {
+  #ifdef ASAN_ENABLED
+  // Raw munmap bypasses ASan; stale poison would follow this VA into unrelated mappings.
+  ASAN_UNPOISON_MEMORY_REGION(chunk, size);
+  #endif
+  OS::safeFree(chunk, size);
+}
+
 LinearAllocator::LinearAllocator(size_t chunk_size) {
   _chunk_size = chunk_size;
   _reserve = _tail = allocateChunk(NULL);
@@ -181,7 +189,7 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
     #ifdef TSAN_ENABLED
     __tsan_release(current);
     #endif
-    OS::safeFree(current, chunks.chunk_size);
+    unmapChunk(current, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_BYTES, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
     NativeMem::record(NM_CALLTRACE, -used);
@@ -314,7 +322,7 @@ void LinearAllocator::freeChunk(Chunk *current) {
   #ifdef TSAN_ENABLED
   __tsan_release(current);
   #endif
-  OS::safeFree(current, _chunk_size);
+  unmapChunk(current, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_BYTES, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
   NativeMem::record(NM_CALLTRACE, -used);

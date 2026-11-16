@@ -18,6 +18,7 @@
 #include "codeCache.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
+#include "mallocTracer.h"
 #include "nativeSocketSampler.h"
 #include "nativeTestResources_linux.h"
 #include "os.h"
@@ -60,6 +61,9 @@ enum ChildExit {
   CHILD_SAME_FINGERPRINT = 17,  // two different builds got the same fingerprint
   CHILD_DEADLOCK = 18,          // patching threads still blocked when the alarm fired
   CHILD_THREAD_FAILED = 19,
+  CHILD_MALLOC_INIT_FAILED = 21,
+  CHILD_WRONG_BASE = 22,
+  CHILD_WRONG_LAYOUT = 23,
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -352,11 +356,11 @@ INSTANTIATE_TEST_SUITE_P(PatchKinds, LibraryPatcherUnloadTest,
 
 // Copies the test DSO to a fresh temporary file and returns its path in
 // path_out. Exits the child on failure.
-static void copyLibToTemp(char* path_out, size_t size) {
+static void copyLibToTemp(char* path_out, size_t size, const char* source = g_lib_path) {
   snprintf(path_out, size, "/tmp/libpatchtarget-XXXXXX.so");
   int out = mkstemps(path_out, 3);
   if (out < 0) _exit(CHILD_DLOPEN_FAILED);
-  int in = open(g_lib_path, O_RDONLY);
+  int in = open(source, O_RDONLY);
   if (in < 0) exitRemoving(path_out, CHILD_DLOPEN_FAILED);
   char buf[8192];
   ssize_t n;
@@ -641,6 +645,138 @@ TEST_F(LibraryPatcherIdentityTest, UnpatchDoesNotWriteIntoReplacementWithSameLay
     void* before = *slot;
     PTHREAD_CREATE.unpatch();
     if (*slot != before) _exit(CHILD_CORRUPTED);
+  });
+}
+
+extern "C" void* malloc_hook(size_t size);
+
+class MallocHookerIdentityTest : public ::testing::Test {
+ protected:
+  void SetUp() override { resolveLibPath(); }
+};
+
+// Parses an unprocessed malloc import; initialize resolves the writer's own
+// originals without advancing its append-only patch cursor.
+static CodeCache* loadMallocTarget(char* path, size_t size, void** handle) {
+  char source[PATH_MAX];
+  testLibPath(source, sizeof(source), "/libnoid-malloc.so");
+  copyLibToTemp(path, size, source);
+  *handle = dlopen(path, RTLD_NOW);
+  if (*handle == nullptr) exitRemoving(path, CHILD_DLOPEN_FAILED);
+  Libraries::instance()->updateSymbols(false);
+  CodeCache* cc = Libraries::instance()->findLibraryByName(strrchr(path, '/') + 1);
+  if (cc == nullptr) exitRemoving(path, CHILD_LIB_NOT_FOUND);
+  if (cc->imageFingerprint() == 0) exitRemoving(path, CHILD_NO_FINGERPRINT);
+  CodeCache* writer = Libraries::instance()->findLibraryByAddress(reinterpret_cast<void*>(MallocTracer::recordMalloc));
+  if (writer == nullptr) exitRemoving(path, CHILD_LIB_NOT_FOUND);
+  // Static ASan defines malloc in the executable, without a malloc import.
+  // Supply initialize's resolved binding in stable storage, not in the target DSO.
+  static void* malloc_binding = reinterpret_cast<void*>(malloc);
+  if (writer->peekImport(im_malloc) == nullptr) writer->addImport(&malloc_binding, "malloc");
+  if (!MallocHooker::initialize()) exitRemoving(path, CHILD_MALLOC_INIT_FAILED);
+  return cc;
+}
+
+TEST_F(MallocHookerIdentityTest, PatchesMatchingImage) {
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    CodeCache* cc = loadMallocTarget(path, sizeof(path), &handle);
+    void** slot = cc->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    MallocHooker::patchLibraries();
+    if (*slot != reinterpret_cast<void*>(malloc_hook)) exitRemoving(path, CHILD_SLOT_NOT_HOOKED);
+    exitRemoving(path, CHILD_OK);
+  });
+}
+
+TEST_F(MallocHookerIdentityTest, PatchesIdenticalReloadAtSameBase) {
+  if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    CodeCache* cc = loadMallocTarget(path, sizeof(path), &handle);
+    void** slot = cc->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    void* base = loadBaseOf(handle);
+    if (!unload(handle, slot, path)) exitRemoving(path, CHILD_WRONG_BASE);
+    handle = dlopen(path, RTLD_NOW);
+    if (handle == nullptr) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    if (loadBaseOf(handle) != base) exitRemoving(path, CHILD_WRONG_BASE);
+    MallocHooker::patchLibraries();
+    exitRemoving(path, *slot == reinterpret_cast<void*>(malloc_hook) ? CHILD_OK : CHILD_SLOT_NOT_HOOKED);
+  });
+}
+
+TEST_F(MallocHookerIdentityTest, RejectsUnloadedImage) {
+  if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    CodeCache* cc = loadMallocTarget(path, sizeof(path), &handle);
+    void** slot = cc->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    if (!unload(handle, slot, path)) exitRemoving(path, CHILD_WRONG_BASE);
+    {
+      UnloadProtection pin(cc);
+      if (pin.isValid()) exitRemoving(path, CHILD_WRONG_BASE);
+    }
+    MallocHooker::patchLibraries();
+    exitRemoving(path, CHILD_OK);
+  });
+}
+
+TEST_F(MallocHookerIdentityTest, RejectsUnknownFingerprint) {
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    CodeCache* cc = loadMallocTarget(path, sizeof(path), &handle);
+    void** slot = cc->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    void* before = *slot;
+    cc->setImageFingerprint(0);
+    MallocHooker::patchLibraries();
+    exitRemoving(path, *slot == before ? CHILD_OK : CHILD_CORRUPTED);
+  });
+}
+
+TEST_F(MallocHookerIdentityTest, RejectsDifferentImageAtSamePathAndBase) {
+  if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    CodeCache* cc = loadMallocTarget(path, sizeof(path), &handle);
+    void** slot = cc->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    FingerprintQuery old_image = {path, 0, nullptr, 0, 0};
+    queryLoaded(old_image);
+    ElfW(Phdr) old_phdrs[16];
+    if (old_image.phnum > 16) exitRemoving(path, CHILD_WRONG_LAYOUT);
+    memcpy(old_phdrs, old_image.phdrs, old_image.phnum * sizeof(ElfW(Phdr)));
+    if (!unload(handle, slot, path)) exitRemoving(path, CHILD_WRONG_BASE);
+
+    char source[PATH_MAX], replacement[64];
+    testLibPath(source, sizeof(source), "/libnoid-valloc.so");
+    copyLibToTemp(replacement, sizeof(replacement), source);
+    if (rename(replacement, path) != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    handle = dlopen(path, RTLD_NOW);
+    if (handle == nullptr) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    FingerprintQuery new_image = {path, 0, nullptr, 0, 0};
+    queryLoaded(new_image);
+    if (new_image.base != old_image.base) exitRemoving(path, CHILD_WRONG_BASE);
+    if (new_image.phnum != old_image.phnum
+        || memcmp(new_image.phdrs, old_phdrs, new_image.phnum * sizeof(ElfW(Phdr))) != 0) {
+      exitRemoving(path, CHILD_WRONG_LAYOUT);
+    }
+    if (new_image.fingerprint == old_image.fingerprint) exitRemoving(path, CHILD_SAME_FINGERPRINT);
+    void* before = *slot;
+    if (before == nullptr || before == dlsym(handle, "malloc")) exitRemoving(path, CHILD_NO_IMPORT);
+    {
+      UnloadProtection pin(cc);
+      if (!pin.isValid()) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    }
+    MallocHooker::patchLibraries();
+    exitRemoving(path, *slot == before ? CHILD_OK : CHILD_CORRUPTED);
   });
 }
 

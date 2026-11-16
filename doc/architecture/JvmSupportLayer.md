@@ -105,6 +105,7 @@ If either step fails, profiling is disabled.
 | Function | HotSpot | J9 / Zing |
 |---|---|---|
 | `initialize()` | shared (`JVMThread` + `ProfiledThread` TLS) | shared |
+| `isPlatformThread(jni, thread)` | positive JNI < 19: true; JNI >= 19: runtime `IsVirtualThread` check | positive JNI < 19: true; JNI >= 19: runtime `IsVirtualThread` check |
 | `initExecution(args, jvmti, jni)` | selects `Fully_loaded`, `Partial_loaded`, or `Lazy_loaded` via `HotspotSupport::shouldPreloadJmethodIDs` / `canResolveLazily` / `initLazyResolution` (`jvmSupport.cpp:79-94`) | always `Fully_loaded`. `fjmethodid=lazy` only logs a warning (`jvmSupport.cpp:95-97`) |
 | `walkJavaStack(request)` | `HotspotSupport::walkJavaStack` | ASGCT through `asyncGetCallTrace()`. Debug builds assert that the event is CPU, wall, native malloc, or native socket (`jvmSupport.cpp:112-117`) |
 | `walkCurrentJavaStack(request)` | anchor-seeded `walkVM`; returns 0 for failed or unsafe allocation stacks | returns 0 for JVMTI retry |
@@ -137,6 +138,24 @@ Callers in shared code:
 independently of the headers used to build the library. `vmEntry.h` defines the
 `JMETHODID_NOT_WALKABLE` frame sentinel; allocation capture retries with JVMTI
 rather than retaining unresolved Java frames.
+
+### Platform-thread classification
+
+The paired Java TaskBlock hooks use carrier-local TLS. They verify the supplied
+`jthread` against JVMTI `GetCurrentThread()` with JNI `IsSameObject()` before
+classification. See [TLSContext](TLSContext.md#paired-taskblock-intervals).
+
+`JVMSupport::isPlatformThread()` rejects null JNI or thread arguments and
+nonpositive `GetVersion()` results. A positive JNI version below 19 classifies
+the thread as platform without reading a virtual-thread function-table entry.
+
+On VMs reporting JNI 19 or later, classification calls `IsVirtualThread` through
+runtime JNI slot 234. A missing function or a virtual-thread result rejects the
+thread. This path does not depend on the build JDK's JNI headers.
+
+`jvmSupport_ut.cpp` covers both HotSpot and non-HotSpot classification, JNI-version
+boundaries, missing functions and virtual threads. Native engine capability also
+controls whether TaskBlock recording is supported.
 
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 

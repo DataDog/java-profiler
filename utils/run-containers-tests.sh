@@ -1358,10 +1358,10 @@ if $OFFLINE; then
     CONTAINER_CMD+=(--pull=never --network=none)
 fi
 CONTAINER_VOLUME_RW_OPTIONS=""
-CONTAINER_VOLUME_RO_OPTIONS=":ro"
 if [[ "${CONTAINER_RUNTIME##*/}" == "podman" ]] && selinux_enforcing; then
     CONTAINER_VOLUME_RW_OPTIONS=":z"
-    CONTAINER_VOLUME_RO_OPTIONS=":ro,z"
+    # Recursive source relabeling would modify host Git metadata before overlays apply.
+    CONTAINER_CMD+=(--security-opt label=disable)
 fi
 if $SHELL_MODE; then
     CONTAINER_CMD+=(-it --init --ulimit core=-1 --cap-add=SYS_PTRACE)
@@ -1391,7 +1391,12 @@ fi
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
-    CONTAINER_CMD+=(-v "$PROJECT_ROOT:/workspace${CONTAINER_VOLUME_RW_OPTIONS}" "$IMAGE_NAME")
+    CONTAINER_CMD+=(-v "$PROJECT_ROOT:/workspace")
+    if [[ -d "$PROJECT_ROOT/.git" ]]; then
+        # Ordinary checkouts expose a second metadata path through the writable source.
+        CONTAINER_CMD+=(-v "$PROJECT_ROOT/.git:/workspace/.git:ro")
+    fi
+    CONTAINER_CMD+=("$IMAGE_NAME")
 
     if $SHELL_MODE; then
         SHELL_CMD="/bin/bash"
@@ -1406,7 +1411,7 @@ if $MOUNT_MODE; then
 else
     # Clone mode: shallow clone from mounted local repo for clean builds (default)
     # Mount the local repo as source, then clone from it to /workspace
-    CONTAINER_CMD+=(-v "$PROJECT_ROOT:/source${CONTAINER_VOLUME_RO_OPTIONS}" "$IMAGE_NAME")
+    CONTAINER_CMD+=(-v "$PROJECT_ROOT:/source:ro" "$IMAGE_NAME")
 
     # Build clone and test command - clone from local mounted source.
     # With a rootful runtime (e.g. Docker) the container's root doesn't own the

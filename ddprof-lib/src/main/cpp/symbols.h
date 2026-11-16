@@ -60,6 +60,8 @@ class UnloadProtection {
 
     bool isValid() const { return _valid; }
     void* release();
+    // Returns true for valid pins; Linux also requires a matching live import-layout fingerprint.
+    bool importsAreCurrent(const CodeCache* cc) const;
 };
 
 #endif // _SYMBOLS_H

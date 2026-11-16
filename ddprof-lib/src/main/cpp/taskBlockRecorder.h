@@ -100,13 +100,14 @@ class TaskBlockActivity {
   explicit TaskBlockActivity(bool already_active = false)
       : _profiler(Profiler::instance()),
         _active(already_active || _profiler->tryEnterTaskBlockActivity()),
-        _owns_activity(!already_active && _active) {
-    if (!_active) Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-  }
+        _owns_activity(!already_active && _active) {}
 
   ~TaskBlockActivity() {
     if (_owns_activity) _profiler->leaveTaskBlockActivity();
   }
+
+  TaskBlockActivity(const TaskBlockActivity&) = delete;
+  TaskBlockActivity& operator=(const TaskBlockActivity&) = delete;
 
   bool active() const { return _active; }
 };
