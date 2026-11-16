@@ -98,18 +98,22 @@ an existing authorized admin bypass is used. This block-only denial risk is acce
 ### Trusted result recognition
 
 The approved allowlist contains the numeric identities below. Each must also have
-GitHub actor type `Bot`. The allowlist belongs in trusted main-branch code.
+GitHub actor type `Bot`. Every entry is an observed Bits verdict author on this
+repository; the linked sample review per account carries the full marker set. The
+allowlist is owned with the gate, in trusted main-branch code: it changes only
+through reviewed PRs to `main`, like the gate itself, and an unrecognized new
+Bits shard false-blocks its PRs until added.
 
-| Login | GitHub user ID |
-| --- | --- |
-| `datadog-official[bot]` | `214633350` |
-| `datadog-datadog-prod-us1[bot]` | `88084959` |
-| `datadog-datadog-prod-us1-2[bot]` | `261164178` |
-| `datadog-datadog-us1-prod[bot]` | `298424163` |
-| `datadog-prod-us1-3[bot]` | `266080212` |
-| `datadog-prod-us1-4[bot]` | `266080418` |
-| `datadog-prod-us1-5[bot]` | `266081015` |
-| `datadog-prod-us1-6[bot]` | `266788760` |
+| Login | GitHub user ID | Observed review |
+| --- | --- | --- |
+| `datadog-official[bot]` | `214633350` | [PR 985](https://github.com/DataDog/java-profiler/pull/985#pullrequestreview-5872953227) |
+| `datadog-datadog-prod-us1[bot]` | `88084959` | [PR 968](https://github.com/DataDog/java-profiler/pull/968#pullrequestreview-5872101609) |
+| `datadog-datadog-prod-us1-2[bot]` | `261164178` | [PR 964](https://github.com/DataDog/java-profiler/pull/964#pullrequestreview-5844518210) |
+| `datadog-datadog-us1-prod[bot]` | `298424163` | [PR 925](https://github.com/DataDog/java-profiler/pull/925#pullrequestreview-5735113661) |
+| `datadog-prod-us1-3[bot]` | `266080212` | [PR 974](https://github.com/DataDog/java-profiler/pull/974#pullrequestreview-5849493826) |
+| `datadog-prod-us1-4[bot]` | `266080418` | [PR 927](https://github.com/DataDog/java-profiler/pull/927#pullrequestreview-5731111091) |
+| `datadog-prod-us1-5[bot]` | `266081015` | [PR 941](https://github.com/DataDog/java-profiler/pull/941#pullrequestreview-5784227207) |
+| `datadog-prod-us1-6[bot]` | `266788760` | [PR 920](https://github.com/DataDog/java-profiler/pull/920#pullrequestreview-5696813787) |
 
 PASS requires trusted origin and validated Bits summary metadata, including the
 `datadog-code-review` reviewer ID `bad90057-5c12-4101-ad47-d91c9dff0f90` and
@@ -298,6 +302,14 @@ matches: event_name `pull_request` or ref `refs/heads/main-x` is rejected. Do no
 add manual `^...$` anchors: around a top-level `|` they bind as `(^A)|(B$)`, the
 partial-match leak the app-level wrapping exists to prevent.
 
+A required context without an expected publisher does not constrain who may satisfy
+it: any same-repository workflow runs with its own `GITHUB_TOKEN`, and
+`permissions: statuses: write` on that token can post a `bits-review/head` success
+for its own head SHA. Requiring the context without the app binding is therefore
+never an activation step — a spoofable required check is weaker than no gate. The
+required context and its expected-publisher binding are added in one change, and
+the same-repo `GITHUB_TOKEN` spoof is an AC10 case.
+
 When separately authorized, propose required context `bits-review/head` with expected
 publisher app ID `1157446`. Read the live protection and rules into a fresh baseline
 immediately before an authorized change. The change is additive: preserve every
@@ -363,7 +375,7 @@ remain open until activation is separately authorized.
 | AC7 | test-drive | Same-repository, fork, and dependency bot PRs receive status updates without running PR-controlled code in the privileged writer |
 | AC8 | test-drive | A push invalidates an earlier PASS; submission, edit, dismissal, and retry update the head status; an actual bot body edit exposes the edit signal used by the evaluator |
 | AC9 | test-drive | A branch workflow cannot obtain publisher authority; each shared-head PR needs its own PASS; a missing-review duplicate blocks and closing it reevaluates the SHA |
-| AC10 | production-check | Over a controlled test PR lifecycle, an ordinary non-bypass actor cannot merge without PASS and becomes eligible with PASS, subject to other checks |
+| AC10 | production-check | Over a controlled test PR lifecycle, an ordinary non-bypass actor cannot merge without PASS and becomes eligible with PASS, subject to other checks; a same-repository branch workflow posting `bits-review/head: success` with its own `GITHUB_TOKEN` does not satisfy the required check |
 | AC11 | production-check | Read-back confirms the required publisher, main-only scope, unchanged unrelated protections, and preserved admin bypass |
 | AC12 | test-drive | Token exchange is denied for event_name `pull_request` and for ref `refs/heads/main-x` (no publisher token minted), proving full-value claim matching before activation |
 
@@ -412,7 +424,7 @@ The following material refinements are approved and reflected in the contract ab
 
 | Decision | Reason and accepted impact | Required verification |
 | --- | --- | --- |
-| Eight-account allowlist; unknown marked bots block | A two-account allowlist can ignore a newer shard's FAIL; copied bot markers may cause false blocks | Identity, ordering, unknown-origin, and marker-copy cases |
+| Eight-account allowlist; unknown marked bots block | All eight are observed Bits authors on this repository; excluding one false-blocks every PR whose latest result is from it. Copied bot markers may cause false blocks | Identity, ordering, unknown-origin, and marker-copy cases |
 | Conservative edited-bot candidates, including unknown origins | Erased metadata must not uncover an older PASS; unrelated edited bot reviews may block | Actual-edit detection, unknown-origin erasure, and live bot-edit signal |
 | No edited summary can pass | Original author identity does not authenticate later text; even original-bot edits require a fresh review | Valid-looking edited PASS, original-author edit, and fresh-review recovery cases |
 | Main-workflow-bound Octo-STS publisher | Branch workflows can share the Actions identity; existing internal Octo-STS status writers remain trusted | Token-claim restrictions and attempted branch-workflow spoofing |
