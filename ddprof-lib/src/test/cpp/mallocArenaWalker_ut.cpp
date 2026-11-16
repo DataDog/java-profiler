@@ -134,6 +134,27 @@ static void runOnLiveThreads(int n, Fn fn) {
   }
 }
 
+// Chunks allocated on the main thread (main_arena) and freed by a worker sit in
+// the worker's tcache, so a small malloc there returns a main_arena chunk
+// although the worker's own arena is not main_arena.
+TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
+  std::vector<void*> main_chunks;
+  for (int i = 0; i < 16; i++) {
+    main_chunks.push_back(malloc(64));
+  }
+  ArenaWalkResult r;
+  std::thread worker([&]() {
+    void* keep = malloc(4096);
+    for (void* p : main_chunks) {
+      free(p);
+    }
+    MallocArenaWalker::walk(&r, 4096);
+    free(keep);
+  });
+  worker.join();
+  EXPECT_EQ(ARENA_WALK_OK, r.status) << arenaWalkStatusName(r.status);
+}
+
 TEST_F(MallocArenaWalkerTest, WalkWithLiveThreadsFindsArenas) {
   std::mutex mu;
   std::vector<ArenaWalkResult> results;

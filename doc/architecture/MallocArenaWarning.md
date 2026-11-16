@@ -54,8 +54,10 @@ fields at known offsets.
 
 ### Seed
 
-1. The calling thread calls `malloc(64)` and reads the size field of the
-   chunk header.
+1. The calling thread calls `malloc(4096)` and reads the size field of the
+   chunk header. The size is above the default tcache limit (1032 bytes), so
+   the chunk comes from the thread's own arena. A small request can return a
+   chunk from the thread cache that belongs to another arena.
 2. A seed is accepted only when the chunk is not mmapped and has the
    non-main-arena bit set. A chunk in `main_arena` gives no seed.
 3. The heap start is the chunk address masked to a 64 MiB boundary
@@ -290,6 +292,7 @@ written, and the walk still runs.
 | No CPU quota | Condition 1 is false. Stats are still written |
 | Memory limit unknown | Condition 2 is false |
 | No `mallinfo2` at runtime (glibc older than 2.33) | `conditionMeasure=committed`, `freeHeldBytes=-1` |
+| `MALLOC_CHECK_` set on glibc older than 2.34 | One arena (`main_arena`) serves all threads: `no-seed`, no warning |
 | Layout not recognized | `walkStatus` is not `ok`, no warning, no crash |
 | musl, macOS | No event is written |
 

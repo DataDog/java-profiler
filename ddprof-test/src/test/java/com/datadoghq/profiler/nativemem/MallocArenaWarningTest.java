@@ -12,11 +12,15 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -49,6 +53,36 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
   protected void withTestAssumptions() {
     // ASan and TSan replace malloc, so the glibc arena walk is not applicable.
     Assumptions.assumeFalse(isAsan() || isTsan());
+    Assumptions.assumeFalse(
+        arenasConfinedByMallocCheck(), "MALLOC_CHECK_ confines glibc before 2.34 to main_arena");
+  }
+
+  // With MALLOC_CHECK_ set, glibc before 2.34 allocates only from main_arena, so no per-thread
+  // arenas exist. From 2.34 on the variable has no effect without libc_malloc_debug.so.
+  private static boolean arenasConfinedByMallocCheck() {
+    return System.getenv("MALLOC_CHECK_") != null && !glibcAtLeast(2, 34);
+  }
+
+  private static boolean glibcAtLeast(int major, int minor) {
+    try {
+      Process p =
+          new ProcessBuilder("getconf", "GNU_LIBC_VERSION").redirectErrorStream(true).start();
+      try (BufferedReader r =
+          new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+        String line = r.readLine();
+        p.waitFor();
+        Matcher m = Pattern.compile("glibc (\\d+)\\.(\\d+)").matcher(line == null ? "" : line);
+        if (m.find()) {
+          int have = Integer.parseInt(m.group(1));
+          return have > major || (have == major && Integer.parseInt(m.group(2)) >= minor);
+        }
+      }
+    } catch (IOException e) {
+      // unknown version: callers treat it as older than requested
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    return false;
   }
 
   @Test
@@ -73,9 +107,7 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
       return;
     }
     Assumptions.assumeFalse(
-        "replaced-allocator".equals(status)
-            || "hugetlb-tunable".equals(status)
-            || "no-seed".equals(status),
+        "replaced-allocator".equals(status) || "hugetlb-tunable".equals(status),
         "arena walk disabled by the process environment: " + status);
     assertEquals("ok", status);
     assertTrue(last.getLong("arenaCount", 0) >= 2, "arenaCount: " + last);

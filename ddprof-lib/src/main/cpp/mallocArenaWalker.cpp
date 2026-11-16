@@ -103,13 +103,17 @@ static inline uintptr_t untag(uintptr_t p) {
 #endif
 }
 
+// A request above the default tcache limit (1032 bytes) skips the thread
+// cache, which can hold chunks of other arenas, and is served by this thread's arena.
+static const size_t SEED_BYTES = 4096;
+
 // Caches the arena of a chunk allocated by this thread, unless that chunk
 // lives in main_arena or an mmapped chunk. Returns true when a seed is cached.
 static bool ensureSeed() {
   if (__atomic_load_n(&seed_arena, __ATOMIC_ACQUIRE) != 0) {
     return true;
   }
-  void* p = malloc(64);
+  void* p = malloc(SEED_BYTES);
   bool ok = false;
   if (p != nullptr) {
     uintptr_t chunk = untag((uintptr_t)p);
