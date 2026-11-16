@@ -180,8 +180,11 @@ new hook fault or of successful EFAULT recovery.
   read, recv, poll and accept, including pending cancellation, join and owner/TLS cleanup.
 - `JvmInternalThreadClassificationTest`: cached positive/negative housekeeping
   verdicts, JNI/JVMTI failure cleanup and synthetic-start preservation.
-- `NativeSocketTaskBlockTest`: pre-recording Read-Poller exclusion with a platform
-  control; pinned JNI read attribution against observed carrier Java id and Linux tid.
+- `NativeSocketTaskBlockTest`: pre-recording platform poller exclusion (Read-Poller
+  or MasterPoller) with a platform control; clean-context pinned JNI read attribution
+  against observed carrier Java id and Linux tid.
+- `NativeSocketCarrierReuseTest`: ordered context-writer and pinned-read lifecycles
+  in one JVM with a single reused carrier.
 - `nativeSocketInterposer_ut.cpp`: zero-slot incomplete-import rejection and inactive stream forwarding without probes or
   TaskBlock entry, active block kinds, sampler-only/combined forwarding,
   close/dup invalidation and production patch rollback.

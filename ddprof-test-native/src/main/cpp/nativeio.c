@@ -221,8 +221,15 @@ Java_com_datadoghq_profiler_wallclock_NativeSocketTaskBlockTest_pinnedRead0(
     if (count_down != NULL) (*env)->CallVoidMethod(env, entered, count_down);
     (*env)->DeleteLocalRef(env, latch_class);
     if (count_down == NULL || (*env)->ExceptionCheck(env)) return -1;
+    jmethodID validate = (*env)->GetStaticMethodID(env, cls, "assertCleanPinnedReadContext", "()V");
+    if (validate == NULL) return -1;
+    (*env)->CallStaticVoidMethod(env, cls, validate);
+    if ((*env)->ExceptionCheck(env)) return -1;
     char byte = 0;
     ssize_t result = ((ssize_t (*)(int, void *, size_t))imports.functions[3])(fd, &byte, 1);
+    int read_errno = errno;
+    jlong diagnostics[3] = {result, read_errno, byte};
+    (*env)->SetLongArrayRegion(env, observed, 2, 3, diagnostics);
     return result == 1 && byte == 1 ? 1 : -1;
 }
 
