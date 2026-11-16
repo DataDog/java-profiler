@@ -2543,16 +2543,35 @@ Error LivenessTracker::initialize(Arguments &args) {
 // yet": it is not a legal xorshift64 state, so it cannot collide with a live
 // stream, and the first draw on a thread seeds itself.
 //
-// Both hold a plain value with no pthread-key destructor, so nothing is freed
+// All hold a plain value with no pthread-key destructor, so nothing is freed
 // on thread exit and clearing is about meaning rather than memory: it returns
 // the slot to the unseeded sentinel, so the next JNI attachment on a reused OS
 // thread draws from a fresh stream instead of continuing the previous logical
 // thread's, and it drops that thread's skipped-bytes accumulator instead of
-// attributing it to whoever attaches next. Both are file-scope so
+// attributing it to whoever attaches next. All are file-scope so
 // releaseThreadLocalState() can reach them from Profiler::onThreadEnd(), which
 // fires on DetachCurrentThread as well as on OS thread exit.
 static ThreadLocal<u64> rng;
 static ThreadLocal<double> skipped;
+// The table generation the skipped bytes were counted in. The accumulator
+// survives stop/start, so bytes of another generation are dropped, not
+// charged to the next admitted object.
+static ThreadLocal<u64> skipped_generation;
+
+static void addSkipped(double bytes, u64 table_generation) {
+  if (skipped_generation.get() != table_generation) {
+    skipped_generation.set(table_generation);
+    skipped.set(bytes);
+    return;
+  }
+  skipped.set(skipped.get() + bytes);
+}
+
+static double takeSkipped(u64 table_generation) {
+  double bytes = skipped_generation.get() == table_generation ? skipped.get() : 0;
+  skipped.set(0);
+  return bytes;
+}
 
 // track()'s admission gate: chase-phase admission boost (see
 // admitForTracking()'s declaration comment in livenessTracker.h). Both boost
@@ -2679,11 +2698,13 @@ void LivenessTracker::admissionResetForTest() {
   setSubsampleRate(SubsampleRate(0.0));
   rng.clear();
   skipped.set(0);
+  skipped_generation.clear();
 }
 
 void LivenessTracker::releaseThreadLocalState() {
   rng.clear();
   skipped.clear();
+  skipped_generation.clear();
 }
 
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
@@ -2706,7 +2727,7 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
   SAMPLER_PERF_PROBE(SP_LIVENESS);
 
   if (!admitForTracking(tid)) {
-    skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
+    addSkipped(static_cast<double>(event._weight) * event._size, table_generation);
     return;
   }
 
@@ -2755,8 +2776,7 @@ retry:
     _table[idx].time = TSC::ticks();
     _table[idx].ref = ref;
     _table[idx].alloc = event;
-    _table[idx].skipped = skipped.get();
-    skipped.set(0);
+    _table[idx].skipped = takeSkipped(table_generation);
     _table[idx].age = 0;
     _table[idx].admission_epoch = load(_gc_epoch);
     _table[idx].call_trace_id = call_trace_id;

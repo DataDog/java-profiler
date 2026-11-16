@@ -635,14 +635,17 @@ chains are described in
 - **`track()`** (`livenessTracker.cpp:2354`) runs from the allocation
   callback:
   1. Admission subsampling (`admitForTracking()`). The weight of rejected
-     allocations accumulates in a thread-local `skipped` value.
+     allocations accumulates in a thread-local `skipped` value, tagged with the
+     table generation the callback read. The next admitted object on the thread
+     carries that weight only if its generation matches. Otherwise the weight
+     is dropped.
   2. `NewWeakGlobalRef(object)`.
   3. `_table_lock.tryLockShared()`. If the lock is not available, the weak ref
      is deleted and the sample is dropped. Under the lock it compares the
      table generation the callback read before resolving the class id
      (`tableGeneration()`, passed by `ObjectSampler::recordAllocation()`)
-     with the current one, which `release()` and `initialize()` bump under the
-     exclusive lock. A mismatch means the callback straddled a stop: its
+     with the current one, which `stop()`, `release()` and `initialize()` bump
+     under the exclusive lock. A mismatch means the callback straddled a stop: its
      `call_trace_id` may name a trace in call-trace storage that was released,
      so the sample is dropped.
   4. Reserves a slot by CASing `_table_size` against a `_table_cap` snapshot

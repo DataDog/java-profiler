@@ -1325,6 +1325,11 @@ public:
     return true;
   }
 
+  // Slot `idx`'s skipped-bytes weight; 0 if idx is outside the allocated table.
+  double trackingSkippedForTest(u32 idx) const {
+    return (_table == nullptr || idx >= (u32)_table_cap) ? 0 : _table[idx].skipped;
+  }
+
   // Admission-boost test seams - same "for testing only" rationale as the
   // leak-tag pool seams above: admitForTracking()/noteSelectedCandidates()
   // are JNI-free pure logic (atomic reads + the per-thread RNG draw), so they

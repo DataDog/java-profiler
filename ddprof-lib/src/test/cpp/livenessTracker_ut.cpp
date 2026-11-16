@@ -3694,6 +3694,43 @@ TEST_F(LivenessTrackerMockJvmTest, AdmissionOverlappingStopStartReadsThePublishe
     restart();
 }
 
+// The weight of rejected allocations is charged to the thread's next admitted
+// object only within one table generation: neither a restart nor a rejected
+// callback that straddled a stop carries it into the next recording.
+TEST_F(LivenessTrackerMockJvmTest, SkippedWeightStaysInItsTableGeneration) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    auto rejectTwice = [&](u64 generation) {
+        tracker->setSubsampleRatioForTest(0.0);
+        for (int i = 0; i < 2; i++) {
+            AllocEvent event;
+            event._size = 16;
+            tracker->track(&jvm.jni, event, /*tid=*/1, jvm.newObject(&jvm.retained_class),
+                           /*call_trace_id=*/1, generation);
+        }
+        tracker->setSubsampleRatioForTest(1.0);
+    };
+
+    // Same generation: the next admitted object carries both rejections.
+    rejectTwice(tracker->tableGeneration());
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    ASSERT_EQ(1u, tracker->tableSizeForTest());
+    EXPECT_EQ(32.0, tracker->trackingSkippedForTest(0));
+
+    // Across a restart.
+    rejectTwice(tracker->tableGeneration());
+    tracker->release(&jvm.jni);
+    restart();
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    ASSERT_EQ(1u, tracker->tableSizeForTest());
+    EXPECT_EQ(0.0, tracker->trackingSkippedForTest(0));
+
+    // Rejected callbacks that read the previous generation.
+    rejectTwice(tracker->tableGeneration() - 1);
+    trackNew(&jvm.retained_class, /*tid=*/1);
+    ASSERT_EQ(2u, tracker->tableSizeForTest());
+    EXPECT_EQ(0.0, tracker->trackingSkippedForTest(1));
+}
+
 // A second start() without a release() in between replaces the tracker's
 // checker instead of adding another: processTraces() would otherwise count the
 // live traces twice, and release() would leave the first one registered.
