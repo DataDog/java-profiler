@@ -23,6 +23,7 @@
 #include "mallocInfo.h"
 #include "os.h"
 #include "profiler.h"
+#include "referenceChainFrontier.h"
 #include "signalSafety.h"
 #include "rustDemangler.h"
 #include "safeAccess.h"
@@ -2664,11 +2665,19 @@ void Recording::recordReferenceChainAbandoned(
   int start = buf->skip(1);
   buf->putVar64(T_REFERENCE_CHAIN_ABANDONED);
   buf->putVar64(event->_start_time);
-  // SearchAbandonReason (the engine's reason enum) - kept as a small fixed table
-  // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
-  // _operation -> kOpNames string mapping above.
-  static const char *const kReasons[] = {"none", "frontier_cap", "ttl", "canary_stuck"};
-  buf->putUtf8(event->_reason < 4 ? kReasons[event->_reason] : "unknown");
+  // Indexed by SearchAbandonReason, including its internal RECORDING_END value.
+  // Keep that slot so ROOT_ENUM_ERROR stays at its enum index; recording stop
+  // does not enqueue an event for RECORDING_END.
+  static const char *const kReasons[] = {"none", "frontier_cap", "ttl",
+                                         "canary_stuck", "unknown",
+                                         "root_enum_error"};
+  static_assert(SearchAbandonReason::RECORDING_END == 4 &&
+                        SearchAbandonReason::ROOT_ENUM_ERROR ==
+                            sizeof(kReasons) / sizeof(kReasons[0]) - 1,
+                "kReasons is positionally indexed by SearchAbandonReason");
+  buf->putUtf8(event->_reason < sizeof(kReasons) / sizeof(kReasons[0])
+                   ? kReasons[event->_reason]
+                   : "unknown");
   buf->putVar32(event->_passes_run);
   buf->putVar32(event->_frontier_size);
   buf->putVar32(event->_hop_cap);

@@ -351,11 +351,23 @@ TEST_F(ReferenceChainsBfsTest, ConsecutiveEnumErrorsAbandonSearch) {
     std::pair<u64, u64> saved = ReferenceChainsTestAccessor::setRootEnumRawStateForTest(0, 0);
     active_fixture->ior_error = JVMTI_ERROR_OUT_OF_MEMORY;
 
+    // Counters persist across tests in this process.
+    // Compare against the starting value rather than assuming zero.
+#ifdef COUNTERS
+    long long enum_errors_before = Counters::getCounter(REFERENCE_CHAIN_ROOT_ENUM_ERRORS);
+#endif
+
     // Pass 1 (manual): the enumeration attempt errors - incomplete, counter 1, still RUNNING.
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+#ifdef COUNTERS
+    EXPECT_EQ(enum_errors_before + 1,
+              Counters::getCounter(REFERENCE_CHAIN_ROOT_ENUM_ERRORS))
+        << "the first errored enumeration attempt must increment "
+           "reference_chain_root_enum_errors";
+#endif
 
     // Passes 2..MAX: backdate the floor so each pass runs a real enumeration attempt that errors
     // again; the ladder must abandon when the counter reaches MAX_CONSECUTIVE_ENUM_ERRORS.
@@ -373,6 +385,12 @@ TEST_F(ReferenceChainsBfsTest, ConsecutiveEnumErrorsAbandonSearch) {
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(SearchState::ABANDONED, tracker->searchState());
     EXPECT_EQ(SearchAbandonReason::ROOT_ENUM_ERROR, ReferenceChainsTestAccessor::searchAbandonReasonForTest());
+#ifdef COUNTERS
+    EXPECT_EQ(enum_errors_before + static_cast<long long>(ReferenceChainTracker::MAX_CONSECUTIVE_ENUM_ERRORS),
+              Counters::getCounter(REFERENCE_CHAIN_ROOT_ENUM_ERRORS))
+        << "each of the " << ReferenceChainTracker::MAX_CONSECUTIVE_ENUM_ERRORS
+        << " consecutive errored attempts must increment reference_chain_root_enum_errors";
+#endif
 
     ReferenceChainsTestAccessor::setRootEnumRawStateForTest(saved.first, saved.second);
     tracker->stop();

@@ -209,7 +209,15 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     ctx.frontier_cap_hit = false;
 
     u64 root_enum_start_ns = OS::nanotime();
-    jvmtiError root_err = jvmti->IterateOverReachableObjects(
+    jvmtiError root_err;
+#ifdef DEBUG
+    // Error injection must not admit objects through the heap callbacks.
+    // Bypass JVMTI so the test reaches the error path without mutating tags.
+    if (_root_enum_error_injection.load(std::memory_order_acquire)) {
+      root_err = JVMTI_ERROR_OUT_OF_MEMORY;
+    } else
+#endif
+    root_err = jvmti->IterateOverReachableObjects(
         heapRootCallback, stackRefCallback, /*object_ref_callback=*/nullptr,
         &ctx);
     u64 root_enum_safepoint_ns = OS::nanotime() - root_enum_start_ns;
@@ -232,6 +240,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       // count feeds the ladder's ROOT_ENUM_ERROR abandon; any successful attempt resets it.
       _root_enum_incomplete = true;
       _consecutive_enum_errors++;
+      Counters::increment(REFERENCE_CHAIN_ROOT_ENUM_ERRORS);
       *truncated = true;
       *frontier_cap_hit = false;
       return;

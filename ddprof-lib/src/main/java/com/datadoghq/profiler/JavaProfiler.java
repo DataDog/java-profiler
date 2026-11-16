@@ -681,6 +681,12 @@ public final class JavaProfiler {
   static native boolean runReferenceChainPass0();
 
   /**
+   * Forces root-enumeration attempts to report a JVMTI error in debug native builds. The flag is
+   * process-wide; disable it in test cleanup. Release builds ignore this call.
+   */
+  static native void setRootEnumErrorInjection0(boolean enabled);
+
+  /**
    * Test seam (debug native builds only): runs one poll of ReferenceChainTracker's
    * LivenessTracker-to-chain-reconstruction bridging step synchronously - for each current leak
    * candidate already discovered by a prior {@link #runReferenceChainPass0()} walk, reconstructs
