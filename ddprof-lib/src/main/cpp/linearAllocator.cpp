@@ -20,6 +20,7 @@
 #include "nativeMem.h"
 #include "os.h"
 #include "common.h"
+#include <cstdint>
 #include <stdio.h>
 #ifdef TSAN_ENABLED
   #include <sys/mman.h>
@@ -193,11 +194,33 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
 }
 
 void *LinearAllocator::alloc(size_t size) {
+  #ifdef ASAN_ENABLED
+  // ASan's shadow granularity is 8 bytes: an allocation whose end is not
+  // 8-aligned leaves its final shadow granule partially addressable, so
+  // clear()'s poison cannot cover the tail and a stale use-after-clear access
+  // to the allocation's last bytes goes undetected. Round the bump (and thus
+  // the unpoison) to the granule; ASan builds only, production layout is
+  // unchanged. sizeof(Chunk) is 8-aligned and every bump is rounded, so all
+  // offsets stay 8-aligned and every poisoned range is granule-aligned.
+  if (size > SIZE_MAX - 7) {
+    return nullptr;  // the rounded bump would wrap; no chunk can hold it
+  }
+  size = (size + 7) & ~(size_t)7;
+  #endif
+
   Chunk *chunk = __atomic_load_n(&_tail, __ATOMIC_ACQUIRE);
 
   // CRITICAL FIX: After detachChunks() fails, _tail may be nullptr.
   // We must handle this gracefully to prevent crash.
   if (chunk == nullptr) {
+    return nullptr;
+  }
+
+  // The fast-path check adds size to offs: a huge size would wrap the sum
+  // past SIZE_MAX, make the check pass, and hand out a pointer past the
+  // chunk's end. offs never exceeds _chunk_size, so rejecting any size above
+  // the chunk capacity keeps offs + size far below SIZE_MAX.
+  if (size > (size_t)_chunk_size) {
     return nullptr;
   }
 
