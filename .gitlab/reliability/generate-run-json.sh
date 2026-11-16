@@ -101,12 +101,27 @@ def config_label(entry):
         return f"{entry['config']}-{entry['allocator']}-{entry['arch']}-{entry['variant']}"
     return entry.get("reason", "Unknown")
 
+def dedupe(entries):
+    """Drop repeat rows by label. Every matrix row also lands in its own
+    build-env/<row key>/build.env copy, and the root-level build.env files of
+    the downloaded archives overwrite each other, so the same row can arrive
+    both ways; the count must not depend on which copy the walk sees first."""
+    seen = set()
+    unique = []
+    for entry in entries:
+        label = config_label(entry)
+        if label in seen:
+            continue
+        seen.add(label)
+        unique.append(entry)
+    return unique
+
 def analyze_results(base_dir):
     """Analyze reliability test results."""
     # INCONCLUSIVE_ keys split exactly the way REASON_ keys do, so both kinds
     # of row land in fields with the same label shape.
-    failures = parse_build_env(base_dir, 'REASON_', r'REASON_([^_]+)_([^_]+)_(\w+)X(\w+)')
-    inconclusive = parse_build_env(base_dir, 'INCONCLUSIVE_', r'INCONCLUSIVE_([^_]+)_([^_]+)_(\w+)X(\w+)')
+    failures = dedupe(parse_build_env(base_dir, 'REASON_', r'REASON_([^_]+)_([^_]+)_(\w+)X(\w+)'))
+    inconclusive = dedupe(parse_build_env(base_dir, 'INCONCLUSIVE_', r'INCONCLUSIVE_([^_]+)_([^_]+)_(\w+)X(\w+)'))
 
     results = {
         "total_configs": expected_configs,

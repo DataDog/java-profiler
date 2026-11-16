@@ -88,10 +88,17 @@ def write(name, lines):
         f.write("\n".join(lines) + "\n")
 
 
-def probe(before, after, status="ok"):
-    return [f"probe_before: rss_kb={before} {markers()}",
+def probe(before, after, status="ok", psi_before="0.05", psi_after="0.05"):
+    def head(kind, rss, psi):
+        if psi is None:
+            # The probe line without the psi key: the pressure reading was
+            # never emitted, not even as NA.
+            return (f"probe_{kind}: rss_kb={rss} psi_cpu_some_avg10=0.1 "
+                    f"loadavg_1m=1.5 cpu_nr_throttled=4 cotenant_runnable=2")
+        return f"probe_{kind}: rss_kb={rss} {markers(psi_mem=psi)}"
+    return [head("before", before, psi_before),
             f"release_probe=jcmd status={status}",
-            f"probe_after: rss_kb={after} {markers()}"]
+            head("after", after, psi_after)]
 
 
 g24, g10, flat = growth(24), growth(10), [500000] * 24
@@ -142,6 +149,15 @@ write("probe-missing.log", emit(g24))
 write("probe-failed.log", emit(g24) + ["release_probe=jcmd status=failed"])
 write("probe-na-before.log", emit(g24) + probe("NA", 120000))
 write("probe-na-after.log", emit(g24) + probe(160000, "NA"))
+
+# Probe-window pressure: a recovery would pass, but memory pressure at the
+# probe itself means the RSS drop may be reclaim rather than release, and a
+# reading that was never recorded cannot clear the recovery either.
+write("probe-psi-after.log", emit(g24) + probe(160000, 130000, psi_after="20.0"))
+write("probe-psi-before.log", emit(g24) + probe(160000, 130000, psi_before="20.0"))
+write("probe-psi-at.log", emit(g24) + probe(160000, 130000, psi_before="5.0", psi_after="5.0"))
+write("probe-psi-na.log", emit(g24) + probe(160000, 130000, psi_after="NA"))
+write("probe-psi-missing.log", emit(g24) + probe(160000, 130000, psi_after=None))
 
 # Growth verdicts for gmalloc and the non-glibc rows.
 write("grow-jemalloc.log", emit(g24) + ["release_probe=not-applicable allocator=jemalloc"])
@@ -327,6 +343,17 @@ expect_reason "failed probe verdict names the status" "reported status failed"
 expect_verdict "NA rss on the before probe is inconclusive" inconclusive probe-na-before.log gmalloc
 expect_verdict "NA rss on the after probe is inconclusive" inconclusive probe-na-after.log gmalloc
 expect_reason "NA rss verdict names the cause" "did not record a usable RSS value"
+
+expect_verdict "pressure at the after probe blocks the release pass" inconclusive probe-psi-after.log gmalloc
+expect_reason "the after-probe verdict names the peak pressure" "peaked at 20, above the provisional bound"
+expect_verdict "pressure at the before probe blocks the release pass" inconclusive probe-psi-before.log gmalloc
+expect_reason "the before-probe verdict names the peak pressure" "peaked at 20, above the provisional bound"
+expect_verdict "probe pressure at the bound still accepts the release" pass probe-psi-at.log gmalloc
+expect_reason "the at-bound pass reason still credits the release" "released 30000 kB of the 60000 kB growth"
+expect_verdict "an NA probe pressure reading keeps the row inconclusive" inconclusive probe-psi-na.log gmalloc
+expect_reason "the NA pressure verdict names the missing reading" "Memory pressure at the release probe was not recorded"
+expect_verdict "an absent probe pressure key keeps the row inconclusive" inconclusive probe-psi-missing.log gmalloc
+expect_reason "the absent-pressure verdict names the missing reading" "Memory pressure at the release probe was not recorded"
 
 expect_verdict "non-glibc growth fails" fail grow-jemalloc.log jemalloc
 expect_reason_is "non-glibc fail reason is exact" "Memory usage is trending up"

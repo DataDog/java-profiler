@@ -94,15 +94,24 @@ def read_marker_records(file_path, sample_count):
     return markers
 
 def read_probe_records(file_path):
-    """Probe bookkeeping; rss is None when the record is absent or its value is not numeric."""
-    probe = {"status": None, "before_rss": None, "after_rss": None}
+    """Probe bookkeeping; rss and psi are None when the record is absent or
+    its value is not numeric. The probe lines carry the same marker tokens as
+    the sample markers, so the pressure readings at the probe itself survive
+    the parse instead of being discarded."""
+    probe = {"status": None, "before_rss": None, "after_rss": None,
+             "before_psi": None, "after_psi": None}
     with open(file_path, 'r') as file:
         for line in file:
             if line.startswith("probe_before:") or line.startswith("probe_after:"):
                 values = parse_key_values(line.split(":", 1)[1])
                 rss = numeric_value(values.get("rss_kb"))
-                key = "before_rss" if line.startswith("probe_before:") else "after_rss"
-                probe[key] = int(rss) if rss is not None else None
+                psi = numeric_value(values.get("psi_memory_some_avg10"))
+                if line.startswith("probe_before:"):
+                    probe["before_rss"] = int(rss) if rss is not None else None
+                    probe["before_psi"] = psi
+                else:
+                    probe["after_rss"] = int(rss) if rss is not None else None
+                    probe["after_psi"] = psi
             elif line.startswith("release_probe=jcmd") and probe["status"] is None:
                 probe["status"] = parse_key_values(line[len("release_probe="):]).get("status")
     return probe
@@ -171,6 +180,15 @@ def compute_verdict(memory_log, sample_markers, probe, allocator):
     growth_kb = probe["before_rss"] - memory_log[0]
     released_kb = probe["before_rss"] - probe["after_rss"]
     if growth_kb > 0 and released_kb >= RELEASE_RECOVERY_SHARE * growth_kb:
+        # The RSS drop is attributable to the trim only while the probe window
+        # was quiet: reclaim or swapping under memory pressure lowers RSS too,
+        # and an unreadable reading keeps the row inconclusive instead.
+        probe_psi = [p for p in (probe["before_psi"], probe["after_psi"]) if p is not None]
+        if len(probe_psi) < 2:
+            return "inconclusive", "Memory pressure at the release probe was not recorded"
+        if max(probe_psi) > PSI_MEMORY_SOME_AVG10_MAX:
+            return "inconclusive", (f"Memory pressure at the release probe peaked at "
+                                    f"{max(probe_psi):g}, above the provisional bound")
         return "pass", f"The release probe released {released_kb} kB of the {growth_kb} kB growth"
     return "fail", GMALLOC_FAIL_REASON
 

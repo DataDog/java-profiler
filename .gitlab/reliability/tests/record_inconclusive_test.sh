@@ -146,6 +146,53 @@ else
   pass "the reason is single-line with no colon and no backtick"
 fi
 
+# --- the row copy under BUILD_ENV_ROW -----------------------------------------
+
+# The publish job needs a per-row copy because the downloaded root-level
+# build.env files overwrite each other; the recorder must mirror the row
+# into BUILD_ENV_ROW without disturbing the root file.
+CASE="${WORK}/rowcopy"
+mkdir -p "${CASE}"
+printf 'INCONCLUSIVE:%s\n' "${REASON}" > "${CASE}/err.log"
+(
+  cd "${CASE}" || exit 1
+  export CONFIG='profiler+tracer' ALLOCATOR=gmalloc ARCH=amd64 VARIANT=memory
+  export BUILD_ENV_ROW="build-env/profiler_tracer_gmalloc_amd64Xmemory/build.env"
+  exec bash "${SCRIPT}"
+)
+assert_eq "the row copy is written at the BUILD_ENV_ROW path" "0" "$?"
+assert_eq "the row copy carries the same key and reason" \
+  "INCONCLUSIVE_profiler_tracer_gmalloc_amd64Xmemory=${REASON}" \
+  "$(sed -n '1p' "${CASE}/build-env/profiler_tracer_gmalloc_amd64Xmemory/build.env")"
+assert_eq "the root build.env still receives the row" \
+  "INCONCLUSIVE_profiler_tracer_gmalloc_amd64Xmemory=${REASON}" \
+  "$(sed -n '1p' "${CASE}/build.env")"
+
+CASE="${WORK}/norowcopy"
+mkdir -p "${CASE}"
+printf 'INCONCLUSIVE:%s\n' "${REASON}" > "${CASE}/err.log"
+run_case "${CASE}" profiler gmalloc amd64 memory
+if [ -e "${CASE}/build-env" ]; then
+  fail_case "an unset BUILD_ENV_ROW still created the row directory"
+else
+  pass "an unset BUILD_ENV_ROW writes no row copy"
+fi
+
+CASE="${WORK}/rowcopy-silent"
+mkdir -p "${CASE}"
+echo "FAIL:Memory usage is trending up" > "${CASE}/err.log"
+(
+  cd "${CASE}" || exit 1
+  export CONFIG=profiler ALLOCATOR=gmalloc ARCH=amd64 VARIANT=memory
+  export BUILD_ENV_ROW="build-env/profiler_gmalloc_amd64Xmemory/build.env"
+  exec bash "${SCRIPT}"
+)
+if [ -e "${CASE}/build-env" ]; then
+  fail_case "a confirmed fail still created the row copy"
+else
+  pass "a confirmed fail writes no row copy"
+fi
+
 # --- YAML wiring: both templates gain the step after the fail path --------------
 
 assert_wiring() { # $1 description, $2 yaml, $3 fixed string that must appear
@@ -161,9 +208,9 @@ SCHED_PARSER="REASON=\$(cat err.log | grep \"FAIL:\" | cut -f2 -d':') || true"
 # shellcheck disable=SC2016  # the PR parser fixture must not be expanded by this test script
 PR_PARSER="REASON=\$(grep -m1 'FAIL:' err.log | cut -f2- -d':' | tr -d '\n') || true"
 # shellcheck disable=SC2016  # the fail-exit fixture vars must stay literal for grep
-SCHED_FAIL_EXIT="if [ -n \"\${REASON}\" ]; then echo \"REASON_\${CONFIG}_\${ALLOCATOR}_\${ARCH}X\${VARIANT}=\${REASON}\" | tr '+' '_' >> build.env; exit 1; fi"
+SCHED_FAIL_EXIT="if [ -n \"\${REASON}\" ]; then _key=\$(printf 'REASON_%s_%s_%sX%s' \"\${CONFIG}\" \"\${ALLOCATOR}\" \"\${ARCH}\" \"\${VARIANT}\" | tr '+' '_'); _row=\"build-env/\${_key#REASON_}/build.env\"; mkdir -p \"\${_row%/*}\"; echo \"\${_key}=\${REASON}\" | tee -a build.env >> \"\${_row}\"; exit 1; fi"
 # shellcheck disable=SC2016  # the PR fail-exit fixture vars must stay literal for grep
-PR_FAIL_EXIT="if [ -n \"\${REASON}\" ]; then _key=\$(printf 'REASON_%s_%s_%sX%s' \"\${CONFIG}\" \"\${ALLOCATOR}\" \"\${ARCH}\" \"\${VARIANT}\" | tr '+' '_'); echo \"\${_key}=\${REASON}\" >> build.env; exit 1; fi"
+PR_FAIL_EXIT="if [ -n \"\${REASON}\" ]; then _key=\$(printf 'REASON_%s_%s_%sX%s' \"\${CONFIG}\" \"\${ALLOCATOR}\" \"\${ARCH}\" \"\${VARIANT}\" | tr '+' '_'); _row=\"build-env/\${_key#REASON_}/build.env\"; mkdir -p \"\${_row%/*}\"; echo \"\${_key}=\${REASON}\" | tee -a build.env >> \"\${_row}\"; exit 1; fi"
 
 assert_wiring "the scheduled REASON parser is unchanged" "${SCHEDULED_YAML}" "${SCHED_PARSER}"
 assert_wiring "the PR child REASON parser is unchanged" "${PR_YAML}" "${PR_PARSER}"
@@ -171,6 +218,21 @@ assert_wiring "the scheduled fail exit is unchanged" "${SCHEDULED_YAML}" "${SCHE
 assert_wiring "the PR child fail exit is unchanged" "${PR_YAML}" "${PR_FAIL_EXIT}"
 assert_wiring "the scheduled timeout fallback stays" "${SCHEDULED_YAML}" 'Unknown failure, perhaps timeout'
 assert_wiring "the PR child timeout fallback stays" "${PR_YAML}" 'Unknown failure, perhaps timeout'
+# The row copy keeps every row alive when the downloaded root-level build.env
+# files overwrite each other in the publish job's workspace.
+assert_wiring "the scheduled recorder passes BUILD_ENV_ROW" "${SCHEDULED_YAML}" 'BUILD_ENV_ROW="build-env/$(printf'
+assert_wiring "the PR child recorder passes BUILD_ENV_ROW" "${PR_YAML}" 'BUILD_ENV_ROW="build-env/$(printf'
+row_dir_path_count() { # $1 yaml
+  sed -n '/^  artifacts:/,/^    reports:/p' "$1" | grep -cF -- 'build-env/'
+}
+assert_eq "the scheduled artifacts carry the build-env row directory" "2" \
+  "$(row_dir_path_count "${SCHEDULED_YAML}")"
+assert_eq "the PR child artifacts carry the build-env row directory" "2" \
+  "$(row_dir_path_count "${PR_YAML}")"
+assert_eq "both scheduled job templates write the row dir name" "4" \
+  "$(grep -cF 'build-env/${_key#REASON_}/build.env' "${SCHEDULED_YAML}")"
+assert_eq "both PR child job templates write the row dir name" "4" \
+  "$(grep -cF 'build-env/${_key#REASON_}/build.env' "${PR_YAML}")"
 
 # The recorder step must sit after the fail exit line, so it runs only when
 # the confirmed-fail path has not fired.

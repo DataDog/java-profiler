@@ -259,6 +259,41 @@ assert_eq "the nested inconclusive row never lands in failures" "4" \
 assert_eq "passed subtracts both kinds from the expected total" "31" \
   "$(summary_field "${JSON}" "s['passed']")"
 
+# --- archive extraction: colliding root build.env and per-row copies ---------
+
+# The publish job downloads every matrix row's artifacts into one workspace.
+# Root-level build.env files overwrite each other (last download wins), so
+# every row also carries its own build-env/<row>/build.env copy. The same row
+# can therefore arrive twice — once through the surviving root file, once
+# through its row copy — and the dedup must count it exactly once while rows
+# whose root file was overwritten still surface through their copies.
+CASE="${WORK}/extraction"
+mkdir -p "${CASE}/build-env/profiler_gmalloc_amd64Xjit" \
+         "${CASE}/build-env/profiler_tracer_jemalloc_amd64Xmemory" \
+         "${CASE}/build-env/profiler_tcmalloc_aarch64Xmemory"
+printf 'INCONCLUSIVE_profiler_gmalloc_amd64Xjit=few samples\n' \
+  > "${CASE}/build-env/profiler_gmalloc_amd64Xjit/build.env"
+printf 'INCONCLUSIVE_profiler_tracer_jemalloc_amd64Xmemory=cpu PSI too high\n' \
+  > "${CASE}/build-env/profiler_tracer_jemalloc_amd64Xmemory/build.env"
+printf 'REASON_profiler_tcmalloc_aarch64Xmemory=Memory usage is trending up\n' \
+  > "${CASE}/build-env/profiler_tcmalloc_aarch64Xmemory/build.env"
+# The surviving root file duplicates one inconclusive row and the failure.
+{
+  printf 'INCONCLUSIVE_profiler_gmalloc_amd64Xjit=few samples\n'
+  printf 'REASON_profiler_tcmalloc_aarch64Xmemory=Memory usage is trending up\n'
+} > "${CASE}/build.env"
+case_run "${CASE}"
+assert_eq "extracted rows are deduplicated against the root survivor" "2" \
+  "$(summary_field "${JSON}" "s['inconclusive']")"
+assert_eq "the duplicated failure is counted once" "1" \
+  "$(summary_field "${JSON}" "s['failed']")"
+assert_eq "passed subtracts each distinct row exactly once" "33" \
+  "$(summary_field "${JSON}" "s['passed']")"
+assert_eq "the overwritten row surfaces through its row copy" \
+  "['profiler-gmalloc-amd64-jit', 'profiler-tracer-jemalloc_amd64-memory']" \
+  "$(summary_field "${JSON}" "s['inconclusive_configs']")"
+assert_not_passed_with_inconclusive "${JSON}" "archive extraction"
+
 # --- YAML wiring: build.env must be downloadable as a regular artifact -------
 
 # The generator parses build.env files from the artifact download. GitLab only
@@ -276,6 +311,16 @@ assert_eq "scheduled pipeline lists build.env in both artifacts paths" "2" \
   "$(build_env_path_count "${SCHEDULED_YAML}")"
 assert_eq "PR child pipeline lists build.env in both artifacts paths" "2" \
   "$(build_env_path_count "${PR_YAML}")"
+
+# The per-row copies under build-env/ keep every row alive when the root-level
+# build.env files overwrite each other during the artifact download.
+build_env_dir_count() { # $1 yaml
+  sed -n '/^  artifacts:/,/^    reports:/p' "$1" | grep -cF -- 'build-env/'
+}
+assert_eq "scheduled pipeline lists the build-env row directory in both artifacts blocks" "2" \
+  "$(build_env_dir_count "${SCHEDULED_YAML}")"
+assert_eq "PR child pipeline lists the build-env row directory in both artifacts blocks" "2" \
+  "$(build_env_dir_count "${PR_YAML}")"
 
 if [ "${FAILED}" -eq 0 ]; then
   echo "All generate_run_json tests passed"
