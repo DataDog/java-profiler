@@ -36,7 +36,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
+    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
 #define ADMISSION_UT_SANITIZER 1
 #endif
 
@@ -100,7 +101,13 @@ void resolveFixturePath() {
 // the executable is the profiler's own library.
 CodeCache* findOwnLibrary() {
   Libraries::instance()->updateSymbols(false);
-  return Libraries::instance()->findLibraryByAddress((void*)MallocTracer::recordMalloc);
+  CodeCache* own = Libraries::instance()->findLibraryByAddress((void*)MallocTracer::recordMalloc);
+#ifdef ADMISSION_UT_SANITIZER
+  // Sanitizer runtimes can define malloc in the test executable itself, so
+  // the own image has no allocator import cell to mutate or inspect.
+  if (own != NULL && own->peekImport(im_malloc, PRIMARY) == NULL) _exit(CHILD_SKIP);
+#endif
+  return own;
 }
 
 // Writes value into the own image's PRIMARY GOT slot for id, through the

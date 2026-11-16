@@ -2,12 +2,12 @@
 
 ## Overview
 
-The native memory profiler tracks heap allocations made through the C standard
-library (`malloc`, `calloc`, `realloc`, `posix_memalign`, `aligned_alloc`). It
-instruments these functions at the GOT (Global Offset Table) level so that every
-intercepted call is accounted for without modifying application source code or
-requiring a custom allocator. `free` is **not** hooked: there is no `free_hook`, and
-free events are not recorded.
+The native memory profiler tracks allocations made through the C allocation
+functions (`malloc`, `calloc`, `realloc`, `posix_memalign`, `aligned_alloc`). While
+native-memory sampling is active, it patches importing libraries' GOT (Global
+Offset Table) entries and records sampled allocations without modifying application
+source code or requiring a custom allocator. `free` is **not** hooked: there is no
+`free_hook`, and free events are not recorded.
 
 Sampled allocation events carry a full Java + native stack trace and are emitted as
 `datadog.NativeMemoryAllocation` JFR events.
@@ -49,10 +49,10 @@ one event per 512 KiB allocated). Passing `nativemem=0` records every allocation
 ## GOT Patching
 
 The profiler redirects allocator calls by writing hook function addresses directly
-into the importing library's GOT. It patches libraries already loaded when a
-native-memory session starts and libraries discovered by `Libraries::refresh()`
-while sampling is active. A later admitted start also patches libraries loaded
-while sampling was stopped.
+into the importing library's GOT. This avoids requiring `LD_PRELOAD` or a process
+restart. It patches libraries already loaded when a native-memory session starts
+and libraries discovered by `Libraries::refresh()` while sampling is active. A later
+admitted start also patches libraries loaded while sampling was stopped.
 
 ### Import IDs
 
@@ -103,9 +103,9 @@ On the fresh path (`_initialized == false`), initialization:
 3. Reads the profiler's five allocation imports in PRIMARY and SECONDARY slots with
    the read-only `CodeCache::peekImport(id, type)` accessor. Missing slots and NULL
    values remain absent. The candidate forwarding values are the PRIMARY slot values.
-4. Returns the existing resolution error if the required malloc candidate is NULL.
-   This path returns before saving pointers, probing nested allocators, marking hooks,
-   or seeding the PRNG.
+4. If the required malloc candidate is NULL, caches `_initialized = true` and returns
+   the existing resolution error. This path returns before saving pointers, probing
+   nested allocators, marking hooks, seeding the PRNG, or running admission.
 5. Runs admission over the current slot values and candidate forwarding values before
    changing `_orig_*`. It compares stripped addresses but never modifies stored
    callable pointers, deduplicates a fixed set of at most 15 targets, and combines
@@ -118,26 +118,41 @@ On the fresh path (`_initialized == false`), initialization:
    `detectNestedMalloc()`, marks the five hook functions with `MARK_JAVA_PROFILER`,
    seeds the shared xoroshiro128+ PRNG from `TSC::ticks()`, and sets `_initialized`.
 
+`detectNestedMalloc()` probes the saved `calloc` target only when both it and the saved
+`malloc` target are non-NULL and its owner library has a valid `UnloadProtection` handle.
+It probes the saved `posix_memalign` target only when both it and the saved `aligned_alloc`
+target are non-NULL and that owner handle is valid. Each probe temporarily patches the
+owner image's relevant import, makes one call, and restores the slot. If nesting is
+observed, `patchLibraries()` skips patching that operation in every library; it patches
+the inner `malloc` or `aligned_alloc` import instead, so the nested allocator call is
+recorded once.
+
 On the cached path, a NULL `_orig_malloc` retains the existing resolution error. Otherwise,
-initialization reads the current PRIMARY and SECONDARY slots again and re-evaluates them
-together with the saved `_orig_*` forwarding pointers. It does not cache an admission
-verdict or rewrite saved pointers. A rejection returns before `_running` is published;
-an admitted request continues to `patchLibraries()`.
+initialization locates its own `CodeCache`; if it is unavailable, it returns
+`INDETERMINATE` with `NO_OWN_LIBRARY`. It then reads the current PRIMARY and SECONDARY
+slots again and re-evaluates them together with the saved `_orig_*` forwarding pointers.
+It does not cache an admission verdict or rewrite saved pointers. A rejection returns
+before `_running` is published; an admitted request continues to `patchLibraries()`.
 
 Linux admission identifies the live owner of each target inside one
 `dl_iterate_phdr()` callback. It checks the loader-reported `PT_LOAD` ranges, then reads
-that image's in-memory dynamic symbol/hash tables and recognizes an owner only when the
-image defines each marker exactly once as a defined `STT_FUNC` with `STB_GLOBAL` or
-`STB_WEAK` binding and `STV_DEFAULT` or `STV_PROTECTED` visibility. An unowned target
-or an unreadable/malformed image is `INDETERMINATE` and rejects native-memory
-activation. The owner walk holds no loader handle: the lifetime basis was source-checked
-for glibc 2.39, which holds its loader write lock through the iteration and unmaps on
-`dlclose()` under that lock, and musl 1.2.5, whose `dlclose()` does not unmap. The
-callback and classifier use only the profiler's internal-linkage code and inline
-compiler builtins; they make no PLT/GOT calls, allocate, explicitly lock, log, touch
-TLS, call an inspected target, marker function or IFUNC resolver. The loader lifetime
-source check covers the named versions; it is not a source review of every supported
-libc release.
+that image's in-memory dynamic symbol/hash tables only from file-backed, `PF_R`
+segments. An image is `DDPROF` only when it defines each marker exactly once as a
+`STT_FUNC` with `STB_GLOBAL` or `STB_WEAK` binding and `STV_DEFAULT` or `STV_PROTECTED`
+visibility. Undefined, local, hidden or internal same-name entries are ignored. If
+neither marker has a qualifying or owned wrong-kind definition, the image is
+`NOT_RECOGNIZED`; a partial pair, an owned exported wrong-kind definition, a duplicate
+qualifying definition, or unreadable/malformed metadata yields `INDETERMINATE`. A target with no owning object
+is `INDETERMINATE` (`NO_OWNER`). All read ranges and derived addresses are checked
+before dereference.
+
+The owner walk holds no loader handle: the lifetime basis was source-checked for glibc
+2.39, which holds its loader write lock through the iteration and unmaps on `dlclose()`
+under that lock, and musl 1.2.5, whose `dlclose()` does not unmap. The callback and
+classifier use profiler-local code, inline accessors and compiler builtins; they make
+no PLT/GOT calls, allocate, explicitly lock, log, touch TLS, call an inspected target,
+marker function or IFUNC resolver. The loader lifetime source check covers the named
+versions; it is not a source review of every supported libc release.
 
 On non-Linux platforms, the shared target derivation and own-hook consistency checks
 still run, but the platform owner classifier returns `NOT_RECOGNIZED` for every target;
