@@ -56,12 +56,15 @@ estimate. An edit no finding justifies goes to the stop summary instead of the t
    `./.claude/commands/build-and-summarize` (never bare `./gradlew`), and follow
    `verify-profiler-change` for what the fix must pass.
 3. **Merge conflicts.** When the poll reports the PR conflicted (`mergeStateStatus`
-   `DIRTY`), rebase on the base branch. A conflict whose resolution needs no semantic
+   `DIRTY`), rebase on the base branch. Add every conflict-touched file to the marker's
+   `scope` before resolving it. A conflict whose resolution needs no semantic
    choice — adjacent hunks, additive changes on both sides, provable by build and
    tests — is resolved and verified like any mechanical fix, in the same push cycle
    (step 5). A conflict where both sides changed the same logic differently is
    design-level: surface the brainstorm and the drafted resolution in the stop
-   summary, never silently pick a side.
+   summary, never silently pick a side. A conflict in a file outside the edit
+   allowlist (the PR's own meta files — hooks, skills, agents) cannot be resolved by
+   the worker under the scope guard: surface it with the drafted resolution too.
 4. **Review comments.** Classify the poll's reviews and comments — bot comments
    (scan-build, CI-results bots) are findings like any other, never auto-dismissed.
    Mechanical findings — bugs, missing tests, factual errors in comments or javadocs,
