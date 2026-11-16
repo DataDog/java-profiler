@@ -341,7 +341,11 @@ private:
   std::atomic<int> _table_max_cap;
   TrackingEntry *_table;
 
-  SubsampleRate _subsample;
+  // start() rewrites both while an allocation callback of the previous
+  // recording may still read them in admitForTracking(). A threshold of
+  // UINT64_MAX admits every allocation without a draw.
+  std::atomic<u64> _subsample_threshold;
+  std::atomic<double> _subsample_ratio;  // reported in the recording settings
 
   // Chase-phase admission-boost state (admitForTracking()'s declaration
   // comment below). _watched_tids is two-phase-published: slots first, then
@@ -947,7 +951,8 @@ public:
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
         _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
-        _subsample(0.1), _watched_tid_count(0), _urgent_tracking(false),
+        _subsample_threshold(SubsampleRate(0.1).threshold),
+        _subsample_ratio(0.1), _watched_tid_count(0), _urgent_tracking(false),
         _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _last_cleanup_ns(0), _used_after_last_gc(0),
@@ -996,7 +1001,7 @@ public:
              u64 table_generation);
 
   // track()'s admission gate: a chase-phase raise of the live-samples
-  // tracking probability over the configured _subsample ratio (default 10% -
+  // tracking probability over the configured subsample ratio (default 10% -
   // a 90% probabilistic drop whose thinning of small per-(klass, tid)
   // populations was observed live as the intermittent zero-tag runs in
   // LeakTagCorrelationReferenceChainTest - see that test's own comment for
@@ -1017,6 +1022,16 @@ public:
   // the configured ratio - a stale or missed boost cannot drop an allocation
   // that the ratio would have admitted.
   bool admitForTracking(jint tid);
+  // Release stores pair with admitForTracking()'s and subsampleRatio()'s
+  // acquire loads; a reader may see one half of a concurrent update.
+  void setSubsampleRate(const SubsampleRate &rate) {
+    _subsample_ratio.store(rate.ratio, std::memory_order_release);
+    _subsample_threshold.store(rate.threshold, std::memory_order_release);
+  }
+  // The configured ratio, for the recording settings.
+  double subsampleRatio() const {
+    return _subsample_ratio.load(std::memory_order_acquire);
+  }
 
   // Publishes the current candidate poll's qualifying tids as the watched
   // set above. Called from ReferenceChainTracker's full poll
@@ -1314,7 +1329,7 @@ public:
   // (NewWeakGlobalRef) and stays out of gtest's reach.
   bool admitForTrackingForTest(jint tid) { return admitForTracking(tid); }
 
-  void setSubsampleRatioForTest(double ratio) { _subsample = SubsampleRate(ratio); }
+  void setSubsampleRatioForTest(double ratio) { setSubsampleRate(SubsampleRate(ratio)); }
 
   // Reset for tests: clears both boost paths, forces ratio=0 (deterministic
   // reject for unboosted tids - xorshift::threshold(0) is 0, which no draw

@@ -2499,7 +2499,7 @@ Error LivenessTracker::initialize(Arguments &args) {
 
   // Both halves replaced together; the threshold exists so the per-allocation
   // decision in track() is an integer compare rather than a double multiply.
-  _subsample = SubsampleRate(args._live_samples_ratio);
+  setSubsampleRate(SubsampleRate(args._live_samples_ratio));
 
   int cap = std::min(2048, max_cap); // with default 512k sampling interval,
                                      // it's enough for 1G of heap
@@ -2588,7 +2588,8 @@ bool LivenessTracker::admitForTracking(jint tid) {
       return true;
     }
   }
-  if (_subsample.ratio >= 1.0) {
+  const u64 threshold = _subsample_threshold.load(std::memory_order_acquire);
+  if (threshold == UINT64_MAX) {
     return true;
   }
   u64 state = rng.get();
@@ -2603,7 +2604,7 @@ bool LivenessTracker::admitForTracking(jint tid) {
   }
   u64 draw = xorshift::next(state);
   rng.set(state);
-  return draw < _subsample.threshold;
+  return draw < threshold;
 }
 
 // Publishes the current poll's qualifying tids as track()'s watched-admission
@@ -2675,7 +2676,7 @@ void LivenessTracker::setUrgentTracking(bool urgent) {
 void LivenessTracker::admissionResetForTest() {
   __atomic_store_n(&_urgent_tracking, false, __ATOMIC_RELEASE);
   __atomic_store_n(&_watched_tid_count, 0, __ATOMIC_RELEASE);
-  _subsample = SubsampleRate(0.0);
+  setSubsampleRate(SubsampleRate(0.0));
   rng.clear();
   skipped.set(0);
 }

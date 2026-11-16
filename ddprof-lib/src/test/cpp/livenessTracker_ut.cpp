@@ -3660,6 +3660,40 @@ TEST_F(LivenessTrackerMockJvmTest, ReleaseSkipsLeakTagClearWhenNoTagIsOut) {
     restart();
 }
 
+// An allocation callback of the previous recording can still be in
+// admitForTracking() while the next start() rewrites the subsample rate. The
+// gtestTsan build reports a data race if that rate is not read atomically.
+TEST_F(LivenessTrackerMockJvmTest, AdmissionOverlappingStopStartReadsThePublishedRate) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0};
+    std::thread callback([&] {
+        while (!done.load(std::memory_order_acquire)) {
+            tracker->admitForTrackingForTest(/*tid=*/42);
+            reads.fetch_add(1, std::memory_order_release);
+        }
+    });
+    while (reads.load(std::memory_order_acquire) == 0) {
+        std::this_thread::yield();
+    }
+
+    const char *const ratios[] = {"generations=true,memory=1048576:l:0.25",
+                                  "generations=true,memory=1048576:l:1"};
+    bool restarted = true;
+    for (int i = 0; i < 1000 && restarted; i++) {
+        tracker->release(&jvm.jni);
+        Arguments args;
+        restarted = !args.parse(ratios[i % 2]) && !tracker->start(args);
+    }
+    done.store(true, std::memory_order_release);
+    callback.join();
+
+    EXPECT_TRUE(restarted);
+    EXPECT_EQ(1.0, tracker->subsampleRatio());
+    EXPECT_TRUE(tracker->admitForTrackingForTest(/*tid=*/42));
+    restart();
+}
+
 // A second start() without a release() in between replaces the tracker's
 // checker instead of adding another: processTraces() would otherwise count the
 // live traces twice, and release() would leave the first one registered.
