@@ -172,6 +172,34 @@ run_guard reb "$DL" "$D2"
 if [ $? -eq 1 ]; then pass; else fail "meta file declared in scope should still refuse (allowlist not widenable)"; fi
 git -C "$R" checkout -q proud-pearly-dolphin 2>/dev/null || git -C "$R" checkout -q -b tmp-main "$BASE"
 
+# 12. Rename hole: the remote tip carries a prohibited hook; the push renames it
+#     into the allowlist. --no-renames lists the deleted source as its own path and
+#     the allowlist refuses even with only the destination declared.
+git -C "$R" checkout -q -b rbase "$D1"
+mkdir -p "$R/.claude/hooks" && echo p > "$R/.claude/hooks/policy.py"
+git -C "$R" add .claude && git -C "$R" -c user.email=t -c user.name=t commit -q -m policy-hook
+RB2=$(git -C "$R" rev-parse HEAD)
+git -C "$R" checkout -q -b rn "$RB2"
+RNDEST="ddprof-lib/src/main/cpp/renamed-hook.cpp"
+git -C "$R" mv .claude/hooks/policy.py "$RNDEST"
+git -C "$R" -c user.email=t -c user.name=t commit -q -m rename-into-allowlist
+RN=$(git -C "$R" rev-parse HEAD)
+marker '{"pr":1001,"branch":"rn","status":"running","scope":["'"$RNDEST"'"]}'
+run_guard rn "$RN" "$RB2"
+if [ $? -eq 1 ]; then pass; else fail "rename of a prohibited hook into the allowlist must be refused"; fi
+# 12a. Control: a legitimate rename within the allowlist, both paths declared, passes.
+git -C "$R" checkout -q -b rn2 "$RB2"
+RSRC="ddprof-lib/src/main/cpp/rsrc.cpp"; RDST="ddprof-lib/src/main/cpp/rdst.cpp"
+mkdir -p "$R/$(dirname "$RSRC")"
+echo q > "$R/$RSRC" && git -C "$R" add "$RSRC" && git -C "$R" -c user.email=t -c user.name=t commit -q -am rsrc
+git -C "$R" mv "$RSRC" "$RDST"
+git -C "$R" -c user.email=t -c user.name=t commit -q -m rename-within-allowlist
+RN2=$(git -C "$R" rev-parse HEAD)
+marker '{"pr":1001,"branch":"rn2","status":"running","scope":["'"$RSRC"'","'"$RDST"'"]}'
+run_guard rn2 "$RN2" "$RB2"
+if [ $? -eq 0 ]; then pass; else fail "legitimate rename with both paths declared should pass"; fi
+git -C "$R" checkout -q proud-pearly-dolphin 2>/dev/null || true
+
 # --- .githooks/pre-push wiring (local-branch keying) — distinct local and remote
 # branch names through the real hook; a stub origin/main provides the trusted
 # review-marker (exit 0) and the real scope guard, as the hook's trusted_source does.

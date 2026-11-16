@@ -42,7 +42,7 @@ def delta_files(local_sha, remote_sha):
         "merge-base", "refs/remotes/origin/main", local_sha)
     if base is None:
         return None
-    out = git_out("diff", "--name-only", base, local_sha)
+    out = git_out("diff", "--name-only", "--no-renames", base, local_sha)
     return None if out is None else [f for f in out.splitlines() if f]
 
 

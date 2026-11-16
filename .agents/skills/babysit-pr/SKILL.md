@@ -28,8 +28,11 @@ written by it, and it dies with the session — its stop summary names what rema
    and `.claude/agents/` (Claude Code); it reads the loop below from the checkout —
    as an async background subagent with worktree isolation, passing the PR number,
    the checkout path, and the branch in the task (Pi: `subagent` with `worktree:true`;
-   Claude Code: the agent on a `git worktree add` of `origin/<branch>`). Give the
-   child a run timeout of at least the cap (Pi: `options: {timeoutMs: 7200000}`) —
+   Claude Code: the agent on a `git worktree add` of `origin/<branch>` — a worktree
+   added from a remote ref starts detached, so immediately create a local branch in it
+   (`git checkout -b <branch>-babysit`; a distinct name — the session's checkout holds
+   the branch itself), and push `HEAD:<branch>` from there. Give the child a run
+   timeout of at least the cap (Pi: `options: {timeoutMs: 7200000}`) —
    the default async timeout kills the worker at 30 minutes, well inside the
    two-hour cap, and its managed worktree is reaped so the run cannot be resumed;
    the launch needs a clean source tree (stash pending edits and restore them after).
@@ -37,7 +40,10 @@ written by it, and it dies with the session — its stop summary names what rema
    discipline (step 6) and the stop report states the elapsed time.
 5. **Handback.** When the run completes, relay its summary in chat: commits pushed,
    findings flagged (drafted design replies, persistent flakes, budget), and threads
-   left for the human. Update the session's own dedupe marker copy to
+   left for the human. Flagged meta-file findings (skills, agents, hooks) become the
+   session's work queue: the session fixes them itself — they are its files — or
+   records them as follow-up tasks; a flagged P1/P2 is never dropped silently.
+   Update the session's own dedupe marker copy to
    `{"pr": <n>, "status": "stopped"}` — the worker never writes this checkout.
    When the session is closing, say that babysitting stops with it.
 

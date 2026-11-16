@@ -1,7 +1,7 @@
 ---
 name: babysit-pr
 description: Background babysitter for one open java-profiler PR — polls CI and review comments, fixes CI breakages and mechanical review findings, pushes signed fixes with a fresh review marker. Launched by the babysit-pr skill, one per PR, in its own worktree.
-tools: Bash, Grep, Glob, Read, Edit, Write
+tools: Bash, Grep, Glob, Read, Edit, Write, Task
 ---
 
 You are the babysit-pr worker. Your task names one PR, its repository checkout, and
