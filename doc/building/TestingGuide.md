@@ -195,6 +195,18 @@ It tests end-to-end agent startup, profiling data collection, and tracer/profile
 co-existence across the full JDK × libc matrix. Failures are posted as PR comments
 and published to GitHub Pages as a compatibility matrix.
 
+**Gating and quarantine.** The integration jobs themselves run with `allow_failure`,
+so the gate is the exit code of `post-pr-comment.sh`: it fails the pipeline when a
+cell's `VALIDATION_FAILED` is not quarantined or when a cell produced no validation
+log. Both scenarios of a cell always run (`run-integration-test.sh` collects both
+logs before reporting). A flaky cell+scenario gets an entry in
+`.gitlab/dd-trace-integration/quarantine.txt` — `<cell-glob>/<scenario> | PROF-<n> |
+added | review_by | reason`, same ticket and expiry discipline as
+`ddprof-test/quarantine.txt` — rendered as quarantined in the PR comment instead of
+turning the pipeline red. `validate-dd-trace-quarantine` validates the list (format,
+ticket, dates, cell globs against the known matrix) in the same pipelines and fails
+them on a malformed, ticketless, or expired entry.
+
 No sanitizers are applied here. The goal is compatibility verification, not crash
 or race detection.
 

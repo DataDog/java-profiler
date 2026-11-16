@@ -65,14 +65,25 @@ jobs:
             .gitlab/scripts/check-abi-floor.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh \
             .gitlab/scripts/tests/includes_test.sh \
-            .gitlab/scripts/tests/test_run_gtest_quarantine.sh
+            .gitlab/scripts/tests/test_run_gtest_quarantine.sh \
+            .gitlab/dd-trace-integration/quarantine-lib.sh \
+            .gitlab/dd-trace-integration/validate-quarantine.sh \
+            .gitlab/dd-trace-integration/post-pr-comment.sh \
+            .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh \
+            .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh
           shellcheck \
             .gitlab/scripts/check-abi-floor.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh \
-            .gitlab/scripts/tests/test_run_gtest_quarantine.sh
+            .gitlab/scripts/tests/test_run_gtest_quarantine.sh \
+            .gitlab/dd-trace-integration/quarantine-lib.sh \
+            .gitlab/dd-trace-integration/validate-quarantine.sh \
+            .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh \
+            .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh
           bash .gitlab/scripts/tests/check_abi_floor_test.sh
           bash .gitlab/scripts/tests/includes_test.sh
           bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
+          bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
+          bash .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh
 
   # Fails when a quarantine entry is malformed, ticketless, or past its
   # review_by date. Without this the list only ever grows, and a quarantine
@@ -94,6 +105,7 @@ jobs:
                                 .github/scripts/flake_report.py \
                                 .github/scripts/flake_summary.py
           python3 .github/scripts/quarantine.py validate
+          bash .gitlab/dd-trace-integration/validate-quarantine.sh
           .github/scripts/tests/test_quarantine.sh
           .github/scripts/tests/test_generate_test_summary.sh
           .github/scripts/tests/test_prepare_reports.sh

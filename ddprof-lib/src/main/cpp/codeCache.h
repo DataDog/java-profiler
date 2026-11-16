@@ -227,8 +227,9 @@ public:
                      bool imports_patchable = false);
   // Copy constructor
   CodeCache(const CodeCache &other);
-  // Copy assignment operator
-  CodeCache &operator=(const CodeCache &other);
+  // Not copy-assignable: nothing assigns a CodeCache, and a correct
+  // operator= would have to release every blob name the target owns.
+  CodeCache &operator=(const CodeCache &other) = delete;
 
   ~CodeCache();
 

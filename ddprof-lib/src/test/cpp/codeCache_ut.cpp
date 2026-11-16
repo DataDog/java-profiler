@@ -8,6 +8,10 @@
 
 #include <memory>
 #include <stdio.h>
+#include <type_traits>
+
+static_assert(!std::is_copy_assignable<CodeCache>::value,
+              "CodeCache must not be copy-assignable");
 
 // memoryUsage() must reflect the actual per-symbol name length, not a fixed
 // per-symbol constant: adding one symbol grows the reported usage by exactly
