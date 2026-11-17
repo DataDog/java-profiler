@@ -782,8 +782,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 }
                 continue;
             } else {
+                // Reserve against max_depth: the truncation clamp drops the slot past it.
                 if (nm->isVTableStub() && depth == 0 && !walk_pc.isReturnAddress()
-                        && depth + 1 < actual_max_depth) {
+                        && depth + 1 < max_depth) {
                     VMSymbol* symbol = captureVtableReceiver(frame, reinterpret_cast<uintptr_t>(walk_pc.raw()), sp, fp, features);
                     if (symbol != nullptr) {
                         // BCI_VTABLE_RECEIVER stores a raw VMSymbol*, not a jmethodID.
