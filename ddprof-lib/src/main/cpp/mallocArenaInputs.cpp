@@ -47,20 +47,19 @@ bool parseTunableLong(const char* tunables, const char* key, long* out) {
     }
     size_t key_len = strlen(key);
     const char* p = tunables;
-    const char* value = NULL;
-    const char* value_end = NULL;
+    bool found = false;
     while (*p != '\0') {
         const char* end = strchr(p, ':');
         if (end == NULL) {
             end = p + strlen(p);
         }
-        if ((size_t)(end - p) > key_len && strncmp(p, key, key_len) == 0 && p[key_len] == '=') {
-            value = p + key_len + 1;
-            value_end = end;
+        if ((size_t)(end - p) > key_len && strncmp(p, key, key_len) == 0 && p[key_len] == '=' &&
+            parseLongRange(p + key_len + 1, end, out)) {
+            found = true;
         }
         p = (*end == ':') ? end + 1 : end;
     }
-    return value != NULL && parseLongRange(value, value_end, out);
+    return found;
 }
 
 long effectiveArenaLimit(const char* tunables, const char* env, int onlineCpus,

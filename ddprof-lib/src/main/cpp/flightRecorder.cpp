@@ -2268,7 +2268,8 @@ void Recording::writeMallocArenaEvents(Buffer *buf) {
   const long long free_held =
       _has_malloc_free_held ? (long long)_malloc_free_held : -1;
   const char *status_name = arenaWalkStatusName(res.status);
-  const u64 ticks = TSC::ticks();
+  // _stop_ticks is already fixed here, so a fresh timestamp would fall outside the chunk.
+  const u64 ticks = _start_ticks;
 
   MallocArenaStatsRecord stats;
   stats.arenaCount = res.arenaCount;
