@@ -212,6 +212,7 @@ public:
                                   int max_timers) {
     return engine.startWithTableSize(args, max_timers);
   }
+  static long interval() { return CTimer::_interval; }
   static int registerThread(CTimer &engine, int tid) {
     return engine.registerThread(tid);
   }
@@ -398,6 +399,49 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
   EXPECT_EQ(handler_before, sigprofHandler());
   EXPECT_FALSE(ProfilerTestAccessor::enginesReady(Profiler::instance()));
   EXPECT_STREQ("Failed to allocate CPU timer table", error.message());
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+}
+
+// The interval validation must use the value actually assigned,
+// cpuSamplerInterval(), so a caller setting only the cpu parameter (leaving
+// _interval at its default) is accepted. The deliberate table-allocation
+// failure bounds the test: it fails after the interval is assigned but before
+// any handler is installed or a gate is opened.
+TEST_F(CTimerNativeMemTest, StartValidatesCpuSamplerInterval) {
+  SKIP_IF_CALLOC_OVERFLOW_ABORTS();
+  CTimer engine;
+  Arguments args;
+  args._cpu = 1000000;
+  args._interval = -1;
+  void *handler_before = sigprofHandler();
+
+  Error error = CTimerTestAccessor::startWithTableSize(engine, args, -1);
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("Failed to allocate CPU timer table", error.message());
+  EXPECT_EQ(1000000, CTimerTestAccessor::interval());
+  EXPECT_EQ(handler_before, sigprofHandler());
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(Profiler::instance()));
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+}
+
+// cpuSamplerInterval() returns 0 for a non-CPU event; the engine must reject
+// it instead of arming zero (disarmed) per-thread timers.
+TEST_F(CTimerNativeMemTest, StartRejectsNonCpuEvent) {
+  CTimer engine;
+  Arguments args;
+  args._event = EVENT_WALL;
+  args._cpu = 1000000;
+  args._interval = -1;
+  void *handler_before = sigprofHandler();
+
+  Error error = CTimerTestAccessor::startWithTableSize(engine, args, -1);
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("interval must be positive", error.message());
+  EXPECT_EQ(handler_before, sigprofHandler());
+  EXPECT_FALSE(ProfilerTestAccessor::enginesReady(Profiler::instance()));
   EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
   EXPECT_EQ(0, CTimerTestAccessor::maxTimers());
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
