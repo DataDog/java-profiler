@@ -75,10 +75,17 @@ edit no finding justifies goes to the stop summary instead of the tree.
 one status comment; at stop it removes the label and edits that same comment with the
 outcome — one timeline entry per run, never a reply. A missing label is flagged in the
 stop report, never created (the worker does not create repo labels). The status comment
-is fixed boilerplate: "🐶 babysit-pr is watching this PR: CI breakages and mechanical
-findings are fixed and pushed through the repo's review gates (run caps and stop
-conditions per the babysit-pr skill; it stops with its session). Design-level
-findings are surfaced to the author, never auto-implemented."
+is fixed boilerplate (a headline plus one bullet per scope — never a single
+ run-on paragraph):
+
+```
+🐶 **babysit-pr is watching this PR**
+
+- **CI breakages** — fixed and pushed through the repo's review gates
+- **Mechanical findings** — fixed and pushed in the same cycle
+- **Design-level findings** — surfaced to the author, never auto-implemented
+- **Stops with its session** — run caps and stop conditions per the babysit-pr skill
+```
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`;
@@ -86,6 +93,14 @@ findings are surfaced to the author, never auto-implemented."
    `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` — inline review
    comments are invisible to `pr view --json`. A poll that finds nothing stays
    cheap: no log fetching, no deep analysis.
+1b. **Thread census (deterministic, every poll).** From that paginated comment
+   list compute the census over ALL comments, never only ones newer than the
+   run: a comment whose `in_reply_to_id` is set is a reply; the rest are thread
+   roots; a thread is **open** exactly when no comment has
+   `in_reply_to_id` equal to its root id — regardless of the comment's age,
+   author, or review state. Improvised alternatives (counting reviews,
+   filtering by date, trusting a "no new comments" heuristic) have missed
+   open threads twice; the census is the only definition of open.
 1a. **Bits gate pending.** `bits-review/head` is a review-bot gate, not CI: it
    never triggers the Bits bot itself. On a non-draft PR a new push should
    re-trigger Bits automatically; if the check is still pending on a head with
@@ -120,7 +135,8 @@ findings are surfaced to the author, never auto-implemented."
      skills, agents) cannot be edited by the worker under the scope guard: draft the
      resolution, ask the operator through the same channel to apply it, and resolve
      the rest.
-4. **Review comments.** Classify the poll's reviews and comments — bot comments
+4. **Review comments.** Classify each open thread from the census (and each
+   top-level review or comment from the poll) — bot comments
    (scan-build, CI-results bots) are findings like any other, never auto-dismissed.
    Mechanical findings — bugs, missing tests, factual errors in comments or javadocs,
    typos — are fixed in the same push cycle as CI fixes, through the same review gates.
