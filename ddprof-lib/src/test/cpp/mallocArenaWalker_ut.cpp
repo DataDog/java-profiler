@@ -18,6 +18,7 @@
 #include <thread>
 #include <vector>
 
+#include "mallocArenaInputs.h"
 #include "mallocArenaWalker.h"
 #include "os.h"
 #include "safeAccess.h"
@@ -134,11 +135,16 @@ static void runOnLiveThreads(int n, Fn fn) {
   }
 }
 
+// True when MALLOC_ARENA_MAX or the glibc.malloc.arena_max tunable limits the arenas.
+static bool arenasCapped() {
+  return strcmp(MallocArenaInputs::capture().arenaLimitSource, "default") != 0;
+}
+
 // Chunks allocated on the main thread (main_arena) and freed by a worker sit in
 // the worker's tcache, so a small malloc there returns a main_arena chunk
 // although the worker's own arena is not main_arena.
 TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
-  if (getenv("MALLOC_ARENA_MAX") != nullptr) {
+  if (arenasCapped()) {
     GTEST_SKIP() << "an arena cap can bind the worker thread to main_arena";
   }
   std::vector<void*> main_chunks;
@@ -161,7 +167,7 @@ TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
 // A non-main arena grows into further 64 MiB heaps. A chunk in a later heap has an
 // ar_ptr that points into the arena's first heap.
 TEST_F(MallocArenaWalkerTest, SeedFromLaterHeapOfMultiHeapArena) {
-  if (getenv("MALLOC_ARENA_MAX") != nullptr) {
+  if (arenasCapped()) {
     GTEST_SKIP() << "an arena cap can bind the worker thread to main_arena";
   }
   ArenaWalkResult r;
