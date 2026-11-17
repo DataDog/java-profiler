@@ -30,7 +30,7 @@ GRAPHQL = "https://api.example.test/graphql"
 GITHUB_TOKEN = "gh-read-token"
 STATUS_TOKEN = "status-write-token"
 #: The publisher app login whose statuses are the gate's own output.
-STATUS_CREATOR = "dd-octo-sts[bot]"
+STATUS_CREATOR = "java-profiler-bits-gate-c5a8bc[bot]"
 OTHER_CREATOR = "somebody-else[bot]"
 PASS_DESCRIPTION = "Bits review pass on PR #968"
 INVALID_INPUT_DESCRIPTION = "Bits review invalid-input on PR #968: pr-968"

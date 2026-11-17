@@ -81,6 +81,7 @@ jobs:
         with:
           scope: DataDog/java-profiler
           policy: self.bits-review-gate.publish-status
+          pool_name: java-profiler-bits-gate
 
       - name: Publish the status for the resolved head
         env:
