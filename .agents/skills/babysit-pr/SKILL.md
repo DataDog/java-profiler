@@ -26,7 +26,9 @@ written by it, and it dies with the session — its stop summary names what rema
    from the previous marker's list
    (the stopped copy, or the running copy when relaunching a dead run) when one
    exists (the once-per-head record survives restarts), and pass the
-   instruction, that list, and the `branch` name to the worker: on start,
+   instruction, that list, and the worker's local branch name to the worker
+   (Pi: `<branch>`; Claude Code: `<branch>-babysit`, per the branch rule below):
+   on start,
    write the worker's own marker `{"pr": <n>, "branch": "<local-branch>",
    "status": "running", "scope": [], "bits_triggered": [...]}` **in its own
    worktree's `build/`**, seeded with the
@@ -167,8 +169,11 @@ flagged, threads left, `bits_triggered` heads).
    A finding pre-existing in files the PR does not touch is never fixed in this PR:
    flag it in the stop summary as a split candidate — the session lands it as its own
    PR through the same gates (the repo's scope rule: unrelated production changes get
-   their own PR; AGENTS.md). Every trusted-root thread gets exactly one reply, posted when
-   its finding is resolved, never deferred to the stop summary: a refuted finding
+   their own PR; AGENTS.md). Every trusted-root thread gets exactly one reply,
+   posted when
+   its finding is resolved, never deferred to the stop summary — a trusted root
+   that carries no finding (a question, an FYI, a thanks) still gets its one
+   reply as a brief factual answer or acknowledgement: a refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply; an
    already-fixed or stale finding gets one line naming the fix (the commit or the
    current text); a design-level finding is never left lingering — its brainstorm is
