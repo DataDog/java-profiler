@@ -109,10 +109,21 @@ class TempCopy {
   int _error;
 };
 
+// Owns a dlopen() reference; drops it on scope exit.
+class DlHandle {
+ public:
+  explicit DlHandle(void* handle) : _handle(handle) {}
+  ~DlHandle() { if (_handle != nullptr) dlclose(_handle); }
+  DlHandle(const DlHandle&) = delete;
+  DlHandle& operator=(const DlHandle&) = delete;
+  void* get() const { return _handle; }
+
+ private:
+  void* _handle;
+};
+
 bool isLoaded(const char* path) {
-  void* handle = dlopen(path, RTLD_LAZY | RTLD_NOLOAD);
-  if (handle != nullptr) dlclose(handle);
-  return handle != nullptr;
+  return DlHandle(dlopen(path, RTLD_LAZY | RTLD_NOLOAD)).get() != nullptr;
 }
 
 }  // namespace
