@@ -138,6 +138,9 @@ static void runOnLiveThreads(int n, Fn fn) {
 // the worker's tcache, so a small malloc there returns a main_arena chunk
 // although the worker's own arena is not main_arena.
 TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
+  if (getenv("MALLOC_ARENA_MAX") != nullptr) {
+    GTEST_SKIP() << "an arena cap can bind the worker thread to main_arena";
+  }
   std::vector<void*> main_chunks;
   for (int i = 0; i < 16; i++) {
     main_chunks.push_back(malloc(64));
@@ -158,6 +161,9 @@ TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
 // A non-main arena grows into further 64 MiB heaps. A chunk in a later heap has an
 // ar_ptr that points into the arena's first heap.
 TEST_F(MallocArenaWalkerTest, SeedFromLaterHeapOfMultiHeapArena) {
+  if (getenv("MALLOC_ARENA_MAX") != nullptr) {
+    GTEST_SKIP() << "an arena cap can bind the worker thread to main_arena";
+  }
   ArenaWalkResult r;
   std::thread worker([&]() {
     std::vector<void*> blocks;
