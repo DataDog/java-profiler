@@ -673,41 +673,31 @@ TEST(ReceiverReadFaultScopeTest, RollsBackEarlierActionWhenLaterInstallationFail
 TEST_P(AsgctVtableReceiverTest, VmReceiverPrefixReservesTheStubAtShallowDepth) {
     // Keep the native-transition anchor empty so the walk stays on the interrupted leaf.
     _thread.anchor = {};
-    for (int budget : {0, 1, 2}) {
-        SCOPED_TRACE(budget);
-        prepareWalk();
-        ASSERT_EQ(budget, HotspotSupportTestAccessor::walkVM(&_ctx, _frames, budget, _features, false));
-        EXPECT_TRUE(asgct_budgets.empty());
-        if (budget == 2) {
-            EXPECT_EQ(BCI_VTABLE_RECEIVER, _frames[0].bci);
-            EXPECT_EQ(reinterpret_cast<jmethodID>(&_symbol), _frames[0].method_id);
+    for (bool track_truncation : {false, true}) {
+        for (int budget : {0, 1, 2}) {
+            SCOPED_TRACE(testing::Message() << "track_truncation=" << track_truncation << " budget=" << budget);
+            prepareWalk();
+            bool truncated = false;
+            ASSERT_EQ(budget, HotspotSupportTestAccessor::walkVM(&_ctx, _frames, budget, _features, false,
+                                                                 track_truncation ? &truncated : nullptr));
+            EXPECT_TRUE(asgct_budgets.empty());
+            if (budget == 2) {
+                EXPECT_EQ(BCI_VTABLE_RECEIVER, _frames[0].bci);
+                EXPECT_EQ(reinterpret_cast<jmethodID>(&_symbol), _frames[0].method_id);
+            }
+            if (budget > 0) {
+                EXPECT_EQ(BCI_NATIVE_FRAME, _frames[budget - 1].bci);
+                EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[budget - 1].method_id));
+            }
+            if (track_truncation) {
+                // The walk fills the extra slot past max_depth; the clamp must drop it, not the stub.
+                EXPECT_TRUE(truncated);
+                EXPECT_NE(12345, _frames[budget].bci);
+                expectCanary(budget + 1);
+            } else {
+                expectCanary(budget);
+            }
         }
-        if (budget > 0) {
-            EXPECT_EQ(BCI_NATIVE_FRAME, _frames[budget - 1].bci);
-            EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[budget - 1].method_id));
-        }
-        expectCanary(budget);
-    }
-}
-
-// With truncation tracking, walkVM may write one slot past max_depth before clamping;
-// the receiver must still not displace the stub from the kept frames.
-TEST_P(AsgctVtableReceiverTest, VmReceiverPrefixWithTruncationKeepsTheStub) {
-    _thread.anchor = {};
-    for (int budget : {1, 2}) {
-        SCOPED_TRACE(budget);
-        prepareWalk();
-        bool truncated = false;
-        ASSERT_EQ(budget, HotspotSupportTestAccessor::walkVM(&_ctx, _frames, budget, _features, false, &truncated));
-        EXPECT_TRUE(truncated);
-        EXPECT_TRUE(asgct_budgets.empty());
-        if (budget == 2) {
-            EXPECT_EQ(BCI_VTABLE_RECEIVER, _frames[0].bci);
-            EXPECT_EQ(reinterpret_cast<jmethodID>(&_symbol), _frames[0].method_id);
-        }
-        EXPECT_EQ(BCI_NATIVE_FRAME, _frames[budget - 1].bci);
-        EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[budget - 1].method_id));
-        expectCanary(budget + 1);
     }
 }
 

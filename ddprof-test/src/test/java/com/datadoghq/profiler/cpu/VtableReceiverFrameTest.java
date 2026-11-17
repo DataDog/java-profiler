@@ -66,7 +66,8 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
     return result;
   }
 
-  // The default cstack resolves to vm or dwarf per platform, so it would repeat one of these.
+  // Where stubs can be captured, the default cstack is vm or dwarf,
+  // so a default-cstack variant would only repeat one of these.
   @RetryingTest(5)
   public void testVtableReceiverFrameInCpuSamplesDwarf() throws Exception {
     assertVtableReceiverFrame();
