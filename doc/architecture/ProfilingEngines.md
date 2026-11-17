@@ -447,7 +447,7 @@ resolved through `Arguments::cpuSamplerInterval()`.
   chooses which thread receives each `SIGPROF`.
 - **Origin check**: none. `setitimer` signals arrive with no `sival` payload,
   so a foreign `SIGPROF` cannot be told apart from the profiler's own. The
-  code comments call out this exposure (`itimer.cpp:44-49`).
+  code comments call out this exposure (the NOTE in `ITimer::signalHandler`).
 - `ITimer` does **not** run `tickInitWindowIfNeeded()` (see
   `ITimer::signalHandler`). `ITimerJvmti` does.
 - **`ITimerJvmti`** passes `nullptr` as the ucontext to

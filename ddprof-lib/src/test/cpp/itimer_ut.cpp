@@ -21,7 +21,8 @@
 
 // This binary links itimer.o statically, so defining sigaction here binds every
 // main-library sigaction call to the interposer below; the flag makes only
-// SIGPROF installs (act != nullptr) fail.
+// SIGPROF installs (act != nullptr) fail. Relaxed is enough: the flag carries
+// no data and is only ever read by the thread that set it.
 static std::atomic<bool> g_fail_sigprof_install{false};
 
 typedef int (*sigaction_fn_t)(int, const struct sigaction *, struct sigaction *);
@@ -68,9 +69,9 @@ static struct sigaction sigprofDisposition() {
   return sa;
 }
 
-// Linux/glibc leaves the sa_mask tail beyond _NSIG/8 bytes undefined after a
-// sigaction() read (only the first word is kernel-filled), so compare the
-// mask per signal instead of as raw bytes.
+// Linux/glibc fills only the first _NSIG/8 bytes of sa_mask on a sigaction
+// read; the 128-byte sigset_t tail keeps the wrapper's internal buffer
+// content, so compare the mask per signal instead of as raw bytes.
 static bool sameSigmask(const sigset_t &a, const sigset_t &b) {
   for (int sig = 1; sig <= 64; sig++) {
     if (sigismember(&a, sig) != sigismember(&b, sig)) {
@@ -105,6 +106,9 @@ protected:
 
   void TearDown() override {
     g_fail_sigprof_install = false;
+    // Discard a SIGPROF an armed timer already generated, so the saved
+    // disposition cannot receive it as SIG_DFL.
+    signal(SIGPROF, SIG_IGN);
     // Disarm in case a start() armed the timer before failing.
     struct itimerval tv = {};
     setitimer(ITIMER_PROF, &tv, nullptr);
@@ -156,7 +160,7 @@ TEST_F(ITimerTest, JvmtiCheckRestoresPreviousDisposition) {
 
 // A caller setting only the cpu parameter (leaving _interval at its default)
 // must be accepted: the engine runs with the interval it actually assigns,
-// cpuSamplerInterval(), not with the raw _interval that used to be validated.
+// cpuSamplerInterval(), not with the raw _interval field.
 TEST_F(ITimerTest, JvmtiStartAcceptsCpuOnlyArguments) {
   ITimerJvmti engine;
   Arguments args;
@@ -187,8 +191,8 @@ TEST_F(ITimerTest, JvmtiStartDefaultsInterval) {
 }
 
 // cpuSamplerInterval() returns 0 for a non-CPU event; the engine must reject
-// it instead of arming a zero (disarmed) timer. _interval is left at its
-// default 0, which the pre-fix validation did not reject.
+// it instead of arming a zero (disarmed) timer. _interval stays at its
+// default 0: the rejection must come from the validated value, not the field.
 TEST_F(ITimerTest, JvmtiStartRejectsNonCpuEvent) {
   ITimerJvmti engine;
   Arguments args;
