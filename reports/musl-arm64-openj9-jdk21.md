@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ❌ FAIL
 
-**Date:** 2026-11-17 00:08:21 EST
+**Date:** 2026-11-17 05:23:19 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 33 |
-| CPU Cores (end) | 33 |
+| CPU Cores (start) | 38 |
+| CPU Cores (end) | 38 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 865 |
-| Sample Rate | 14.42/sec |
-| Health Score | 901% |
-| Threads | 11 |
-| Allocations | 503 |
+| CPU Samples | 908 |
+| Sample Rate | 15.13/sec |
+| Health Score | 946% |
+| Threads | 10 |
+| Allocations | 477 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
+<summary>CPU Timeline (1 unique values: 38-38 cores)</summary>
 
 ```
-1794891800 33
-1794891805 33
-1794891810 33
-1794891815 33
-1794891820 33
-1794891825 33
-1794891830 33
-1794891835 33
-1794891840 33
-1794891845 33
-1794891850 33
-1794891855 33
-1794891860 33
-1794891865 33
-1794891870 33
-1794891875 33
-1794891880 33
-1794891885 33
-1794891890 33
-1794891895 33
+1794910609 38
+1794910614 38
+1794910619 38
+1794910624 38
+1794910629 38
+1794910634 38
+1794910639 38
+1794910644 38
+1794910649 38
+1794910654 38
+1794910659 38
+1794910664 38
+1794910669 38
+1794910674 38
+1794910679 38
+1794910684 38
+1794910689 38
+1794910694 38
+1794910699 38
+1794910704 38
 ```
 </details>
 
