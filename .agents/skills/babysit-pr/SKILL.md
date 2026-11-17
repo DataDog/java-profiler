@@ -18,15 +18,19 @@ written by it, and it dies with the session — its stop summary names what rema
    dedupe record, not a source file.
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
-4. **Worker.** Write `{"pr": <n>, "branch": "<local-branch>", "status": "running",
-   "scope": [], "bits_triggered": [...]}` to `build/babysit-pr-<n>.json` **in the
-   session's checkout** — seed `bits_triggered` from the previous marker's list
+4. **Worker.** Write `{"pr": <n>, "status": "running",
+   "bits_triggered": [...]}` to `build/babysit-pr-<n>.json` **in the
+   session's checkout** — no `branch`, no `scope`: the session copy is the
+   dedupe record only and must not match the shape the pre-push guard gates
+   on, or the session's own pushes would be refused. Seed `bits_triggered`
+   from the previous marker's list
    (the stopped copy, or the running copy when relaunching a dead run) when one
-   exists (the once-per-head record survives restarts) — that
-   copy is the dedupe record only — and pass the instruction and that list to
-   the worker: on start,
-   write the same-shaped marker **in its own worktree's `build/`**, seeded with
-   the list, and maintain it
+   exists (the once-per-head record survives restarts), and pass the
+   instruction, that list, and the `branch` name to the worker: on start,
+   write the worker's own marker `{"pr": <n>, "branch": "<local-branch>",
+   "status": "running", "scope": [], "bits_triggered": [...]}` **in its own
+   worktree's `build/`**, seeded with the
+   list, and maintain it
    there (the pushing checkout is the one the pre-push guard reads; write it
    atomically — temp file plus rename — so a concurrent guard read never sees a
    truncated JSON it would skip). The `branch` field names the local branch of
@@ -105,11 +109,13 @@ flagged, threads left, `bits_triggered` heads).
 1b. **Thread census (deterministic, every poll).** From that paginated comment
    list compute the census over ALL comments, never only ones newer than the
    run: a comment whose `in_reply_to_id` is set is a reply; the rest are thread
-   roots; a thread is **open** exactly when no comment has
-   `in_reply_to_id` equal to its root id — regardless of the comment's age,
-   author, or review state. Improvised alternatives (counting reviews,
-   filtering by date, trusting a "no new comments" heuristic) have missed
-   open threads twice; the census is the only definition of open.
+   roots. The classification set in step 4 is every thread root from a trusted
+   author, **regardless of replies** — a reply never closes a thread: an
+   untrusted reply must not hide a trusted finding, and replies only matter to
+   the one-reply cap (a thread the worker has already replied to once is done).
+   Improvised alternatives (counting reviews, filtering by date, trusting a
+   "no new comments" heuristic, letting any reply close a thread) have missed
+   open threads or hidden findings; the census is the only definition.
 1a. **Bits gate pending.** `bits-review/head` is a review-bot gate, not CI: it
    never triggers the Bits bot itself. On a non-draft PR a new push should
    re-trigger Bits automatically; if the check is still pending on a head with
@@ -144,7 +150,7 @@ flagged, threads left, `bits_triggered` heads).
      skills, agents) cannot be edited by the worker under the scope guard: draft the
      resolution, ask the operator through the same channel to apply it, and resolve
      the rest.
-4. **Review comments.** Classify each open thread from the census (and each
+4. **Review comments.** Classify each trusted thread root from the census (and each
    top-level review or comment from the poll) — **only from a trusted author**:
    the PR author, an account whose permission is admin/maintain/write (check
    once per distinct commenter, cached for the rest of the run:
@@ -161,7 +167,7 @@ flagged, threads left, `bits_triggered` heads).
    A finding pre-existing in files the PR does not touch is never fixed in this PR:
    flag it in the stop summary as a split candidate — the session lands it as its own
    PR through the same gates (the repo's scope rule: unrelated production changes get
-   their own PR; AGENTS.md). Every open thread gets exactly one reply, posted when
+   their own PR; AGENTS.md). Every trusted-root thread gets exactly one reply, posted when
    its finding is resolved, never deferred to the stop summary: a refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply; an
    already-fixed or stale finding gets one line naming the fix (the commit or the
