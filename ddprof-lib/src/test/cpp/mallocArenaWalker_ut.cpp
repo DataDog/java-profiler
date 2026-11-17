@@ -155,6 +155,29 @@ TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
   EXPECT_EQ(ARENA_WALK_OK, r.status) << arenaWalkStatusName(r.status);
 }
 
+// A non-main arena grows into further 64 MiB heaps. A chunk in a later heap has an
+// ar_ptr that points into the arena's first heap.
+TEST_F(MallocArenaWalkerTest, SeedFromLaterHeapOfMultiHeapArena) {
+  ArenaWalkResult r;
+  std::thread worker([&]() {
+    std::vector<void*> blocks;
+    for (int i = 0; i < 1400; i++) {
+      blocks.push_back(malloc(64 * 1024));
+    }
+    // The free tail of the first heap is under 64 KiB; use it up so that the
+    // next small request comes from the later heap.
+    for (int i = 0; i < 16; i++) {
+      blocks.push_back(malloc(4096));
+    }
+    MallocArenaWalker::walk(&r, 4096);
+    for (void* p : blocks) {
+      free(p);
+    }
+  });
+  worker.join();
+  EXPECT_EQ(ARENA_WALK_OK, r.status) << arenaWalkStatusName(r.status);
+}
+
 TEST_F(MallocArenaWalkerTest, WalkWithLiveThreadsFindsArenas) {
   std::mutex mu;
   std::vector<ArenaWalkResult> results;
