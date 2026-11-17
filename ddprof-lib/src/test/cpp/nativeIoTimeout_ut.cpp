@@ -8,7 +8,10 @@
 #include "counters.h"
 #include "nativeBlock.h"
 #include "nativeSocketInterposer.h"
+#include "profiler.h"
 #include "safeAccess.h"
+#include "threadExitRegistry.h"
+#include "threadLocalData.inline.h"
 #include "vmEntry.h"
 
 #include <cerrno>
@@ -35,7 +38,10 @@ public:
 
 namespace {
 enum TimeoutOperation { PPOLL, PSELECT, SELECT, EPOLL_PWAIT2 };
-enum TimeoutScenario { KERNEL_FAULT, READABLE_CONTROLS, LIBC_BASELINE, LIBC_HOOK };
+enum TimeoutScenario {
+  KERNEL_FAULT, READABLE_CONTROLS, LIBC_BASELINE, LIBC_HOOK,
+  MARKED_REAL_HANDLERS, MARKED_READABLE_REAL_HANDLERS
+};
 
 volatile sig_atomic_t recovered_faults;
 int original_calls;
@@ -148,7 +154,7 @@ int invokeTimeoutHook(TimeoutOperation operation, void *timeout, bool hook) {
 }
 
 int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, bool active,
-                 bool partial) {
+                 bool partial, bool stale) {
   // A stuck fault handler or accidentally blocking original is a test failure,
   // not an unbounded orphan. This limit is for this finite I/O test only.
   alarm(10);
@@ -157,7 +163,27 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
     return 24;
   VMTestAccessor::setTimeoutTestVm(vm);
   NativeSocketInterposer::instance()->setActiveForTest(active);
-  if (vm != 2) {
+  bool real_handlers = scenario == MARKED_REAL_HANDLERS || scenario == MARKED_READABLE_REAL_HANDLERS;
+  if (real_handlers) {
+    struct sigaction action = {};
+    action.sa_flags = SA_SIGINFO | SA_RESTART | SA_NODEFER;
+    sigemptyset(&action.sa_mask);
+    action.sa_sigaction = Profiler::segvHandler;
+    if (sigaction(SIGSEGV, &action, nullptr) != 0) return 25;
+    action.sa_sigaction = Profiler::busHandler;
+    if (sigaction(SIGBUS, &action, nullptr) != 0) return 26;
+    ThreadExitRegistry::resetForTest();
+    if (stale) {
+      ProfiledThread* previous = ProfiledThread::clearCurrentThreadTLS();
+      if (previous != nullptr) ProfiledThread::deleteForTest(previous);
+      // A reused identity can retain its predecessor's mark before registration.
+      ThreadExitRegistry::markForTest(ThreadExitRegistry::currentId());
+    } else {
+      if (ProfiledThread::initCurrentThread() == nullptr) return 27;
+      ThreadExitRegistry::markCurrent();
+    }
+    if (!ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) return 28;
+  } else if (vm != 2) {
     (void)Counters::getCounters();
     struct sigaction action = {};
     action.sa_sigaction = timeoutFaultHandler;
@@ -195,9 +221,9 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
       reinterpret_cast<void *>(libc_original ? ::select : selectOriginal));
   NativeSocketInterposer::setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_PWAIT2,
       reinterpret_cast<void*>(epollPwait2Original));
-  if (scenario == READABLE_CONTROLS) {
+  if (scenario == READABLE_CONTROLS || scenario == MARKED_READABLE_REAL_HANDLERS) {
     kernel_original = false;
-    for (int value = 0; value < 4; value++) {
+    for (int value = real_handlers ? 1 : 0; value < 4; value++) {
       // A readable structure ends exactly at the inaccessible page: a safeCopy
       // must not over-read it. Check null, zero, seconds and fractional timeouts.
       void *timeout = value == 0 ? nullptr : memory + page - sizeof(timespec);
@@ -216,9 +242,11 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
       int result = invokeTimeoutHook(operation, timeout, true);
       if (result != 7 || errno != EPIPE || original_calls != 1 || recovered_faults != 0)
         return 30 + value;
-      bool eligible = active && (value == 0 || (vm != 2 && value > 1));
+      bool eligible = active && (value == 0 || (!real_handlers && vm != 2 && value > 1));
       if (scope_entries != (eligible ? 1 : 0))
         return 40 + value;
+      if (real_handlers && (!ThreadExitRegistry::contains(ThreadExitRegistry::currentId()) ||
+                            (stale && ProfiledThread::current() != nullptr))) return 45;
     }
     return 0;
   }
@@ -238,22 +266,53 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
   bool expected_errno = errno == EFAULT || (operation == EPOLL_PWAIT2 && errno == ENOSYS);
   if (result != -1 || !expected_errno || original_calls != 1 || scope_entries != 0)
     return 61;
-  return recovered_faults == (active && vm != 2 ? 1 : 0) ? 0 : 62;
+  if (real_handlers && (!ThreadExitRegistry::contains(ThreadExitRegistry::currentId()) ||
+                        (stale && ProfiledThread::current() != nullptr))) return 63;
+  return recovered_faults == (active && vm != 2 && !real_handlers ? 1 : 0) ? 0 : 62;
 }
 
 int waitForTimeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, bool active,
-                        bool partial = false) {
+                        bool partial = false, bool stale = false) {
   pid_t child = fork();
   if (child < 0)
     return -1;
   if (child == 0)
-    _exit(timeoutChild(vm, operation, scenario, active, partial));
+    _exit(timeoutChild(vm, operation, scenario, active, partial, stale));
   int status;
   pid_t result;
   do {
     result = waitpid(child, &status, 0);
   } while (result < 0 && errno == EINTR);
   return result == child ? status : -1;
+}
+
+TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesForwardInaccessibleTimeoutsWithRealCrashHandlers) {
+  for (int vm : {0, 1}) {
+    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT, EPOLL_PWAIT2}) {
+      for (bool stale : {false, true}) {
+        for (bool partial : {false, true}) {
+          SCOPED_TRACE(vm);
+          SCOPED_TRACE(operation);
+          SCOPED_TRACE(stale);
+          SCOPED_TRACE(partial);
+          EXPECT_EQ(0, waitForTimeoutChild(vm, operation, MARKED_REAL_HANDLERS, true, partial, stale));
+        }
+      }
+    }
+  }
+}
+
+TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesDoNotAdmitReadableNonNullTimeouts) {
+  for (int vm : {0, 1}) {
+    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT, EPOLL_PWAIT2}) {
+      for (bool stale : {false, true}) {
+        SCOPED_TRACE(vm);
+        SCOPED_TRACE(operation);
+        SCOPED_TRACE(stale);
+        EXPECT_EQ(0, waitForTimeoutChild(vm, operation, MARKED_READABLE_REAL_HANDLERS, true, false, stale));
+      }
+    }
+  }
 }
 
 TEST(NativeIoTimeoutTest, ProtectedVmFaultRecoveryForwardsUnchangedToKernelOriginal) {
@@ -321,4 +380,12 @@ TEST(NativeIoTimeoutTest, ActualLibcFaultComparisonDoesNotAssumeUniversalEfault)
   }
 }
 } // namespace
+#else
+TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesForwardInaccessibleTimeoutsWithRealCrashHandlers) {
+  GTEST_SKIP() << "Native timeout hooks are Linux-only";
+}
+
+TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesDoNotAdmitReadableNonNullTimeouts) {
+  GTEST_SKIP() << "Native timeout hooks are Linux-only";
+}
 #endif // __linux__

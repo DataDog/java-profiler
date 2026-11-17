@@ -20,6 +20,32 @@
 #include "threadLocalData.inline.h"
 
 #include <cassert>
+#include <unistd.h>
+
+CrashBootstrapFence::CrashBootstrapFence() : _active(false) {
+#ifdef __linux__
+    sigset_t faults;
+    sigemptyset(&faults);
+    sigaddset(&faults, SIGSEGV);
+    sigaddset(&faults, SIGBUS);
+    // A profiling walk must not inherit blocked recovery faults.
+    sigaddset(&faults, SIGPROF);
+    sigaddset(&faults, SIGVTALRM);
+    if (sigprocmask(SIG_BLOCK, &faults, &_saved_mask) != 0) _exit(128 + SIGSEGV);
+    _active = true;
+#endif
+}
+
+CrashBootstrapFence::~CrashBootstrapFence() {
+    disarm();
+}
+
+void CrashBootstrapFence::disarm() {
+    if (_active) {
+        if (sigprocmask(SIG_SETMASK, &_saved_mask, nullptr) != 0) _exit(128 + SIGSEGV);
+        _active = false;
+    }
+}
 
 void blockProfilingForExit() {
     sigset_t prof_signals, old_signals;
@@ -57,8 +83,15 @@ bool isInTrackedSignalContext() {
     return pt != nullptr && pt->signalDepth() > 0;
 }
 
+#ifdef UNIT_TEST
+void (*SignalHandlerScope::bootstrapHookForTest)() = nullptr;
+#endif
+
 SignalHandlerScope::SignalHandlerScope(bool shouldRunPriming) : _current(nullptr), _active(true) {
     ProfiledThread *pt = shouldRunPriming ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
+#ifdef UNIT_TEST
+    if (bootstrapHookForTest != nullptr) bootstrapHookForTest();
+#endif
     if (pt != nullptr) {
         DEBUG_ONLY(_signal_depth = pt->signalDepth();)
         _current = pt;

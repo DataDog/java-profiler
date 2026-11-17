@@ -22,16 +22,16 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ### Architecture
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots, exact-copy failure handling and ASan-safe chunk reclamation
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
-- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, recordings, buffers, metadata, constant pools, terminal output quarantine and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
+- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer and independent DEBUG TaskBlock receipts: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, recordings, buffers, metadata, constant pools, terminal output quarantine and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
-- [Native I/O Hooks](architecture/NativeIoHooks.md) — shared JDK poll-adapter/validated Netty epoll import ownership, alias-safe retention, FD reuse, cancellation cleanup and synchronous native TaskBlocks.
+- [Native I/O Hooks](architecture/NativeIoHooks.md) — shared JDK poll-adapter/validated Netty epoll import ownership, alias-safe retention, FD reuse, marked-thread timeout-probe bypass, cancellation cleanup and synchronous native TaskBlocks.
 - [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, pinned Linux import-layout validation and allocation sampling
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir, retained-weight epoch provenance and retryable/terminal teardown-tail flush; bounded timer TID prechecks; lazy wall-block backing; [TaskBlock producer contract](architecture/ProfilingEngines.md#taskblock-producer-contract); allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), owner-side housekeeping, paired TaskBlock platform-thread classification and continuation completeness
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
-- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching
+- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching; crash-handler bootstrap (raw-identity thread-exit registry, Linux-only fault/profiling-mask fence)
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
 - [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership, paired TaskBlock interval recovery and retained filtered/unfiltered unowned wall context
 

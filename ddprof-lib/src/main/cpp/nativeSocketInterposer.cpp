@@ -15,6 +15,7 @@
 #include "nativeSocketSampler.h"
 #include "safeAccess.h"
 #include "symbols.h"
+#include "threadExitRegistry.h"
 #include "tsc.h"
 #include "vmEntry.h"
 
@@ -24,14 +25,13 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-// Only HotSpot/OpenJ9 install the crash handler that recovers safeCopy faults.
-// Other VMs must forward without reading application-owned timeout memory.
-// The original libc may itself read that memory; preserve its behavior, not
-// a synthetic EFAULT guarantee for every libc implementation.
+// Only HotSpot/OpenJ9 with an unmarked identity can recover safeCopy faults.
+// Other callers forward without reading application-owned timeout memory.
 static NOINLINE bool nonZeroTimeval(const struct timeval* timeout) {
   if (timeout == nullptr) return true;
   if (!VM::isHotspot() && !VM::isOpenJ9()) return false;
   ErrnoGuard errno_guard;
+  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) return false;
   struct timeval value;
   return SafeAccess::safeCopy(&value, timeout, sizeof(value)) &&
       (value.tv_sec != 0 || value.tv_usec != 0);
@@ -41,6 +41,7 @@ static NOINLINE bool nonZeroTimespec(const struct timespec* timeout) {
   if (timeout == nullptr) return true;
   if (!VM::isHotspot() && !VM::isOpenJ9()) return false;
   ErrnoGuard errno_guard;
+  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) return false;
   struct timespec value;
   return SafeAccess::safeCopy(&value, timeout, sizeof(value)) &&
       (value.tv_sec != 0 || value.tv_nsec != 0);
