@@ -23,9 +23,8 @@ struct MallocArenaStatsRecord {
   const char* walkStatus;       // arenaWalkStatusName() of the walk
 };
 
-// Payload of datadog.MallocArenaWarning. The derived values (headroom, its
-// source, the compared measure, the recommended arena limit) come from
-// evaluation. Fields marked -1 are unavailable; walk-derived counts are 0
+// Payload of datadog.MallocArenaWarning; derived values come from rule
+// evaluation. -1 marks an unavailable field; walk-derived counts are 0
 // unless walkStatus is "ok".
 struct MallocArenaWarningRecord {
   int arenaCount;
