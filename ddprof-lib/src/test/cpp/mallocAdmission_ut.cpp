@@ -271,6 +271,22 @@ TEST_F(AdmissionsTest, ErrorLiteralsAreExact) {
     EXPECT_EQ(MallocAdmission::errorMessage(NOT_RECOGNIZED), nullptr);
 }
 
+TEST_F(AdmissionsTest, MissingOwnLibraryResultHasReason) {
+    MallocAdmissionResult out;
+    out.verdict = {NOT_RECOGNIZED, NONE};
+    out.target_count = 7;
+    out.images_classified = 9;
+
+    MallocAdmission::missingOwnLibrary(out);
+
+    EXPECT_EQ(out.verdict.outcome, INDETERMINATE);
+    EXPECT_EQ(out.verdict.reason, NO_OWN_LIBRARY);
+    EXPECT_EQ(out.target_count, 0);
+    EXPECT_EQ(out.images_classified, 0);
+    EXPECT_STREQ(MallocAdmission::errorMessage(out.verdict.outcome),
+                 "Native-memory profiling was not started: allocation-target ownership could not be determined.");
+}
+
 } // namespace
 
 namespace {

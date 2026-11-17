@@ -243,14 +243,18 @@ TEST(MallocAdmissionSlotsTest, NoOwnerTargetDoesNotMaskFixtureDDProf) {
     MallocAdmissionInput in = emptyInput();
     const void* current[5][NUM_IMPORT_TYPES];
     MallocAdmission::readImports(&lib, current);
-    in.current[0][PRIMARY] = current[0][PRIMARY];
-    in.current[1][PRIMARY] = anon;
+    in.current[0][PRIMARY] = anon;
+    in.current[1][PRIMARY] = current[0][PRIMARY];
 
     MallocAdmissionResult out = evaluateWith(in);
     EXPECT_EQ(out.verdict.outcome, DDPROF);
     EXPECT_EQ(out.verdict.reason, NONE);
-    EXPECT_EQ(out.target_count, 2);
-    // The unattributable target stays NO_OWNER while the fixture target
+    ASSERT_EQ(out.target_count, 2);
+    EXPECT_EQ(out.targets[1], fixture);
+    EXPECT_EQ(out.target_verdicts[1].outcome, DDPROF);
+    EXPECT_EQ(out.target_verdicts[0].outcome, INDETERMINATE);
+    EXPECT_EQ(out.target_verdicts[0].reason, NO_OWNER);
+    // The unattributable target stays NO_OWNER while the final fixture target
     // carries the DDPROF verdict.
     int ddprof_targets = 0, no_owner_targets = 0;
     for (int i = 0; i < out.target_count; i++) {

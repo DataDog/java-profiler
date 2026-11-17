@@ -30,13 +30,16 @@ class LoadedImage {
     LoadedImage(const ElfProgramHeader* ph, int phnum, uintptr_t load_bias)
         : _ph(ph), _phnum(phnum), _load_bias(load_bias) {}
 
-    uintptr_t address(uintptr_t vaddr) const { return _load_bias + vaddr; }
+    bool address(uintptr_t vaddr, uintptr_t& out) const {
+        return !__builtin_add_overflow(_load_bias, vaddr, &out);
+    }
 
-    // True if [addr, addr + size) lies inside the file-backed part of a PT_LOAD.
+    // True if [addr, addr + size) lies inside a file-backed PT_LOAD.
     bool readable(uintptr_t addr, size_t size) const {
         for (int i = 0; i < _phnum; i++) {
             if (_ph[i].p_type != PT_LOAD) continue;
-            uintptr_t start = address(_ph[i].p_vaddr);
+            uintptr_t start;
+            if (!address(_ph[i].p_vaddr, start)) continue;
             if (addr >= start && addr - start <= _ph[i].p_filesz
                 && size <= _ph[i].p_filesz - (addr - start)) {
                 return true;
@@ -55,12 +58,19 @@ class LoadedImage {
     // A pointer from the dynamic section. glibc relocates them in place, musl
     // and the vDSO do not; an unrelocated one is a vaddr below the image. The
     // same test as ElfParser::dyn_ptr().
-    uintptr_t dynamicPointer(uintptr_t d_ptr) const {
+    bool dynamicPointer(uintptr_t d_ptr, uintptr_t& out) const {
         uintptr_t min_vaddr = UINTPTR_MAX;
         for (int i = 0; i < _phnum; i++) {
             if (_ph[i].p_type == PT_LOAD && _ph[i].p_vaddr < min_vaddr) min_vaddr = _ph[i].p_vaddr;
         }
-        return d_ptr < address(min_vaddr & ~OS::page_mask) ? address(d_ptr) : d_ptr;
+        if (min_vaddr == UINTPTR_MAX) return false;
+
+        uintptr_t relocation_threshold;
+        if (!address(min_vaddr & ~OS::page_mask, relocation_threshold)) return false;
+        if (d_ptr < relocation_threshold) return address(d_ptr, out);
+
+        out = d_ptr;
+        return true;
     }
 };
 

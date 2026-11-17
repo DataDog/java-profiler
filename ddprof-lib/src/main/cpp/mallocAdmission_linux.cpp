@@ -30,6 +30,10 @@ namespace {
 constexpr size_t MARKER_START_LEN = sizeof("ddprof_start_profiling") - 1;
 constexpr size_t MARKER_STOP_LEN = sizeof("ddprof_stop_profiling") - 1;
 
+static bool addChecked(uintptr_t base, size_t offset, uintptr_t& out) {
+    return !__builtin_add_overflow(base, static_cast<uintptr_t>(offset), &out);
+}
+
 // True if [addr, addr + size) lies inside the file-backed part of a PT_LOAD
 // segment that also has the PF_R flag. LoadedImage::readable() alone does not
 // test PF_R — the admission reader must not treat a mapping it may not read
@@ -131,8 +135,10 @@ ImageMetadata resolveMetadata(const LoadedImage& image, const ElfProgramHeader* 
         md.failure = BAD_DYNAMIC;
         return md;
     }
-    md.symtab = image.dynamicPointer(symtab_raw);
-    md.strtab = image.dynamicPointer(strtab_raw);
+    if (!image.dynamicPointer(symtab_raw, md.symtab) || !image.dynamicPointer(strtab_raw, md.strtab)) {
+        md.failure = BAD_DYNAMIC;
+        return md;
+    }
     if (!readableR(ph, phnum, load_bias, md.strtab, md.strsz)) {
         md.failure = BAD_DYNAMIC;
         return md;
@@ -142,29 +148,57 @@ ImageMetadata resolveMetadata(const LoadedImage& image, const ElfProgramHeader* 
     if (has_gnu) {
         md.has_hash = true;
         md.gnu_hash = true;
-        md.hash = image.dynamicPointer(gnu_raw);
+        if (!image.dynamicPointer(gnu_raw, md.hash)) md.failure = BAD_HASH_TABLE;
     } else if (has_sysv) {
         md.has_hash = true;
         md.gnu_hash = false;
-        md.hash = image.dynamicPointer(sysv_raw);
+        if (!image.dynamicPointer(sysv_raw, md.hash)) md.failure = BAD_HASH_TABLE;
     } else {
         md.failure = NO_HASH_TABLE;
     }
     return md;
 }
 
-// A bounded comparison of the marker name (len bytes plus the terminating NUL)
-// at st_name inside the string table. The caller has already checked
-// st_name + len + 1 <= strsz, so the loop never reads past the table. An
-// inline byte loop, not memcmp/strlen/strncmp: everything reachable from the
-// dl_iterate_phdr callback must be internal-linkage code or an inline-
-// expanding builtin (no library call, no PLT/GOT entry).
-inline bool markerNameEquals(const char* strtab, size_t st_name, const char* name, size_t len) {
-    const char* candidate = strtab + st_name;
-    for (size_t i = 0; i < len; i++) {
-        if (candidate[i] != name[i]) return false;
+// Compares at most len marker bytes and the following terminator. A shorter or
+// longer unrelated symbol is a mismatch without scanning its remaining string.
+// The inline byte loop avoids library calls from the loader callback.
+inline bool markerNameEquals(const ImageMetadata& md, size_t st_name, const char* name, size_t len,
+                             bool& matches, AdmissionReason& fail) {
+    matches = false;
+    if (st_name >= md.strsz) {
+        fail = BAD_SYMBOL;
+        return false;
     }
-    return candidate[len] == '\0';
+    uintptr_t candidate;
+    if (!addChecked(md.strtab, st_name, candidate)) {
+        fail = BAD_SYMBOL;
+        return false;
+    }
+    size_t remaining = md.strsz - st_name;
+    for (size_t i = 0; i < len; i++) {
+        if (i >= remaining) {
+            fail = BAD_SYMBOL;
+            return false;
+        }
+        uintptr_t char_addr;
+        if (!addChecked(candidate, i, char_addr)) {
+            fail = BAD_SYMBOL;
+            return false;
+        }
+        const char value = *reinterpret_cast<const char*>(char_addr);
+        if (value == '\0' || value != name[i]) return true;
+    }
+    if (len >= remaining) {
+        fail = BAD_SYMBOL;
+        return false;
+    }
+    uintptr_t terminator;
+    if (!addChecked(candidate, len, terminator)) {
+        fail = BAD_SYMBOL;
+        return false;
+    }
+    matches = *reinterpret_cast<const char*>(terminator) == '\0';
+    return true;
 }
 
 // The GNU/Linux hash function used by DT_GNU_HASH tables.
@@ -222,13 +256,9 @@ bool visitSymbol(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum,
         return false;
     }
     const ElfW(Sym)* sym = (const ElfW(Sym)*)sym_addr;
-    size_t st_name = sym->st_name;
-    size_t name_end;
-    if (__builtin_add_overflow(st_name, len + 1, &name_end) || name_end > md.strsz) {
-        fail = BAD_SYMBOL;
-        return false;
-    }
-    if (!markerNameEquals((const char*)md.strtab, st_name, name, len)) return true;
+    bool matches;
+    if (!markerNameEquals(md, sym->st_name, name, len, matches, fail)) return false;
+    if (!matches) return true;
     if (sym->st_shndx == SHN_UNDEF) return true;
     unsigned int bind = ELF64_ST_BIND(sym->st_info);
     unsigned int visibility = ELF64_ST_VISIBILITY(sym->st_other);
@@ -251,16 +281,22 @@ bool lookupGnu(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, u
                const char* name, size_t len, MarkerFindings& out, AdmissionReason& fail) {
     out.qualifying = 0;
     out.wrong_kind = 0;
+    uintptr_t symoffset_addr, bloom_size_addr, bloom_base;
+    if (!addChecked(md.hash, 4, symoffset_addr) || !addChecked(md.hash, 8, bloom_size_addr) ||
+        !addChecked(md.hash, 16, bloom_base)) {
+        fail = BAD_HASH_TABLE;
+        return false;
+    }
     uint32_t nbuckets, symoffset, bloom_size;
     if (!readU32(ph, phnum, load_bias, md.hash, nbuckets) ||
-        !readU32(ph, phnum, load_bias, md.hash + 4, symoffset) ||
-        !readU32(ph, phnum, load_bias, md.hash + 8, bloom_size)) {
+        !readU32(ph, phnum, load_bias, symoffset_addr, symoffset) ||
+        !readU32(ph, phnum, load_bias, bloom_size_addr, bloom_size)) {
         fail = BAD_HASH_TABLE;
         return false;
     }
     uintptr_t offset, buckets;
     if (__builtin_mul_overflow((uintptr_t)bloom_size, sizeof(ElfW(Addr)), &offset) ||
-        __builtin_add_overflow(md.hash + 16, offset, &buckets)) {
+        !addChecked(bloom_base, offset, buckets)) {
         fail = BAD_HASH_TABLE;
         return false;
     }
@@ -286,7 +322,7 @@ bool lookupGnu(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, u
     }
     uintptr_t chains;
     if (__builtin_mul_overflow((uintptr_t)nbuckets, sizeof(uint32_t), &offset) ||
-        __builtin_add_overflow(buckets, offset, &chains)) {
+        !addChecked(buckets, offset, chains)) {
         fail = BAD_HASH_TABLE;
         return false;
     }
@@ -326,9 +362,14 @@ bool lookupSysv(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, 
                 const char* name, size_t len, MarkerFindings& out, AdmissionReason& fail) {
     out.qualifying = 0;
     out.wrong_kind = 0;
+    uintptr_t nchain_addr, buckets;
+    if (!addChecked(md.hash, 4, nchain_addr) || !addChecked(md.hash, 8, buckets)) {
+        fail = BAD_HASH_TABLE;
+        return false;
+    }
     uint32_t nbucket, nchain;
     if (!readU32(ph, phnum, load_bias, md.hash, nbucket) ||
-        !readU32(ph, phnum, load_bias, md.hash + 4, nchain)) {
+        !readU32(ph, phnum, load_bias, nchain_addr, nchain)) {
         fail = BAD_HASH_TABLE;
         return false;
     }
@@ -336,13 +377,9 @@ bool lookupSysv(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, 
         fail = BAD_HASH_TABLE;
         return false;
     }
-    uintptr_t offset, buckets, chains, bucket_addr;
-    if (__builtin_add_overflow(md.hash, 2 * sizeof(uint32_t), &buckets)) {
-        fail = BAD_HASH_TABLE;
-        return false;
-    }
+    uintptr_t offset, chains, bucket_addr;
     if (__builtin_mul_overflow((uintptr_t)nbucket, sizeof(uint32_t), &offset) ||
-        __builtin_add_overflow(buckets, offset, &chains)) {
+        !addChecked(buckets, offset, chains)) {
         fail = BAD_HASH_TABLE;
         return false;
     }

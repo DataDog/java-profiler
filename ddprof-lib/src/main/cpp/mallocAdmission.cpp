@@ -93,6 +93,12 @@ void MallocAdmission::readImports(const CodeCache* own, const void* current[5][N
     }
 }
 
+void MallocAdmission::missingOwnLibrary(MallocAdmissionResult& out) {
+    out.verdict = {INDETERMINATE, NO_OWN_LIBRARY};
+    out.target_count = 0;
+    out.images_classified = 0;
+}
+
 void MallocAdmission::evaluate(const MallocAdmissionInput& in, MallocAdmissionResult& out) {
     out.target_count = 0;
     out.images_classified = 0;

@@ -5,44 +5,42 @@
 package com.datadoghq.profiler.nativemem;
 
 /**
- * Test double for the ddprof hook-owner image, living inside
- * {@code libddproftest}: the library exports the ddprof marker names (with
- * call counters) and the JNI entry points save, rewrite and restore the
- * profiler's own allocation GOT slots to stand-in forwarding hooks, the way
- * the real ddprof would. Production code never calls this class; only Linux
- * child-JVM tests do. The native entry points are Linux-only: the library
- * builds everywhere, but {@code install()}/{@code restore()} link only on
- * Linux and must not be called elsewhere.
+ * Test double for the ddprof hook-owner image, living inside {@code libddproftest}: the library
+ * exports the ddprof marker names (with call counters) and the JNI entry points save, rewrite and
+ * restore the profiler's own allocation GOT slots to stand-in forwarding hooks, the way the real
+ * ddprof would. Production code never calls this class; only Linux child-JVM tests do. The native
+ * entry points are Linux-only: the library builds everywhere, but {@code install()}/{@code
+ * restore()} link only on Linux and must not be called elsewhere.
  */
 public final class DdprofStandin {
-    static {
-        System.loadLibrary("ddproftest");
-    }
+  static {
+    System.loadLibrary("ddproftest");
+  }
 
-    // Rewrites the profiler's own allocation GOT slots to stand-in
-    // forwarding hooks. Returns 0 on success, -1 when the profiler image or
-    // its relocations could not be inspected.
-    public static native int install();
+  // Rewrites the profiler's own allocation GOT slots to stand-in
+  // forwarding hooks. Returns 0 on success, -1 when the profiler image or
+  // its relocations could not be inspected.
+  public static native int install();
 
-    // Restores the saved allocation GOT slot values. Returns 0 on success.
-    public static native int restore();
+  // Restores the saved allocation GOT slot values. Returns 0 on success.
+  public static native int restore();
 
-    // Runs the native allocation workload through libddproftest. Kept here
-    // so the external launcher can invoke the package-private helper.
-    public static void allocate(long size, int count) {
-        NativeAllocHelper.nativeMalloc(size, count);
-    }
+  // Runs the native allocation workload through libddproftest. Kept here
+  // so the external launcher can invoke the package-private helper.
+  public static void allocate(long size, int count) {
+    NativeAllocHelper.nativeMalloc(size, count);
+  }
 
-    // Returns the malloc value captured from the profiler's own GOT slot
-    // before the stand-in rewrites it. This test-only snapshot lets lifecycle
-    // tests verify restoration after a rejected cached attempt.
-    public static native long savedMalloc();
+  // Returns the malloc value captured from the profiler's own GOT slot
+  // before the stand-in rewrites it. This test-only snapshot lets lifecycle
+  // tests verify restoration after a rejected cached attempt.
+  public static native long savedMalloc();
 
-    // Times the two marker functions were called. The admission check must
-    // never call a marker, so tests assert these stay 0 across it.
-    public static native long startMarkerCalls();
+  // Times the two marker functions were called. The admission check must
+  // never call a marker, so tests assert these stay 0 across it.
+  public static native long startMarkerCalls();
 
-    public static native long stopMarkerCalls();
+  public static native long stopMarkerCalls();
 
-    private DdprofStandin() {}
+  private DdprofStandin() {}
 }
