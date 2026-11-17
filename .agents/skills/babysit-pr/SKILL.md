@@ -74,10 +74,18 @@ conditions per the babysit-pr skill; it stops with its session). Design-level
 findings are surfaced to the author, never auto-implemented."
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
-   `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`; and
+   `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`;
+   and
    `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` — inline review
    comments are invisible to `pr view --json`. A poll that finds nothing stays
    cheap: no log fetching, no deep analysis.
+1a. **Bits gate pending.** `bits-review/head` is a review-bot gate, not CI: it
+   never triggers the Bits bot itself. On a non-draft PR a new push should
+   re-trigger Bits automatically; if the check is still pending on a head with
+   everything else green, one ordinary PR comment `@datadog review` re-triggers
+   it — post it once per head (never repeatedly). On a draft PR incoming changes
+   do not re-trigger Bits: the comment is required. Never post it in the PR body
+   or an inline review thread; a plain top-level comment is what the bot reads.
 2. **CI red.** One `$GH run rerun --failed <run>` is the flaky allowance; a failure that
    survives it, or a run that cannot rerun, is real. Fetch the logs, reproduce through
    `./.claude/commands/build-and-summarize` (never bare `./gradlew`), and follow
