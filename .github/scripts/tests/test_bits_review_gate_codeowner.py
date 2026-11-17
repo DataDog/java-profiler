@@ -1,0 +1,483 @@
+# Copyright 2026, Datadog, Inc.
+"""Tests for the sensitive-path code-owner review gate.
+
+Hermetic through the shared fake transport: sensitive-pattern loading
+from CODEOWNERS (default rule excluded, comments and blanks ignored),
+path matching (exact, directory-prefix and fnmatch), latest-review
+selection with the id tie-breaker, the owner-approval contract (team
+member, not the PR author, latest review APPROVED), the per-SHA decision
+(no PR, no sensitive path, approval present, approval missing,
+self-approval rejected, conjunction) and fail-closed behavior for every
+failed read and malformed record. Status publishing carries the exact
+context and fails closed on unreadable CODEOWNERS and failed writes.
+"""
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+import unittest.mock
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import bits_review_gate as gate  # noqa: E402
+import codeowner_review_gate as cogate  # noqa: E402
+
+import bits_review_gate_testlib as testlib  # noqa: E402
+from test_bits_review_gate_api import FakeResponse  # noqa: E402,F401
+
+REPO = "DataDog/java-profiler"
+API = "https://api.example.test"
+GRAPHQL = "https://api.example.test/graphql"
+GITHUB_TOKEN = "gh-read-token"
+STATUS_TOKEN = "status-write-token"
+SHA = "1" * 40
+PULLS_URL = "%s/repos/%s/pulls?state=open&base=main&per_page=100" % (API, REPO)
+STATUSES_URL = "%s/repos/%s/commits/%s/statuses?per_page=100" % (API, REPO, SHA)
+MEMBERS_URL = "%s/orgs/DataDog/teams/profiling-java/members?per_page=100" % API
+TEAM_LOGINS = frozenset({"owner-a", "owner-b"})
+
+
+def make_client(transport):
+    return cogate.CodeownerClient(REPO, transport=transport, env={
+        "GITHUB_API_URL": API, "GITHUB_GRAPHQL_URL": GRAPHQL,
+        "GITHUB_TOKEN": GITHUB_TOKEN})
+
+
+def files_url(number):
+    return "%s/repos/%s/pulls/%d/files?per_page=100" % (API, REPO, number)
+
+
+def files_page(*names):
+    return [{"filename": name, "status": "modified"} for name in names]
+
+
+def pr(number, **overrides):
+    return testlib.build_pr_record(
+        number, sha=SHA,
+        user={"login": "pr-author"}, **overrides)
+
+
+def review(login, state, submitted_at, review_id=1, commit_oid=SHA):
+    """A raw GraphQL-shaped review node, exactly what the client returns;
+    bound to the evaluated head unless a test overrides the commit."""
+    return testlib.build_review_node(
+        databaseId=review_id, state=state, submittedAt=submitted_at,
+        commit={"oid": commit_oid},
+        author={"__typename": "User", "login": login, "databaseId": 7})
+
+
+def reviews_page(nodes, has_next=False, cursor="cursor-1"):
+    return {"data": {"repository": {"pullRequest": {"reviews": {
+        "nodes": nodes,
+        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor}}}}}}
+
+
+class SensitivePatternsTest(unittest.TestCase):
+    def test_repo_codeowners_marks_gate_paths_and_keeps_default_out(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "..", "..", ".github", "CODEOWNERS")
+        patterns = cogate.load_sensitive_patterns(path)
+        self.assertIn("/.github/workflows/bits-review-gate.yml", patterns)
+        self.assertNotIn("*", patterns)
+
+    def test_comments_blanks_and_default_rule_are_skipped(self):
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            handle.write("# header\n\n"
+                         "* @DataDog/profiling-java\n"
+                         "/owned/path @DataDog/profiling-java\n"
+                         "  \n"
+                         "/other/path @DataDog/profiling-java\n")
+            name = handle.name
+        try:
+            self.assertEqual(cogate.load_sensitive_patterns(name),
+                             ["/owned/path", "/other/path"])
+        finally:
+            os.unlink(name)
+
+    def test_entry_naming_another_team_is_rejected(self):
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            handle.write("/owned/path @DataDog/profiling-java\n"
+                         "/other/path @DataDog/other-team\n")
+            name = handle.name
+        try:
+            with self.assertRaises(gate.ApiError):
+                cogate.load_sensitive_patterns(name)
+        finally:
+            os.unlink(name)
+
+    def test_entry_count_at_the_cap_is_accepted_and_over_it_rejected(self):
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            for index in range(cogate.CODEOWNERS_MAX_ENTRIES - 1):
+                handle.write("/p/%d @DataDog/profiling-java\n" % index)
+            name = handle.name
+        try:
+            self.assertEqual(
+                len(cogate.load_sensitive_patterns(name)),
+                cogate.CODEOWNERS_MAX_ENTRIES - 1)
+        finally:
+            os.unlink(name)
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            for index in range(cogate.CODEOWNERS_MAX_ENTRIES):
+                handle.write("/p/%d @DataDog/profiling-java\n" % index)
+            name = handle.name
+        try:
+            self.assertEqual(
+                len(cogate.load_sensitive_patterns(name)),
+                cogate.CODEOWNERS_MAX_ENTRIES)
+        finally:
+            os.unlink(name)
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            for index in range(cogate.CODEOWNERS_MAX_ENTRIES + 1):
+                handle.write("/p/%d @DataDog/profiling-java\n" % index)
+            name = handle.name
+        try:
+            with self.assertRaises(gate.ApiError):
+                cogate.load_sensitive_patterns(name)
+        finally:
+            os.unlink(name)
+
+    def test_unreadable_file_is_fatal(self):
+        with self.assertRaises(gate.ApiError):
+            cogate.load_sensitive_patterns(
+                os.path.join(tempfile.gettempdir(), "no-such-codeowners-file"))
+
+
+class SensitiveMatchTest(unittest.TestCase):
+    PATTERNS = [".github/workflows/bits-review-gate.yml",
+                ".github/scripts/tests/fixtures/bits_review_gate/"]
+
+    def test_exact_path_matches_and_sibling_does_not(self):
+        self.assertTrue(cogate.is_sensitive(
+            ".github/workflows/bits-review-gate.yml", self.PATTERNS))
+        self.assertFalse(cogate.is_sensitive(
+            ".github/workflows/ci.yml", self.PATTERNS))
+
+    def test_directory_pattern_matches_contents_not_siblings(self):
+        self.assertTrue(cogate.is_sensitive(
+            ".github/scripts/tests/fixtures/bits_review_gate/x.json", self.PATTERNS))
+        self.assertFalse(cogate.is_sensitive(
+            ".github/scripts/tests/fixtures/other/x.json", self.PATTERNS))
+
+    def test_wildcard_pattern_uses_fnmatch(self):
+        self.assertTrue(cogate.is_sensitive("docs/x/y.md", ["docs/*/y.md"]))
+        self.assertFalse(cogate.is_sensitive("docs/x/z.md", ["docs/*/y.md"]))
+
+    def test_unanchored_pattern_is_rejected(self):
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            handle.write("docs/*/y.md @DataDog/profiling-java\n")
+            name = handle.name
+        try:
+            with self.assertRaises(gate.ApiError):
+                cogate.load_sensitive_patterns(name)
+        finally:
+            os.unlink(name)
+
+
+class LatestReviewTest(unittest.TestCase):
+    def test_latest_by_submission_time_wins(self):
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+            review("owner-a", "CHANGES_REQUESTED", "2026-01-02T00:00:00Z", 2)]]
+        self.assertEqual(cogate.latest_review_by_login(records)["owner-a"]["state"],
+                         "CHANGES_REQUESTED")
+
+    def test_equal_submission_time_breaks_the_tie_by_id(self):
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+            review("owner-a", "COMMENTED", "2026-01-01T00:00:00Z", 2)]]
+        self.assertEqual(cogate.latest_review_by_login(records)["owner-a"]["state"],
+                         "COMMENTED")
+
+    def test_records_without_login_are_ignored(self):
+        records = [{"author_login": None, "state": "APPROVED",
+                    "submitted_at": "2026-01-01T00:00:00Z", "id": 1}]
+        self.assertEqual(cogate.latest_review_by_login(records), {})
+
+
+class OwnerApprovalTest(unittest.TestCase):
+    def test_team_member_approval_counts(self):
+        records = [gate.normalize_review(review("owner-a", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        self.assertTrue(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+
+    def test_self_approval_never_counts(self):
+        records = [gate.normalize_review(review("pr-author", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+
+    def test_non_member_approval_does_not_count(self):
+        records = [gate.normalize_review(review("outsider", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+
+    def test_superseded_approval_does_not_count(self):
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+            review("owner-a", "CHANGES_REQUESTED",
+                   "2026-01-02T00:00:00Z", 2)]]
+        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+
+    def test_approval_on_another_commit_does_not_count(self):
+        records = [gate.normalize_review(review(
+            "owner-a", "APPROVED", "2026-01-01T00:00:00Z", commit_oid="2" * 40))]
+        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+
+
+class EvaluateShaTest(unittest.TestCase):
+    def evaluate(self, transport):
+        client = make_client(transport)
+        client._team_logins = TEAM_LOGINS
+        return cogate.evaluate_sha(SHA, client,
+                                   [".github/scripts/bits_review_gate.py"])
+
+    def test_no_open_pr_at_sha_passes(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, []),
+        ])
+        self.assertEqual(self.evaluate(transport),
+                         ("success", "no open pull request at this head", None))
+
+    def test_pr_without_sensitive_paths_passes(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, files_page("doc/README.md")),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "success")
+
+    def test_sensitive_path_without_owner_review_fails_with_target_url(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, files_page(
+                "doc/README.md", ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([])),
+        ])
+        state, description, target_url = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("approval from @DataDog/profiling-java required", description)
+        self.assertEqual(target_url, "https://github.com/" + REPO + "/pull/101")
+
+    def test_sensitive_path_with_owner_review_passes(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, files_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "success")
+
+    def test_self_approval_on_sensitive_path_fails(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, files_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("pr-author", "APPROVED", "2026-01-01T00:00:00Z")])),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "failure")
+
+    def test_non_member_approval_on_sensitive_path_fails(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, files_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("outsider", "APPROVED", "2026-01-01T00:00:00Z")])),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "failure")
+
+    def test_renamed_sensitive_file_is_caught_by_previous_name(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, [
+                {"filename": "renamed-away.py", "status": "renamed",
+                 "previous_filename": ".github/scripts/bits_review_gate.py"}]),
+            FakeResponse(200, reviews_page([])),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "failure")
+
+    def test_failed_files_read_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(500, []),
+            FakeResponse(500, []),
+            FakeResponse(500, []),
+        ])
+        state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("files read failed", description)
+
+    def test_failed_reviews_read_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, files_page(
+                ".github/scripts/bits_review_gate.py")),
+            gate.RateLimitError("rate limit"),
+        ])
+        state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("reviews read failed", description)
+
+    def test_malformed_pr_record_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, ["not-a-record"]),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "failure")
+
+    def test_pr_with_malformed_head_sha_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101, head={"sha": None})]),
+        ])
+        state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("malformed PR record", description)
+
+    def test_pr_with_malformed_author_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [testlib.build_pr_record(
+                101, sha=SHA, user={"id": 5})]),
+            FakeResponse(200, files_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([
+                review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+        ])
+        state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("malformed PR record", description)
+
+    def test_failed_team_roster_read_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, files_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([])),
+            FakeResponse(500, []),
+            FakeResponse(500, []),
+            FakeResponse(500, []),
+        ])
+        client = make_client(transport)
+        state, description, _ = cogate.evaluate_sha(
+            SHA, client, [".github/scripts/bits_review_gate.py"])
+        self.assertEqual(state, "failure")
+        self.assertIn("team roster read failed", description)
+
+    def test_malformed_file_entry_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, [{"status": "modified"}]),
+        ])
+        state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("files read failed", description)
+
+    def test_identical_timestamp_and_id_keeps_the_first_record(self):
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 7),
+            review("owner-a", "COMMENTED", "2026-01-01T00:00:00Z", 7)]]
+        self.assertEqual(cogate.latest_review_by_login(records)["owner-a"]["state"],
+                         "APPROVED")
+
+    def test_failing_member_in_conjunction_fails_the_sha(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101), pr(102)]),
+            FakeResponse(200, files_page("doc/README.md")),
+            FakeResponse(200, files_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([])),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "failure")
+
+    def test_failed_pulls_read_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(500, []),
+            FakeResponse(500, []),
+            FakeResponse(500, []),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "failure")
+
+
+class PublishTest(unittest.TestCase):
+    def publish(self, transport, codeowners=None):
+        client = make_client(transport)
+        client._team_logins = TEAM_LOGINS
+        if codeowners is None:
+            with unittest.mock.patch.object(
+                    cogate, "load_sensitive_patterns",
+                    return_value=[".github/scripts/bits_review_gate.py"]):
+                return cogate.publish(SHA, client, STATUS_TOKEN)
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            handle.write(codeowners)
+            name = handle.name
+        try:
+            with unittest.mock.patch.object(cogate, "CODEOWNERS_PATH", name):
+                return cogate.publish(SHA, client, STATUS_TOKEN)
+        finally:
+            os.unlink(name)
+
+    def response_for_flow(self, sensitive, approval):
+        """Responses for one PR flow: pulls, files, reviews, and the 200
+        that the status POST consumes. The roster comes from the seeded
+        client cache, not from a queued response."""
+        responses = [FakeResponse(200, [pr(101)]),
+                     FakeResponse(
+                         200, files_page(".github/scripts/bits_review_gate.py"
+                                         if sensitive else "doc/README.md"))]
+        if sensitive:
+            nodes = [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")] \
+                if approval else []
+            responses.append(FakeResponse(200, reviews_page(nodes)))
+        responses.append(FakeResponse(200, []))
+        return responses
+
+    def test_pass_publishes_success_with_context(self):
+        transport = testlib.FakeTransport(self.response_for_flow(False, False))
+        code = self.publish(transport)
+        self.assertEqual(code, 0)
+        request = transport.calls[-1]
+        self.assertTrue(request.full_url.endswith("/statuses/" + SHA))
+        payload = json.loads(request.data)
+        self.assertEqual(payload["context"], "codeowner-review/head")
+        self.assertEqual(payload["state"], "success")
+
+    def test_missing_owner_review_publishes_failure_and_exits_one(self):
+        transport = testlib.FakeTransport(self.response_for_flow(True, False))
+        self.assertEqual(self.publish(transport), 1)
+        payload = json.loads(transport.calls[-1].data)
+        self.assertEqual(payload["state"], "failure")
+
+    def test_owner_review_publishes_success_and_exits_zero(self):
+        transport = testlib.FakeTransport(self.response_for_flow(True, True))
+        self.assertEqual(self.publish(transport), 0)
+
+    def test_failed_write_exits_one(self):
+        # The flow's final 200 is replaced by three 5xx: the status POST
+        # exhausts its attempts and the write fails.
+        transport = testlib.FakeTransport(
+            self.response_for_flow(False, False)[:-1]
+            + [FakeResponse(500, []) for _ in range(3)])
+        self.assertEqual(self.publish(transport), 1)
+
+    def test_unreadable_codeowners_fails_closed(self):
+        # A missing CODEOWNERS file is fatal before any evaluation: point
+        # the module constant at a path that cannot exist.
+        with unittest.mock.patch.object(
+                cogate, "CODEOWNERS_PATH",
+                os.path.join(tempfile.gettempdir(), "no-such-codeowners")):
+            self.assertEqual(cogate.publish(
+                SHA, make_client(testlib.FakeTransport([])), STATUS_TOKEN), 1)
+
+    def test_sha_argument_must_be_forty_hex(self):
+        with self.assertRaises(SystemExit):
+            cogate.main(["publish", "--sha", "not-a-sha"])
+
+
+if __name__ == "__main__":
+    unittest.main()
