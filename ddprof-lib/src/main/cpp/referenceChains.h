@@ -15,6 +15,7 @@
 #include "pidController.h"
 #include "spinLock.h"
 #include "mutex.h"
+#include "threadExitRegistry.h"
 #include <algorithm>
 #include <atomic>
 #include <climits>
@@ -828,6 +829,7 @@ private:
 
   static void *threadEntry(void *self) {
     ((ReferenceChainTracker *)self)->threadLoop();
+    ThreadExitRegistry::markCurrent();
     return nullptr;
   }
   void threadLoop();
