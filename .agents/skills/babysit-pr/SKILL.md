@@ -19,8 +19,9 @@ written by it, and it dies with the session — its stop summary names what rema
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
 4. **Worker.** Write `{"pr": <n>, "branch": "<local-branch>", "status": "running",
-   "scope": [], "bits_triggered": []}` to `build/babysit-pr-<n>.json` **in the
-   session's checkout** — that
+   "scope": [], "bits_triggered": [...]}` to `build/babysit-pr-<n>.json` **in the
+   session's checkout** — seed `bits_triggered` from the previous stopped marker's
+   list when one exists (the once-per-head record survives restarts) — that
    copy is the dedupe record only — and pass the instruction to the worker: on start,
    write the same-shaped marker **in its own worktree's `build/`** and maintain it
    there (the pushing checkout is the one the pre-push guard reads; write it
@@ -48,7 +49,9 @@ written by it, and it dies with the session — its stop summary names what rema
    session's work queue: the session fixes them itself — they are its files — or
    records them as follow-up tasks; a flagged P1/P2 is never dropped silently.
    Update the session's own dedupe marker copy to
-   `{"pr": <n>, "status": "stopped"}` — the worker never writes this checkout.
+   `{"pr": <n>, "status": "stopped", "bits_triggered": [...]}` — the list carried
+   from the worker's stop report, so the next launch seeds its marker from it. The
+   worker never writes this checkout.
    When the session is closing, say that babysitting stops with it.
 
 ## The loop (the worker's task)
@@ -166,10 +169,13 @@ findings are surfaced to the author, never auto-implemented."
    is recorded in the stop summary instead of retried.
 6. **Stop report.** Complete when CI is green, open mechanical findings are handled, or
    any cap hit (at most two fix-push rounds and two hours per run). Update the worker
-   worktree's marker to `{"pr": <n>, "status": "stopped"}`, remove the `dog-sitter`
-   label, and edit the status comment to append the stop summary (commits pushed,
-   findings flagged, threads left). The session updates its own dedupe copy
-   at handback — the worker never writes the session's checkout.
+   worktree's marker to `{"pr": <n>, "status": "stopped", "bits_triggered": [...]}`
+   — keeping the triggered-heads list, which the stop report names so the session's
+   handback copy carries it — remove the
+   `dog-sitter` label, and edit the status comment to append the stop summary (commits
+   pushed, findings flagged, threads left, `bits_triggered` heads). The session
+   updates its own dedupe copy at handback — the worker never writes the session's
+   checkout.
 
 ## Never
 
