@@ -30,6 +30,21 @@
 
 class ProfiledThread;
 
+// Linux forces blocked synchronous faults to the default action; Darwin spins,
+// so its fence is a no-op. Defer profiling walks while recovery faults are blocked.
+// Disarm before recovery or foreign handlers, which require nested delivery.
+class CrashBootstrapFence {
+public:
+    CrashBootstrapFence();
+    ~CrashBootstrapFence();
+    void disarm();
+    CrashBootstrapFence(const CrashBootstrapFence&) = delete;
+    CrashBootstrapFence& operator=(const CrashBootstrapFence&) = delete;
+private:
+    sigset_t _saved_mask;
+    bool _active;
+};
+
 // Block all profiling signals while a thread is exiting. Without this,
 // a profiling signal delivered during the release()/pthread-teardown race
 // window can allocate a new ProfiledThread that can never be freed (leak).
@@ -87,6 +102,10 @@ bool isInTrackedSignalContext();
 // Internal RAII type — do not instantiate directly; use the macros below.
 class SignalHandlerScope {
 public:
+#ifdef UNIT_TEST
+    // Observes the faultable bootstrap before any depth bookkeeping.
+    static void (*bootstrapHookForTest)();
+#endif
     SignalHandlerScope(bool shouldRunPriming = true);
     ~SignalHandlerScope();
     void release();
@@ -122,7 +141,7 @@ private:
 
 // Declare a scope guard local that increments the depth on entry and
 // decrements on scope exit.  Use as the first statement of non-profiling
-// signal handlers (segvHandler, busHandler and wakeupHandler) 
+// signal handlers, after CrashBootstrapFence in segvHandler/busHandler.
 #define SIGNAL_HANDLER_GUARD_NO_SAMPLE()                    \
       SignalHandlerScope _signal_handler_scope(false);
 

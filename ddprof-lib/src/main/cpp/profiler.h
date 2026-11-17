@@ -8,6 +8,8 @@
 #define _PROFILER_H
 
 #include "arch.h"
+#include "taskBlockDiagnostics.h"
+#include "nativeMem.h"
 #include "arguments.h"
 #include "callTraceStorage.h"
 #include "codeCache.h"
@@ -139,6 +141,9 @@ private:
   // JDK_8313796 workaround for unfixed versions
   static volatile bool _need_JDK_8313796_workaround;
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+  TaskBlockDiagnostics _task_block_diagnostics;
+#endif
   Mutex _state_lock;
   std::atomic<State> _state;
   // Thread-registration gates; the contract is in ProfilingEngines.md.
@@ -407,7 +412,7 @@ private:
     }
   }
 
-  static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
+  static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext, CrashBootstrapFence& bootstrap_fence);
   static void check_JDK_8313796_workaround();
 
   static Profiler *const _instance;
@@ -466,6 +471,9 @@ public:
         _remote_symbolication(false), _sanity_check_failed(false),
         _sanity_check_message(NULL), _dlopen_entry(NULL) {
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+    NativeMem::record(NM_MISC, sizeof(_task_block_diagnostics));
+#endif
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
     }
@@ -478,6 +486,9 @@ public:
         [this](const CallTraceIdSet& failed) { _block_tracker.onUnpreservedTraceIds(failed); });
   }
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+  TaskBlockDiagnostics& taskBlockDiagnostics() { return _task_block_diagnostics; }
+#endif
   // Test-only capability probe for the default synchronous wall-clock API tests.
   bool taskBlockSupportedForTest(JNIEnv* env, jthread thread);
 
@@ -736,7 +747,9 @@ public:
   };
   TaskBlockRecordResult recordTaskBlock(int tid, jthread thread,
                                         int start_depth,
-                                        TaskBlockEvent *event);
+                                        TaskBlockEvent *event
+                                        TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr,
+                                                                   TaskBlockStage* rejection = nullptr));
 #ifdef UNIT_TEST
   using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
@@ -749,7 +762,7 @@ public:
   static void setTaskBlockActivityHookForTest(TaskBlockActivityHook hook);
   static void runTaskBlockActivityHookForTest(TaskBlockActivityStage stage);
 #endif
-  bool tryEnterTaskBlockActivity();
+  bool tryEnterTaskBlockActivity(TASK_BLOCK_DIAGNOSTIC_ONLY(const TaskBlockDiagnosticRecord* diagnostic = nullptr));
   void leaveTaskBlockActivity();
   bool omitStacktraces() const { return _omit_stacktraces; }
 
@@ -781,6 +794,10 @@ public:
 #ifdef UNIT_TEST
   // Runs the reset steps of a fresh start() in isolation.  Compiled only into
   // gtest binaries.
+  // Observe admission/disarm and ThreadEnd before any JVM-dependent teardown.
+  static void (*crashHandlerAdmittedForTest)();
+  static void (*threadEndMarkedForTest)();
+  void onThreadEndForTest() { onThreadEnd(nullptr, nullptr, nullptr); }
   int resetRecordingStateForTest() { return resetRecordingState(); }
 
   bool beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }

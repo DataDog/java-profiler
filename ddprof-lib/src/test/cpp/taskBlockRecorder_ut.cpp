@@ -8,6 +8,8 @@
 #include "counters.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
+#include "taskBlockDiagnostics.h"
+
 #include "tsc.h"
 #include "vmEntry.h"
 
@@ -51,6 +53,17 @@ public:
   static void reserveCompetingTaskBlockActivity() {
     Profiler::instance()->_task_block_activity_state.fetch_add(1, std::memory_order_acq_rel);
   }
+  static int exchangeDepth(int depth) {
+    int previous = Profiler::instance()->_max_stack_depth;
+    Profiler::instance()->_max_stack_depth = depth;
+    return previous;
+  }
+  static CallTraceBuffer* exchangeBuffer(int stripe, CallTraceBuffer* buffer) {
+    auto*& value = Profiler::instance()->_calltrace_buffer[stripe];
+    auto* previous = value;
+    value = buffer;
+    return previous;
+  }
   static FlightRecorder& recorder() { return Profiler::instance()->_jfr; }
   static SpinLock& lock(int stripe) { return Profiler::instance()->_locks[stripe]; }
 };
@@ -67,6 +80,7 @@ public:
 };
 
 namespace {
+TaskBlockDiagnosticRecord diagnosticSince(u64 cursor, TaskBlockStage stage);
 
 std::atomic<Profiler::TaskBlockRecordResult> g_record_result{
     Profiler::TaskBlockRecordResult::RECORDED};
@@ -103,10 +117,12 @@ u64 minEligibleEndTicks(u64 start_ticks) {
 class TaskBlockRecorderTest : public ::testing::Test {
 protected:
   bool previous_enabled;
+  u64 diagnostic_cursor = 0;
 
   void SetUp() override {
     previous_enabled = ProfilerTestAccessor::exchangeTaskBlockEnabled(false);
     Counters::reset();
+    diagnostic_cursor = TaskBlockDiagnostics::instance().cursor();
     initializeTaskBlockDurationThreshold();
     g_record_result.store(Profiler::TaskBlockRecordResult::RECORDED,
                           std::memory_order_release);
@@ -136,6 +152,7 @@ TEST_F(TaskBlockRecorderTest, TraceContextIsRejectedBeforeDuration) {
   EXPECT_FALSE(taskBlockPassesBasicEligibility(100, 100, context));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TRACE_CONTEXT));
   EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_TRACE_CONTEXT);
 }
 
 TEST_F(TaskBlockRecorderTest, DurationThresholdIncludesExactBoundary) {
@@ -148,6 +165,8 @@ TEST_F(TaskBlockRecorderTest, DurationThresholdIncludesExactBoundary) {
   EXPECT_FALSE(taskBlockPassesBasicEligibility(
       start_ticks, passing_end - 1, context));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::BASIC_ELIGIBLE);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_DURATION_BELOW_MINIMUM);
   EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_THRESHOLD_INVALID));
 }
 
@@ -230,6 +249,7 @@ TEST_F(TaskBlockRecorderTest, AdmissionContentionDropsWithinSharedSpinBudget) {
   EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
   EXPECT_TRUE(Profiler::instance()->beginTaskBlockRotationForTest());
   Profiler::instance()->endTaskBlockRotationForTest();
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::ACTIVITY_CAS_BUDGET_EXHAUSTED);
 }
 
 TEST_F(TaskBlockRecorderTest, AdmissionRetriesTransientContentionWithoutDropping) {
@@ -250,6 +270,7 @@ TEST_F(TaskBlockRecorderTest, AdmissionRetriesTransientContentionWithoutDropping
     EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
     EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
   }
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::ACTIVITY_ADMITTED);
 }
 
 TEST_F(TaskBlockRecorderTest, AdmissionBudgetDropStillCompletesExitLifecycle) {
@@ -295,6 +316,9 @@ TEST_F(TaskBlockRecorderTest, AdmissionBudgetDropStillCompletesExitLifecycle) {
   EXPECT_EQ(1, g_record_calls.load(std::memory_order_acquire));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
   EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_ACTIVITY_REJECTED);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_MATCHED_AND_CLEARED);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::ACTIVITY_REUSED);
 }
 
 TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
@@ -310,6 +334,7 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
   profiler->endTaskBlockRotationForTest();
   ASSERT_TRUE(profiler->tryEnterTaskBlockActivity());
   profiler->leaveTaskBlockActivity();
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::ACTIVITY_CLOSED_INITIAL);
 }
 
 class AbandonedTaskBlockTest : public TaskBlockRecorderTest {
@@ -551,6 +576,7 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsEndWithoutStrandingLifecycle) {
   profiler->endTaskBlockRotationForTest();
   EXPECT_FALSE(result.get());
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_ACTIVITY_REJECTED);
 }
 
 TEST_F(TaskBlockRecorderTest, StaleCachedFilterSlotIsSelfHealedBeforeExit) {
@@ -592,6 +618,8 @@ TEST_F(TaskBlockRecorderTest, StaleCachedFilterSlotIsSelfHealedBeforeExit) {
   EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner())
       << "the live block run must still be cleared once the stale slot is "
          "healed, instead of being stranded by a spurious slot mismatch";
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_VALIDATION_BEGIN);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_MATCHED_AND_CLEARED);
 }
 
 TEST_F(TaskBlockRecorderTest, StackCaptureFailureIsCountedAndActivityReleased) {
@@ -615,6 +643,7 @@ TEST_F(TaskBlockRecorderTest, StackCaptureFailureIsCountedAndActivityReleased) {
   EXPECT_EQ(0, Profiler::instance()->taskBlockInflightForTest());
   ASSERT_TRUE(Profiler::instance()->tryEnterTaskBlockActivity());
   Profiler::instance()->leaveTaskBlockActivity();
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::TERMINAL_STACK_CAPTURE_FAILED);
 }
 
 TEST_F(TaskBlockRecorderTest, RecordFailureIsCountedAndActivityReleased) {
@@ -706,6 +735,7 @@ TEST_F(TaskBlockRecorderTest, ClosedAndDrainedRotationCannotGainAReservation) {
   profiler->endTaskBlockRotationForTest();
   Profiler::setTaskBlockActivityHookForTest(nullptr);
   admission_barrier = nullptr;
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::ACTIVITY_CLOSED_DURING_CAS);
 }
 
 // Access only configuration and locks; failure tests execute recordTaskBlock(),
@@ -925,6 +955,7 @@ TEST_F(TaskBlockRecorderTest, ExitPausedBeforeAdmissionCannotRecordIntoNextRecor
       current.get(), &filter, &tracker, nullptr, 0, token, 0, 0));
   EXPECT_EQ(1, g_record_calls.load(std::memory_order_acquire));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_RECORDING_DISABLED);
 }
 
 class TaskBlockRecorderOverflowTest : public TaskBlockRecorderTest {
@@ -998,6 +1029,12 @@ TEST_F(TaskBlockRecorderOverflowTest, ThreadTableOverflowIsCountedBeforeSerializ
   }
   EXPECT_EQ(1, changed_stripes);
   EXPECT_GT(total_after, total_before);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_EVENT_THREAD_ADMISSION);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::BUFFER_SERIALIZATION_BEGIN);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::BUFFER_ACCEPTED);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::TERMINAL_BUFFER_ACCEPTED);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::STACK_OMITTED_INTENTIONALLY);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::RECORD_REQUEST);
 }
 
 TEST_F(TaskBlockRecorderTest, InactiveExitRejectsMissingOrForeignCachedIdentity) {
@@ -1024,4 +1061,409 @@ TEST_F(TaskBlockRecorderTest, InactiveExitRejectsMissingOrForeignCachedIdentity)
     EXPECT_EQ(0, g_record_calls.load());
     EXPECT_EQ(nullptr, filter.lookupByTid(current->tid()));
   }
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::OWNER_SLOT_UNAVAILABLE);
+}
+
+namespace {
+TaskBlockDiagnosticRecord diagnosticSince(u64 cursor, TaskBlockStage stage) {
+  auto& diagnostics = TaskBlockDiagnostics::instance();
+  for (u64 ticket = cursor + 1; ticket <= diagnostics.cursor(); ++ticket) {
+    TaskBlockDiagnosticRecord record{};
+    if (diagnostics.read(ticket, record) &&
+        record.words[TaskBlockDiagnosticRecord::STAGE] == static_cast<u64>(stage)) return record;
+  }
+  ADD_FAILURE() << "missing stage " << static_cast<u64>(stage);
+  return {};
+}
+}
+
+TEST_F(TaskBlockRecorderTest, GenerationRejectionCarriesExpectedAndObservedIdentity) {
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  int slot = filter.registerThread(72345);
+  ASSERT_GE(slot, 0);
+  u64 token = tracker.enterBlockedRun(&filter, slot, OSThreadState::SLEEPING,
+                                     BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0, token);
+  u64 cursor = TaskBlockDiagnostics::instance().cursor();
+  BlockRunSnapshot snapshot{};
+  EXPECT_FALSE(tracker.snapshotAndExitBlockedRun(
+      &filter, slot, WallClockBlockTracker::tokenGeneration(token) + 1, &snapshot));
+  auto record = diagnosticSince(cursor, TaskBlockStage::EXIT_GENERATION_MISMATCH);
+  EXPECT_EQ(72345, record.words[TaskBlockDiagnosticRecord::TID]);
+  EXPECT_EQ(WallClockBlockTracker::encodeBlockRunToken(slot,
+                WallClockBlockTracker::tokenGeneration(token) + 1),
+            record.words[TaskBlockDiagnosticRecord::TOKEN]);
+  EXPECT_EQ(WallClockBlockTracker::tokenGeneration(token),
+            record.words[TaskBlockDiagnosticRecord::OBSERVED_GENERATION]);
+  EXPECT_EQ(filter.recordingEpoch(), record.words[TaskBlockDiagnosticRecord::CURRENT_EPOCH]);
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, tracker.slotForId(slot)->activeBlockOwner());
+}
+
+TEST_F(TaskBlockRecorderOverflowTest, RecorderRefusalAndTerminalShareEventIdentity) {
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(12345), ProfiledThread::deleteForTest);
+  int slot = filter.ensureOwnerSlot(*current);
+  ASSERT_GE(slot, 0);
+  TaskBlockDiagnosticRecord identity{};
+  const u64 token = tracker.enterBlockedRun(&filter, slot, OSThreadState::SLEEPING,
+      BlockRunOwner::TASK_BLOCK, &identity);
+  ASSERT_NE(0, token);
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+  current->setTaskBlockDiagnosticOrigin(identity);
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  u64 cursor = TaskBlockDiagnostics::instance().cursor();
+  FlightRecorderTestAccessor::exchangeRecording(ProfilerTestAccessor::recorder(), nullptr);
+  EXPECT_FALSE(recordTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0,
+      token, 0x1234, 0));
+  auto refused = diagnosticSince(cursor, TaskBlockStage::REJECT_NO_RECORDING);
+  auto terminal = diagnosticSince(cursor, TaskBlockStage::TERMINAL_RECORD_FAILED);
+  EXPECT_EQ(static_cast<u64>(TaskBlockStage::REJECT_NO_RECORDING),
+            terminal.words[TaskBlockDiagnosticRecord::DETAIL]);
+  for (auto field : {TaskBlockDiagnosticRecord::TID, TaskBlockDiagnosticRecord::TOKEN,
+                     TaskBlockDiagnosticRecord::ORIGIN_EPOCH, TaskBlockDiagnosticRecord::LIFECYCLE}) {
+    EXPECT_EQ(identity.words[field], refused.words[field]);
+    EXPECT_EQ(identity.words[field], terminal.words[field]);
+  }
+  EXPECT_EQ(0x1234, terminal.words[TaskBlockDiagnosticRecord::BLOCKER]);
+  EXPECT_EQ(1, terminal.words[TaskBlockDiagnosticRecord::START]);
+  EXPECT_GT(terminal.words[TaskBlockDiagnosticRecord::END], 1);
+  EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot)->activeBlockOwner());
+}
+
+TEST_F(TaskBlockRecorderTest, OrderedTrackerExitRejectionsDoNotConsumeRun) {
+  for (auto stage : {TaskBlockStage::EXIT_NO_IDENTITY_SLOT, TaskBlockStage::EXIT_NO_BLOCK_SLOT,
+      TaskBlockStage::EXIT_ZERO_GENERATION, TaskBlockStage::EXIT_STATE_UNKNOWN,
+      TaskBlockStage::EXIT_OWNER_NONE, TaskBlockStage::EXIT_GENERATION_MISMATCH}) {
+    SCOPED_TRACE(static_cast<u64>(stage));
+    ThreadFilter registry;
+    registry.init("", true);
+    int slot = registry.registerThread(19765);
+    ASSERT_GE(slot, 0);
+    WallClockBlockTracker tracker;
+    if (stage != TaskBlockStage::EXIT_NO_BLOCK_SLOT) ASSERT_TRUE(tracker.ensureAllocated());
+    auto* block = tracker.slotForId(slot);
+    if (block != nullptr) {
+      block->setBlockGenerationForTest(9);
+      block->active_block_owner.store(static_cast<int>(BlockRunOwner::TASK_BLOCK), std::memory_order_release);
+      block->setActiveBlockState(OSThreadState::SLEEPING);
+      if (stage == TaskBlockStage::EXIT_STATE_UNKNOWN) block->setActiveBlockState(OSThreadState::UNKNOWN);
+      if (stage == TaskBlockStage::EXIT_OWNER_NONE) block->active_block_owner.store(0, std::memory_order_release);
+    }
+    u64 cursor = TaskBlockDiagnostics::instance().cursor();
+    BlockRunSnapshot snapshot{};
+    EXPECT_FALSE(tracker.snapshotAndExitBlockedRun(&registry,
+        stage == TaskBlockStage::EXIT_NO_IDENTITY_SLOT ? -1 : slot,
+        stage == TaskBlockStage::EXIT_ZERO_GENERATION ? 0 : 10, &snapshot));
+    auto record = diagnosticSince(cursor, stage);
+    if (stage != TaskBlockStage::EXIT_NO_IDENTITY_SLOT) {
+      EXPECT_EQ(19765, record.words[TaskBlockDiagnosticRecord::TID]);
+      EXPECT_GT(record.words[TaskBlockDiagnosticRecord::LIFECYCLE], 0);
+      EXPECT_EQ(registry.recordingEpoch(), record.words[TaskBlockDiagnosticRecord::CURRENT_EPOCH]);
+    }
+    if (block != nullptr) EXPECT_EQ(9, block->blockGeneration());
+  }
+}
+
+TEST_F(TaskBlockRecorderTest, TrackerEntryRefusalsHaveDistinctReceipts) {
+  for (auto stage : {TaskBlockStage::ENTER_UNKNOWN_STATE, TaskBlockStage::ENTER_NO_IDENTITY_SLOT,
+      TaskBlockStage::ENTER_NO_BLOCK_SLOT, TaskBlockStage::ENTER_INSIDE_CONTEXT_WINDOW,
+      TaskBlockStage::ENTER_OWNER_ALREADY_HELD, TaskBlockStage::ENTER_GENERATION_SATURATED}) {
+    SCOPED_TRACE(static_cast<u64>(stage));
+    ThreadFilter registry;
+    registry.init("", true);
+    int slot = registry.registerThread(17432);
+    ASSERT_GE(slot, 0);
+    WallClockBlockTracker tracker;
+    if (stage != TaskBlockStage::ENTER_NO_BLOCK_SLOT) ASSERT_TRUE(tracker.ensureAllocated());
+    if (stage == TaskBlockStage::ENTER_INSIDE_CONTEXT_WINDOW) {
+      registry.slotForId(slot)->context_window_state.store(1, std::memory_order_release);
+    }
+    if (stage == TaskBlockStage::ENTER_OWNER_ALREADY_HELD) {
+      tracker.slotForId(slot)->active_block_owner.store(static_cast<int>(BlockRunOwner::JAVA), std::memory_order_release);
+    }
+    if (stage == TaskBlockStage::ENTER_GENERATION_SATURATED) {
+      tracker.slotForId(slot)->setBlockGenerationForTest(WallClockBlockTracker::kMaxBlockRunGeneration);
+    }
+    u64 cursor = TaskBlockDiagnostics::instance().cursor();
+    EXPECT_EQ(0, tracker.enterBlockedRun(&registry,
+        stage == TaskBlockStage::ENTER_NO_IDENTITY_SLOT ? -1 : slot,
+        stage == TaskBlockStage::ENTER_UNKNOWN_STATE ? OSThreadState::UNKNOWN : OSThreadState::SLEEPING,
+        BlockRunOwner::TASK_BLOCK));
+    auto record = diagnosticSince(cursor, stage);
+    if (stage != TaskBlockStage::ENTER_NO_IDENTITY_SLOT) {
+      EXPECT_EQ(17432, record.words[TaskBlockDiagnosticRecord::TID]);
+      EXPECT_GT(record.words[TaskBlockDiagnosticRecord::LIFECYCLE], 0);
+    }
+    EXPECT_EQ(0, record.words[TaskBlockDiagnosticRecord::TOKEN]);
+    if (stage == TaskBlockStage::ENTER_OWNER_ALREADY_HELD) {
+      EXPECT_EQ(BlockRunOwner::JAVA, tracker.slotForId(slot)->activeBlockOwner());
+    }
+  }
+}
+
+TEST_F(TaskBlockRecorderTest, LifecycleInvalidationsRetainClearedTokenWithoutInventingIdentity) {
+  for (auto stage : {TaskBlockStage::INVALIDATE_RESET, TaskBlockStage::INVALIDATE_REUSE,
+      TaskBlockStage::INVALIDATE_ALL, TaskBlockStage::INVALIDATE_CONTEXT, TaskBlockStage::INVALIDATE_RETIRE}) {
+    ThreadFilter registry;
+    WallClockBlockTracker tracker;
+    registry.setBlockTracker(&tracker);
+    registry.init("", true);
+    int slot = registry.registerThread(16234);
+    ASSERT_GE(slot, 0);
+    u64 token = tracker.enterBlockedRun(&registry, slot, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+    ASSERT_NE(0, token);
+    u64 cursor = TaskBlockDiagnostics::instance().cursor();
+    switch (stage) {
+      case TaskBlockStage::INVALIDATE_RESET: tracker.resetSlot(slot); break;
+      case TaskBlockStage::INVALIDATE_REUSE: tracker.resetSlotForReuse(slot); break;
+      case TaskBlockStage::INVALIDATE_ALL: tracker.resetAll(); break;
+      case TaskBlockStage::INVALIDATE_CONTEXT: tracker.clearActiveBlockRun(slot); break;
+      case TaskBlockStage::INVALIDATE_RETIRE: EXPECT_TRUE(tracker.retireSlot(slot, 16234)); break;
+      default: FAIL();
+    }
+    auto record = diagnosticSince(cursor, stage);
+    EXPECT_EQ(token, record.words[TaskBlockDiagnosticRecord::TOKEN]);
+    EXPECT_EQ(0, record.words[TaskBlockDiagnosticRecord::VALID]);
+    EXPECT_EQ(0, record.words[TaskBlockDiagnosticRecord::TID]);
+    EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot)->activeBlockOwner());
+  }
+}
+
+TEST_F(TaskBlockRecorderTest, TlsAndNonpositiveDurationRefusalsAreIdentified) {
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(14532), ProfiledThread::deleteForTest);
+  EXPECT_FALSE(recordTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, 0, 1, 0));
+  EXPECT_FALSE(recordTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, 123, 1, 0));
+  Context context{};
+  EXPECT_FALSE(taskBlockPassesBasicEligibility(100, 100, context));
+  EXPECT_FALSE(taskBlockPassesBasicEligibility(101, 100, context));
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_ZERO_TOKEN);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_TLS_TOKEN_MISMATCH);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_DURATION_NOT_POSITIVE);
+}
+
+TEST_F(TaskBlockRecorderOverflowTest, RealRecorderLockAndStripeRefusalsReachMappedTerminal) {
+  Context context{};
+  auto attempt = [&] {
+    return recordTaskBlockIfEligible(12765, nullptr, 0, 1, minEligibleEndTicks(1),
+        context, 4321, 0, OSThreadState::SLEEPING);
+  };
+  {
+    ExclusiveLockGuard lock(&FlightRecorderTestAccessor::lock(ProfilerTestAccessor::recorder()));
+    EXPECT_FALSE(attempt());
+  }
+  auto refusal = diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_RECORDER_SHARED_LOCK);
+  auto terminal = diagnosticSince(diagnostic_cursor, TaskBlockStage::TERMINAL_RECORD_FAILED);
+  EXPECT_EQ(static_cast<u64>(TaskBlockStage::REJECT_RECORDER_SHARED_LOCK), terminal.words[TaskBlockDiagnosticRecord::DETAIL]);
+  EXPECT_EQ(12765, refusal.words[TaskBlockDiagnosticRecord::TID]);
+  u64 cursor = TaskBlockDiagnostics::instance().cursor();
+  {
+    std::vector<std::unique_ptr<ExclusiveLockGuard>> locks;
+    for (int i = 0; i < CONCURRENCY_LEVEL; ++i) locks.emplace_back(new ExclusiveLockGuard(&ProfilerTestAccessor::lock(i)));
+    EXPECT_FALSE(attempt());
+  }
+  diagnosticSince(cursor, TaskBlockStage::REJECT_STRIPE_BUSY);
+  terminal = diagnosticSince(cursor, TaskBlockStage::TERMINAL_RECORD_FAILED);
+  EXPECT_EQ(static_cast<u64>(TaskBlockStage::REJECT_STRIPE_BUSY), terminal.words[TaskBlockDiagnosticRecord::DETAIL]);
+}
+
+namespace {
+int task_stack_count = 0;
+jvmtiError JNICALL taskStackForDiagnostics(jvmtiEnv*, jthread, jint, jint, jvmtiFrameInfo* frames, jint* count) {
+  *count = task_stack_count;
+  if (*count != 0) frames[0] = {reinterpret_cast<jmethodID>(1), 12};
+  return JVMTI_ERROR_NONE;
+}
+class TaskBlockStackState {
+  bool omit;
+  int depth;
+  std::array<CallTraceBuffer*, CONCURRENCY_LEVEL> previous{};
+  jvmtiEnv* jvmti;
+public:
+  explicit TaskBlockStackState(jvmtiEnv* environment)
+      : omit(ProfilerTestAccessor::exchangeOmitStacktraces(false)),
+        depth(ProfilerTestAccessor::exchangeDepth(0)),
+        jvmti(VMTestAccessor::exchangeJvmti(environment)) {
+    for (int i = 0; i < CONCURRENCY_LEVEL; ++i) previous[i] = ProfilerTestAccessor::exchangeBuffer(i, nullptr);
+  }
+  ~TaskBlockStackState() {
+    VMTestAccessor::exchangeJvmti(jvmti);
+    for (int i = 0; i < CONCURRENCY_LEVEL; ++i) ProfilerTestAccessor::exchangeBuffer(i, previous[i]);
+    ProfilerTestAccessor::exchangeDepth(depth);
+    ProfilerTestAccessor::exchangeOmitStacktraces(omit);
+    task_stack_count = 0;
+  }
+  TaskBlockStackState(const TaskBlockStackState&) = delete;
+  TaskBlockStackState& operator=(const TaskBlockStackState&) = delete;
+};
+}
+
+TEST_F(TaskBlockRecorderOverflowTest, RealStackSetupAndEmptyCaptureRefusalsAreIdentified) {
+  std::vector<CallTraceBuffer> buffer(CallTraceBuffer::capacity(4, ALLOCSTACK_JVMTI));
+  jvmtiInterface_1_ table{};
+  table.GetStackTrace = taskStackForDiagnostics;
+  jvmtiEnv jvmti{&table};
+  TaskBlockStackState state(&jvmti);
+  Context context{};
+  auto attempt = [&] {
+    return recordTaskBlockIfEligible(12345, nullptr, 0, 1, minEligibleEndTicks(1),
+        context, 123, 0, OSThreadState::SLEEPING);
+  };
+  EXPECT_FALSE(attempt());
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_STACK_DEPTH_NONPOSITIVE);
+  ProfilerTestAccessor::exchangeDepth(4);
+  EXPECT_FALSE(attempt());
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_CALLTRACE_BUFFER_MISSING);
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) ProfilerTestAccessor::exchangeBuffer(i, buffer.data());
+  EXPECT_FALSE(attempt());
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::REJECT_STACK_CAPTURE_EMPTY_OR_ERROR);
+  task_stack_count = 1;
+  EXPECT_TRUE(attempt());
+  auto ready = diagnosticSince(diagnostic_cursor, TaskBlockStage::STACK_READY);
+  EXPECT_GT(ready.words[TaskBlockDiagnosticRecord::DETAIL], 0);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::TERMINAL_BUFFER_ACCEPTED);
+
+}
+
+TEST_F(TaskBlockRecorderTest, ContextChangeAfterOwnerCasReleasesOnlyTemporaryOwnership) {
+  ThreadFilter registry;
+  WallClockBlockTracker tracker;
+  registry.setBlockTracker(&tracker);
+  registry.init("", true);
+  int slot = registry.registerThread(14567);
+  ASSERT_GE(slot, 0);
+  struct ContextHook {
+    ContextHook() {
+      WallClockBlockTracker::BlockState::prepare_context_hook_for_test = [](ThreadFilter::Slot* identity) {
+        identity->context_window_state.store(2, std::memory_order_release);
+      };
+    }
+    ~ContextHook() { WallClockBlockTracker::BlockState::prepare_context_hook_for_test = nullptr; }
+    ContextHook(const ContextHook&) = delete;
+    ContextHook& operator=(const ContextHook&) = delete;
+  } hook;
+  EXPECT_EQ(0, tracker.enterBlockedRun(&registry, slot, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK));
+  auto record = diagnosticSince(diagnostic_cursor, TaskBlockStage::ENTER_CONTEXT_CHANGED_AFTER_OWNER_CAS);
+  EXPECT_EQ(2, record.words[TaskBlockDiagnosticRecord::DETAIL]);
+  EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot)->activeBlockOwner());
+  EXPECT_EQ(0, tracker.slotForId(slot)->blockGeneration());
+}
+
+TEST_F(TaskBlockRecorderTest, SlotMismatchAndContextCrossingRemainDistinctFromRecorderRefusals) {
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> first(
+      ProfiledThread::forTid(17453), ProfiledThread::deleteForTest);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> second(
+      ProfiledThread::forTid(17454), ProfiledThread::deleteForTest);
+  const int slot = filter.ensureOwnerSlot(*first);
+  ASSERT_GE(slot, 0);
+  ASSERT_GE(filter.ensureOwnerSlot(*second), 0);
+  const u64 token = tracker.enterBlockedRun(&filter, slot, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0, token);
+  Context context{};
+  EXPECT_FALSE(finishTaskBlockAtExit(second.get(), &filter, &tracker, nullptr, 0,
+      token, 1, context, 51, 0, minEligibleEndTicks(1)));
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::OWNER_SLOT_MISMATCH);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_VALIDATION_REJECTED);
+  EXPECT_EQ(BlockRunOwner::TASK_BLOCK, tracker.slotForId(slot)->activeBlockOwner());
+  filter.onContextWindowEnter(*first);
+  filter.onContextWindowExit(*first);
+  EXPECT_FALSE(finishTaskBlockAtExit(first.get(), &filter, &tracker, nullptr, 0,
+      token, 1, context, 52, 0, minEligibleEndTicks(1)));
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_CONTEXT_WINDOW_INELIGIBLE);
+  EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot)->activeBlockOwner());
+  EXPECT_EQ(0, g_record_calls.load());
+}
+
+TEST_F(TaskBlockRecorderTest, MatchedPairedExitCarriesOriginAndForeignTokenDoesNotBorrowIt) {
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(16324), ProfiledThread::deleteForTest);
+  int slot = filter.ensureOwnerSlot(*current);
+  ASSERT_GE(slot, 0);
+  u64 token = tracker.enterBlockedRun(&filter, slot, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0, token);
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+  auto origin = TaskBlockDiagnostics::identity(&filter, slot, token);
+  origin.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH] = filter.recordingEpoch();
+  origin.words[TaskBlockDiagnosticRecord::VALID] |= TaskBlockDiagnosticRecord::HAS_ORIGIN;
+  current->setTaskBlockDiagnosticOrigin(origin);
+  EXPECT_FALSE(recordTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, token + 1, 61, 0));
+  auto rejected = diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_TLS_TOKEN_MISMATCH);
+  EXPECT_EQ(0, rejected.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH]);
+  EXPECT_EQ(token, rejected.words[TaskBlockDiagnosticRecord::DETAIL]);
+  EXPECT_TRUE(recordTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, token, 62, 0));
+  auto armed = diagnosticSince(diagnostic_cursor, TaskBlockStage::TLS_ARMED);
+  EXPECT_EQ(token, armed.words[TaskBlockDiagnosticRecord::TOKEN]);
+  EXPECT_EQ(1, armed.words[TaskBlockDiagnosticRecord::START]);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_CALLED);
+  diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_TLS_EXTRACTED);
+  auto eligible = diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_ELIGIBLE);
+  EXPECT_EQ(token, eligible.words[TaskBlockDiagnosticRecord::TOKEN]);
+  EXPECT_EQ(filter.recordingEpoch(), eligible.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH]);
+  EXPECT_EQ(filter.slotForId(slot)->lifecycleGeneration(), eligible.words[TaskBlockDiagnosticRecord::LIFECYCLE]);
+}
+
+TEST_F(TaskBlockRecorderTest, StoppedRegistryFallbackReceiptSurvivesRestart) {
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(15432), ProfiledThread::deleteForTest);
+  int slot = filter.ensureOwnerSlot(*current);
+  ASSERT_GE(slot, 0);
+  u64 token = tracker.enterBlockedRun(&filter, slot, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+  ASSERT_NE(0, token);
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
+  filter.deactivateRecording();
+  EXPECT_FALSE(recordTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, token, 71, 0));
+  auto fallback = diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_CACHED_SLOT_FALLBACK);
+  EXPECT_EQ(token, fallback.words[TaskBlockDiagnosticRecord::TOKEN]);
+  filter.init("", true);
+  auto retained = diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_CACHED_SLOT_FALLBACK);
+  EXPECT_EQ(fallback.words, retained.words);
+  u64 cursor = TaskBlockDiagnostics::instance().cursor();
+  int rebound = filter.ensureOwnerSlot(*current);
+  ASSERT_EQ(slot, rebound);
+  TaskBlockDiagnosticRecord admitted{};
+  u64 next = tracker.enterBlockedRun(&filter, rebound, OSThreadState::SLEEPING,
+      BlockRunOwner::TASK_BLOCK, &admitted);
+  ASSERT_NE(0, next);
+  auto fresh = diagnosticSince(cursor, TaskBlockStage::ENTER_TOKEN_PUBLISHED);
+  EXPECT_EQ(next, admitted.words[TaskBlockDiagnosticRecord::TOKEN]);
+  EXPECT_EQ(next, fresh.words[TaskBlockDiagnosticRecord::TOKEN]);
+  EXPECT_NE(token, next);
+  EXPECT_EQ(15432, fresh.words[TaskBlockDiagnosticRecord::TID]);
+  auto first = diagnosticSince(diagnostic_cursor, TaskBlockStage::ENTER_TOKEN_PUBLISHED);
+  EXPECT_NE(first.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH], fresh.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH]);
+  EXPECT_EQ(first.words[TaskBlockDiagnosticRecord::LIFECYCLE], fresh.words[TaskBlockDiagnosticRecord::LIFECYCLE]);
+  filter.retireThreadByTid(15432);
+  cursor = TaskBlockDiagnostics::instance().cursor();
+  const int reused = filter.registerThread(15432);
+  ASSERT_EQ(slot, reused);
+  ASSERT_NE(0, tracker.enterBlockedRun(&filter, reused, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK));
+  auto replacement = diagnosticSince(cursor, TaskBlockStage::ENTER_TOKEN_PUBLISHED);
+  EXPECT_NE(fresh.words[TaskBlockDiagnosticRecord::LIFECYCLE], replacement.words[TaskBlockDiagnosticRecord::LIFECYCLE]);
+  EXPECT_EQ(fresh.words[TaskBlockDiagnosticRecord::TID], replacement.words[TaskBlockDiagnosticRecord::TID]);
 }

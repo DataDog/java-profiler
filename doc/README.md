@@ -20,7 +20,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ### Architecture
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots and exact-copy failure handling
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
-- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, recordings, buffers, metadata and constant pools
+- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer and independent DEBUG TaskBlock receipts: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, recordings, buffers, metadata and constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
 - [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, pinned Linux import-layout validation and allocation sampling
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir, retained-weight epoch provenance and retryable teardown-tail flush; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
@@ -28,7 +28,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), paired TaskBlock platform-thread classification and continuation completeness
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
-- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching
+- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching; crash-handler bootstrap (raw-identity thread-exit registry, Linux-only fault/profiling-mask fence)
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
 - [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership, paired TaskBlock interval recovery and retained filtered/unfiltered unowned wall context
 
