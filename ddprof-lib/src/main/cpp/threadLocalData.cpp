@@ -97,14 +97,14 @@ void (*ProfiledThread::beforeFreeValueForTest)() = nullptr;
 #endif
 
 void ProfiledThread::freeValue(void* value) {
+  // Block before the fallback exit mark (mirrors Profiler::onThreadEnd) so no
+  // sampler can fault on the marked identity; it also keeps a signal from
+  // re-allocating a ProfiledThread that could never be released.
+  blockProfilingForExit();
 #ifdef UNIT_TEST
   if (beforeFreeValueForTest != nullptr) beforeFreeValueForTest();
 #endif
   ThreadExitRegistry::markCurrent();
-
-  // Block future profiling signals that prevents re-allocating
-  // ProfiledThread that cannot be released - memory leak
-  blockProfilingForExit();
 
   // otel_thread_ctx_v1 (a genuine thread_local, not the custom ThreadLocal
   // above) is nulled by ThreadLocalDataPool::release() below -- via
