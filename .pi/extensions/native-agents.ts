@@ -40,6 +40,8 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("tool_result", async (event, ctx) => {
     if (injected) return undefined;
+    // A call made by another tool (codemode) returns its result to that tool, not to the model.
+    if (event.parentToolCallId !== undefined) return undefined;
     if (event.toolName !== "read" && event.toolName !== "edit" && event.toolName !== "write") return undefined;
     let path = String(event.input.path ?? "").replace(/^@/, "");
     if (path.startsWith("~/")) path = join(homedir(), path.slice(1));

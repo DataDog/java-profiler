@@ -211,6 +211,9 @@ C++ engine `ddprof-lib/src/main/cpp/` (implementation-specific code under `hotsp
 - Keep code lean and easy to follow; factor self-contained code into short functions with
   explicit names. Datadog-specific extensions are integrated directly into base files (e.g.
   `stackWalker.h`); exclude `ddprof-lib/build/async-profiler` from usage searches.
+- Java code on context and sampling paths (e.g. `ContextValueCache`, `ContextSetter`)
+  minimizes allocations: no string concatenation, boxing or varargs there, also when
+  building error or label strings.
 - Copyright: new source files (including tests) start with the short header
   `Copyright <current year>, Datadog, Inc.` — no full license text block. When modifying
   an existing Datadog copyright, update the end year (e.g. `2025, 2026, Datadog`) in every

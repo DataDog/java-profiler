@@ -28,7 +28,8 @@ fi
 # The driver replays events against one extension instance and prints one line per
 # tool_result: "inject <first item kept> <instructions text present> <structuredContent kept>",
 # or "none" when the handler leaves the result alone. A step "sh:<command>" runs a shell
-# command, and "cd:<dir>" changes the cwd that later events pass.
+# command, "cd:<dir>" changes the cwd that later events pass, and "nested:<tool>:<path>" is a
+# tool_result for a call that another tool made (parentToolCallId set).
 cat > "$TEMP_DIR/driver.mjs" <<'EOF'
 const [ext, cwd0, ...steps] = process.argv.slice(2);
 const mod = await import(ext);
@@ -41,13 +42,14 @@ for (const step of steps) {
   const arg = step.slice(ev.length + 1);
   if (ev === "sh") { (await import("node:child_process")).execSync(arg, { shell: "/bin/bash", stdio: "pipe" }); continue; }
   if (ev === "cd") { cwd = arg; continue; }
-  if (ev !== "tool_result") { await handlers[ev]({ type: ev }, { cwd }); continue; }
+  if (ev !== "tool_result" && ev !== "nested") { await handlers[ev]({ type: ev }, { cwd }); continue; }
   const tool = arg.split(":", 1)[0];
   const path = arg.slice(tool.length + 1);
   const content = [{ type: "text", text: "ORIGINAL" }];
   const structuredContent = { kept: true };
-  const r = await handlers.tool_result({ type: ev, toolName: tool, input: { path, command: path },
-    content, structuredContent, isError: false }, { cwd });
+  const parent = ev === "nested" ? { parentToolCallId: "call-1" } : {};
+  const r = await handlers.tool_result({ type: "tool_result", toolName: tool, input: { path, command: path },
+    content, structuredContent, isError: false, ...parent }, { cwd });
   if (!r) { out.push("none"); continue; }
   const text = r.content.slice(1).map((c) => c.text).join("");
   out.push(["inject", r.content[0].text === "ORIGINAL", text.includes("NATIVE-RULES-TOKEN"),
@@ -99,6 +101,8 @@ check "a directory name that only starts like a covered dir" "none" "$REPO" \
 check "the covered dir itself is not below it" "none" "$REPO" tool_result:read:ddprof-lib/src/main/cpp
 check "a path outside the checkout" "none" "$REPO" \
   tool_result:read:../other/ddprof-lib/src/main/cpp/a.cpp
+check "a nested read does not inject and does not use up the injection" "none,$HIT" "$REPO" \
+  nested:read:ddprof-lib/src/main/cpp/a.cpp tool_result:read:ddprof-lib/src/main/cpp/a.cpp
 check "bash and grep are not covered" "none,none" "$REPO" \
   tool_result:bash:ddprof-lib/src/main/cpp/a.cpp tool_result:grep:ddprof-lib/src/main/cpp/a.cpp
 check "empty path" "none" "$REPO" tool_result:read:
