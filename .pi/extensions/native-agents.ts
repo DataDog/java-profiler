@@ -1,14 +1,26 @@
 // Copyright 2026, Datadog, Inc.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 // Pi may run in a subdirectory: the list and its paths are relative to the checkout's top level.
 function checkoutRoot(cwd: string): string {
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   return top.status === 0 ? top.stdout.trim() : cwd;
+}
+
+// p with symlinks resolved, like git's root, so both sides of relative() agree. A write may
+// name a file and directories that do not exist yet: those keep their names below the deepest
+// existing ancestor.
+function realize(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    const parent = dirname(p);
+    return parent === p ? p : join(realize(parent), basename(p));
+  }
 }
 
 // The instructions for rel, a path relative to root, if it is below a directory listed in
@@ -46,8 +58,8 @@ export default function (pi: ExtensionAPI) {
     let path = String(event.input.path ?? "").replace(/^@/, "");
     if (path.startsWith("~/")) path = join(homedir(), path.slice(1));
     let root = roots.get(ctx.cwd);
-    if (root === undefined) roots.set(ctx.cwd, (root = checkoutRoot(ctx.cwd)));
-    const rel = relative(root, resolve(ctx.cwd, path)).split(sep).join("/");
+    if (root === undefined) roots.set(ctx.cwd, (root = realize(checkoutRoot(ctx.cwd))));
+    const rel = relative(root, realize(resolve(ctx.cwd, path))).split(sep).join("/");
     const found = instructionsFor(root, rel);
     if (!found) return undefined;
     injected = true;

@@ -151,5 +151,25 @@ cp "$REPO/$INSTRUCTIONS" "$TEMP_DIR/nogit/$INSTRUCTIONS"
 check "outside a git checkout, paths are relative to the cwd" "$HIT" "$TEMP_DIR/nogit" \
   tool_result:read:ddprof-lib/src/main/cpp/a.cpp
 
+# git prints the physical checkout root; the cwd and the tool paths may go through symlinks.
+ln -s "$REPO" "$TEMP_DIR/repolink"
+ln -s "$REPO/ddprof-lib/src/main/cpp" "$TEMP_DIR/cpplink"
+ln -s "$TEMP_DIR/nogit" "$TEMP_DIR/nogitlink"
+ln -s ../cpp "$REPO/ddprof-lib/src/main/java/cpplink"
+ln -s ../java "$REPO/ddprof-lib/src/main/cpp/javalink"
+check "a cwd reached through a symlink to the checkout" "$HIT" "$TEMP_DIR/repolink" \
+  tool_result:read:ddprof-lib/src/main/cpp/a.cpp
+check "a subdirectory cwd reached through a symlink" "$HIT" "$TEMP_DIR/repolink/ddprof-lib/src/main/java" \
+  tool_result:read:../cpp/a.cpp
+check "a tool path through a symlink to a covered dir" "$HIT" "$REPO" tool_result:read:"$TEMP_DIR/cpplink/a.cpp"
+check "a write of a new file in new dirs, through a symlink to the checkout" "$HIT" "$REPO" \
+  tool_result:write:"$TEMP_DIR/repolink/ddprof-lib/src/main/cpp/new1/new2/new.cpp"
+check "a symlink in the checkout to a covered dir" "$HIT" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/java/cpplink/a.cpp
+check "a symlink in a covered dir to another dir" "none" "$REPO" \
+  tool_result:read:ddprof-lib/src/main/cpp/javalink/A.java
+check "outside a git checkout, a cwd reached through a symlink" "$HIT" "$TEMP_DIR/nogitlink" \
+  tool_result:read:ddprof-lib/src/main/cpp/a.cpp
+
 echo "$TESTS tests, $FAILED failed"
 [ "$FAILED" -eq 0 ]
