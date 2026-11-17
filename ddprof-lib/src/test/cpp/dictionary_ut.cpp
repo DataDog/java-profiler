@@ -24,9 +24,19 @@
 
 // ── Dictionary ─────────────────────────────────────────────────────────────
 
+// Fault-injection builds fail a key allocation at random, so an insert that must
+// succeed retries; without injection it succeeds on the first try.
+static unsigned int mustLookup(Dictionary &d, const char *key, size_t length) {
+    unsigned int id;
+    do {
+        id = d.lookup(key, length);
+    } while (id == 0);
+    return id;
+}
+
 TEST(DictionaryTest, LookupReturnsSameIdForSameKey) {
     Dictionary d(0);
-    unsigned int id1 = d.lookup("hello", 5);
+    unsigned int id1 = mustLookup(d, "hello", 5);
     EXPECT_GT(id1, 0U);
     EXPECT_EQ(id1, d.lookup("hello", 5));
 }
@@ -57,14 +67,14 @@ TEST(DictionaryTest, NativeMemAccountingBalancesAcrossLifecycle) {
 
 TEST(DictionaryTest, LookupReturnsDifferentIdsForDifferentKeys) {
     Dictionary d(0);
-    unsigned int a = d.lookup("alpha", 5);
-    unsigned int b = d.lookup("beta",  4);
+    unsigned int a = mustLookup(d, "alpha", 5);
+    unsigned int b = mustLookup(d, "beta",  4);
     EXPECT_NE(a, b);
 }
 
 TEST(DictionaryTest, BoundedLookupSkipsInsertWhenAtLimit) {
     Dictionary d(0);
-    d.lookup("key1", 4);
+    mustLookup(d, "key1", 4);
     // size is 1, limit is 1 → insert not allowed
     unsigned int r = d.bounded_lookup("key2", 4, 1);
     EXPECT_EQ(r, static_cast<unsigned int>(INT_MAX));
@@ -72,16 +82,16 @@ TEST(DictionaryTest, BoundedLookupSkipsInsertWhenAtLimit) {
 
 TEST(DictionaryTest, BoundedLookupReturnsExistingIdWhenAtLimit) {
     Dictionary d(0);
-    unsigned int existing = d.lookup("key1", 4);
+    unsigned int existing = mustLookup(d, "key1", 4);
     // size is 1, limit is 1 → existing key still found
     EXPECT_EQ(existing, d.bounded_lookup("key1", 4, 1));
 }
 
 TEST(DictionaryTest, CollectReturnsAllInsertedEntries) {
     Dictionary d(0);
-    d.lookup("a", 1);
-    d.lookup("b", 1);
-    d.lookup("c", 1);
+    mustLookup(d, "a", 1);
+    mustLookup(d, "b", 1);
+    mustLookup(d, "c", 1);
     std::map<unsigned int, const char*> m;
     d.collect(m);
     EXPECT_EQ(m.size(), 3U);
@@ -89,7 +99,7 @@ TEST(DictionaryTest, CollectReturnsAllInsertedEntries) {
 
 TEST(DictionaryTest, ClearResetsToEmpty) {
     Dictionary d(0);
-    d.lookup("x", 1);
+    mustLookup(d, "x", 1);
     d.clear();
     std::map<unsigned int, const char*> m;
     d.collect(m);
@@ -98,14 +108,11 @@ TEST(DictionaryTest, ClearResetsToEmpty) {
 
 // A failed overflow-table calloc must fail the insert, not be stored through.
 TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
-#ifdef __FAULT_INJECTION__
-    GTEST_SKIP() << "needs a deterministic fill; key allocation fails at random here";
-#endif
     Dictionary d(0);
     char key[32];
     for (int i = 0; i < 5000; i++) {  // fills the root table and some overflow tables
         snprintf(key, sizeof(key), "fill_%d", i);
-        ASSERT_GT(d.lookup(key, strlen(key)), 0U);
+        mustLookup(d, key, strlen(key));
     }
     long long live_before = NativeMem::live(NM_DICTIONARY);
 
@@ -128,22 +135,21 @@ TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
 
     EXPECT_GT(d.lookup("fill_0", 6), 0U);  // existing keys still resolve
     d.failTableAllocationForTest(false);
-    EXPECT_GT(d.lookup("after_recovery", 14), 0U);
+    EXPECT_GT(mustLookup(d, "after_recovery", 14), 0U);
 }
 
 // A failed insert must never hand a caller id 0: it resolves to UNRESOLVED_ID,
 // and the dictionary reports the failure so the owner can emit that entry.
 TEST(DictionaryTest, SymbolDictionaryResolvesFailedInsertsToUnresolvedId) {
-#ifdef __FAULT_INJECTION__
-    GTEST_SKIP() << "needs a deterministic fill; key allocation fails at random here";
-#endif
     SymbolDictionary d;
     char key[32];
     for (int i = 0; i < 3 * TABLE_CAPACITY; i++) {
         snprintf(key, sizeof(key), "fill_%d", i);
         ASSERT_NE(0U, d.lookup(key, strlen(key)));
     }
-    EXPECT_FALSE(d.failed());
+#ifndef __FAULT_INJECTION__
+    EXPECT_FALSE(d.failed());  // injection can fail a key insert at random
+#endif
 
     d.failTableAllocationForTest(true);
     int unresolved = 0;
