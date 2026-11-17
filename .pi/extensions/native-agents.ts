@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Pi may run in a subdirectory: the list and its paths are relative to the checkout's top level.
 function checkoutRoot(cwd: string): string {
@@ -21,6 +22,22 @@ function realize(p: string): string {
     const parent = dirname(p);
     return parent === p ? p : join(realize(parent), basename(p));
   }
+}
+
+// The absolute path that Pi's file tools use for input, or null for a file URL that Pi rejects.
+// Mirrors Pi's resolveToCwd, which the package does not export, without its Windows branch.
+function resolveToolPath(input: string, cwd: string): string | null {
+  let p = input.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
+  if (p === "~") p = homedir();
+  else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
+  else if (p.startsWith("file://")) {
+    try {
+      p = fileURLToPath(p);
+    } catch {
+      return null; // a host or an encoded "/", which the tool call itself fails on
+    }
+  }
+  return resolve(cwd, p);
 }
 
 // The instructions for rel, a path relative to root, if it is below a directory listed in
@@ -55,11 +72,11 @@ export default function (pi: ExtensionAPI) {
     // A call made by another tool (codemode) returns its result to that tool, not to the model.
     if (event.parentToolCallId !== undefined) return undefined;
     if (event.toolName !== "read" && event.toolName !== "edit" && event.toolName !== "write") return undefined;
-    let path = String(event.input.path ?? "").replace(/^@/, "");
-    if (path.startsWith("~/")) path = join(homedir(), path.slice(1));
+    const path = resolveToolPath(String(event.input.path ?? ""), ctx.cwd);
+    if (path === null) return undefined;
     let root = roots.get(ctx.cwd);
     if (root === undefined) roots.set(ctx.cwd, (root = realize(checkoutRoot(ctx.cwd))));
-    const rel = relative(root, realize(resolve(ctx.cwd, path))).split(sep).join("/");
+    const rel = relative(root, realize(path)).split(sep).join("/");
     const found = instructionsFor(root, rel);
     if (!found) return undefined;
     injected = true;

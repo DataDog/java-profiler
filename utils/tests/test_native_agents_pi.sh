@@ -171,5 +171,14 @@ check "a symlink in a covered dir to another dir" "none" "$REPO" \
 check "outside a git checkout, a cwd reached through a symlink" "$HIT" "$TEMP_DIR/nogitlink" \
   tool_result:read:ddprof-lib/src/main/cpp/a.cpp
 
+# The tool path normalizations that Pi's resolveToCwd applies.
+HOME="$REPO/ddprof-lib/src/main/cpp/home" check "a bare ~ is HOME" "$HIT" "$REPO" tool_result:read:"~"
+check "a file URL" "$HIT" "$REPO" tool_result:read:"file://$REPO/ddprof-lib/src/main/cpp/a.cpp"
+ln -s "$REPO/ddprof-lib/src/main/cpp" "$TEMP_DIR/cpp link"
+check "a file URL with a percent-encoded space" "$HIT" "$REPO" tool_result:read:"file://$TEMP_DIR/cpp%20link/a.cpp"
+check "a file URL with a host is left alone" "none,$HIT" "$REPO" \
+  tool_result:read:"file://host$REPO/ddprof-lib/src/main/cpp/a.cpp" tool_result:read:ddprof-lib/src/main/cpp/a.cpp
+check "a no-break space reads as a space" "$HIT" "$REPO" tool_result:read:"$TEMP_DIR/cpp"$'\xc2\xa0'"link/a.cpp"
+
 echo "$TESTS tests, $FAILED failed"
 [ "$FAILED" -eq 0 ]
