@@ -1,13 +1,3 @@
-<!-- cairn:knowledgebase begin (managed by cairn; do not edit manually) -->
-## Cairn knowledgebase (optional)
-
-If `.knowledgebase/memories/` exists, this repo carries distilled
-institutional memory from past cairn investigations (confirmed findings
-and refuted dead ends); if your harness also provides the cairn-memory
-skill, consult it before design, implementation, or review work here.
-If cairn is not available in your environment, skip this section —
-nothing else in this file depends on it.
-<!-- cairn:knowledgebase end -->
 
 **`.knowledgebase/` is written only by the cairn skills** (a hook blocks file-tool edits;
 `qualityChecks` checks the memory frontmatter). New memories travel with the change they
