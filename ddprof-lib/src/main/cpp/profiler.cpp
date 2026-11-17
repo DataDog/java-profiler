@@ -131,7 +131,16 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   registerThread(tid);
 }
 
+#ifdef UNIT_TEST
+void (*Profiler::threadEndMarkedForTest)() = nullptr;
+void (*Profiler::crashHandlerAdmittedForTest)() = nullptr;
+#endif
+
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  ThreadExitRegistry::markCurrent();
+#ifdef UNIT_TEST
+  if (threadEndMarkedForTest != nullptr) threadEndMarkedForTest();
+#endif
   // Thread teardown: no point to initialize TLS if not yet initialized
   ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
@@ -1674,7 +1683,34 @@ void Profiler::enableCpuEngine(int activated) {
   }
 }
 
+// All-zero sigaction: sa_handler == SIG_DFL and a zeroed sa_mask is the empty
+// set on Linux and macOS (bit-array sigset_t). Zero-initialized, so building
+// it involves no runtime constructor that would be unsafe in signal context.
+static const struct sigaction kDefaultAction = {};
+
+// Exiting-thread fault path: hand the fault to whoever owned it before us.
+// With no prior handler, the pre-profiler behavior is the default action, so
+// restore it and re-raise (both sigaction() and raise() are async-signal-safe).
+static void chainOrTerminate(int signo, siginfo_t *siginfo, void *ucontext,
+                             SigAction chain, SigAction orig) {
+  if (chain != nullptr) {
+    chain(signo, siginfo, ucontext);
+  } else if (orig != nullptr) {
+    orig(signo, siginfo, ucontext);
+  } else {
+    sigaction(signo, &kDefaultAction, nullptr);
+    raise(signo);
+  }
+}
+
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // Faults on an exiting thread skip the TLS bootstrap entirely: the lookup
+  // itself can fault during pthread teardown and re-enter the handler.
+  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    chainOrTerminate(signo, siginfo, ucontext, OS::getSegvChainTarget(), orig_segvHandler);
+    return;
+  }
+  CrashBootstrapFence bootstrap_fence;
   // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
   // null-pointer-check faults during normal Java execution.  When we chain to
   // it, that siglongjmp unwinds past our stack frame and skips the RAII
@@ -1689,7 +1725,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
   SIGNAL_HANDLER_GUARD_NO_SAMPLE();
-  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+  if (crashHandlerInternal(signo, siginfo, ucontext, bootstrap_fence)) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
@@ -1703,10 +1739,16 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // See segvHandler: exiting threads skip the faultable TLS bootstrap.
+  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    chainOrTerminate(signo, siginfo, ucontext, OS::getBusChainTarget(), orig_busHandler);
+    return;
+  }
+  CrashBootstrapFence bootstrap_fence;
   // See segvHandler: release before chaining in case the chained handler
   // siglongjmps through us.
   SIGNAL_HANDLER_GUARD_NO_SAMPLE();
-  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+  if (crashHandlerInternal(signo, siginfo, ucontext, bootstrap_fence)) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
@@ -1720,26 +1762,25 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
-int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
+int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext,
+                                   CrashBootstrapFence& bootstrap_fence) {
   ProfiledThread* thrd = ProfiledThread::current();
+  bool have_tls_protection = thrd != nullptr && thrd->enterCrashHandler();
+  bootstrap_fence.disarm();
+#ifdef UNIT_TEST
+  if (crashHandlerAdmittedForTest != nullptr) crashHandlerAdmittedForTest();
+#endif
 
-  // First, try to handle safefetch - this doesn't need TLS or any protection
-  // because it directly checks the PC and modifies ucontext to skip the fault.
-  // This must be checked first before any reentrancy checks.
+  // Admission is fenced, but safefetch must run before rejection: a nested
+  // recovery may occur at the crash-depth limit. Undo any successful admission.
   if (SafeAccess::handle_safefetch(signo, ucontext)) {
-    return 1;  // handled
-  }
-
-  // Reentrancy protection: use TLS-based tracking if available.
-  // If TLS is not available, the thread is not protected by
-  // siglongjmp, so bail out.
-  bool have_tls_protection = false;
-  if (thrd != nullptr) {
-    if (!thrd->enterCrashHandler()) {
-      // we are already in a crash handler; don't recurse!
-      return 0;  // not handled, safe to chain
+    if (have_tls_protection) {
+      thrd->exitCrashHandler();
     }
-    have_tls_protection = true;
+    return 1;
+  }
+  if (thrd != nullptr && !have_tls_protection) {
+    return 0;
   }
 
   StackFrame frame(ucontext);

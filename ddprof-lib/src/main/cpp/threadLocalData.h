@@ -183,6 +183,8 @@ public:
 #ifdef UNIT_TEST
   // Test-only hook invoked at the end of forTid(), see above.
   static void (*forTidTestHook)();
+  // Observes the registry before the fallback TSD mark can hide a missing early mark.
+  static void (*beforeFreeValueForTest)();
 
   // Exposes the private isClaimed() so a test can confirm a
   // ThreadLocalDataPool slot was released rather than left orphaned.

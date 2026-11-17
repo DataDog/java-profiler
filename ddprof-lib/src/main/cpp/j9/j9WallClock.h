@@ -19,6 +19,7 @@
 #define _J9_J9WALLCLOCK_H
 
 #include "engine.h"
+#include "threadExitRegistry.h"
 #include <pthread.h>
 
 class J9WallClock : public Engine {
@@ -33,6 +34,7 @@ private:
 
   static void *threadEntry(void *wall_clock) {
     ((J9WallClock *)wall_clock)->timerLoop();
+    ThreadExitRegistry::markCurrent();
     return NULL;
   }
 

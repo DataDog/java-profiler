@@ -4,6 +4,7 @@
  */
 
 #include "faultInjection.h"
+#include "threadExitRegistry.h"
 #include "threadLocalData.inline.h"
 #include "threadLocalDataPool.h"
 #include "context_api.h"
@@ -72,6 +73,7 @@ ProfiledThread* ProfiledThread::initCurrentThread() {
       ThreadLocalDataPool::release(primed);
     }
     _current_thread.set(tls);
+    ThreadExitRegistry::clearCurrent();
   }
   return tls;
 }
@@ -90,7 +92,16 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
   }
 }
 
+#ifdef UNIT_TEST
+void (*ProfiledThread::beforeFreeValueForTest)() = nullptr;
+#endif
+
 void ProfiledThread::freeValue(void* value) {
+#ifdef UNIT_TEST
+  if (beforeFreeValueForTest != nullptr) beforeFreeValueForTest();
+#endif
+  ThreadExitRegistry::markCurrent();
+
   // Block future profiling signals that prevents re-allocating
   // ProfiledThread that cannot be released - memory leak
   blockProfilingForExit();
