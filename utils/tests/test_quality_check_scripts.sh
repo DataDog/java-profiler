@@ -492,6 +492,10 @@ rc=0; out=$(python3 "$CM" --root "$CM_ROOT" --write 2>&1) || rc=$?
 expect "T6b --write" 0 "$rc" "$out" "CLAUDE.md: written"
 rc=0; out=$(python3 "$CM" --root "$CM_ROOT" 2>&1) || rc=$?
 expect "T6c canonical CLAUDE.md" 0 "$rc" "$out" "CLAUDE.md: OK"
+# The cairn hook skips a CLAUDE.md under 400 characters that names AGENTS.md; a longer stub gets its block.
+size=$(wc -c < "$CM_ROOT/CLAUDE.md")
+rc=0; [ "$size" -lt 400 ] && grep -q "AGENTS.md" "$CM_ROOT/CLAUDE.md" || rc=1
+expect "T6c2 canonical stub stays short enough for the cairn hook to skip (size $size)" 0 "$rc" ""
 CAIRN=$'<!-- cairn:knowledgebase begin (managed by cairn; do not edit manually) -->\n## Cairn\n\ntext\n<!-- cairn:knowledgebase end -->\n\n'
 add_cairn() {  # inserts $CAIRN after the heading, $1 times
   local i; { head -2 "$CM_ROOT/CLAUDE.md"; for ((i = 0; i < $1; i++)); do printf '%s' "$CAIRN"; done
@@ -568,7 +572,7 @@ printf '# CLAUDE.md\n\n@AGENTS.md\n' > "$STUB_TEXT"
 CM_ROOT="$TEMP_DIR/claude-md-literal"
 mkdir -p "$CM_ROOT" && (cd "$CM_ROOT" && git init -q && git config user.email t@example.com && git config user.name t)
 python3 "$CM" --root "$CM_ROOT" --write >/dev/null
-if cmp -s "$CM_ROOT/CLAUDE.md" "$REDIRECT_TEXT"; then pass; else fail "T6o --write does not write the redirect text"; fi
+if cmp -s "$CM_ROOT/CLAUDE.md" "$STUB_TEXT"; then pass; else fail "T6o --write does not write the stub text"; fi
 cm_commit() {  # cm_commit <file>: commits <file> as CLAUDE.md
   cp "$1" "$CM_ROOT/CLAUDE.md" && (cd "$CM_ROOT" && git add CLAUDE.md && git commit -qm "$(basename "$1")")
 }
