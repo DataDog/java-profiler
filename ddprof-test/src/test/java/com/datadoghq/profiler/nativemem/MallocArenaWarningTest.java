@@ -26,13 +26,9 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests {@code datadog.MallocArenaStats} (one per chunk on Linux glibc) and {@code
- * datadog.MallocArenaWarning}. The quota tests skip without a cgroup CPU quota; run them with
- * {@code --cpus=2 --memory=2g} so the churn exceeds 1% of the native headroom ({@code
- * arenawarn=1}).
- *
- * <p>The no-warning test needs {@code MALLOC_ARENA_MAX} = 8 * ceil(quota) in the JVM environment.
- * The warning test skips when the variable is set to that value or less.
+ * Tests {@code datadog.MallocArenaStats} and {@code datadog.MallocArenaWarning}. The quota tests
+ * skip without a cgroup CPU quota (run with {@code --cpus=2 --memory=2g}); the no-warning test
+ * needs {@code MALLOC_ARENA_MAX} = 8 * ceil(quota), and the warning test skips at or below it.
  */
 public class MallocArenaWarningTest extends AbstractProfilerTest {
   private static final String STATS = "datadog.MallocArenaStats";
