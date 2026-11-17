@@ -150,9 +150,9 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
 1. **JVMTI** `ThreadStart`/`ThreadEnd` reach `Profiler::onThreadStart()`/
    `onThreadEnd()`, which call `Profiler::registerThread()`/
    `unregisterThread()`, so they share the gates described in item 2.
-   When the thread's `ProfiledThread` still exists at thread end,
-   unregistration runs with profiling signals blocked
-   (`blockProfilingForExit()`).
+   `onThreadEnd()` blocks profiling signals (`blockProfilingForExit()`) before
+   publishing the exit-registry mark, so the filter update, name update, engine
+   unregistration and TLS release all run under that block.
 2. **Native threads**: on Linux, `LibraryPatcher`'s `pthread_create` GOT hook
    wraps the start routine (`start_routine_wrapper()`) and calls
    `Profiler::registerThread()` (`libraryPatcher_linux.cpp:553`). On exit,
