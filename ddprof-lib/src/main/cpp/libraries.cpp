@@ -11,6 +11,7 @@
 #include "log.h"
 #include "mallocTracer.h"
 #include "os.h"
+#include "threadExitRegistry.h"
 #include "profiler.h"
 #include "symbols.h"
 #include "symbols_linux.h"
@@ -147,6 +148,7 @@ void *Libraries::refresherLoop(void *arg) {
       Profiler::instance()->updateNativeThreadNames(true);
     }
   }
+  ThreadExitRegistry::markCurrent();
   return nullptr;
 }
 

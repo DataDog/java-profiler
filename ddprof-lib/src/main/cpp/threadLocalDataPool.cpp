@@ -6,6 +6,7 @@
 #include "counters.h"
 #include "threadLocalData.inline.h"
 #include "threadLocalDataPool.h"
+#include "threadExitRegistry.h"
 
 #include <cassert>
 #include <stdlib.h>
@@ -56,6 +57,7 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     int index = start_pos;
     do {
         if (_threads[index].claimAcquire(tid)) {
+            ThreadExitRegistry::clearCurrent();
             return &_threads[index];
         }
         index = (index + 1) % _capacity;

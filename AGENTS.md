@@ -178,12 +178,12 @@ before working on a subsystem.
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing, owner context-window membership, paired TaskBlock interval recovery, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
 | Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; timer TID metadata lookup is capped at 256 probes and fails open to ordinary signals; lazy wall-block backing survives recording resets; unowned teardown tails retain slot custody until written; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
-| JFR integration (FlightRecorder, metadata, constant pools, buffers; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; output quarantine retains custody and stops producers in non-restartable ERROR) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
+| JFR integration (FlightRecorder, metadata, constant pools, buffers; bounded DEBUG TaskBlock transition receipts survive recording teardown; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; output quarantine retains custody and stops producers in non-restartable ERROR) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
-| Native I/O hooks (shared-owner JDK import patches, FD classification, cancellation-safe cleanup and synchronous physical-thread IO_WAIT TaskBlocks) | [doc/architecture/NativeIoHooks.md](doc/architecture/NativeIoHooks.md) |
+| Native I/O hooks (shared-owner JDK import patches, FD classification, marked-thread timeout-probe bypass, cancellation-safe cleanup and synchronous physical-thread IO_WAIT TaskBlocks) | [doc/architecture/NativeIoHooks.md](doc/architecture/NativeIoHooks.md) |
 | Native memory profiling (malloc interception, pinned Linux import-layout validation, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
-| SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
+| SIGSEGV-safe library patching; crash-handler bootstrap (raw-identity exit registry, Linux-only fault/profiling-mask fence) | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
 | Memory requirements & budgets | [doc/reference/ProfilerMemoryRequirements.md](doc/reference/ProfilerMemoryRequirements.md) |
 | Remote symbolication (+frame types) | [doc/reference/RemoteSymbolication.md](doc/reference/RemoteSymbolication.md), [doc/reference/RemoteSymbolicationFrameTypes.md](doc/reference/RemoteSymbolicationFrameTypes.md) |
@@ -300,6 +300,11 @@ holds an `InflightGuard`.
 **Thread termination.** An exiting thread calls `blockProfilingForExit()` before
 unregistering from the engines and before releasing its `ProfiledThread`
 (`Profiler::onThreadEnd()`, `unregister_and_release()` in `libraryPatcher_linux.cpp`).
+The wrapper, JVMTI ThreadEnd and normal engine returns mark `ThreadExitRegistry`
+before pthread teardown; the TSD destructor is a later fallback. Unhooked threads
+and J9 cancellation can remain unmarked; an unusable handler-entry stack is not
+protected (no `sigaltstack`). Darwin has no fault-mask fence, and lifetime pressure
+can evict marks. See [SigsegvPatching.md](doc/architecture/SigsegvPatching.md).
 Otherwise a signal can sample a half-torn-down thread, or re-acquire a
 `ProfiledThread` that is never freed. The block is never undone: calling it on a
 thread that keeps running silently stops profiling that thread — use `SignalBlocker`

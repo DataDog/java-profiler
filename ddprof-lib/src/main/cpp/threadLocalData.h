@@ -7,6 +7,7 @@
 #define THREAD_LOCAL_DATA_H
 
 #include "common.h"
+#include "taskBlockDiagnostics.h"
 #include "context.h"
 #include "context_api.h"
 #include "nativeMem.h"
@@ -105,6 +106,15 @@ private:
   BlockSlot _task_block_slot;
   BlockSlot _monitor_slot;
   u64 _block_recording_epoch;
+#if defined(DEBUG) || defined(UNIT_TEST)
+  struct TaskBlockDiagnosticOrigin {
+    u64 token = 0;
+    u64 lifecycle = 0;
+    u64 epoch = 0;
+    u64 owner = 0;
+    u64 state = 0;
+  } _task_block_diagnostic_origin;
+#endif
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   volatile int _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -187,6 +197,8 @@ public:
 #ifdef UNIT_TEST
   // Test-only hook invoked at the end of forTid(), see above.
   static void (*forTidTestHook)();
+  // Observes the registry before the fallback TSD mark can hide a missing early mark.
+  static void (*beforeFreeValueForTest)();
 
   // Exposes the private isClaimed() so a test can confirm a
   // ThreadLocalDataPool slot was released rather than left orphaned.
@@ -532,6 +544,30 @@ public:
     _park_slot.block_token = token;
   }
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+  void setTaskBlockDiagnosticOrigin(const TaskBlockDiagnosticRecord& diagnostic) {
+    _task_block_diagnostic_origin = {diagnostic.words[TaskBlockDiagnosticRecord::TOKEN],
+        diagnostic.words[TaskBlockDiagnosticRecord::LIFECYCLE], diagnostic.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH],
+        diagnostic.words[TaskBlockDiagnosticRecord::OWNER], diagnostic.words[TaskBlockDiagnosticRecord::STATE]};
+    TaskBlockDiagnosticRecord armed = diagnostic;
+    armed.words[TaskBlockDiagnosticRecord::START] = _task_block_slot.start_ticks;
+    TASK_BLOCK_DIAGNOSTIC(TLS_ARMED, &armed, 0);
+  }
+  TaskBlockDiagnosticRecord taskBlockDiagnosticOrigin() const {
+    TaskBlockDiagnosticRecord diagnostic{};
+    diagnostic.words[TaskBlockDiagnosticRecord::TOKEN] = _task_block_diagnostic_origin.token;
+    diagnostic.words[TaskBlockDiagnosticRecord::LIFECYCLE] = _task_block_diagnostic_origin.lifecycle;
+    diagnostic.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH] = _task_block_diagnostic_origin.epoch;
+    diagnostic.words[TaskBlockDiagnosticRecord::OWNER] = _task_block_diagnostic_origin.owner;
+    diagnostic.words[TaskBlockDiagnosticRecord::STATE] = _task_block_diagnostic_origin.state;
+    diagnostic.words[TaskBlockDiagnosticRecord::START] = _task_block_slot.start_ticks;
+    if (_task_block_diagnostic_origin.token != 0) {
+      diagnostic.words[TaskBlockDiagnosticRecord::VALID] = TaskBlockDiagnosticRecord::HAS_IDENTITY | TaskBlockDiagnosticRecord::HAS_ORIGIN;
+    }
+    return diagnostic;
+  }
+  u64 taskBlockTokenForDiagnostic() const { return _task_block_slot.block_token; }
+#endif
   inline bool taskBlockEnter(u64 token, u64 start_ticks,
                              const Context& context) {
     if (token == 0) return false;
@@ -541,6 +577,9 @@ public:
       return false;
     }
     _task_block_slot.block_token = token;
+#if defined(DEBUG) || defined(UNIT_TEST)
+    _task_block_diagnostic_origin = {};
+#endif
     return true;
   }
 

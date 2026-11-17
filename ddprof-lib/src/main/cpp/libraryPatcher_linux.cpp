@@ -14,6 +14,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "symbols.h"
+#include "threadExitRegistry.h"
 
 #include <algorithm>
 #include <assert.h>
@@ -374,6 +375,7 @@ public:
 // musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
 __attribute__((noinline))
 static void unregister_and_release() {
+    ThreadExitRegistry::markCurrent();
     blockProfilingForExit();
     int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
