@@ -19,7 +19,8 @@ written by it, and it dies with the session — its stop summary names what rema
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
 4. **Worker.** Write `{"pr": <n>, "branch": "<local-branch>", "status": "running",
-   "scope": []}` to `build/babysit-pr-<n>.json` **in the session's checkout** — that
+   "scope": [], "bits_triggered": []}` to `build/babysit-pr-<n>.json` **in the
+   session's checkout** — that
    copy is the dedupe record only — and pass the instruction to the worker: on start,
    write the same-shaped marker **in its own worktree's `build/`** and maintain it
    there (the pushing checkout is the one the pre-push guard reads; write it
@@ -83,9 +84,12 @@ findings are surfaced to the author, never auto-implemented."
    never triggers the Bits bot itself. On a non-draft PR a new push should
    re-trigger Bits automatically; if the check is still pending on a head with
    everything else green, one ordinary PR comment `@datadog review` re-triggers
-   it — post it once per head (never repeatedly). On a draft PR incoming changes
-   do not re-trigger Bits: the comment is required. Never post it in the PR body
-   or an inline review thread; a plain top-level comment is what the bot reads.
+   it. Before posting, check the marker's `bits_triggered` list for this head
+   and append the head after posting — the list is the durable once-per-head
+   record, so a restarted run never re-posts. On a draft PR incoming changes
+   do not re-trigger Bits: the comment is required (same once-per-head record).
+   Never post it in the PR body or an inline review thread; a plain top-level
+   comment is what the bot reads.
 2. **CI red.** One `$GH run rerun --failed <run>` is the flaky allowance; a failure that
    survives it, or a run that cannot rerun, is real. Fetch the logs, reproduce through
    `./.claude/commands/build-and-summarize` (never bare `./gradlew`), and follow
