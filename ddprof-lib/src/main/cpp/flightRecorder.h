@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "arch.h"
+#include "taskBlockDiagnostics.h"
 #include "arguments.h"
 #include "buffers.h"
 #include "common.h"
@@ -662,7 +663,9 @@ public:
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
-  bool recordTaskBlock(int lock_index, int tid, TaskBlockEvent *event);
+  bool recordTaskBlock(int lock_index, int tid, TaskBlockEvent *event
+                       TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr,
+                                                  TaskBlockStage* rejection = nullptr));
 
   bool active() const { return _rec != NULL; }
 

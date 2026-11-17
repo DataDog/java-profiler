@@ -1230,7 +1230,9 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 }
 
 Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
-    int tid, jthread thread, int start_depth, TaskBlockEvent *event) {
+    int tid, jthread thread, int start_depth, TaskBlockEvent *event
+    TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic, TaskBlockStage* rejection)) {
+  TASK_BLOCK_DIAGNOSTIC(RECORD_REQUEST, diagnostic, 0);
 #ifdef UNIT_TEST
   TaskBlockRecordOverride override =
       g_test_task_block_record_override.load(std::memory_order_acquire);
@@ -1241,6 +1243,7 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
   CriticalSection cs;
   RecordingStripe stripe(_locks, getLockIndex(tid));
   if (!stripe.owned()) {
+    TASK_BLOCK_REJECTION(REJECT_STRIPE_BUSY, diagnostic, 0, rejection);
     return TaskBlockRecordResult::RECORD_FAILED;
   }
   u32 lock_index = stripe.index();
@@ -1248,7 +1251,12 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
   // Lightweight recordings intentionally encode an absent stack trace as
   // constant-pool ID 0, as the regular CPU and wall-clock sample paths do.
   if (!_omit_stacktraces) {
-    if (_max_stack_depth <= 0 || _calltrace_buffer[lock_index] == nullptr) {
+    if (_max_stack_depth <= 0) {
+      TASK_BLOCK_REJECTION(REJECT_STACK_DEPTH_NONPOSITIVE, diagnostic, _max_stack_depth, rejection);
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+    if (_calltrace_buffer[lock_index] == nullptr) {
+      TASK_BLOCK_REJECTION(REJECT_CALLTRACE_BUFFER_MISSING, diagnostic, lock_index, rejection);
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1259,6 +1267,7 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     bool truncated = false;
     int num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
     if (num_frames <= 0) {
+      TASK_BLOCK_REJECTION(REJECT_STACK_CAPTURE_EMPTY_OR_ERROR, diagnostic, num_frames, rejection);
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1271,19 +1280,24 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     }
 #endif
     if (call_trace_id == 0) {
+      TASK_BLOCK_REJECTION(REJECT_CALLTRACE_STORAGE_ZERO, diagnostic, 0, rejection);
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
     event->_callTraceId = call_trace_id;
+    TASK_BLOCK_DIAGNOSTIC(STACK_READY, diagnostic, call_trace_id);
+  } else {
+    TASK_BLOCK_DIAGNOSTIC(STACK_OMITTED_INTENTIONALLY, diagnostic, 0);
   }
-  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
+  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic, rejection));
   return recorded ? TaskBlockRecordResult::RECORDED
                   : TaskBlockRecordResult::RECORD_FAILED;
 }
 
-bool Profiler::tryEnterTaskBlockActivity() {
+bool Profiler::tryEnterTaskBlockActivity(TASK_BLOCK_DIAGNOSTIC_ONLY(const TaskBlockDiagnosticRecord* diagnostic)) {
   u64 state = _task_block_activity_state.load(std::memory_order_acquire);
   if (state & TASK_BLOCK_CLOSED) {
+    TASK_BLOCK_DIAGNOSTIC(ACTIVITY_CLOSED_INITIAL, diagnostic, state);
     Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
     return false;
   }
@@ -1312,9 +1326,21 @@ bool Profiler::tryEnterTaskBlockActivity() {
     ++failures;
   }
   if (!admitted) {
+#if defined(DEBUG) || defined(UNIT_TEST)
+    if (state & TASK_BLOCK_CLOSED) {
+      TASK_BLOCK_DIAGNOSTIC(ACTIVITY_CLOSED_DURING_CAS, diagnostic, state);
+    } else {
+      TASK_BLOCK_DIAGNOSTIC(ACTIVITY_CAS_BUDGET_EXHAUSTED, diagnostic, failures);
+    }
+#endif
     Counters::increment((state & TASK_BLOCK_CLOSED) ? TASK_BLOCK_DROPPED_ROTATION
                                                  : TASK_BLOCK_DROPPED_ADMISSION);
   }
+#if defined(DEBUG) || defined(UNIT_TEST)
+  else {
+    TASK_BLOCK_DIAGNOSTIC(ACTIVITY_ADMITTED, diagnostic, state + 1);
+  }
+#endif
 #ifdef UNIT_TEST
   runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);
 #endif

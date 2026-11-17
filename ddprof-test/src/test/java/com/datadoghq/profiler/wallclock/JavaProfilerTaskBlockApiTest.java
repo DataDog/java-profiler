@@ -290,10 +290,15 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
               }
             },
             "taskblock-paired-api");
-    worker.start();
-    worker.join(5_000L);
-    assertFalse(worker.isAlive());
-    if (error.get() != null) throw new AssertionError(error.get());
+    try (TaskBlockRecorderTestSupport.Evidence evidence =
+        NativeBuildConfig.isDebugInstrumented()
+            ? new TaskBlockRecorderTestSupport.Evidence(profiler.getVersion())
+            : null) {
+      worker.start();
+      worker.join(5_000L);
+      assertFalse(worker.isAlive());
+      if (error.get() != null) throw new AssertionError(error.get());
+    }
   }
 
   private void waitForCounterAbove(String name, long baseline, long timeoutMillis)

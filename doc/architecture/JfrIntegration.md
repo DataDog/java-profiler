@@ -179,6 +179,41 @@ See [TLSContext](TLSContext.md#retained-unowned-wall-context).
 - `cpuMonitorCycle()` writes `jdk.CPULoad` into `_cpu_monitor_buf`, which
   `finishChunk()` flushes; nothing in `ddprof-lib/src/main/cpp` calls it today.
 
+## TaskBlock Diagnostic Receipts
+
+DEBUG builds keep a process-lifetime `TaskBlockDiagnostics` ring in `Profiler`,
+outside `Recording`. Its 4,096 cells occupy 736 KiB, plus fixed stage counters
+and cursors, charged to `NM_MISC`. Release libraries contain no ring or probes.
+
+Receipts identify activity admission, tracker entry/exit, lifecycle invalidation,
+eligibility, stack capture and recorder admission. Paired API owners retain their
+origin token, native lifecycle, recording epoch, owner and state in a 40-byte
+DEBUG-only payload. Existing owner accounting includes ABI alignment padding.
+
+Each cell has 22 atomic payload words and one atomic publication word. Writers
+reserve a nonwrapping ticket with at most eight CAS attempts and try one cell CAS.
+Busy or superseded claims drop diagnostics, not application events.
+
+Readers accept only the same committed ticket before and after atomic payload
+loads. Snapshots expose overwritten ranges, gaps, reservation/cell losses and
+sequence exhaustion. Stage totals are observational, not a coherent snapshot.
+
+`TaskBlockRecorderTestSupport` reads versioned primitive snapshots through DEBUG
+JNI and persists raw evidence from Java cleanup, independently of JFR. Timestamps
+and frequency use the profiler's TSC clock; unavailable identity fields have validity bits.
+
+The primitive snapshot header contains version, row width, capacity, requested cursor,
+oldest/high tickets, reservation/cell losses, exhaustion, TSC frequency/ticks, stage
+count and a nearby wall-clock microsecond anchor. Stage totals precede fixed-width rows.
+
+Each row contains its ticket and the 22 fields named by `TaskBlockDiagnosticRecord::Field`.
+Ticket zero marks a gap. Native stage names accompany the persisted binary snapshots;
+the Java evidence file also includes candidate, profiler, build and JVM identities.
+
+`BUFFER_ACCEPTED` means serialization returned, not delivery to a JFR consumer.
+Attribution needs complete identity-qualified receipts without diagnostic loss;
+missing receipts or a later missing decoded event do not establish recorder rejection.
+
 ## Chunk Lifecycle
 
 A recording file holds one JFR chunk at a time. `dump()` finishes it, copies it
