@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-hotspot-jdk17
 ---
 
-## musl-arm64-hotspot-jdk17 - ❌ FAIL
+## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-17 10:58:04 EST
+**Date:** 2026-11-17 11:08:50 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,50 @@ title: musl-arm64-hotspot-jdk17
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | 0 |
-| Sample Rate | 0.00/sec |
-| Health Score | 0% |
-| Threads | 0 |
-| Allocations | 0 |
+| Status | PASS |
+| CPU Samples | 83 |
+| Sample Rate | 1.38/sec |
+| Health Score | 86% |
+| Threads | 10 |
+| Allocations | 55 |
 
-#### Scenario 2: Tracer+Profiler ❌
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | 0 |
-| Sample Rate | 0.00/sec |
-| Health Score | 0% |
-| Threads | 0 |
-| Allocations | 0 |
+| Status | PASS |
+| CPU Samples | 95 |
+| Sample Rate | 1.58/sec |
+| Health Score | 99% |
+| Threads | 12 |
+| Allocations | 70 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1794930689 51
-1794930694 51
-1794930699 51
-1794930704 51
-1794930709 51
-1794930714 51
-1794930719 51
-1794930724 51
-1794930729 51
-1794930734 51
-1794930739 51
-1794930744 51
-1794930749 51
-1794930754 51
-1794930759 51
-1794930764 51
-1794930769 51
-1794930774 51
-1794930779 51
-1794930784 51
+1794931386 51
+1794931391 51
+1794931396 51
+1794931401 51
+1794931406 51
+1794931411 51
+1794931416 51
+1794931421 51
+1794931426 51
+1794931431 51
+1794931436 51
+1794931441 51
+1794931446 51
+1794931451 51
+1794931456 51
+1794931461 51
+1794931466 51
+1794931471 51
+1794931476 51
+1794931481 51
 ```
 </details>
 
