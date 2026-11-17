@@ -1374,19 +1374,30 @@ bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size,
 bool hashImportLayout(const LoadedImage& image, u64& hash) {
     const ElfProgramHeader* dynamic = image.find(PT_DYNAMIC);
     if (dynamic == NULL) return true;  // nothing is imported
-    uintptr_t dyn_start = image.address(dynamic->p_vaddr);
-    if (!image.readable(dyn_start, dynamic->p_filesz)) return false;
+    uintptr_t dyn_start;
+    if (!image.address(dynamic->p_vaddr, dyn_start) ||
+        !image.readable(dyn_start, dynamic->p_filesz)) {
+        return false;
+    }
 
     uintptr_t symtab = 0, strtab = 0, jmprel = 0, rel = 0;
     size_t syment = 0, strsz = 0, pltrelsz = 0, relsz = 0, relent = 0, relcount = 0;
     size_t count = dynamic->p_filesz / sizeof(ElfDyn);
     for (const ElfDyn* dyn = (const ElfDyn*)dyn_start; count-- > 0 && dyn->d_tag != DT_NULL; dyn++) {
         switch (dyn->d_tag) {
-            case DT_SYMTAB:    symtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
-            case DT_STRTAB:    strtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
-            case DT_JMPREL:    jmprel = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_SYMTAB:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, symtab)) return false;
+                break;
+            case DT_STRTAB:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, strtab)) return false;
+                break;
+            case DT_JMPREL:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, jmprel)) return false;
+                break;
             case DT_RELA:
-            case DT_REL:       rel = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_REL:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, rel)) return false;
+                break;
             case DT_SYMENT:    syment = dyn->d_un.d_val; break;
             case DT_STRSZ:     strsz = dyn->d_un.d_val; break;
             case DT_PLTRELSZ:  pltrelsz = dyn->d_un.d_val; break;
@@ -1425,8 +1436,8 @@ u64 Symbols::imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias)
     u64 hash = fnv1a(ph, phnum * sizeof(ElfProgramHeader), 14695981039346656037ULL);
     for (int i = 0; i < phnum; i++) {
         if (ph[i].p_type != PT_NOTE) continue;
-        uintptr_t start = image.address(ph[i].p_vaddr);
-        if (image.readable(start, ph[i].p_filesz)) {
+        uintptr_t start;
+        if (image.address(ph[i].p_vaddr, start) && image.readable(start, ph[i].p_filesz)) {
             hash = fnv1a((const void*)start, ph[i].p_filesz, hash);
         }
     }

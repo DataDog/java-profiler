@@ -14,9 +14,9 @@
 
 #include "mallocAdmission.h"
 
-// Bound on the entries visited by one hash-chain walk (GNU or SysV). Released
-// ddprof libraries have a longest GNU chain of 2; the cap only guards against
-// malformed tables, after which the image is INDETERMINATE (CHAIN_LIMIT).
+// Bound on entries visited by one GNU or SysV hash-chain walk. The tested
+// released ddprof images have a longest GNU chain of 2; any image exceeding this
+// work cap is conservatively INDETERMINATE (CHAIN_LIMIT), even if valid.
 constexpr int MAX_HASH_CHAIN_STEPS = 65536;
 
 namespace ElfMarkerLookup {

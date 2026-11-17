@@ -99,6 +99,9 @@ class MallocAdmission {
     // page-protection change). A missing slot or NULL value stores NULL.
     static void readImports(const CodeCache* own, const void* current[5][NUM_IMPORT_TYPES]);
 
+    // Sets INDETERMINATE/NO_OWN_LIBRARY and clears the target and image counts.
+    static void missingOwnLibrary(MallocAdmissionResult& out);
+
     // Derives the deduplicated target set from current/forwarding/own_hooks,
     // applies the own-hook rules, classifies each target's owner image and
     // combines the verdicts. Never modifies a stored value.

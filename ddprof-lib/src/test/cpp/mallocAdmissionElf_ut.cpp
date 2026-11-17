@@ -32,7 +32,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
+#include "../../main/cpp/loadedImage_linux.h"
 #include "../../main/cpp/mallocAdmission_linux.h"
 
 namespace {
@@ -318,10 +321,7 @@ uint32_t synthSysvHash(const char* name, size_t len) {
 constexpr uint8_t synthInfo(unsigned bind, unsigned type) { return (uint8_t)((bind << 4) | type); }
 
 // The smallest bucket count in [2, 64] that places the two marker names in
-// different buckets under `hash`. With a shared bucket one marker's chain
-// includes the other's symbol, and the queried name-extent check (correctly)
-// fails closed on the shorter name — the tests below need the markers found,
-// not that rejection.
+// different buckets under `hash`, keeping each synthesized marker chain short.
 template <typename HashFn>
 static uint32_t synthBucketCount(HashFn hash) {
     for (uint32_t nb = 2; nb < 64; nb++) {
@@ -608,6 +608,31 @@ struct SynthDefaults {
     }
 };
 
+TEST(MallocAdmissionElfTest, LoadedImageAddressNormalizationChecksOverflow) {
+    ElfProgramHeader ph[1] = {};
+    ph[0].p_type = PT_LOAD;
+
+    uintptr_t out = 0;
+    LoadedImage near_limit(ph, 1, UINTPTR_MAX - 0xFFF);
+    EXPECT_FALSE(near_limit.address(0x2000, out));
+    ASSERT_TRUE(near_limit.address(0x800, out));
+    EXPECT_EQ(out, UINTPTR_MAX - 0x7FF);
+
+    ph[0].p_vaddr = 0x2000;
+    EXPECT_FALSE(near_limit.dynamicPointer(0x4000, out));
+
+    ph[0].p_vaddr = 0;
+    EXPECT_FALSE(near_limit.dynamicPointer(0x2000, out));
+
+    LoadedImage small_bias(ph, 1, 0x1000);
+    ASSERT_TRUE(small_bias.dynamicPointer(0x800, out));
+    EXPECT_EQ(out, 0x1800);
+
+    ph[0].p_type = PT_NULL;
+    LoadedImage no_load(ph, 1, 0);
+    EXPECT_FALSE(no_load.dynamicPointer(0x1000, out));
+}
+
 // A well-formed synthesized GNU-hash image classifies as DDPROF: recognition
 // does not depend on real loader bytes.
 TEST(MallocAdmissionElfSynthTest, WellFormedGnuHashIsDDProf) {
@@ -818,6 +843,60 @@ TEST(MallocAdmissionElfSynthTest, GnuUnterminatedChainIsChainLimit) {
     EXPECT_EQ(v.reason, CHAIN_LIMIT);
 }
 
+TEST(MallocAdmissionElfSynthTest, GnuChainLimitBoundary) {
+    constexpr uint32_t limit = 65536;
+    uint32_t start_hash = synthGnuHash(SYNTH_START, strlen(SYNTH_START));
+    uint32_t stop_hash = synthGnuHash(SYNTH_STOP, strlen(SYNTH_STOP));
+    char filler_buf[32];
+    std::string filler_name;
+    for (uint32_t i = 0;; i++) {
+        snprintf(filler_buf, sizeof(filler_buf), "filler_%u", i);
+        uint32_t hash = synthGnuHash(filler_buf, strlen(filler_buf));
+        if ((hash | 1u) != (start_hash | 1u) && (hash | 1u) != (stop_hash | 1u)) {
+            filler_name = filler_buf;
+            break;
+        }
+    }
+
+    auto classify_at = [&](uint32_t start_index) {
+        SynthImage img;
+        img.startStringTable();
+        size_t filler = img.addString(filler_name.c_str());
+        size_t stop = img.addString(SYNTH_STOP);
+        size_t start = img.addString(SYNTH_START);
+        img.finishStringTable();
+
+        std::vector<SynthSymbol> syms;
+        syms.reserve((size_t)start_index + 1);
+        syms.push_back({nullptr, 0, 0, 0, 0});
+        syms.push_back({filler_name.c_str(), static_cast<uint32_t>(filler),
+                        synthInfo(STB_GLOBAL, STT_OBJECT), STV_DEFAULT, 3});
+        syms.push_back({SYNTH_STOP, static_cast<uint32_t>(stop),
+                        synthInfo(STB_GLOBAL, STT_FUNC), STV_DEFAULT, 2});
+        for (uint32_t i = 3; i < start_index; i++) {
+            syms.push_back({filler_name.c_str(), static_cast<uint32_t>(filler),
+                            synthInfo(STB_GLOBAL, STT_OBJECT), STV_DEFAULT, 3});
+        }
+        syms.push_back({SYNTH_START, static_cast<uint32_t>(start),
+                        synthInfo(STB_GLOBAL, STT_FUNC), STV_DEFAULT, 1});
+        size_t symtab = img.addSymtab(syms);
+        GnuTableOffsets gnu = img.addGnuTable(syms, 1, 1);
+        img.addDynamic({{DT_SYMTAB, symtab},
+                        {DT_STRTAB, img.strtabOffset()},
+                        {DT_STRSZ, img.strtabSize()},
+                        {DT_GNU_HASH, gnu.header}});
+        return img.classify();
+    };
+
+    AdmissionVerdict at_limit = classify_at(limit);
+    EXPECT_EQ(at_limit.outcome, DDPROF);
+    EXPECT_EQ(at_limit.reason, NONE);
+
+    AdmissionVerdict beyond_limit = classify_at(limit + 1);
+    EXPECT_EQ(beyond_limit.outcome, INDETERMINATE);
+    EXPECT_EQ(beyond_limit.reason, CHAIN_LIMIT);
+}
+
 // A SysV chain that loops through readable filler symbols: bounded by
 // MAX_HASH_CHAIN_STEPS (nchain 100000 is above the cap), reports CHAIN_LIMIT.
 TEST(MallocAdmissionElfSynthTest, SysvCyclicChainIsChainLimit) {
@@ -893,6 +972,83 @@ TEST(MallocAdmissionElfSynthTest, StNameOutOfRangeIsBadSymbol) {
                       {DT_STRSZ, d.img.strtabSize()},
                       {DT_GNU_HASH, gnu.header}});
     AdmissionVerdict v = d.img.classify();
+    EXPECT_EQ(v.outcome, INDETERMINATE);
+    EXPECT_EQ(v.reason, BAD_SYMBOL);
+}
+
+TEST(MallocAdmissionElfSynthTest, SysvShortTerminatedNameAtEndIsOrdinaryMismatch) {
+    SynthImage img;
+    img.startStringTable();
+    size_t start = img.addString(SYNTH_START);
+    size_t stop = img.addString(SYNTH_STOP);
+    size_t short_name = img.addString("x");
+    img.finishStringTable();
+    ASSERT_EQ(short_name + 2, img.strtabOffset() + img.strtabSize());
+
+    std::vector<SynthSymbol> syms = {
+        {nullptr, 0, 0, 0, 0},
+        {SYNTH_START, static_cast<uint32_t>(start), synthInfo(STB_GLOBAL, STT_FUNC), STV_DEFAULT, 1},
+        {SYNTH_STOP, static_cast<uint32_t>(stop), synthInfo(STB_GLOBAL, STT_FUNC), STV_DEFAULT, 2},
+        {"x", static_cast<uint32_t>(short_name), synthInfo(STB_GLOBAL, STT_OBJECT), STV_DEFAULT, 3}};
+    size_t symtab = img.addSymtab(syms);
+    SysvTableOffsets sysv = img.addSysvTable(syms, 1);
+    img.addDynamic({{DT_SYMTAB, symtab},
+                    {DT_STRTAB, img.strtabOffset()},
+                    {DT_STRSZ, img.strtabSize()},
+                    {DT_HASH, sysv.header}});
+
+    AdmissionVerdict v = img.classify();
+    EXPECT_EQ(v.outcome, DDPROF);
+    EXPECT_EQ(v.reason, NONE);
+}
+
+TEST(MallocAdmissionElfSynthTest, MarkerPrefixesWithSuffixesAreNotRecognized) {
+    SynthImage img;
+    img.startStringTable();
+    const std::string start_name = std::string(SYNTH_START) + "_suffix";
+    const std::string stop_name = std::string(SYNTH_STOP) + "_suffix";
+    size_t start = img.addString(start_name.c_str());
+    size_t stop = img.addString(stop_name.c_str());
+    img.finishStringTable();
+
+    std::vector<SynthSymbol> syms = {
+        {nullptr, 0, 0, 0, 0},
+        {start_name.c_str(), static_cast<uint32_t>(start), synthInfo(STB_GLOBAL, STT_FUNC),
+         STV_DEFAULT, 1},
+        {stop_name.c_str(), static_cast<uint32_t>(stop), synthInfo(STB_GLOBAL, STT_FUNC),
+         STV_DEFAULT, 2}};
+    size_t symtab = img.addSymtab(syms);
+    SysvTableOffsets sysv = img.addSysvTable(syms, 1);
+    img.addDynamic({{DT_SYMTAB, symtab},
+                    {DT_STRTAB, img.strtabOffset()},
+                    {DT_STRSZ, img.strtabSize()},
+                    {DT_HASH, sysv.header}});
+
+    AdmissionVerdict v = img.classify();
+    EXPECT_EQ(v.outcome, NOT_RECOGNIZED);
+    EXPECT_EQ(v.reason, NONE);
+}
+
+TEST(MallocAdmissionElfSynthTest, SysvMarkerPrefixWithoutTerminatorIsBadSymbol) {
+    SynthImage img;
+    img.startStringTable();
+    size_t start = img.addString(SYNTH_START);
+    img.finishStringTable();
+
+    std::vector<SynthSymbol> syms = {
+        {nullptr, 0, 0, 0, 0},
+        {SYNTH_START, static_cast<uint32_t>(start), synthInfo(STB_GLOBAL, STT_FUNC), STV_DEFAULT, 1}};
+    size_t symtab = img.addSymtab(syms);
+    SysvTableOffsets sysv = img.addSysvTable(syms, 1);
+    img.addDynamic({{DT_SYMTAB, symtab},
+                    {DT_STRTAB, img.strtabOffset()},
+                    {DT_STRSZ, img.strtabSize()},
+                    {DT_HASH, sysv.header}});
+    // Truncate after the full marker prefix but omit its NUL. This candidate
+    // cannot be safely distinguished from the marker and must fail closed.
+    img.pokeU64(img.lastDynamicEntryOffset(DT_STRSZ) + 8, start + strlen(SYNTH_START));
+
+    AdmissionVerdict v = img.classify();
     EXPECT_EQ(v.outcome, INDETERMINATE);
     EXPECT_EQ(v.reason, BAD_SYMBOL);
 }

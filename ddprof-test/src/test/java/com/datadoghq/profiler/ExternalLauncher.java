@@ -42,8 +42,8 @@ import java.util.regex.Pattern;
  *   <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
  *       process; each step is either the literal {@code STOP} (calls {@link JavaProfiler#stop()})
  *       or a comma delimited profiler command list (calls {@link JavaProfiler#execute(String)})
- *   <li>nativemem-exclusion &lt;steps&gt; - runs scripted native-memory admission steps in a child JVM
- *       using {@code libddproftest} as the ddprof stand-in; prints outcomes for the parent test
+ *   <li>nativemem-exclusion &lt;steps&gt; - runs scripted native-memory admission steps in a child
+ *       JVM using {@code libddproftest} as the ddprof stand-in; prints outcomes for the parent test
  *   <li>lazy-trace-id &lt;comma delimited profiler command list, required&gt; - starts the
  *       profiler, spins in {@code com.datadoghq.profiler.generated.LazyTraceIdProbe} (defined by
  *       its own class loader, so it has no jmethodIDs until the profiler resolves its frames) and
@@ -245,14 +245,17 @@ public class ExternalLauncher {
           System.out.println("[load] ok");
           break;
         case "INSTALL":
-          System.out.println("[standin] installed=" + com.datadoghq.profiler.nativemem.DdprofStandin.install());
+          System.out.println(
+              "[standin] installed=" + com.datadoghq.profiler.nativemem.DdprofStandin.install());
           break;
         case "RESTORE":
-          System.out.println("[standin] restored=" + com.datadoghq.profiler.nativemem.DdprofStandin.restore());
+          System.out.println(
+              "[standin] restored=" + com.datadoghq.profiler.nativemem.DdprofStandin.restore());
           break;
         case "SAVEDMALLOC":
-          System.out.println("[standin-saved] malloc="
-              + com.datadoghq.profiler.nativemem.DdprofStandin.savedMalloc());
+          System.out.println(
+              "[standin-saved] malloc="
+                  + com.datadoghq.profiler.nativemem.DdprofStandin.savedMalloc());
           break;
         case "START":
           JavaProfiler instance = JavaProfiler.getInstance();
@@ -281,9 +284,11 @@ public class ExternalLauncher {
           com.datadoghq.profiler.nativemem.DdprofStandin.allocate(1024, Integer.parseInt(argument));
           break;
         case "MARKERS":
-          System.out.println("[markers] start="
-              + com.datadoghq.profiler.nativemem.DdprofStandin.startMarkerCalls()
-              + " stop=" + com.datadoghq.profiler.nativemem.DdprofStandin.stopMarkerCalls());
+          System.out.println(
+              "[markers] start="
+                  + com.datadoghq.profiler.nativemem.DdprofStandin.startMarkerCalls()
+                  + " stop="
+                  + com.datadoghq.profiler.nativemem.DdprofStandin.stopMarkerCalls());
           break;
         default:
           throw new IllegalStateException("unknown scenario step " + name);

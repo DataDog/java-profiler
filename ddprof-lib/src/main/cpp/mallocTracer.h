@@ -30,6 +30,7 @@ struct MallocPatchEntry {
 // and are unpatched on stop() to minimize overhead when not profiling.
 class MallocHooker {
   friend class MallocHookerTestAccessor;
+  friend class MallocHookerSlotTestAccessor;
 
   private:
     // Guards the patching bookkeeping below off Linux. On Linux patching and

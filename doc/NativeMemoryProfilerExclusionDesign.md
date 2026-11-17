@@ -299,6 +299,11 @@ scan [S6] and is not the proposed production lookup. Likewise, do not add a
 repeated full-library scan for each operation; account for the existing address
 lookup's cold path rather than claiming it is constant time.
 
+Each GNU or SysV hash-chain walk has a 65,536-entry work cap. Exceeding it
+returns `INDETERMINATE` and rejects native-memory activation, even if the image is
+otherwise a valid ELF. This is a conservative compatibility limit; the tested
+ddprof 0.26.0 and 0.27.0 images have a longest GNU chain of two entries.
+
 The detector runs in ordinary profiler-start context, not in a malloc hook or
 signal handler. No new detection flag, symbol lookup, allocation, logging, lock,
 or loader operation may enter those hot paths.

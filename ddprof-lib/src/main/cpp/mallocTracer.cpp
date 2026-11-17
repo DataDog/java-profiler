@@ -201,9 +201,10 @@ Error MallocHooker::initialize() {
         if (_orig_malloc == NULL) return Error(RESOLUTION_ERROR);
         CodeCache* lib = Libraries::instance()->findLibraryByAddress((void*)MallocTracer::recordMalloc);
         if (lib == NULL) {
-            // Defensive: CodeCacheArray is append-only, so a once-found own
-            // library cannot disappear; treat as indeterminate, not crash.
-            return Error(MallocAdmission::errorMessage(INDETERMINATE));
+            // CodeCacheArray is append-only; a missing cached owner must fail admission closed.
+            MallocAdmissionResult result;
+            MallocAdmission::missingOwnLibrary(result);
+            return Error(MallocAdmission::errorMessage(result.verdict.outcome));
         }
         MallocAdmissionInput in;
         MallocAdmission::readImports(lib, in.current);
