@@ -307,6 +307,13 @@ gate therefore depends on change control for these files. Candidate-controlled
 workflows must not obtain the publisher token. The app installation must cover
 only this repository. The installation permission, the installation scope, the
 pool allow list, and exact policy claims must be tested before activation.
+
+`.github/CODEOWNERS` keeps the repository-wide default rule for change
+attribution and marks the sensitive paths. The gate evaluator publishes the
+`codeowner-review/head` status: a head that changes a sensitive path passes
+only when a `@DataDog/profiling-java` member other than the pull request author
+approves that head; review of ordinary paths stays at the authors' discretion.
+The context is not a required check until activation.
 The repository policy file `.github/chainguard/self.bits-review-gate.publish-status.sts.yaml`
 carries exactly these claims:
 
