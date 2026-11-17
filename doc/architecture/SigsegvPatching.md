@@ -97,6 +97,12 @@ Early marks cover the pthread-create wrapper, JVMTI ThreadEnd, and normal
 engine returns (wall timer, refresher, reference-chain BFS, J9 sampler).
 The `ProfiledThread` TSD destructor supplies a later fallback mark.
 
+Every mark site blocks profiling signals (`blockProfilingForExit`) before
+publishing the identity: a marked thread's fault chains out without
+SafeAccess or walk recovery, so a sampler must never be admitted after the
+mark. The window before the block keeps only the pre-registry handler-bootstrap
+exposure.
+
 Registry identities use raw `gettid` (Linux) and `thread_selfid` (Darwin)
 syscalls. Darwin profiler IDs remain Mach ports for Mach API users.
 Registration clears stale registry identities when a thread ID is reused.

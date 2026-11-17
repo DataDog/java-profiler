@@ -6,6 +6,7 @@
 #include "codeCache.h"
 #include "common.h"
 #include "findLibraryImpl.h"
+#include "guards.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
@@ -148,6 +149,9 @@ void *Libraries::refresherLoop(void *arg) {
       Profiler::instance()->updateNativeThreadNames(true);
     }
   }
+  // Block before the exit mark: a sampler must not fault on the marked
+  // identity (see Profiler::onThreadEnd).
+  blockProfilingForExit();
   ThreadExitRegistry::markCurrent();
   return nullptr;
 }
