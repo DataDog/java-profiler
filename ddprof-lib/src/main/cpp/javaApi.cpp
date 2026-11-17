@@ -32,6 +32,7 @@
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
+#include "signalSafety.h"
 #include "taskBlockRecorder.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
@@ -679,8 +680,13 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   // Supersede only after admission checks so a rejected traced nested begin
   // preserves its pending interval. Recovery validates the slot and generation.
   recoverAbandonedTaskBlock(current, tracker, slot_id);
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+  TaskBlockDiagnosticRecord diagnostic{};
+  TaskBlockDiagnosticRecord* diagnostic_ptr = &diagnostic;
+#endif
   u64 token = enterOwnedBlockRun(
-      current, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
+      current, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
   if (token == 0) return 0;
   // A successfully acquired run excludes any previous registry owner, even
   // when its TLS payload survived a context-window transition.
@@ -690,6 +696,9 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
                             WallClockBlockTracker::tokenGeneration(token));
     return 0;
   }
+#ifdef DEBUG
+  current->setTaskBlockDiagnosticOrigin(diagnostic);
+#endif
   return static_cast<jlong>(token);
 }
 
@@ -2111,4 +2120,86 @@ Java_com_datadoghq_profiler_JavaProfiler_testIsContextValid0(JNIEnv* env, jclass
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testTlsPrimingAvailable(JNIEnv* env, jclass unused) {
   return ThreadLocalDataPool::isInitialized() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_TaskBlockRecorderTestSupport_cursor0(JNIEnv* env, jclass unused) {
+#ifdef DEBUG
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  return static_cast<jlong>(TaskBlockDiagnostics::instance().cursor());
+#else
+  return -1;
+#endif
+}
+
+extern "C" DLLEXPORT jobjectArray JNICALL
+Java_com_datadoghq_profiler_wallclock_TaskBlockRecorderTestSupport_stageNames0(JNIEnv* env, jclass unused) {
+#ifdef DEBUG
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  jclass string_class = env->FindClass("java/lang/String");
+  if (string_class == nullptr) return nullptr;
+  jobjectArray names = env->NewObjectArray(TaskBlockDiagnostics::STAGES, string_class, nullptr);
+  env->DeleteLocalRef(string_class);
+  if (names == nullptr) return nullptr;
+  for (size_t i = 0; i < TaskBlockDiagnostics::STAGES; ++i) {
+    jstring name = env->NewStringUTF(TaskBlockDiagnostics::stageName(i));
+    if (name == nullptr) return nullptr;
+    env->SetObjectArrayElement(names, i, name);
+    env->DeleteLocalRef(name);
+    if (env->ExceptionCheck()) return nullptr;
+  }
+  return names;
+#else
+  return nullptr;
+#endif
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_wallclock_TaskBlockRecorderTestSupport_snapshot0(JNIEnv* env, jclass unused, jlong cursor) {
+#ifdef DEBUG
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  auto& diagnostics = TaskBlockDiagnostics::instance();
+  const u64 high = diagnostics.cursor();
+  if (cursor < 0 || static_cast<u64>(cursor) > high) {
+    throwNew(env, "java/lang/IllegalArgumentException", "Invalid TaskBlock diagnostic cursor");
+    return nullptr;
+  }
+  const u64 oldest = TaskBlockDiagnostics::oldestRetained(high);
+  const u64 first = std::max(static_cast<u64>(cursor) + 1, oldest);
+  constexpr size_t header = 13;
+  constexpr size_t width = TaskBlockDiagnosticRecord::WIDTH + 1;
+  std::vector<jlong> words(header + TaskBlockDiagnostics::STAGES + (high - first + 1) * width, 0);
+  words[0] = 1;
+  words[1] = width;
+  words[2] = TaskBlockDiagnostics::CAPACITY;
+  words[3] = cursor;
+  words[4] = oldest;
+  words[5] = high;
+  words[9] = TSC::frequency();
+  words[10] = TSC::ticks();
+  words[11] = TaskBlockDiagnostics::STAGES;
+  words[12] = OS::micros();
+  size_t offset = header + TaskBlockDiagnostics::STAGES;
+  for (u64 ticket = first; ticket <= high; ++ticket) {
+    TaskBlockDiagnosticRecord record{};
+    if (diagnostics.read(ticket, record)) {
+      words[offset] = ticket;
+      for (size_t field = 0; field < record.words.size(); ++field) {
+        words[offset + 1 + field] = static_cast<jlong>(record.words[field]);
+      }
+    }
+    offset += width;
+  }
+  words[6] = diagnostics.reservationLosses();
+  words[7] = diagnostics.cellLosses();
+  words[8] = diagnostics.exhausted() ? 1 : 0;
+  for (size_t stage = 0; stage < TaskBlockDiagnostics::STAGES; ++stage) {
+    words[header + stage] = diagnostics.stageTotal(static_cast<TaskBlockStage>(stage));
+  }
+  jlongArray result = env->NewLongArray(words.size());
+  if (result != nullptr) env->SetLongArrayRegion(result, 0, words.size(), words.data());
+  return result;
+#else
+  return nullptr;
+#endif
 }

@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "arch.h"
+#include "taskBlockDiagnostics.h"
 #include "counters.h"
 #include "callTraceHashTable.h"
 #include "context.h"
@@ -202,28 +203,39 @@ public:
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
         // On success the run is owned but not yet visible to readers; the
         // caller publishes it with publishActiveBlockRun().
+#ifdef UNIT_TEST
+        inline static void (*prepare_context_hook_for_test)(ThreadFilter::Slot*) = nullptr;
+#endif
         inline bool tryPrepareActiveBlockRun(ThreadFilter::Slot* identity_slot,
                                              BlockRunOwner owner,
                                              u64* generation_out,
-                                             bool outside_context_required) {
+                                             bool outside_context_required
+                                             TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr)) {
             u64 context_state = identity_slot->rawContextWindowState();
             if (outside_context_required && (context_state & 1) != 0) {
+                TASK_BLOCK_DIAGNOSTIC(ENTER_INSIDE_CONTEXT_WINDOW, diagnostic, context_state);
                 return false;
             }
             int expected_owner = static_cast<int>(BlockRunOwner::NONE);
             if (!active_block_owner.compare_exchange_strong(
                     expected_owner, static_cast<int>(owner), std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
+                TASK_BLOCK_DIAGNOSTIC(ENTER_OWNER_ALREADY_HELD, diagnostic, expected_owner);
                 return false;
             }
-            if (outside_context_required &&
-                identity_slot->rawContextWindowState() != context_state) {
+#ifdef UNIT_TEST
+            if (prepare_context_hook_for_test != nullptr) prepare_context_hook_for_test(identity_slot);
+#endif
+            u64 observed_context_state = outside_context_required ? identity_slot->rawContextWindowState() : context_state;
+            if (outside_context_required && observed_context_state != context_state) {
+                TASK_BLOCK_DIAGNOSTIC(ENTER_CONTEXT_CHANGED_AFTER_OWNER_CAS, diagnostic, observed_context_state);
                 active_block_owner.store(static_cast<int>(BlockRunOwner::NONE),
                                          std::memory_order_release);
                 return false;
             }
             u64 generation = block_generation.load(std::memory_order_relaxed);
             if (generation == kMaxBlockRunGeneration) {
+                TASK_BLOCK_DIAGNOSTIC(ENTER_GENERATION_SATURATED, diagnostic, generation);
                 active_block_owner.store(static_cast<int>(BlockRunOwner::NONE),
                                          std::memory_order_release);
                 Counters::increment(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED);
@@ -356,12 +368,14 @@ public:
     }
 
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
-                        OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
+                        OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA
+                        TASK_BLOCK_DIAGNOSTIC_ONLY(, TaskBlockDiagnosticRecord* admitted_origin = nullptr));
     bool exitBlockedRun(ThreadFilter::SlotID slot_id, u64 generation);
     // Same generation check as exitBlockedRun(slot_id, generation), but
     // captures the run's state and context eligibility before clearing it.
     bool snapshotAndExitBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
-                                   u64 generation, BlockRunSnapshot* snapshot);
+                                   u64 generation, BlockRunSnapshot* snapshot
+                                   TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* origin = nullptr));
     using TailFlush = std::function<bool(ThreadFilter::SlotID, int)>;
     // Wired once before registry use; lock contention must retain the tail, not wait.
     // Profiler wires this during static initialization, before TLS keys are guaranteed ready.

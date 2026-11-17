@@ -2986,20 +2986,29 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
 }
 
 bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
-                                     TaskBlockEvent *event) {
+                                     TaskBlockEvent *event
+                                     TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic, TaskBlockStage* rejection)) {
   OptionalSharedLockGuard locker(&_rec_lock);
-  if (locker.ownsLock()) {
-    Recording* rec = _rec;
-    if (rec != nullptr && rec->outputGood()) {
-      Buffer *buf = rec->buffer(lock_index);
-      // Reject before serialization if eventThread cannot enter this chunk's
-      // constant pool. The TaskBlock caller counts false as RECORD_FAILED.
-      if (!rec->addThread(lock_index, tid)) return false;
-      rec->recordTaskBlock(buf, tid, event);
-      return rec->outputGood();
-    }
+  if (!locker.ownsLock()) {
+    TASK_BLOCK_REJECTION(REJECT_RECORDER_SHARED_LOCK, diagnostic, lock_index, rejection);
+    return false;
   }
-  return false;
+  Recording* rec = _rec;
+  if (rec == nullptr) {
+    TASK_BLOCK_REJECTION(REJECT_NO_RECORDING, diagnostic, 0, rejection);
+    return false;
+  }
+  if (!rec->outputGood()) return false;
+  Buffer *buf = rec->buffer(lock_index);
+  // Thread admission must precede bytes that reference this chunk's thread pool.
+  if (!rec->addThread(lock_index, tid)) {
+    TASK_BLOCK_REJECTION(REJECT_EVENT_THREAD_ADMISSION, diagnostic, tid, rejection);
+    return false;
+  }
+  TASK_BLOCK_DIAGNOSTIC(BUFFER_SERIALIZATION_BEGIN, diagnostic, lock_index);
+  rec->recordTaskBlock(buf, tid, event);
+  TASK_BLOCK_DIAGNOSTIC(BUFFER_ACCEPTED, diagnostic, lock_index);
+  return rec->outputGood();
 }
 
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,

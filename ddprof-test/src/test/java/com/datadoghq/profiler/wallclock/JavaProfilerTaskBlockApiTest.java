@@ -121,20 +121,27 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         NativeBuildConfig.isDebugInstrumented(), "native timestamp seam requires DEBUG");
     AtomicBoolean recorded = new AtomicBoolean(true);
     AtomicLong secondToken = new AtomicLong();
-    runWorker(
-        () -> {
-          long token = profiler.beginTaskBlock();
-          assertTrue(token != 0);
-          Thread.sleep(schedulingPauseMillis);
-          recorded.set(
-              ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
-                  token, 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
-          secondToken.set(profiler.beginTaskBlock());
-          assertTrue(secondToken.get() != 0);
-          assertFalse(
-              ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
-                  secondToken.get(), 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
-        });
+    // The coordinator's Thread.join uses Object.wait; exclude that producer
+    // so the global duration counter covers only the paired-API worker.
+    profiler.addThread();
+    try {
+      runWorker(
+          () -> {
+            long token = profiler.beginTaskBlock();
+            assertTrue(token != 0);
+            Thread.sleep(schedulingPauseMillis);
+            recorded.set(
+                ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
+                    token, 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
+            secondToken.set(profiler.beginTaskBlock());
+            assertTrue(secondToken.get() != 0);
+            assertFalse(
+                ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
+                    secondToken.get(), 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
+          });
+    } finally {
+      profiler.removeThread();
+    }
 
     assertFalse(recorded.get());
     assertTrue(secondToken.get() != 0);
@@ -437,10 +444,15 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
               }
             },
             "taskblock-paired-api");
-    worker.start();
-    worker.join(5_000L);
-    assertFalse(worker.isAlive());
-    if (error.get() != null) throw new AssertionError(error.get());
+    try (TaskBlockRecorderTestSupport.Evidence evidence =
+        NativeBuildConfig.isDebugInstrumented()
+            ? new TaskBlockRecorderTestSupport.Evidence(profiler.getVersion())
+            : null) {
+      worker.start();
+      worker.join(5_000L);
+      assertFalse(worker.isAlive());
+      if (error.get() != null) throw new AssertionError(error.get());
+    }
   }
 
   private void waitForCounterAbove(String name, long baseline, long timeoutMillis)

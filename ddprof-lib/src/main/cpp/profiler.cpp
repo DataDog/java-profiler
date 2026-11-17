@@ -131,7 +131,16 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   registerThread(tid);
 }
 
+#ifdef UNIT_TEST
+void (*Profiler::threadEndMarkedForTest)() = nullptr;
+void (*Profiler::crashHandlerAdmittedForTest)() = nullptr;
+#endif
+
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  ThreadExitRegistry::markCurrent();
+#ifdef UNIT_TEST
+  if (threadEndMarkedForTest != nullptr) threadEndMarkedForTest();
+#endif
   // Thread teardown: no point to initialize TLS if not yet initialized
   ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
@@ -1268,7 +1277,9 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 }
 
 Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
-    int tid, jthread thread, int start_depth, TaskBlockEvent *event) {
+    int tid, jthread thread, int start_depth, TaskBlockEvent *event
+    TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic, TaskBlockStage* rejection)) {
+  TASK_BLOCK_DIAGNOSTIC(RECORD_REQUEST, diagnostic, 0);
 #ifdef UNIT_TEST
   TaskBlockRecordOverride override =
       g_test_task_block_record_override.load(std::memory_order_acquire);
@@ -1279,6 +1290,7 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
   CriticalSection cs;
   RecordingStripe stripe(_locks, getLockIndex(tid));
   if (!stripe.owned()) {
+    TASK_BLOCK_REJECTION(REJECT_STRIPE_BUSY, diagnostic, 0, rejection);
     return TaskBlockRecordResult::RECORD_FAILED;
   }
   u32 lock_index = stripe.index();
@@ -1286,7 +1298,12 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
   // Lightweight recordings intentionally encode an absent stack trace as
   // constant-pool ID 0, as the regular CPU and wall-clock sample paths do.
   if (!_omit_stacktraces) {
-    if (_max_stack_depth <= 0 || _calltrace_buffer[lock_index] == nullptr) {
+    if (_max_stack_depth <= 0) {
+      TASK_BLOCK_REJECTION(REJECT_STACK_DEPTH_NONPOSITIVE, diagnostic, _max_stack_depth, rejection);
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+    if (_calltrace_buffer[lock_index] == nullptr) {
+      TASK_BLOCK_REJECTION(REJECT_CALLTRACE_BUFFER_MISSING, diagnostic, lock_index, rejection);
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1297,6 +1314,7 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     bool truncated = false;
     int num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
     if (num_frames <= 0) {
+      TASK_BLOCK_REJECTION(REJECT_STACK_CAPTURE_EMPTY_OR_ERROR, diagnostic, num_frames, rejection);
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
@@ -1309,19 +1327,24 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     }
 #endif
     if (call_trace_id == 0) {
+      TASK_BLOCK_REJECTION(REJECT_CALLTRACE_STORAGE_ZERO, diagnostic, 0, rejection);
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
     event->_callTraceId = call_trace_id;
+    TASK_BLOCK_DIAGNOSTIC(STACK_READY, diagnostic, call_trace_id);
+  } else {
+    TASK_BLOCK_DIAGNOSTIC(STACK_OMITTED_INTENTIONALLY, diagnostic, 0);
   }
-  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
+  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic, rejection));
   return recorded ? TaskBlockRecordResult::RECORDED
                   : TaskBlockRecordResult::RECORD_FAILED;
 }
 
-bool Profiler::tryEnterTaskBlockActivity() {
+bool Profiler::tryEnterTaskBlockActivity(TASK_BLOCK_DIAGNOSTIC_ONLY(const TaskBlockDiagnosticRecord* diagnostic)) {
   u64 state = _task_block_activity_state.load(std::memory_order_acquire);
   if (state & TASK_BLOCK_CLOSED) {
+    TASK_BLOCK_DIAGNOSTIC(ACTIVITY_CLOSED_INITIAL, diagnostic, state);
     Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
     return false;
   }
@@ -1350,9 +1373,21 @@ bool Profiler::tryEnterTaskBlockActivity() {
     ++failures;
   }
   if (!admitted) {
+#if defined(DEBUG) || defined(UNIT_TEST)
+    if (state & TASK_BLOCK_CLOSED) {
+      TASK_BLOCK_DIAGNOSTIC(ACTIVITY_CLOSED_DURING_CAS, diagnostic, state);
+    } else {
+      TASK_BLOCK_DIAGNOSTIC(ACTIVITY_CAS_BUDGET_EXHAUSTED, diagnostic, failures);
+    }
+#endif
     Counters::increment((state & TASK_BLOCK_CLOSED) ? TASK_BLOCK_DROPPED_ROTATION
                                                  : TASK_BLOCK_DROPPED_ADMISSION);
   }
+#if defined(DEBUG) || defined(UNIT_TEST)
+  else {
+    TASK_BLOCK_DIAGNOSTIC(ACTIVITY_ADMITTED, diagnostic, state + 1);
+  }
+#endif
 #ifdef UNIT_TEST
   runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);
 #endif
@@ -1686,7 +1721,34 @@ void Profiler::enableCpuEngine(int activated) {
   }
 }
 
+// All-zero sigaction: sa_handler == SIG_DFL and a zeroed sa_mask is the empty
+// set on Linux and macOS (bit-array sigset_t). Zero-initialized, so building
+// it involves no runtime constructor that would be unsafe in signal context.
+static const struct sigaction kDefaultAction = {};
+
+// Exiting-thread fault path: hand the fault to whoever owned it before us.
+// With no prior handler, the pre-profiler behavior is the default action, so
+// restore it and re-raise (both sigaction() and raise() are async-signal-safe).
+static void chainOrTerminate(int signo, siginfo_t *siginfo, void *ucontext,
+                             SigAction chain, SigAction orig) {
+  if (chain != nullptr) {
+    chain(signo, siginfo, ucontext);
+  } else if (orig != nullptr) {
+    orig(signo, siginfo, ucontext);
+  } else {
+    sigaction(signo, &kDefaultAction, nullptr);
+    raise(signo);
+  }
+}
+
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // Faults on an exiting thread skip the TLS bootstrap entirely: the lookup
+  // itself can fault during pthread teardown and re-enter the handler.
+  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    chainOrTerminate(signo, siginfo, ucontext, OS::getSegvChainTarget(), orig_segvHandler);
+    return;
+  }
+  CrashBootstrapFence bootstrap_fence;
   // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
   // null-pointer-check faults during normal Java execution.  When we chain to
   // it, that siglongjmp unwinds past our stack frame and skips the RAII
@@ -1701,7 +1763,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
   SIGNAL_HANDLER_GUARD_NO_SAMPLE();
-  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+  if (crashHandlerInternal(signo, siginfo, ucontext, bootstrap_fence)) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
@@ -1715,10 +1777,16 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // See segvHandler: exiting threads skip the faultable TLS bootstrap.
+  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    chainOrTerminate(signo, siginfo, ucontext, OS::getBusChainTarget(), orig_busHandler);
+    return;
+  }
+  CrashBootstrapFence bootstrap_fence;
   // See segvHandler: release before chaining in case the chained handler
   // siglongjmps through us.
   SIGNAL_HANDLER_GUARD_NO_SAMPLE();
-  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+  if (crashHandlerInternal(signo, siginfo, ucontext, bootstrap_fence)) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
@@ -1732,26 +1800,25 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
-int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
+int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext,
+                                   CrashBootstrapFence& bootstrap_fence) {
   ProfiledThread* thrd = ProfiledThread::current();
+  bool have_tls_protection = thrd != nullptr && thrd->enterCrashHandler();
+  bootstrap_fence.disarm();
+#ifdef UNIT_TEST
+  if (crashHandlerAdmittedForTest != nullptr) crashHandlerAdmittedForTest();
+#endif
 
-  // First, try to handle safefetch - this doesn't need TLS or any protection
-  // because it directly checks the PC and modifies ucontext to skip the fault.
-  // This must be checked first before any reentrancy checks.
+  // Admission is fenced, but safefetch must run before rejection: a nested
+  // recovery may occur at the crash-depth limit. Undo any successful admission.
   if (SafeAccess::handle_safefetch(signo, ucontext)) {
-    return 1;  // handled
-  }
-
-  // Reentrancy protection: use TLS-based tracking if available.
-  // If TLS is not available, the thread is not protected by
-  // siglongjmp, so bail out.
-  bool have_tls_protection = false;
-  if (thrd != nullptr) {
-    if (!thrd->enterCrashHandler()) {
-      // we are already in a crash handler; don't recurse!
-      return 0;  // not handled, safe to chain
+    if (have_tls_protection) {
+      thrd->exitCrashHandler();
     }
-    have_tls_protection = true;
+    return 1;
+  }
+  if (thrd != nullptr && !have_tls_protection) {
+    return 0;
   }
 
   StackFrame frame(ucontext);
