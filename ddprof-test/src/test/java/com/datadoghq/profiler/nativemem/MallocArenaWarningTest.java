@@ -6,6 +6,7 @@ package com.datadoghq.profiler.nativemem;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -77,7 +78,7 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
           return have > major || (have == major && Integer.parseInt(m.group(2)) >= minor);
         }
       }
-    } catch (IOException e) {
+    } catch (IOException | NumberFormatException e) {
       // unknown version: callers treat it as older than requested
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -101,6 +102,7 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
     for (JfrEvent item : stats) {
       last = item;
     }
+    assertNotNull(last, "no stats event");
     String status = last.getString("walkStatus");
     if (Platform.isZing()) {
       assertEquals("unsupported-jvm", status);

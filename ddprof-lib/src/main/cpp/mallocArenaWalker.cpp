@@ -123,11 +123,14 @@ static bool ensureSeed() {
         (hdr & CHUNK_NON_MAIN_ARENA)) {
       uintptr_t heap = chunk & ~(HEAP_MAX_SIZE - 1);
       uintptr_t ar = 0;
-      // heap_info.ar_ptr is the first field of heap_info.
-      if (readAt(heap, &ar) && ar > heap) {
-        size_t hi = ar - heap;
+      // heap_info.ar_ptr is the first field of heap_info. In a later heap of an arena it
+      // points into the first heap, so validate the arena against its own first heap.
+      if (readAt(heap, &ar) && ar != 0) {
+        uintptr_t arena_heap = ar & ~(HEAP_MAX_SIZE - 1);
+        size_t hi = ar - arena_heap;
+        uintptr_t back = 0;
         // sizeof(heap_info) is 32 before glibc 2.35 and 48 since.
-        if (hi == 32 || hi == 48) {
+        if ((hi == 32 || hi == 48) && readAt(arena_heap, &back) && back == ar) {
           __atomic_store_n(&seed_heap_info_size, hi, __ATOMIC_RELEASE);
           __atomic_store_n(&seed_arena, ar, __ATOMIC_RELEASE);
           ok = true;

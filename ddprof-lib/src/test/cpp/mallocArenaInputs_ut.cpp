@@ -23,6 +23,13 @@ TEST(MallocArenaInputsParse, KeyAsSuffixOrPrefixOfAnotherKey) {
     EXPECT_EQ(7, v);
 }
 
+TEST(MallocArenaInputsParse, LastDuplicateKeyWins) {
+    long v = 0;
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=1:glibc.malloc.arena_max=256",
+                                 "glibc.malloc.arena_max", &v));
+    EXPECT_EQ(256, v);
+}
+
 TEST(MallocArenaInputsParse, ListPositions) {
     long v = 0;
     EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=4", "glibc.malloc.arena_max", &v));
