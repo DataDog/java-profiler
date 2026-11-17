@@ -84,6 +84,15 @@ TEST_F(ReferenceChainsBfsTest, AnchorJournalDuplicatesConsumeCapacityButIndexOnc
     EXPECT_EQ(second, AnchorAcc::anchorIndexTagForTest(1));
     EXPECT_EQ((std::vector<jlong>{first, second}), AnchorAcc::freshQueueTagsForTest());
 
+    // The next enumeration re-reports both tags: both are indexed now, so the indexed-tag gate
+    // stages nothing - their replay would be a no-op, and the slots stay free for real effects.
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        reportRediscovery(pass, first);
+        reportRediscovery(pass, second);
+        EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+    }
+
     tracker->stop();
 }
 
@@ -198,6 +207,122 @@ void fillJournalWithUnknownLocals(AnchorScopedPass &pass) {
     }
     ASSERT_EQ(AnchorObservationBuffer::CAPACITY,
               (size_t)ReferenceChainsTestAccessor::journalCountForTest());
+}
+
+// A stable durable population at the journal capacity is re-reported by every enumeration. Before
+// the indexed-tag gate its re-enlist records refilled the journal at the same prefix every pass:
+// the overflow aborted at the same report, _root_enum_incomplete latched, and no later root was
+// ever reached. The gate must keep the repeat reports slot-free so the next enumeration admits
+// the late root.
+TEST_F(ReferenceChainsBfsTest, AnchorJournalStablePopulationLeavesSlotsForLaterRoots) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr size_t kCapacity = AnchorObservationBuffer::CAPACITY;
+    const jlong first_tag = 20000;
+    // The stable population plus one late root reported behind it.
+    insertRootAttachedDurableEntries(frontier, first_tag, kCapacity + 1);
+
+    // First enumeration: nothing is indexed yet, so every report stages a record and the replay
+    // indexes the whole population through the durable cap (evicting its oldest share).
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        for (size_t i = 0; i < kCapacity; i++) {
+            reportRediscovery(pass, first_tag + (jlong)i);
+        }
+        ASSERT_EQ(kCapacity, (size_t)AnchorAcc::journalCountForTest());
+        EXPECT_FALSE(pass.ctx.anchor_observation_overflow);
+        pass.scope.flush();
+    }
+    const size_t indexed = AnchorAcc::anchorIndexSizeForTest();
+    EXPECT_GT(indexed, (size_t)0);
+    EXPECT_LT(indexed, kCapacity); // the durable cap evicted the oldest share
+
+    // Second enumeration: the indexed share stages nothing; only the evicted holders re-enlist.
+    // The journal must stay below capacity and admit the late root.
+    AnchorScopedPass retry(tracker, frontier);
+    for (size_t i = 0; i < kCapacity; i++) {
+        reportRediscovery(retry, first_tag + (jlong)i);
+    }
+    EXPECT_FALSE(retry.ctx.anchor_observation_overflow);
+    EXPECT_EQ(kCapacity - indexed, (size_t)AnchorAcc::journalCountForTest());
+    const jlong late = first_tag + (jlong)kCapacity;
+    reportRediscovery(retry, late);
+    EXPECT_FALSE(retry.ctx.anchor_observation_overflow);
+    retry.scope.flush();
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(late));
+
+    tracker->stop();
+}
+
+// A local holder whose class is already classified non-container replays as a pure no-op
+// (noteLocalRootHolder() returns before any state change): the LOCAL gate must not stage it, so
+// a stable non-container local population never occupies journal slots.
+TEST_F(ReferenceChainsBfsTest, AnchorJournalClassifiedNonContainerLocalStagesNothing) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const jlong kNonContainer = -3102;
+    AnchorAcc::primeClassShapeForTest(kNonContainer, false);
+
+    const jlong local = [&] {
+        AnchorScopedPass pass(tracker, frontier);
+        const jlong local = reportFreshLocal(pass, kNonContainer);
+        EXPECT_GT(local, 0);
+        EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+        pass.scope.flush();
+        return local;
+    }();
+    ASSERT_GT(local, 0);
+    EXPECT_EQ(0u, AnchorAcc::anchorIndexSizeForTest());
+
+    // Re-report the same admitted tag: still a no-op, still unstaged.
+    AnchorScopedPass retry(tracker, frontier);
+    jlong tag = local;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              retry.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kNonContainer, &tag));
+    EXPECT_EQ(local, tag);
+    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+
+    tracker->stop();
+}
+
+// An unclassified local holder parks on its first report (a real effect); the re-report finds it
+// already parked and must not stage a second record for it.
+TEST_F(ReferenceChainsBfsTest, AnchorJournalParkedLocalRestagesNothing) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const jlong local = [&] {
+        AnchorScopedPass pass(tracker, frontier);
+        const jlong local = reportFreshLocal(pass, -3999);
+        EXPECT_GT(local, 0);
+        EXPECT_EQ(1u, AnchorAcc::journalCountForTest());
+        pass.scope.flush();
+        return local;
+    }();
+    ASSERT_GT(local, 0);
+    ASSERT_EQ(0u, AnchorAcc::anchorIndexSizeForTest());
+    ASSERT_EQ(1u, AnchorAcc::pendingLocalAnchorCountForTest());
+
+    AnchorScopedPass retry(tracker, frontier);
+    jlong tag = local;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              retry.root(JVMTI_HEAP_ROOT_STACK_LOCAL, -3999, &tag));
+    EXPECT_EQ(local, tag);
+    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+    EXPECT_EQ(1u, AnchorAcc::pendingLocalAnchorCountForTest());
+
+    tracker->stop();
 }
 
 } // namespace

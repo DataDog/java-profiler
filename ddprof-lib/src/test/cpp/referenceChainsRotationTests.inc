@@ -1024,21 +1024,27 @@ struct T9RJournalFill {
         follow_seeds.clear();
     }
 
-    // The holder is a known non-container, so its replayed LOCAL reports park nothing.
+    // Seeds the holder the fill reports: a reparented static-field holder already sitting in the
+    // at-risk FIFO. Its repeated AT_RISK reports stage records (filling the journal) whose replay
+    // is a pure no-op (pushAtRiskStaticAnchor() dedups), so the fill leaves no state behind.
     static void seedHolder(ReferenceChainTracker *tracker) {
         holder_tag = tracker->nextTag();
         T9RAcc::primeClassShapeForTest(holder_class_tag, false);
         ASSERT_TRUE(T9RAcc::insertFrontierEntry(
-            tracker->frontierTable(), holder_tag, 0, 0, FrontierEntryState::FRONTIER,
-            JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0, holder_class_tag));
+            tracker->frontierTable(), holder_tag, /*parent_tag=*/1, /*depth=*/1,
+            FrontierEntryState::FRONTIER, JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0,
+            holder_class_tag));
+        T9RAcc::pushStaticAnchorFifoForTest(holder_tag, 0);
     }
 
     static void fill(const void *user_data) {
         void *ctx = const_cast<void *>(user_data);
         for (u32 i = 0; i < AnchorObservationBuffer::CAPACITY; i++) {
             jlong tag = holder_tag;
-            if (T9RAcc::reportHeapRootForTest(JVMTI_HEAP_ROOT_STACK_LOCAL, holder_class_tag,
-                                              &tag, ctx) != JVMTI_ITERATION_CONTINUE) {
+            // The edge callback returns VISIT_OBJECTS for a descend-able holder; only an ABORT
+            // ends the fill.
+            if (T9RAcc::reportStaticFieldEdgeForTest(-555, &tag, ctx) &
+                JVMTI_VISIT_ABORT) {
                 break;
             }
         }

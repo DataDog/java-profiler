@@ -1183,6 +1183,24 @@ private:
   // with a tiered cursor: leak-tagged, fresh, containers, then other roots fairly.
   std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
   bool isSelectableAnchor(const FrontierEntry &entry, jlong own_class_tag) const;
+  // True iff the tag currently occupies the anchor index. Callback and replay are serialized on
+  // the BFS thread, so callback-time reads see the replay's own writes.
+  bool isAnchorIndexed(jlong tag) const {
+    return _static_anchor_index_tags.count(tag) > 0;
+  }
+  // True iff noteLocalRootHolder() would not return unchanged for this observation: not indexed,
+  // not already parked, not a classified non-container. Staging a known no-op wastes a slot, and
+  // re-staging a stable population every enumeration refills the journal at the same prefix, so
+  // the overflow aborts at the same report every pass and no later root is ever reached.
+  bool localHolderNeedsObservation(jlong tag, jlong own_class_tag) const {
+    if (_static_anchor_index_tags.count(tag) > 0 ||
+        _pending_local_anchor_tags.count(tag) > 0) {
+      return false;
+    }
+    auto shape = _class_shape_cache.find(own_class_tag);
+    return shape == _class_shape_cache.end() ||
+           shape->second == (u8)AnchorClassShape::CONTAINER;
+  }
   // At-risk anchor push: deduped, capped, and quota-limited per klass.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   // Add `tag` to _static_anchor_index if its root_kind is a durable anchor-tier kind (STATIC_FIELD
@@ -1220,14 +1238,6 @@ private:
   // alongside). Local-share entries are never evicted here. Called by the anchor-index
   // helpers during replay, not from heap callbacks. Returns the number of evicted entries.
   size_t evictOldestDurableAnchors();
-  // Re-indexes an evicted durable anchor when a traversal re-reports it: root enumeration never
-  // re-reports a static-field holder, an unchanged durable root kind never upgrades
-  // (maybeUpgradeRootAttachedRootKind() refuses), and an already-admitted entry takes no fresh
-  // admission path - so without this, a live evicted anchor would stay unindexed until
-  // restartSearch(). Direct helper for tests and non-callback callers; production callbacks
-  // capture eligibility and replay the index update after JVMTI returns. BFS thread only.
-  void reenlistEvictedDurableAnchor(FrontierTable *frontier, jlong tag,
-                                    jlong class_tag);
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
   // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive

@@ -923,22 +923,27 @@ struct T8JournalFill {
         count_after_fill = 0;
     }
 
-    // Seeds the holder the fill reports; its class is a known non-container so the replayed
-    // reports park nothing for classification.
+    // Seeds the holder the fill reports: a reparented static-field holder already sitting in the
+    // at-risk FIFO. Its repeated AT_RISK reports stage records (filling the journal) whose replay
+    // is a pure no-op (pushAtRiskStaticAnchor() dedups), so the fill leaves no state behind.
     static void seedHolder(ReferenceChainTracker *tracker) {
         holder_tag = tracker->nextTag();
         T8Acc::primeClassShapeForTest(holder_class_tag, false);
         ASSERT_TRUE(T8Acc::insertFrontierEntry(
-            tracker->frontierTable(), holder_tag, 0, 0, FrontierEntryState::FRONTIER,
-            JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0, holder_class_tag));
+            tracker->frontierTable(), holder_tag, /*parent_tag=*/1, /*depth=*/1,
+            FrontierEntryState::FRONTIER, JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0,
+            holder_class_tag));
+        T8Acc::pushStaticAnchorFifoForTest(holder_tag, 0);
     }
 
     static void fill(const void *user_data) {
         void *ctx = const_cast<void *>(user_data);
         for (u32 i = 0; i < AnchorObservationBuffer::CAPACITY; i++) {
             jlong tag = holder_tag;
-            if (T8Acc::reportHeapRootForTest(JVMTI_HEAP_ROOT_STACK_LOCAL, holder_class_tag,
-                                             &tag, ctx) != JVMTI_ITERATION_CONTINUE) {
+            // The edge callback returns VISIT_OBJECTS for a descend-able holder; only an ABORT
+            // ends the fill.
+            if (T8Acc::reportStaticFieldEdgeForTest(-555, &tag, ctx) &
+                JVMTI_VISIT_ABORT) {
                 break;
             }
         }
@@ -1156,6 +1161,8 @@ TEST_F(ReferenceChainsBfsTest, ExpansionOverflowKeepsDemotionAndBatchForRetry) {
 
     int edges = 0;
     bool truncated = false;
+    // The fill's own holder occupies one FIFO slot; the demotion rejection must not push a second.
+    const size_t fifo_before = T8Acc::staticAnchorFifoSizeForTest();
     T8Acc::expandFrontierWithBudgetForTest(&mock_jvmti, &mock_jni, 1000, &edges, &truncated);
     ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill);
     EXPECT_TRUE(truncated);
@@ -1164,7 +1171,7 @@ TEST_F(ReferenceChainsBfsTest, ExpansionOverflowKeepsDemotionAndBatchForRetry) {
     ASSERT_TRUE(frontier->lookup(T8DemotionSeed::kHolderTag, &entry));
     EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
     EXPECT_EQ(0u, entry.depth);
-    EXPECT_EQ(0u, T8Acc::staticAnchorFifoSizeForTest());
+    EXPECT_EQ(fifo_before, T8Acc::staticAnchorFifoSizeForTest());
     EXPECT_EQ(0u, T8Acc::journalCountForTest());
     // Incomplete batch: the source obligation stays queued and un-expanded.
     EXPECT_EQ(std::vector<jlong>{T8DemotionSeed::kParentTag}, T8Acc::pendingExpandContents());

@@ -542,9 +542,11 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             found && current.parent_tag == 0 &&
             rootKindDurability((u8)reference_kind) >
                 rootKindDurability(current.root_kind);
-        // The re-enlist filter is the callback-time snapshot; replay only skips tags already
-        // indexed.
-        if (found && ctx->tracker->isSelectableAnchor(current, class_tag)) {
+        // Indexed tags are skipped (cheap probe first): their re-enlist replay is a no-op, and
+        // re-staging the same selectable holders every sweep refills the journal at the same
+        // prefix (sustained overflow aborts at the same edge every pass - no forward progress).
+        if (!ctx->tracker->isAnchorIndexed(*tag_ptr) && found &&
+            ctx->tracker->isSelectableAnchor(current, class_tag)) {
           pending_actions |= AnchorObservation::REENLIST_ELIGIBLE;
         }
         // The upgrade refuses for parent_tag != 0 by design, so this STATIC_FIELD edge proves an

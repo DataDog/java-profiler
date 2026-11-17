@@ -132,6 +132,10 @@ public:
     if (!owns(lease)) {
       return;
     }
+    // A reservation is RAII-cancelled at callback return, so none can be outstanding here; a
+    // commit after this clear would be silently dropped by the !_reserved check. Keeping the
+    // assignment is the defensive fallback if that discipline is ever broken in a release build.
+    assert(_reserved == false);
     _count = 0;
     _static_retry = false;
     _overflow = false;

@@ -691,10 +691,6 @@ public:
     static int staticFieldSweepCursorForTest() {
         return ReferenceChainTracker::instance()->_static_field_sweep_cursor;
     }
-    static void reenlistEvictedDurableAnchorForTest(jlong tag, jlong class_tag) {
-        ReferenceChainTracker::instance()->reenlistEvictedDurableAnchor(
-            ReferenceChainTracker::instance()->frontierTable(), tag, class_tag);
-    }
     static constexpr size_t kLocalAnchorIndexCap =
         ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP;
     static constexpr size_t kDurableAnchorIndexCap =

@@ -793,13 +793,20 @@ TEST_F(ReferenceChainsBfsTest, AnchorCallbacksOnWorkerThreadOnlyRecordAndCallerF
     }
 
     // A callback worker that outruns the capacity aborts at the first record that does not fit;
-    // the caller sees the overflow after the join and the flush keeps the accepted prefix.
+    // the caller sees the overflow after the join and the flush keeps the accepted prefix. The
+    // reports are distinct unindexed roots: a re-report of the already-indexed tags above would
+    // stage nothing (its replay would be a no-op) and never fill the journal.
+    std::vector<jlong> fill_tags;
+    for (u32 i = 0; i <= AnchorObservationBuffer::CAPACITY; i++) {
+        fill_tags.push_back(100 + (jlong)i);
+        t9lInsertRootAttachedDurable(frontier, fill_tags.back());
+    }
     T9LScopedPass full(tracker, frontier);
     u32 accepted = 0;
     int last_control = -1;
     std::thread worker([&]() {
         for (u32 i = 0; i <= AnchorObservationBuffer::CAPACITY; i++) {
-            jlong tag = tags[0];
+            jlong tag = fill_tags[i];
             last_control = T9LAcc::reportHeapRootForTest(JVMTI_HEAP_ROOT_JNI_GLOBAL, kT9LClassTag,
                                                          &tag, &full.ctx);
             if (last_control != JVMTI_ITERATION_CONTINUE) {

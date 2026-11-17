@@ -155,9 +155,13 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     } else if (translated_root_kind ==
                (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
       // Unchanged JNI_GLOBAL roots re-enlist evicted anchors here; static-field roots re-enlist
-      // from the sweep. Record eligibility now; replay skips tags still indexed.
+      // from the sweep. Skipped for already-indexed tags (cheap probe first - the indexed steady
+      // state is the common case): their replay is a no-op, and re-staging the same selectable
+      // holders every enumeration refills the journal at the same prefix - the overflow then
+      // aborts at the same report every pass and no later root is ever reached.
       FrontierEntry current{};
-      if (ctx->frontier->lookup(*tag_ptr, &current) &&
+      if (!ctx->tracker->isAnchorIndexed(*tag_ptr) &&
+          ctx->frontier->lookup(*tag_ptr, &current) &&
           ctx->tracker->isSelectableAnchor(current, class_tag)) {
         actions |= AnchorObservation::REENLIST_ELIGIBLE;
       }
@@ -167,12 +171,14 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   default:
     break;
   }
-  // Remember local holders before expansion can reparent them into a deeper
-  // chain. Known collections still need bounded descend walks after that change
-  // to observe replacement backing storage. Only confirmed containers enter the
-  // anchor index (capped); classification runs outside this callback, so an
-  // unclassified holder waits in a capped pending buffer instead. Recorded, applied at flush.
-  if (local_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+  // Remember local holders before expansion can reparent them into a deeper chain; known
+  // collections still need bounded descend walks after that to observe replacement backing
+  // storage. Only confirmed containers enter the anchor index (capped), an unclassified holder
+  // waits in the pending buffer. Skipped under the same conditions noteLocalRootHolder() returns
+  // unchanged (see localHolderNeedsObservation()): a stable local population must not refill the
+  // journal with its own no-op records every enumeration.
+  if (local_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr) &&
+      ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag)) {
     actions |= AnchorObservation::LOCAL;
   }
   if (actions != 0) {

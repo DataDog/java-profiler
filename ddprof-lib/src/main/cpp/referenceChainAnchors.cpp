@@ -89,7 +89,10 @@ void ReferenceChainTracker::replayAnchorObservations(
       addToStaticAnchorIndex(r.tag, r.own_class_tag, r.durable_root_kind);
     }
     if (r.actions & AnchorObservation::REENLIST_ELIGIBLE) {
-      // Eligibility was decided at callback time against the frontier snapshot; no recheck here.
+      // Eligibility was decided at callback time against the frontier snapshot: root-attached
+      // durable kind, or a CONTAINER-shaped holder (isSelectableAnchor) - the admission contract
+      // for a rediscovered evicted anchor, which can carry parent_tag != 0 and a stale transient
+      // root_kind after reparenting. No recheck here.
       if (_static_anchor_index_tags.count(r.tag) == 0) {
         indexAnchorForRotation(r.tag, r.own_class_tag);
       }
@@ -606,27 +609,6 @@ void ReferenceChainTracker::eraseAnchorEntries(
                      _static_anchor_fresh_queue.end(),
                      [&](jlong tag) { return removed.count(tag) > 0; }),
       _static_anchor_fresh_queue.end());
-}
-
-void ReferenceChainTracker::reenlistEvictedDurableAnchor(
-    FrontierTable *frontier, jlong tag, jlong class_tag) {
-  // O(1) fast path: fresh admissions, prior re-enlistments and never-evicted tags are still
-  // indexed; only an evicted tag pays the frontier lookup below.
-  if (_static_anchor_index_tags.count(tag) > 0) {
-    return;
-  }
-  FrontierEntry entry{};
-  // isSelectableAnchor, not a root-attached-only gate: improveChain()/reparentToDurableRoot()
-  // re-parent confirmed containers under a durable root, so a rediscovered evicted anchor can
-  // legitimately carry parent_tag != 0 - and then also a stale transient root_kind, which the
-  // root-kind filter inside addToStaticAnchorIndex() would reject. Rotation eligibility (root-
-  // attached durable kind, or a CONTAINER-shaped holder) is the admission contract, and
-  // indexAnchorForRotation() is the unfiltered durable-share index push.
-  if (!frontier->lookup(tag, &entry) ||
-      !isSelectableAnchor(entry, class_tag)) {
-    return; // gone from the frontier, or no longer a rotation-eligible anchor
-  }
-  indexAnchorForRotation(tag, class_tag);
 }
 
 bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,

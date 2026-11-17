@@ -1258,8 +1258,8 @@ TEST_F(ReferenceChainsBfsTest, DurableUpgradeAtCapTriggersEviction) {
 
 // A live evicted anchor has no fresh-admission path (its frontier entry is already ADMITTED) and
 // no upgrade path (an unchanged durable root kind never upgrades), so the traversal callbacks'
-// re-enlistment is its only route back into the rotation index. Non-durable root kinds and
-// non-root-attached entries are filtered.
+// re-enlistment staging is its only route back into the rotation index. Non-root-attached entries
+// and unchanged transient root kinds are not staged.
 TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReenlistedByTraversalReport) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -1269,6 +1269,7 @@ TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReenlistedByTraversalReport
 
     const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
     const jlong kClass = -601;
+    AnchorAcc::primeClassShapeForTest(kClass, false);
     const jlong target = 7001;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, target, 0, 0, FrontierEntryState::FRONTIER,
@@ -1283,15 +1284,22 @@ TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReenlistedByTraversalReport
     ASSERT_FALSE(
         ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
 
-    // The traversal callbacks' re-enlistment on the next report of the holder's durable edge.
-    ReferenceChainsTestAccessor::reenlistEvictedDurableAnchorForTest(target,
-                                                                     kClass);
+    // The next traversal report of the holder's durable edge stages a re-enlist; the flush
+    // indexes it.
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        reportRediscovery(pass, target);
+        ASSERT_EQ(1u, AnchorAcc::journalCountForTest());
+        pass.scope.flush();
+    }
     EXPECT_TRUE(
         ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
     EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
         target));
 
-    // Negative controls: a non-root-attached entry and a transient root kind are not re-enlisted.
+    // Negative controls: a non-root-attached entry is not staged for re-enlist (the static edge
+    // stages an at-risk push instead), and an unchanged transient root kind of a classified
+    // non-container stages nothing at all.
     const jlong child = 7100, transient = 7101;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, child, 42, 1, FrontierEntryState::FRONTIER,
@@ -1299,10 +1307,17 @@ TEST_F(ReferenceChainsBfsTest, EvictedDurableAnchorIsReenlistedByTraversalReport
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, transient, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
-    ReferenceChainsTestAccessor::reenlistEvictedDurableAnchorForTest(child,
-                                                                     kClass);
-    ReferenceChainsTestAccessor::reenlistEvictedDurableAnchorForTest(transient,
-                                                                     kClass);
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        jlong child_tag = child;
+        jint child_ctl = pass.staticEdge(&child_tag);
+        EXPECT_EQ(0, child_ctl & JVMTI_VISIT_ABORT);
+        jlong transient_tag = transient;
+        EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+                  pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kClass,
+                            &transient_tag));
+        pass.scope.flush();
+    }
     EXPECT_FALSE(
         ReferenceChainsTestAccessor::anchorIndexContainsForTest(child));
     EXPECT_FALSE(
@@ -2273,9 +2288,9 @@ TEST_F(ReferenceChainsBfsTest, AnchorObservationClassTagFollowsCallbackSnapshot)
     tracker->stop();
 }
 
-// A cap-crossing replay evicts an earlier-indexed holder; the later rediscovery of the same holder
-// in the same journal then re-enlists it. The earlier rediscovery (holder still indexed) is skipped
-// and neither reset its first look nor coalesced the later one away.
+// A cap-crossing replay evicts an earlier-indexed holder. A re-report of a still-indexed holder
+// stages nothing (its re-enlist replay would be a no-op); the holder evicted by the replay is
+// re-enlisted by the next enumeration, once it is actually unindexed.
 TEST_F(ReferenceChainsBfsTest, AnchorRepeatedReportAcrossCapCrossingWaveReenlists) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -2299,26 +2314,37 @@ TEST_F(ReferenceChainsBfsTest, AnchorRepeatedReportAcrossCapCrossingWaveReenlist
     ASSERT_TRUE(AnchorAcc::anchorIndexContainsForTest(victim));
     const u64 gen = AnchorAcc::durableAnchorResweepGenForTest();
 
-    AnchorScopedPass pass(tracker, frontier);
-    reportRediscovery(pass, victim); // rediscovery while still indexed
-    jlong tag = crossing;            // upgrade: replay adds the (cap+1)-th durable entry
-    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
-              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, -3001, &tag));
-    reportRediscovery(pass, victim); // rediscovery after the crossing evicted it
-    ASSERT_EQ(3u, AnchorAcc::journalCountForTest());
-    pass.scope.flush();
-
-    // One eviction batch, oldest first: the crossing left cap - batch entries, then the victim came
-    // back at the tail through the third record.
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        reportRediscovery(pass, victim); // rediscovery while still indexed: stages nothing
+        EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+        jlong tag = crossing;            // upgrade: replay adds the (cap+1)-th durable entry
+        ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+                  pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, -3001, &tag));
+        reportRediscovery(pass, victim); // still indexed at callback time: stages nothing
+        ASSERT_EQ(1u, AnchorAcc::journalCountForTest());
+        pass.scope.flush();
+    }
+    // One eviction batch, oldest first: the crossing left cap - batch entries; the victim went
+    // with them and its skipped re-reports cannot bring it back within this pass.
     EXPECT_EQ(gen + 1, AnchorAcc::durableAnchorResweepGenForTest());
-    EXPECT_EQ(cap - batch + 1, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(cap - batch, AnchorAcc::anchorIndexSizeForTest());
     EXPECT_EQ(AnchorAcc::anchorIndexSizeForTest(),
               AnchorAcc::anchorOwnClassTagsSizeForTest());
-    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(victim));
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(victim));
     EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(crossing));
     EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(filler));
     EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(filler + (jlong)(batch - 1)));
     EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(filler + (jlong)batch));
+
+    // The next enumeration re-reports the evicted victim: unindexed now, so it stages and
+    // re-enlists at the tail.
+    AnchorScopedPass retry(tracker, frontier);
+    reportRediscovery(retry, victim);
+    ASSERT_EQ(1u, AnchorAcc::journalCountForTest());
+    retry.scope.flush();
+    EXPECT_EQ(cap - batch + 1, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(victim));
     EXPECT_EQ(victim, AnchorAcc::anchorIndexTagForTest(AnchorAcc::anchorIndexSizeForTest() - 1));
     EXPECT_EQ(victim, AnchorAcc::freshQueueTagsForTest().back());
 
@@ -2451,7 +2477,9 @@ TEST_F(ReferenceChainsBfsTest, AnchorReplayedLocalsClassifiedLaterOrRejectedAsNo
     for (int i = 0; i < 2; i++) {
         rejected.push_back(reportFreshLocal(pass, kNonContainer));
     }
-    EXPECT_EQ(5u, AnchorAcc::journalCountForTest()); // classification is not a callback concern
+    EXPECT_EQ(3u, AnchorAcc::journalCountForTest()); // unclassified holders stage; classified
+                                                     // non-containers replay as a no-op and are
+                                                     // skipped at staging time
     pass.scope.flush();
     EXPECT_EQ(3u, AnchorAcc::pendingLocalAnchorCountForTest());
     EXPECT_EQ(0u, AnchorAcc::anchorIndexSizeForTest());
