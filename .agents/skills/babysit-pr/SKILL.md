@@ -72,20 +72,29 @@ both its source and its destination — the guard's `--no-renames` delta lists b
 edit no finding justifies goes to the stop summary instead of the tree.
 
 **Run signals.** At start the worker adds the `dog-sitter` label to the PR and posts
-one status comment; at stop it removes the label and edits that same comment with the
-outcome — one timeline entry per run, never a reply. A missing label is flagged in the
-stop report, never created (the worker does not create repo labels). The status comment
-is fixed boilerplate (a headline plus one bullet per scope — never a single
- run-on paragraph):
+one status comment; at stop it removes the label and edits that same comment —
+the status line flips to stopped — one timeline entry per run, never a reply. A missing
+label is flagged in the stop report, never created (the worker does not create repo
+labels). The status comment
+is fixed boilerplate — a status card whose status line flips at stop (never
+removed: one timeline entry per run):
 
 ```
-🐶 **babysit-pr is watching this PR**
+## 🐶 babysit-pr
 
-- **CI breakages** — fixed and pushed through the repo's review gates
-- **Mechanical findings** — fixed and pushed in the same cycle
-- **Design-level findings** — surfaced to the author, never auto-implemented
-- **Stops with its session** — run caps and stop conditions per the babysit-pr skill
+| Scope | What happens |
+|---|---|
+| CI breakages | fixed and pushed through the repo's review gates |
+| Mechanical findings | fixed and pushed in the same cycle |
+| Design-level findings | surfaced to the author, never auto-implemented |
+
+👀 **Watching** — run caps and stop conditions per the babysit-pr skill.
 ```
+
+At stop, edit that same comment: replace the last status line with
+`✅ **Stopped at <UTC time>** — <one-line outcome: CI green / cap reached / blocked-on-X>`
+and append the stop summary under a `---` separator (commits pushed, findings
+flagged, threads left, `bits_triggered` heads).
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json reviews,comments,url,mergeable,mergeStateStatus`;
@@ -202,8 +211,10 @@ is fixed boilerplate (a headline plus one bullet per scope — never a single
    worktree's marker to `{"pr": <n>, "status": "stopped", "bits_triggered": [...]}`
    — keeping the triggered-heads list, which the stop report names so the session's
    handback copy carries it — remove the
-   `dog-sitter` label, and edit the status comment to append the stop summary (commits
-   pushed, findings flagged, threads left, `bits_triggered` heads). The session
+   `dog-sitter` label, and edit the status comment per the run-signals rule:
+   flip the status line to the stopped form and append the stop summary (commits
+   pushed, findings flagged, threads left, `bits_triggered` heads) under the
+   separator. The session
    updates its own dedupe copy at handback — the worker never writes the session's
    checkout.
 
