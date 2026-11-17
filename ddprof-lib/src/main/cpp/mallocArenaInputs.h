@@ -32,9 +32,9 @@ struct MallocArenaInputs {
     static MallocArenaInputs capture();
 };
 
-// Looks up `key` in a GLIBC_TUNABLES-style list ("k1=v1:k2=v2"). Sets *out only
-// for a whole-key match whose value is a decimal integer with an optional '-'.
-// Returns false for a null list, a missing key, or a value such as "max".
+// Looks up `key` in a GLIBC_TUNABLES-style list ("k1=v1:k2=v2"); the last match wins.
+// Sets *out only if its value is a decimal integer with an optional '-'. Returns
+// false for a null list, a missing key, or a value such as "max".
 bool parseTunableLong(const char* tunables, const char* key, long* out);
 
 // Arena limit glibc applies: the glibc.malloc.arena_max tunable, else `env`
