@@ -1,12 +1,15 @@
 ---
 id: find-marker-branch-babysit-mismatch
 title: Marker branch field vs Claude worker's -babysit local branch; Bits re-trigger codified
-type: finding
+kind: finding
 tags: [babysit-pr, bits, pre-push-hook, marker, claude-worker]
 applies_to: []
 source: pr-1001/bits-1702
-status: confirmed
+status: active
+recorded: 2026-11-17
+valid_at: 2026-11-17
 ---
+
 # Marker `branch` field vs Claude worker's `-babysit` local branch (Bits 17:02 P1, PR #1001)
 
 The worker marker recorded `branch: <branch>` while the Claude Code worker checks
