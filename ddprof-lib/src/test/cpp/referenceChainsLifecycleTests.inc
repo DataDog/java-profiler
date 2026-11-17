@@ -510,3 +510,430 @@ TEST_F(ReferenceChainsRecordingBoundaryTest, NoStaleFrontierIdsAfterRecordingBou
 
     tracker->stop();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Anchor-observation journal lifecycle: lease ownership, epoch invalidation and the join gate.
+// A scope is kept alive only around the traversal group it owns; scopes that outlive a lifecycle
+// boundary below are deliberate stand-ins for a straggler holding a stale token.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+using T9LAcc = ReferenceChainsTestAccessor;
+
+// Restores the shared singleton/mock state on every exit, including a failed ASSERT.
+struct T9LTestGuard {
+    ReferenceChainsMockHeap &fixture;
+    explicit T9LTestGuard(ReferenceChainsMockHeap &f) : fixture(f) {}
+    ~T9LTestGuard() {
+        T9LAcc::setAbortPassRequestedForTest(false);
+#ifdef DEBUG
+        T9LAcc::clearJoinResultForTest();
+#endif
+        fixture.jvmti_tbl.IterateOverReachableObjects =
+            &ReferenceChainsMockHeap::mock_IterateOverReachableObjects;
+        fixture.fail_get_objects_with_tags = false;
+        ReferenceChainTracker::instance()->stop();
+    }
+};
+
+// A pass context bound to a caller-owned scope, as every production traversal caller builds it.
+struct T9LScopedPass {
+    ReferenceChainAnchorObservationScope scope;
+    ReferenceChainPassContext ctx;
+
+    T9LScopedPass(ReferenceChainTracker *tracker, FrontierTable *frontier) : scope(tracker), ctx(scope) {
+        ctx.tracker = tracker;
+        ctx.frontier = frontier;
+        ctx.hop_cap = 64;
+        ctx.budget = 100000;
+        ctx.edges_admitted = 0;
+        ctx.truncated = false;
+        ctx.frontier_cap_hit = false;
+    }
+};
+
+constexpr jlong kT9LClassTag = -3501;
+
+void t9lInsertRootAttachedDurable(FrontierTable *frontier, jlong tag) {
+    ASSERT_TRUE(T9LAcc::insertFrontierEntry(frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+                                            JVMTI_HEAP_REFERENCE_JNI_GLOBAL, 0, kT9LClassTag));
+}
+
+AnchorObservation t9lAtRiskRecord(jlong tag, u32 klass_id) {
+    AnchorObservation record{};
+    record.tag = tag;
+    record.at_risk_klass_id = klass_id;
+    record.actions = AnchorObservation::AT_RISK;
+    return record;
+}
+
+AnchorObservation t9lReenlistRecord(jlong tag) {
+    AnchorObservation record{};
+    record.tag = tag;
+    record.own_class_tag = kT9LClassTag;
+    record.actions = AnchorObservation::REENLIST_ELIGIBLE;
+    return record;
+}
+
+// Root enumeration whose first report is accepted, after which the stop request arrives (what
+// stopThread()'s abort flag does to an in-flight pass) and the second report is refused.
+struct T9LCooperativeStop {
+    static inline jlong first_tag = 0;
+    static inline jlong second_tag = 0;
+    static inline int first_control = -1;
+    static inline int second_control = -1;
+    static inline jlong first_tag_after = 0;
+    static inline jlong second_tag_after = 0;
+};
+
+jvmtiError JNICALL t9lCooperativeStopIterate(jvmtiEnv *, jvmtiHeapRootCallback root_cb,
+                                             jvmtiStackReferenceCallback, jvmtiObjectReferenceCallback,
+                                             const void *user_data) {
+    void *ctx = const_cast<void *>(user_data);
+    jlong first = T9LCooperativeStop::first_tag;
+    T9LCooperativeStop::first_control = root_cb(JVMTI_HEAP_ROOT_JNI_GLOBAL, 0, 0, &first, ctx);
+    T9LCooperativeStop::first_tag_after = first;
+    T9LAcc::setAbortPassRequestedForTest(true);
+    jlong second = T9LCooperativeStop::second_tag;
+    T9LCooperativeStop::second_control = root_cb(JVMTI_HEAP_ROOT_JNI_GLOBAL, 0, 0, &second, ctx);
+    T9LCooperativeStop::second_tag_after = second;
+    return JVMTI_ERROR_NONE;
+}
+
+} // namespace
+
+// Scopes overlapping the owner's group are non-owning: they cannot reserve, cannot latch overflow
+// or a static retry on the owner's journal, cannot flush its records, and their destruction does
+// not release the owner's lease.
+TEST_F(ReferenceChainsBfsTest, OverlappingAnchorScopeCannotReserveOverflowFlushOrReleaseOwner) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9LTestGuard guard(*this);
+
+    const u64 gen = T9LAcc::durableAnchorResweepGenForTest();
+    {
+        ReferenceChainAnchorObservationScope owner(tracker);
+        ASSERT_TRUE(owner.ownsLease());
+        {
+            ReferenceChainAnchorObservationScope other(tracker);
+            EXPECT_FALSE(other.ownsLease());
+            {
+                AnchorObservationReservation reservation = other.reserve();
+                EXPECT_FALSE(reservation.held());
+                reservation.commit(t9lAtRiskRecord(901, 7)); // a refused reservation records nothing
+            }
+            other.markOverflow(/*static_attachment=*/true);
+            EXPECT_TRUE(other.observeReturn()) << "a non-owning scope has no journal: abort, don't lose";
+            other.flush();
+        }
+        EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+        EXPECT_FALSE(owner.observeReturn()) << "the overlapping scope latched overflow on the owner";
+
+        {
+            AnchorObservationReservation reservation = owner.reserve();
+            ASSERT_TRUE(reservation.held());
+            reservation.commit(t9lAtRiskRecord(901, 7));
+        }
+        ASSERT_EQ(1u, T9LAcc::journalCountForTest());
+        {
+            // The owner's destructor-free lease is still the only one: a later overlapping scope
+            // (after the earlier one was destroyed) is non-owning too, and flushing it replays nothing.
+            ReferenceChainAnchorObservationScope later(tracker);
+            EXPECT_FALSE(later.ownsLease()) << "destroying a non-owning scope released the owner's lease";
+            later.flush();
+        }
+        EXPECT_EQ(1u, T9LAcc::journalCountForTest()) << "a non-owning flush consumed the owner's record";
+        EXPECT_FALSE(T9LAcc::staticAnchorFifoContainsForTest(901));
+
+        owner.flush();
+        EXPECT_TRUE(T9LAcc::staticAnchorFifoContainsForTest(901));
+        EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+    }
+    EXPECT_EQ(gen, T9LAcc::durableAnchorResweepGenForTest())
+        << "a non-owning markOverflow(static) must not request a resweep";
+    ReferenceChainAnchorObservationScope next(tracker);
+    EXPECT_TRUE(next.ownsLease()) << "the owner's destruction must release its lease";
+}
+
+// A stop()/start() cycle reusing numeric tag 1 invalidates every outstanding token: the stale
+// scope's flush is discarded before any tag lookup (its positive, non-empty payload would index
+// the NEW recording's tag 1), cannot touch the new owner's journal, and its destruction cannot
+// release the new lease.
+TEST_F(ReferenceChainsBfsTest, StaleAnchorScopeAfterStopStartCannotReplayOrReleaseNewLease) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9LTestGuard guard(*this);
+
+    t9lInsertRootAttachedDurable(tracker->frontierTable(), 1);
+    auto stale = std::make_unique<ReferenceChainAnchorObservationScope>(tracker);
+    ASSERT_TRUE(stale->ownsLease());
+    {
+        AnchorObservationReservation r1 = stale->reserve();
+        ASSERT_TRUE(r1.held());
+        r1.commit(t9lReenlistRecord(1));
+    }
+    {
+        AnchorObservationReservation r2 = stale->reserve();
+        ASSERT_TRUE(r2.held());
+        r2.commit(t9lAtRiskRecord(902, 3));
+    }
+    ASSERT_EQ(2u, T9LAcc::journalCountForTest());
+    const u64 epoch_before = T9LAcc::journalEpochForTest();
+
+    tracker->stop();
+    ASSERT_GT(T9LAcc::journalEpochForTest(), epoch_before);
+    EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+    ASSERT_FALSE(tracker->start(args));
+    // The new recording reuses numeric tag 1 for a different object.
+    t9lInsertRootAttachedDurable(tracker->frontierTable(), 1);
+    EXPECT_FALSE(T9LAcc::anchorIndexContainsForTest(1));
+
+    auto fresh = std::make_unique<ReferenceChainAnchorObservationScope>(tracker);
+    ASSERT_TRUE(fresh->ownsLease()) << "the epoch bump must clear the stale lease";
+    {
+        AnchorObservationReservation reservation = fresh->reserve();
+        ASSERT_TRUE(reservation.held());
+        reservation.commit(t9lAtRiskRecord(903, 4));
+    }
+    ASSERT_EQ(1u, T9LAcc::journalCountForTest());
+
+    {
+        AnchorObservationReservation reservation = stale->reserve();
+        EXPECT_FALSE(reservation.held());
+    }
+    stale->markOverflow(/*static_attachment=*/true);
+    stale->flush();
+    EXPECT_FALSE(T9LAcc::anchorIndexContainsForTest(1)) << "a stale payload was replayed";
+    EXPECT_FALSE(T9LAcc::staticAnchorFifoContainsForTest(902));
+    EXPECT_EQ(1u, T9LAcc::journalCountForTest()) << "the stale scope touched the new journal";
+    EXPECT_FALSE(fresh->observeReturn());
+    stale.reset(); // must not release the new owner's lease
+    {
+        ReferenceChainAnchorObservationScope overlapping(tracker);
+        EXPECT_FALSE(overlapping.ownsLease()) << "a stale token released the new lease";
+    }
+
+    fresh->flush();
+    EXPECT_TRUE(T9LAcc::staticAnchorFifoContainsForTest(903));
+    EXPECT_FALSE(T9LAcc::staticAnchorFifoContainsForTest(902));
+    EXPECT_FALSE(T9LAcc::anchorIndexContainsForTest(1));
+}
+
+// The accepted prefix is applied when a cooperative stop aborts the walk, and the refused report
+// leaves its object untouched.
+TEST_F(ReferenceChainsBfsTest, CooperativeStopAppliesAcceptedPrefixBeforePassReturns) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9LTestGuard guard(*this);
+
+    const jlong leak_base = T9LAcc::leakTagBase();
+    T9LCooperativeStop::first_tag = leak_base;
+    T9LCooperativeStop::second_tag = leak_base + 1;
+    jvmti_tbl.IterateOverReachableObjects = &t9lCooperativeStopIterate;
+    T9LAcc::setRootEnumRawStateForTest(0, 0);
+
+    bool truncated = false;
+    tracker->runPass(&mock_jvmti, &mock_jni, &truncated);
+    EXPECT_EQ((int)JVMTI_ITERATION_CONTINUE, T9LCooperativeStop::first_control);
+    EXPECT_EQ((int)JVMTI_ITERATION_ABORT, T9LCooperativeStop::second_control);
+    const jlong admitted = T9LCooperativeStop::first_tag_after;
+    ASSERT_GT(admitted, 0);
+    EXPECT_NE(leak_base, admitted) << "the accepted report must have converted its leak tag";
+    EXPECT_EQ(leak_base + 1, T9LCooperativeStop::second_tag_after) << "the refused report was applied";
+    EXPECT_TRUE(T9LAcc::anchorIndexContainsForTest(admitted))
+        << "the accepted prefix was not flushed on the stop path";
+    EXPECT_EQ(1u, T9LAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+}
+
+// JVMTI heap callbacks run on a thread other than the caller's (the VM thread). They only begin
+// and commit records under the journal lock; the caller, blocked in the synchronous traversal,
+// observes the return and drains.
+TEST_F(ReferenceChainsBfsTest, AnchorCallbacksOnWorkerThreadOnlyRecordAndCallerFlushes) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9LTestGuard guard(*this);
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const jlong tags[] = {11, 12, 13};
+    for (jlong tag : tags) {
+        t9lInsertRootAttachedDurable(frontier, tag);
+    }
+    {
+        T9LScopedPass pass(tracker, frontier);
+        int controls[3] = {-1, -1, -1};
+        std::thread worker([&]() {
+            for (int i = 0; i < 3; i++) {
+                jlong tag = tags[i];
+                controls[i] = T9LAcc::reportHeapRootForTest(JVMTI_HEAP_ROOT_JNI_GLOBAL,
+                                                            kT9LClassTag, &tag, &pass.ctx);
+            }
+        });
+        worker.join(); // the synchronous traversal returned
+        for (int i = 0; i < 3; i++) {
+            EXPECT_EQ((int)JVMTI_ITERATION_CONTINUE, controls[i]);
+        }
+        EXPECT_FALSE(pass.scope.observeReturn());
+        EXPECT_EQ(3u, T9LAcc::journalCountForTest());
+        EXPECT_EQ(0u, T9LAcc::anchorIndexSizeForTest()) << "a callback mutated the anchor index";
+        pass.scope.flush();
+        EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+        for (jlong tag : tags) {
+            EXPECT_TRUE(T9LAcc::anchorIndexContainsForTest(tag));
+        }
+    }
+
+    // A callback worker that outruns the capacity aborts at the first record that does not fit;
+    // the caller sees the overflow after the join and the flush keeps the accepted prefix.
+    T9LScopedPass full(tracker, frontier);
+    u32 accepted = 0;
+    int last_control = -1;
+    std::thread worker([&]() {
+        for (u32 i = 0; i <= AnchorObservationBuffer::CAPACITY; i++) {
+            jlong tag = tags[0];
+            last_control = T9LAcc::reportHeapRootForTest(JVMTI_HEAP_ROOT_JNI_GLOBAL, kT9LClassTag,
+                                                         &tag, &full.ctx);
+            if (last_control != JVMTI_ITERATION_CONTINUE) {
+                break;
+            }
+            accepted++;
+        }
+    });
+    worker.join();
+    EXPECT_EQ(AnchorObservationBuffer::CAPACITY, accepted);
+    EXPECT_EQ((int)JVMTI_ITERATION_ABORT, last_control);
+    EXPECT_TRUE(full.scope.observeReturn());
+    EXPECT_TRUE(full.ctx.anchor_observation_overflow);
+    EXPECT_EQ(AnchorObservationBuffer::CAPACITY, T9LAcc::journalCountForTest());
+    full.scope.flush();
+    EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+    EXPECT_FALSE(full.scope.observeReturn());
+}
+
+#ifdef DEBUG
+// A failed pthread_join leaves the worker unjoined: start, recording-boundary teardown and the
+// test reset all refuse to touch the journal a straggler could still hold, and a retry that
+// succeeds lets them proceed.
+TEST_F(ReferenceChainsBfsTest, StopThreadJoinFailureKeepsJournalAndRetrySucceeds) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9LTestGuard guard(*this);
+
+    auto holder = std::make_unique<ReferenceChainAnchorObservationScope>(tracker);
+    ASSERT_TRUE(holder->ownsLease());
+    {
+        AnchorObservationReservation reservation = holder->reserve();
+        ASSERT_TRUE(reservation.held());
+        reservation.commit(t9lAtRiskRecord(904, 5));
+    }
+    const u64 epoch = T9LAcc::journalEpochForTest();
+
+    T9LAcc::setThreadUnjoinedForTest();
+    T9LAcc::setJoinResultForTest(EBUSY);
+    EXPECT_FALSE(tracker->stopThread());
+    EXPECT_FALSE(T9LAcc::threadJoinedForTest());
+    EXPECT_EQ(1, T9LAcc::joinCallCountForTest());
+
+    EXPECT_TRUE((bool)tracker->start(args)) << "start() must refuse while a worker is unjoined";
+    tracker->stop();
+    tracker->resetSearchStateForTest(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(2, T9LAcc::joinCallCountForTest()) << "the reset retried the join once and gave up";
+    EXPECT_EQ(epoch, T9LAcc::journalEpochForTest());
+    EXPECT_EQ(1u, T9LAcc::journalCountForTest()) << "teardown cleared a journal the worker could hold";
+    EXPECT_FALSE(T9LAcc::threadJoinedForTest());
+
+    T9LAcc::setJoinResultForTest(0);
+    EXPECT_TRUE(tracker->stopThread());
+    EXPECT_TRUE(T9LAcc::threadJoinedForTest());
+    EXPECT_EQ(1, T9LAcc::joinCallCountForTest());
+    EXPECT_TRUE(tracker->stopThread()) << "an already joined worker needs no second join";
+    EXPECT_EQ(1, T9LAcc::joinCallCountForTest());
+
+    tracker->stop();
+    EXPECT_GT(T9LAcc::journalEpochForTest(), epoch);
+    EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+    holder->flush(); // stale token: discarded
+    EXPECT_FALSE(T9LAcc::staticAnchorFifoContainsForTest(904));
+    holder.reset();
+    EXPECT_FALSE((bool)tracker->start(args));
+}
+#endif
+
+// While a failed tag release keeps the abandoned search's tags live, nothing resets the journal;
+// the restart that follows the confirmed release does, so no earlier scope can replay against the
+// reused tags.
+TEST_F(ReferenceChainsRecordingBoundaryTest,
+       TagReleaseRetryKeepsJournalUntilRestartThenInvalidatesStaleScope) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1:ttl=0"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9LTestGuard guard(*this);
+
+    int nodeA = addNode();
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeA, -1},
+    };
+    fail_get_objects_with_tags = true;
+    bool truncated = false;
+    for (int i = 0; i < ReferenceChainTracker::NO_PROGRESS_PASS_LIMIT + 2; i++) {
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    }
+    ASSERT_EQ(SearchState::ABANDONED, tracker->searchState());
+    ASSERT_FALSE(T9LAcc::tagsReleased());
+    const u64 epoch = T9LAcc::journalEpochForTest();
+
+    auto straggler = std::make_unique<ReferenceChainAnchorObservationScope>(tracker);
+    ASSERT_TRUE(straggler->ownsLease());
+    {
+        AnchorObservationReservation reservation = straggler->reserve();
+        ASSERT_TRUE(reservation.held());
+        reservation.commit(t9lReenlistRecord(1));
+    }
+    // Failed release retries: no restart, so no journal reset.
+    EXPECT_TRUE(T9LAcc::shouldRunPass(1));
+    EXPECT_EQ(epoch, T9LAcc::journalEpochForTest());
+    EXPECT_EQ(1u, T9LAcc::journalCountForTest());
+    EXPECT_EQ(SearchState::ABANDONED, tracker->searchState());
+
+    // Release succeeds; the restart gate then resets the search and with it the journal epoch.
+    fail_get_objects_with_tags = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_TRUE(T9LAcc::tagsReleased());
+    // The restart gate also needs a leak-signal source and a growing candidate (this fixture's
+    // TearDown restores the no-signal state).
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    int fake_object_storage = 0;
+    for (u16 i = 1; i <= 20; i++) {
+        int slot;
+        bool created;
+        LivenessTracker::instance()->klassPopulationRecordForTest(/*klass_id=*/1, i, i, &slot, &created);
+        LivenessTracker::instance()->tidTrendRecordForTest(/*klass_id=*/1, /*tid=*/4242, (u32)i, (u64)i);
+    }
+    LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+        nullptr, /*klass_id=*/1, (jweak)&fake_object_storage);
+    EXPECT_TRUE(T9LAcc::shouldRunPass(OS::nanotime() + 3600ULL * 1000000000ULL));
+    ASSERT_EQ(SearchState::RUNNING, tracker->searchState()) << "the restart gate did not fire";
+    EXPECT_GT(T9LAcc::journalEpochForTest(), epoch);
+    EXPECT_EQ(0u, T9LAcc::journalCountForTest());
+
+    // The reused numeric tag 1 now names a new entry; the straggler's stale record must not index it.
+    t9lInsertRootAttachedDurable(tracker->frontierTable(), 1);
+    straggler->flush();
+    EXPECT_FALSE(T9LAcc::anchorIndexContainsForTest(1));
+    straggler.reset();
+    ReferenceChainAnchorObservationScope next(tracker);
+    EXPECT_TRUE(next.ownsLease());
+}

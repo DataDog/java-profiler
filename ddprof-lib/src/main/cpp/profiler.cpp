@@ -2241,6 +2241,9 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
+  if (_reference_chains_active && !ReferenceChainTracker::instance()->stopThread())
+    return Error("reference chain BFS thread did not join; teardown skipped, retry stop()");
+
   // Close the registration gate and wait for the calls already past it, so no
   // thread arms a timer or opens an fd after the engines below stop.
   // Unregistration stays open (see _thread_tables_stable). The engine stops
@@ -2261,11 +2264,8 @@ Error Profiler::stop() {
     // thread-object registry; a call that already read the flag is handled
     // by releaseAllThreadObjects() closing the registry.
     _reference_chains_active = false;
-    // Join the BFS thread and clear the recording-boundary state before the
-    // rest of the teardown (stopThread() wakes and joins; stop() resets the
-    // per-recording caches). Matches the Profiler::stop() order documented
-    // in referenceChains.cpp's stopThread()/stop() comments.
-    ReferenceChainTracker::instance()->stopThread();
+    // The BFS thread was joined at the top of stop(); stop() below resets the
+    // per-recording caches.
     // Write the tracker's still-undrained events into the final chunk before stop() clears
     // the queues - otherwise abandonment events queued since the last dump() are dropped for
     // good, and the final chunk's live-object/leak-tag events (written by

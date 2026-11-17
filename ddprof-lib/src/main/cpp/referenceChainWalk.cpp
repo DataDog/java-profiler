@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <unordered_set>
 
 // Heap-walk engine
@@ -140,6 +141,63 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
   }
   jvmti->Deallocate((unsigned char *)classes);
 }
+
+namespace {
+
+bool isDurableAnchorRootKind(u8 root_kind) {
+  return root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+         root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
+}
+
+// Takes a journal reservation only on callback branches that may produce anchor effects. Placement
+// new from a prvalue elides the move that the non-movable reservation forbids; the destructor
+// cancels an uncommitted reservation.
+class LazyReservation {
+public:
+  LazyReservation() = default;
+  LazyReservation(const LazyReservation &) = delete;
+  LazyReservation &operator=(const LazyReservation &) = delete;
+  ~LazyReservation() {
+    if (_live) {
+      get()->~AnchorObservationReservation();
+    }
+  }
+
+  // False when the journal had no room (or the scope does not own it); nothing is then held.
+  bool acquire(ReferenceChainAnchorObservationScope &scope) {
+    new (&_storage) AnchorObservationReservation(scope.reserve());
+    _live = true;
+    return get()->held();
+  }
+
+  void commit(const AnchorObservation &record) {
+    if (_live) {
+      get()->commit(record);
+    }
+  }
+
+private:
+  AnchorObservationReservation *get() {
+    return reinterpret_cast<AnchorObservationReservation *>(&_storage);
+  }
+
+  alignas(AnchorObservationReservation) unsigned char _storage[sizeof(AnchorObservationReservation)];
+  bool _live = false;
+};
+
+AnchorObservation makeAnchorObservation(jlong tag, jlong own_class_tag,
+                                        u32 at_risk_klass_id, u8 actions,
+                                        u8 durable_root_kind) {
+  AnchorObservation record{};
+  record.tag = tag;
+  record.own_class_tag = own_class_tag;
+  record.at_risk_klass_id = at_risk_klass_id;
+  record.actions = actions;
+  record.durable_root_kind = durable_root_kind;
+  return record;
+}
+
+} // namespace
 
 jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     jvmtiHeapReferenceKind reference_kind,
@@ -286,10 +344,18 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       return JVMTI_VISIT_ABORT;
     }
     jlong leak_tag = *tag_ptr;
+    u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
+    // Reserve before the tag install: a full journal aborts with the leak tag still in place.
+    const bool durable_leak = isDurableAnchorRootKind(root_kind);
+    LazyReservation leak_reservation;
+    if (durable_leak && !leak_reservation.acquire(ctx->anchor_scope)) {
+      ctx->abortForObservationOverflow(root_kind ==
+                                       (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+      return JVMTI_VISIT_ABORT;
+    }
     // Allocate a frontier tag for this object
     jlong frontier_tag = ctx->tracker->nextTag();
     u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-    u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
     if (ctx->frontier->insert(frontier_tag, parent_tag, referrer_klass,
                                depth, FrontierEntryState::FRONTIER,
                                root_kind, class_tag, edge_field_index,
@@ -315,14 +381,13 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                (long long)parent_tag);
       ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag,
                                              parent_tag, frontier_tag);
-      // Index maintenance: a leak-tagged object admitted root-attached by a durable root edge (e.g.
-      // a static field directly holding a tagged chunk) is the highest-priority anchor tier
-      // (leak_tag != 0).
-      if (parent_tag == 0 &&
-          (root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
-           root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL)) {
-        ctx->tracker->addToStaticAnchorIndex(frontier_tag, class_tag,
-                                             root_kind);
+      // A leak-tagged object admitted root-attached by a durable root edge is the highest-priority
+      // anchor tier (leak_tag != 0). Recorded as a journal observation; the caller replays the
+      // index update after JVMTI returns.
+      if (durable_leak) {
+        leak_reservation.commit(makeAnchorObservation(
+            frontier_tag, class_tag, 0, AnchorObservation::DURABLE_ADD,
+            root_kind));
       }
       // Auto-mark: record this as a discovered instance, with eviction rights over uncorrelated
       // noise slots (see recordDiscoveredInstance).
@@ -375,6 +440,13 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // (parent_tag == 0) - see FrontierEntry::root_kind's own comment for why a non-root entry's
     // edge kind is not recorded.
     u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
+    const bool durable_admission = isDurableAnchorRootKind(root_kind);
+    LazyReservation admit_reservation;
+    if (durable_admission && !admit_reservation.acquire(ctx->anchor_scope)) {
+      ctx->abortForObservationOverflow(root_kind ==
+                                       (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+      return JVMTI_VISIT_ABORT;
+    }
     ReferenceChainTracker::AdmitResult result = ctx->tracker->admitObject(
         ctx->frontier, ctx->hop_cap, ctx->budget, &ctx->edges_admitted,
         tag_ptr, parent_tag, referrer_klass, depth, root_kind, class_tag,
@@ -395,11 +467,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // nothing further to do.
       break;
     }
-    // Index maintenance: track root-attached durable anchors for O(anchors) collector iteration
-    // instead of O(frontier_size) table scan.
+    // Durable admission is recorded as a journal observation; the caller replays the anchor
+    // index update after JVMTI returns.
     if (result == ReferenceChainTracker::AdmitResult::ADMITTED &&
-        parent_tag == 0) {
-      ctx->tracker->addToStaticAnchorIndex(*tag_ptr, class_tag, root_kind);
+        durable_admission) {
+      admit_reservation.commit(makeAnchorObservation(
+          *tag_ptr, class_tag, 0, AnchorObservation::DURABLE_ADD, root_kind));
     }
     // Auto-mark: if this object's class matches a watched leak class, record its frontier tag so
     // pollWatchedTargets() can build a chain event for it.
@@ -454,6 +527,16 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
           ctx->frontier->lookup(*tag_ptr, &pre_improve_entry) &&
           pre_improve_entry.parent_tag == 0 &&
           rootKindDurability(pre_improve_entry.root_kind) >= 2;
+      // Reserve before improveChain(): a successful demotion cannot be undone, so a full journal
+      // must abort while the entry is still root-attached.
+      LazyReservation demotion_reservation;
+      if (was_root_attached_durable &&
+          !demotion_reservation.acquire(ctx->anchor_scope)) {
+        ctx->abortForObservationOverflow(
+            pre_improve_entry.root_kind ==
+            (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        return JVMTI_VISIT_ABORT;
+      }
       if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
                                        depth, 0, edge_field_index,
                                        (u8)reference_kind)) {
@@ -467,8 +550,10 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         if (was_root_attached_durable) {
           // Ensure a first look even when class-shape reconciliation has not
           // yet classified this reparented holder as a collection.
-          ctx->tracker->pushAtRiskStaticAnchor(
-              *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
+          demotion_reservation.commit(makeAnchorObservation(
+              *tag_ptr, class_tag,
+              ctx->tracker->classTags()->resolve(class_tag),
+              AnchorObservation::AT_RISK, 0));
         }
       } else if (ctx->frontier->reparentToDurableRoot(
                      *tag_ptr, parent_tag, referrer_klass, edge_field_index,
@@ -486,35 +571,60 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // sweep's class -> field edge reports the class as the referrer with a negative tag, which
       // the rtag < 0 branch above treats as root-like (class objects are never frontier entries),
       // and heap-root references arrive here with referrer_tag_ptr == nullptr.
-      if (ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier,
-                                                          *tag_ptr,
-                                                          (u8)reference_kind)) {
+      const bool durable_edge =
+          isDurableAnchorRootKind((u8)reference_kind);
+      u8 pending_actions = 0;
+      LazyReservation root_reservation;
+      if (durable_edge) {
+        // Decide the possible anchor effects from the current entry before any mutation. A
+        // possible upgrade or an eligible re-enlist/at-risk witness needs a journal slot.
+        FrontierEntry current{};
+        bool found = ctx->frontier->lookup(*tag_ptr, &current);
+        bool upgrade_possible =
+            found && current.parent_tag == 0 &&
+            rootKindDurability((u8)reference_kind) >
+                rootKindDurability(current.root_kind);
+        // The re-enlist filter is the callback-time snapshot; replay only skips tags already
+        // indexed.
+        if (found && ctx->tracker->isSelectableAnchor(current, class_tag)) {
+          pending_actions |= AnchorObservation::REENLIST_ELIGIBLE;
+        }
+        // The upgrade refuses for parent_tag != 0 by design, so this STATIC_FIELD edge proves an
+        // at-risk static attachment that the anchor tier's parent_tag == 0
+        // filter can never see.
+        if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD && found &&
+            current.parent_tag != 0) {
+          pending_actions |= AnchorObservation::AT_RISK;
+        }
+        if ((upgrade_possible || pending_actions != 0) &&
+            !root_reservation.acquire(ctx->anchor_scope)) {
+          ctx->abortForObservationOverflow(
+              reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+          return JVMTI_VISIT_ABORT;
+        }
+      }
+      jlong upgraded_class_tag = 0;
+      if (ctx->tracker->maybeUpgradeRootAttachedRootKind(
+              ctx->frontier, *tag_ptr, (u8)reference_kind,
+              &upgraded_class_tag)) {
+        if (durable_edge) {
+          root_reservation.commit(makeAnchorObservation(
+              *tag_ptr, upgraded_class_tag, 0, AnchorObservation::DURABLE_ADD,
+              (u8)reference_kind));
+        }
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
             ctx->resolved_chain_tag_count,
             ReferenceChainTracker::ChainInvalidationKind::REBUILD);
-      } else {
-        // An unchanged durable root never upgrades (and the static sweep's class -> field edge is
-        // the only traversal that re-reports a static-only holder), so this edge is an evicted
-        // durable anchor's only re-indexing path; the re-enlist filters non-durable kinds and
-        // non-root-attached entries itself, and is O(1) for still-indexed tags.
-        if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
-            reference_kind == JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
-          ctx->tracker->reenlistEvictedDurableAnchor(ctx->frontier, *tag_ptr,
-                                                     class_tag);
-        }
-        if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
-          // The upgrade refused (maybeUpgradeRootAttachedRootKind returns false for parent_tag != 0
-          // by design), so this STATIC_FIELD edge just proved an at-risk static attachment the anchor
-          // tier's parent_tag == 0 filter can never see: a holder already admitted as a non-root
-          // child (find-anchor-holder-eviction).
-          FrontierEntry entry{};
-          if (ctx->frontier->lookup(*tag_ptr, &entry) &&
-              entry.parent_tag != 0) {
-            ctx->tracker->pushAtRiskStaticAnchor(
-                *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
-          }
-        }
+      } else if (pending_actions != 0) {
+        // No upgrade: an unchanged durable root never upgrades, so this edge is a static-only
+        // holder's only re-indexing path (via the static sweep) and a non-root holder's at-risk witness.
+        root_reservation.commit(makeAnchorObservation(
+            *tag_ptr, class_tag,
+            (pending_actions & AnchorObservation::AT_RISK)
+                ? ctx->tracker->classTags()->resolve(class_tag)
+                : 0,
+            pending_actions, 0));
       }
     }
   }
@@ -730,7 +840,8 @@ void ReferenceChainTracker::seedLeakAccumulationForNewlyWatchedKlass(
 }
 
 bool ReferenceChainTracker::maybeUpgradeRootAttachedRootKind(
-    FrontierTable *frontier, jlong tag, u8 new_root_kind) {
+    FrontierTable *frontier, jlong tag, u8 new_root_kind,
+    jlong *upgraded_class_tag) {
   FrontierEntry entry{};
   if (!frontier->lookup(tag, &entry)) {
     return false;
@@ -746,7 +857,9 @@ bool ReferenceChainTracker::maybeUpgradeRootAttachedRootKind(
     return false;
   }
   frontier->updateRootKind(tag, new_root_kind);
-  addToStaticAnchorIndex(tag, entry.class_tag, new_root_kind);
+  if (upgraded_class_tag != nullptr) {
+    *upgraded_class_tag = entry.class_tag;
+  }
   return true;
 }
 

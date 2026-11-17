@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "classTagAllocator.h"
+#include "referenceChainInternal.h"
 #include "referenceChains.h"
 #include "vmEntry.h"
 
@@ -127,7 +128,22 @@ public:
         t->_expand_lane_prefer_priority = true;
 #ifdef DEBUG
         t->_between_invalidation_scan_and_writeback_for_test = nullptr;
+        t->_join_thread_for_test = nullptr;
 #endif
+        // A failed-join test leaves the worker marked unjoined; no thread exists at fixture setup.
+        t->_thread_joined = true;
+        t->_anchor_observations.reset();
+    }
+
+    // Anchor-observation journal: accepted-record count and the lifecycle epoch reset() advances.
+    static u32 journalCountForTest() {
+        return ReferenceChainTracker::instance()->_anchor_observations.count();
+    }
+    static u64 journalEpochForTest() {
+        return ReferenceChainTracker::instance()->_anchor_observations.epoch();
+    }
+    static bool threadJoinedForTest() {
+        return ReferenceChainTracker::instance()->_thread_joined;
     }
 
     static bool canAffordNewSearch(u64 now_ns) {
@@ -373,6 +389,30 @@ public:
     static void setBetweenInvalidationScanAndWritebackForTest(void (*hook)()) {
         ReferenceChainTracker::instance()->_between_invalidation_scan_and_writeback_for_test =
             hook;
+    }
+#endif
+
+#ifdef DEBUG
+    // Join-result injection: stopThread()'s pthread_join() is replaced by a stub that returns the
+    // configured result (0 = success) without joining a real thread, and counts its calls.
+    static inline int s_join_result = 0;
+    static inline int s_join_calls = 0;
+    static int injectedJoinForTest(pthread_t, void **) {
+        s_join_calls++;
+        return s_join_result;
+    }
+    static void setJoinResultForTest(int result) {
+        s_join_result = result;
+        s_join_calls = 0;
+        ReferenceChainTracker::instance()->_join_thread_for_test = &injectedJoinForTest;
+    }
+    static void clearJoinResultForTest() {
+        ReferenceChainTracker::instance()->_join_thread_for_test = nullptr;
+    }
+    static int joinCallCountForTest() { return s_join_calls; }
+    // Marks a worker as started-but-unjoined, the state a failed join leaves.
+    static void setThreadUnjoinedForTest() {
+        ReferenceChainTracker::instance()->_thread_joined = false;
     }
 #endif
 
@@ -1085,14 +1125,21 @@ public:
     static void walkStaticAnchorFifoForTest(jvmtiEnv *jvmti, JNIEnv *jni,
                                              const std::vector<jlong> &tags,
                                              int budget, int *edges_admitted,
-                                             std::vector<jlong> *unwalked) {
+                                             std::vector<jlong> *unwalked,
+                                             bool *anchor_observation_overflow = nullptr) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         bool truncated = false;
         bool cap_hit = false;
         u64 safepoint_ns = 0;
-        t->walkStaticFieldAnchors(jvmti, jni, tags, budget, edges_admitted,
-                                  &truncated, &cap_hit, &safepoint_ns,
+        bool overflow = false;
+        // The scope is the caller-side owner: its destructor replays the accepted prefix.
+        ReferenceChainAnchorObservationScope scope(t);
+        t->walkStaticFieldAnchors(jvmti, jni, scope, tags, budget, edges_admitted,
+                                  &truncated, &cap_hit, &safepoint_ns, &overflow,
                                   unwalked);
+        if (anchor_observation_overflow != nullptr) {
+            *anchor_observation_overflow = overflow;
+        }
     }
 
     // Direct candidate-slot seeding (the production path fills these via pollWatchedTargets()'s

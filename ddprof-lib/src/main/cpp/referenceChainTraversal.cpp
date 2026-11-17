@@ -23,6 +23,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
+#include <unordered_set>
 
 // Manual walk driver - IterateOverReachableObjects root/stack-ref enumeration
 
@@ -52,6 +54,47 @@ u8 translateHeapRootKind(jvmtiHeapRootKind root_kind) {
   }
 }
 
+bool isDurableRootKind(u8 root_kind) {
+  return root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+         root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
+}
+
+// Holds at most one journal reservation, taken only when a report can produce anchor effects. The
+// placement-new from a prvalue elides the move the non-movable reservation forbids; the destructor
+// cancels an uncommitted reservation.
+class RootReservation {
+public:
+  RootReservation() = default;
+  RootReservation(const RootReservation &) = delete;
+  RootReservation &operator=(const RootReservation &) = delete;
+  ~RootReservation() {
+    if (_live) {
+      get()->~AnchorObservationReservation();
+    }
+  }
+
+  // False when the journal had no room (or the scope does not own it); nothing is then held.
+  bool acquire(ReferenceChainAnchorObservationScope &scope) {
+    new (&_storage) AnchorObservationReservation(scope.reserve());
+    _live = true;
+    return get()->held();
+  }
+
+  void commit(const AnchorObservation &record) {
+    if (_live) {
+      get()->commit(record);
+    }
+  }
+
+private:
+  AnchorObservationReservation *get() {
+    return reinterpret_cast<AnchorObservationReservation *>(&_storage);
+  }
+
+  alignas(AnchorObservationReservation) unsigned char _storage[sizeof(AnchorObservationReservation)];
+  bool _live = false;
+};
+
 } // namespace
 
 jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
@@ -68,6 +111,21 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
 
   u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
   u8 translated_root_kind = translateHeapRootKind(root_kind);
+  // Reserve one journal record before any frontier/tag transition when this report can produce an
+  // anchor effect (leak conversion or upgrade/re-enlist of a durable root, or a local holder).
+  // A full journal aborts with nothing changed so root enumeration retries the report.
+  const bool durable_root = isDurableRootKind(translated_root_kind);
+  const bool local_root =
+      isTransientRootKind(translated_root_kind) && class_tag != 0;
+  RootReservation reservation;
+  if (*tag_ptr >= 0 && ((durable_root && *tag_ptr > 0) || local_root) &&
+      !reservation.acquire(ctx->anchor_scope)) {
+    ctx->abortForObservationOverflow(/*static_attachment=*/false);
+    return JVMTI_ITERATION_ABORT;
+  }
+  u8 actions = 0;
+  u8 durable_kind = 0;
+  jlong record_class_tag = class_tag;
   AdmitResult result = ctx->tracker->admitObject(
       ctx->frontier, ctx->hop_cap, ctx->budget, &ctx->edges_admitted, tag_ptr,
       /*parent_tag=*/0, referrer_klass, /*depth=*/0, translated_root_kind,
@@ -80,7 +138,7 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     ctx->truncated = true;
     ctx->frontier_cap_hit = true;
     return JVMTI_ITERATION_ABORT;
-  case AdmitResult::ALREADY_ADMITTED:
+  case AdmitResult::ALREADY_ADMITTED: {
     if (isLeakTag(*tag_ptr)) {
       // Leak-tagged object met as a DIRECT heap root (JNI global, stack local, ...): convert the
       // leak tag exactly like heapReferenceCallback()'s interception branch so a chain can be built
@@ -97,12 +155,11 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         ctx->edges_admitted++;
         ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag, 0,
                                             frontier_tag);
-        // Index maintenance, mirroring the edge path's interception branch: a leak-tagged root
-        // attached by a durable root edge is the highest-priority anchor tier.
-        if (translated_root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
-            translated_root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
-          ctx->tracker->addToStaticAnchorIndex(frontier_tag, class_tag,
-                                               translated_root_kind);
+        // A leak-tagged root attached by a durable root edge is the highest-priority anchor tier.
+        // Recorded as a journal observation; the caller replays it after JVMTI returns.
+        if (durable_root) {
+          actions |= AnchorObservation::DURABLE_ADD;
+          durable_kind = translated_root_kind;
         }
         if (ctx->tracker->_candidate_count > 0) {
           u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
@@ -124,22 +181,31 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     }
     // Prefer the more durable root when an object is rediscovered and invalidate a cached chain so
     // its root attribution is rebuilt.
+    jlong upgraded_class_tag = 0;
     if (ctx->tracker->maybeUpgradeRootAttachedRootKind(
-            ctx->frontier, *tag_ptr, translated_root_kind)) {
+            ctx->frontier, *tag_ptr, translated_root_kind,
+            &upgraded_class_tag)) {
+      if (durable_root) {
+        actions |= AnchorObservation::DURABLE_ADD;
+        durable_kind = translated_root_kind;
+        record_class_tag = upgraded_class_tag;
+      }
       ctx->tracker->deferResolvedChainInvalidation(
           *tag_ptr, ctx->resolved_chain_tags,
           ctx->resolved_chain_tag_count,
           ReferenceChainTracker::ChainInvalidationKind::REBUILD);
     } else if (translated_root_kind ==
                (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
-      // An unchanged durable root never upgrades: for an evicted anchor this re-discovery is the
-      // only re-indexing path. Static-field holders never appear here (root enumeration has no
-      // static-field root kind) - they re-enlist from the static sweep's edge path instead. The
-      // re-enlist filters non-root-attached entries itself and is O(1) for still-indexed tags.
-      ctx->tracker->reenlistEvictedDurableAnchor(ctx->frontier, *tag_ptr,
-                                                 class_tag);
+      // Unchanged JNI_GLOBAL roots re-enlist evicted anchors here; static-field roots re-enlist
+      // from the sweep. Record eligibility now; replay skips tags still indexed.
+      FrontierEntry current{};
+      if (ctx->frontier->lookup(*tag_ptr, &current) &&
+          ctx->tracker->isSelectableAnchor(current, class_tag)) {
+        actions |= AnchorObservation::REENLIST_ELIGIBLE;
+      }
     }
     break;
+  }
   default:
     break;
   }
@@ -147,10 +213,17 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   // chain. Known collections still need bounded descend walks after that change
   // to observe replacement backing storage. Only confirmed containers enter the
   // anchor index (capped); classification runs outside this callback, so an
-  // unclassified holder waits in a capped pending buffer instead.
-  if (isTransientRootKind(translated_root_kind) && class_tag != 0 &&
-      *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
-    ctx->tracker->noteLocalRootHolder(*tag_ptr, class_tag);
+  // unclassified holder waits in a capped pending buffer instead. Recorded, applied at flush.
+  if (local_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    actions |= AnchorObservation::LOCAL;
+  }
+  if (actions != 0) {
+    AnchorObservation record{};
+    record.tag = *tag_ptr;
+    record.own_class_tag = record_class_tag;
+    record.actions = actions;
+    record.durable_root_kind = durable_kind;
+    reservation.commit(record);
   }
   return JVMTI_ITERATION_CONTINUE;
 }
@@ -215,7 +288,10 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // make any further progress.
   if (run_root_enum) {
     jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
-    ReferenceChainPassContext ctx;
+    // Root-enumeration scope: flushed right after the call returns, before any result handling,
+    // so every exit below (error, truncation, completion) sees the accepted prefix applied.
+    ReferenceChainAnchorObservationScope root_scope(this);
+    ReferenceChainPassContext ctx(root_scope);
     ctx.tracker = this;
     ctx.resolved_chain_tags = resolved_chain_tags;
     ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
@@ -240,6 +316,13 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
         &ctx);
     u64 root_enum_safepoint_ns = OS::nanotime() - root_enum_start_ns;
     *safepoint_ns += root_enum_safepoint_ns;
+    if (root_scope.observeReturn()) {
+      // A full (or non-owned) journal stops the walk without frontier_cap_hit: the rejected root
+      // is reported again by the next enumeration.
+      ctx.anchor_observation_overflow = true;
+      ctx.truncated = true;
+    }
+    root_scope.flush();
 
     // expand_budget is spent independently of root_enum_budget below (see
     // ROOT_ENUM_MIN_INTERVAL_NS's own comment) - ctx.edges_admitted is written straight into
@@ -447,37 +530,49 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     bool static_anchor_truncated = false;
     bool static_anchor_frontier_cap_hit = false;
     std::vector<jlong> static_anchor_unwalked;
-    walkStaticFieldAnchors(jvmti, jni, static_anchor_tags, rotation_budget,
-                           &static_anchor_edges_admitted,
-                           &static_anchor_truncated,
-                           &static_anchor_frontier_cap_hit, safepoint_ns,
-                           &static_anchor_unwalked);
-    rotation_edges_admitted += static_anchor_edges_admitted;
-    rotation_budget -= static_anchor_edges_admitted;
-    *truncated = *truncated || static_anchor_truncated;
-    // Requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
-    // the FIFO front, order-preserving, so a pass whose budget died mid-batch walks them first next
-    // pass instead of waiting for the next sweep lap's re-push.
-    if (!static_anchor_unwalked.empty() &&
-        !static_anchor_fifo_drained.empty()) {
-      std::vector<AtRiskAnchor> static_anchor_requeue;
-      for (jlong tag : static_anchor_unwalked) {
-        FrontierEntry entry{};
-        if (!_frontier->lookup(tag, &entry)) {
-          continue;
-        }
+    bool static_anchor_observation_overflow = false;
+    bool static_anchor_cap_hit_return = false;
+    {
+      // Selected-anchor scope: spans the walk and the at-risk requeue, and flushes before the
+      // queue-tier expansion below (replayed at-risk pushes land behind the requeued entries).
+      ReferenceChainAnchorObservationScope anchor_scope(this);
+      walkStaticFieldAnchors(jvmti, jni, anchor_scope, static_anchor_tags,
+                             rotation_budget, &static_anchor_edges_admitted,
+                             &static_anchor_truncated,
+                             &static_anchor_frontier_cap_hit, safepoint_ns,
+                             &static_anchor_observation_overflow,
+                             &static_anchor_unwalked);
+      rotation_edges_admitted += static_anchor_edges_admitted;
+      rotation_budget -= static_anchor_edges_admitted;
+      *truncated = *truncated || static_anchor_truncated ||
+                   static_anchor_observation_overflow;
+      // Requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
+      // the FIFO front, order-preserving, so a pass whose budget died mid-batch walks them first
+      // next pass instead of waiting for the next sweep lap's re-push.
+      if (!static_anchor_unwalked.empty() &&
+          !static_anchor_fifo_drained.empty()) {
+        std::vector<AtRiskAnchor> static_anchor_requeue;
         for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
-          if (tag == at_risk.tag) {
+          bool unwalked = false;
+          for (jlong tag : static_anchor_unwalked) {
+            if (tag == at_risk.tag) {
+              unwalked = true;
+              break;
+            }
+          }
+          FrontierEntry entry{};
+          if (unwalked && _frontier->lookup(at_risk.tag, &entry)) {
             static_anchor_requeue.push_back(at_risk);
-            break;
           }
         }
+        if (!static_anchor_requeue.empty()) {
+          requeueStaticAnchorFifoFront(static_anchor_requeue);
+        }
       }
-      if (!static_anchor_requeue.empty()) {
-        requeueStaticAnchorFifoFront(static_anchor_requeue);
-      }
+      anchor_scope.flush();
+      static_anchor_cap_hit_return = static_anchor_frontier_cap_hit;
     }
-    if (static_anchor_frontier_cap_hit) {
+    if (static_anchor_cap_hit_return) {
       *frontier_cap_hit = true;
       return;
     }
@@ -527,7 +622,10 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
          "and must not be made from GarbageCollectionStart/Finish");
 
   jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
-  ReferenceChainPassContext ctx;
+  // One scope for the whole call; each FollowReferences batch is observed and flushed below
+  // before its completion/pop/requeue handling and before the next batch.
+  ReferenceChainAnchorObservationScope scope(this);
+  ReferenceChainPassContext ctx(scope);
   ctx.tracker = this;
   ctx.frontier = _frontier;
   ctx.hop_cap = hop_cap;
@@ -702,6 +800,13 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
           *safepoint_ns += OS::nanotime() - follow_start_ns;
+          if (scope.observeReturn()) {
+            // Journal overflow: the rejected edge's referrer is not in completed_batch_tags, so
+            // the truncated-batch handling below keeps it queued.
+            ctx.anchor_observation_overflow = true;
+            ctx.truncated = true;
+          }
+          scope.flush();
           if (follow_err != JVMTI_ERROR_NONE) {
             ctx.truncated = true;
           }
@@ -940,7 +1045,10 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   }
 
   jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
-  ReferenceChainPassContext ctx;
+  // Static-sweep scope: flushed right after FollowReferences, before the follow_err early return
+  // and before the cursor/lap outcome is reported to the caller.
+  ReferenceChainAnchorObservationScope scope(this);
+  ReferenceChainPassContext ctx(scope);
   ctx.tracker = this;
   ctx.frontier = _frontier;
   ctx.hop_cap = hop_cap;
@@ -970,6 +1078,13 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   jvmtiError follow_err =
       jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
   *safepoint_ns += OS::nanotime() - follow_start_ns;
+  if (scope.observeReturn()) {
+    // Overflow takes the truncation path below: chunk_start is kept, the lap is marked truncated
+    // (no cycle completion) and frontier_cap_hit stays false.
+    ctx.anchor_observation_overflow = true;
+    ctx.truncated = true;
+  }
+  scope.flush();
   jni->DeleteLocalRef(holder);
   if (follow_err != JVMTI_ERROR_NONE) {
     return;

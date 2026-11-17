@@ -76,13 +76,41 @@ jlong resolveThreadLocalMapClassTag(jvmtiEnv *jvmti, JNIEnv *jni) {
 
 } // namespace
 
+void ReferenceChainTracker::replayAnchorObservations(
+    const AnchorObservation *records, u32 count, bool static_retry) {
+  // Strict arrival order, no dedup or coalescing: the helpers apply their own caps, promotion and
+  // eviction, so the index mutations happen here, after the JVMTI call has returned.
+  for (u32 i = 0; i < count; i++) {
+    const AnchorObservation &r = records[i];
+    if (r.actions & AnchorObservation::LOCAL) {
+      noteLocalRootHolder(r.tag, r.own_class_tag);
+    }
+    if (r.actions & AnchorObservation::DURABLE_ADD) {
+      addToStaticAnchorIndex(r.tag, r.own_class_tag, r.durable_root_kind);
+    }
+    if (r.actions & AnchorObservation::REENLIST_ELIGIBLE) {
+      // Eligibility was decided at callback time against the frontier snapshot; no recheck here.
+      if (_static_anchor_index_tags.count(r.tag) == 0) {
+        indexAnchorForRotation(r.tag, r.own_class_tag);
+      }
+    }
+    if (r.actions & AnchorObservation::AT_RISK) {
+      pushAtRiskStaticAnchor(r.tag, r.at_risk_klass_id);
+    }
+  }
+  if (static_retry) {
+    _durable_anchor_resweep_gen++; // one retry request for the rejected static-field report(s)
+  }
+}
+
 void ReferenceChainTracker::descendFromAnchor(
-    jvmtiEnv *jvmti, JNIEnv *jni, jobject anchor, jlong anchor_tag,
-    u32 anchor_depth, jlong anchor_descend_class_tag, int budget,
-    int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
-    u64 *safepoint_ns) {
+    jvmtiEnv *jvmti, JNIEnv *jni, ReferenceChainAnchorObservationScope &scope,
+    jobject anchor, jlong anchor_tag, u32 anchor_depth,
+    jlong anchor_descend_class_tag, int budget, int *edges_admitted,
+    bool *truncated, bool *frontier_cap_hit, u64 *safepoint_ns,
+    bool *anchor_observation_overflow) {
   jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
-  ReferenceChainPassContext ctx;
+  ReferenceChainPassContext ctx(scope);
   ctx.tracker = this;
   ctx.frontier = _frontier;
   ctx.resolved_chain_tags = resolved_chain_tags;
@@ -112,6 +140,9 @@ void ReferenceChainTracker::descendFromAnchor(
   *edges_admitted += ctx.edges_admitted;
   *truncated = *truncated || ctx.truncated;
   *frontier_cap_hit = *frontier_cap_hit || ctx.frontier_cap_hit;
+  // observeReturn() takes the buffer lock, ordering the callbacks' writes before this read.
+  *anchor_observation_overflow =
+      scope.observeReturn() || ctx.anchor_observation_overflow;
 }
 
 std::vector<jlong>
@@ -364,8 +395,8 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
   _local_anchor_tags.erase(tag);
   // The upgrade grows the durable share without a new index push (the dedup in
   // indexAnchorForRotation() returns early), so the durable cap is checked here too. The just
-  // upgraded tag may itself be among the evicted oldest entries; the next traversal report of its
-  // durable edge re-enlists it (reenlistEvictedDurableAnchor()).
+  // upgraded tag may itself be among the evicted oldest entries; replay of its next durable-edge
+  // observation re-indexes it.
   evictOldestDurableAnchors();
   indexAnchorForRotation(tag, own_class_tag);
 }
@@ -387,7 +418,7 @@ void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
       return;
     }
     // At the cap: defer to resolvePendingLocalAnchors(), which may compact dead local entries
-    // (it can take the frontier lock; this callback must not).
+    // on the BFS thread.
     confirmed_container = true;
   }
   if (_pending_local_anchors.size() >= PENDING_LOCAL_ANCHOR_CAP) {
@@ -579,9 +610,8 @@ void ReferenceChainTracker::eraseAnchorEntries(
 
 void ReferenceChainTracker::reenlistEvictedDurableAnchor(
     FrontierTable *frontier, jlong tag, jlong class_tag) {
-  // O(1) fast path: fresh admissions, prior re-enlistments and never-evicted tags are all still
-  // indexed, and the traversal callbacks hit this for every rediscovered durable root - only the
-  // rare evicted tag pays the frontier lookup below.
+  // O(1) fast path: fresh admissions, prior re-enlistments and never-evicted tags are still
+  // indexed; only an evicted tag pays the frontier lookup below.
   if (_static_anchor_index_tags.count(tag) > 0) {
     return;
   }
@@ -884,9 +914,11 @@ void ReferenceChainTracker::requeueStaticAnchorFifoFront(
 }
 
 void ReferenceChainTracker::walkStaticFieldAnchors(
-    jvmtiEnv *jvmti, JNIEnv *jni, const std::vector<jlong> &anchor_tags,
-    int budget, int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
-    u64 *safepoint_ns, std::vector<jlong> *unwalked) {
+    jvmtiEnv *jvmti, JNIEnv *jni, ReferenceChainAnchorObservationScope &scope,
+    const std::vector<jlong> &anchor_tags, int budget, int *edges_admitted,
+    bool *truncated, bool *frontier_cap_hit, u64 *safepoint_ns,
+    bool *anchor_observation_overflow, std::vector<jlong> *unwalked) {
+  *anchor_observation_overflow = false;
   if (anchor_tags.empty()) {
     return;
   }
@@ -941,15 +973,25 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
       break;
     }
     int edges_before = *edges_admitted;
-    descendFromAnchor(jvmti, jni, objects[i], resolved_tags[i], entry.depth,
-                      /*anchor_descend_class_tag=*/0, remaining, edges_admitted,
-                      truncated, frontier_cap_hit, safepoint_ns);
+    bool overflow = false;
+    descendFromAnchor(jvmti, jni, scope, objects[i], resolved_tags[i],
+                      entry.depth, /*anchor_descend_class_tag=*/0, remaining,
+                      edges_admitted, truncated, frontier_cap_hit, safepoint_ns,
+                      &overflow);
     TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors anchor walk "
              "outcome tag=%lld edges=%d truncated=%d cap_hit=%d",
              (long long)resolved_tags[i], *edges_admitted - edges_before,
              (int)*truncated, (int)*frontier_cap_hit);
     walked++;
     jni->DeleteLocalRef(objects[i]);
+    if (overflow) {
+      // The partially walked anchor stays unwalked (its rejected edge was not applied) so the
+      // caller restores it with the remaining resolved tags.
+      *anchor_observation_overflow = true;
+      first_unwalked = i;
+      first_undeleted = i + 1;
+      break;
+    }
     if (*truncated && !*frontier_cap_hit) {
       // Budget/deadline exhausted mid-set - remaining anchors keep their rotation turn via the
       // cursor next pass (the wrapping cursor already tolerates a short selection).
@@ -1014,6 +1056,8 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
   int walked = 0;
   const int start = _thread_walk_anchor_cursor;
   int i = start;
+  // Descent-group scope: flushes the accepted prefix on every exit before later pass decisions.
+  ReferenceChainAnchorObservationScope scope(this);
   do {
     jobject thread_obj;
     {
@@ -1062,10 +1106,15 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
       if (anchor_tag != 0) {
         int remaining = budget - *edges_admitted;
         if (remaining > 0) {
-          descendFromAnchor(jvmti, jni, thread_obj, anchor_tag, anchor_depth,
-                            descend_class_tag, remaining, edges_admitted,
-                            truncated, frontier_cap_hit, safepoint_ns);
+          bool overflow = false;
+          descendFromAnchor(jvmti, jni, scope, thread_obj, anchor_tag,
+                            anchor_depth, descend_class_tag, remaining,
+                            edges_admitted, truncated, frontier_cap_hit,
+                            safepoint_ns, &overflow);
           walked++;
+          if (overflow) {
+            break; // retain the cursor on this thread: its walk was cut short
+          }
         }
       }
     }

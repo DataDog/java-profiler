@@ -3,6 +3,77 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+namespace {
+
+using AnchorAcc = ReferenceChainsTestAccessor;
+
+// A pass context bound to a caller-owned journal scope, as every production traversal caller
+// builds it. Callbacks only record; the test plays the caller and flushes at the return boundary
+// (scope.flush(), or scope destruction). Never replays from inside a callback.
+struct AnchorScopedPass {
+    ReferenceChainAnchorObservationScope scope;
+    ReferenceChainPassContext ctx;
+
+    AnchorScopedPass(ReferenceChainTracker *tracker, FrontierTable *frontier,
+                     int budget = 100000)
+        : scope(tracker), ctx(scope) {
+        ctx.tracker = tracker;
+        ctx.frontier = frontier;
+        ctx.hop_cap = 64;
+        ctx.budget = budget;
+        ctx.edges_admitted = 0;
+        ctx.truncated = false;
+        ctx.frontier_cap_hit = false;
+    }
+
+    jvmtiIterationControl root(jvmtiHeapRootKind kind, jlong class_tag, jlong *tag) {
+        return AnchorAcc::reportHeapRootForTest(kind, class_tag, tag, &ctx);
+    }
+
+    // The static sweep's class -> field edge (negative class-object referrer, class tag 0).
+    jint staticEdge(jlong *tag) {
+        return AnchorAcc::reportStaticFieldEdgeForTest(-555, tag, &ctx);
+    }
+};
+
+void insertAnchorEntry(FrontierTable *frontier, jlong tag, jlong parent_tag,
+                       u8 root_kind, jlong class_tag = 0) {
+    ASSERT_TRUE(AnchorAcc::insertFrontierEntry(
+        frontier, tag, parent_tag, parent_tag == 0 ? 0 : 1,
+        FrontierEntryState::FRONTIER, root_kind, /*referrer_klass=*/0, class_tag));
+}
+
+// Reports an already-admitted, root-attached JNI-global entry again: the callback records one
+// REENLIST_ELIGIBLE observation for it (no frontier change, nothing indexed until the flush).
+void reportRediscovery(AnchorScopedPass &pass, jlong tag, jlong class_tag = -3001) {
+    jlong reported = tag;
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, class_tag, &reported));
+    ASSERT_EQ(tag, reported);
+}
+
+// Reports a fresh local root (admits a new frontier tag and records one LOCAL observation).
+jlong reportFreshLocal(AnchorScopedPass &pass, jlong class_tag) {
+    jlong reported = 0;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, class_tag, &reported));
+    return reported;
+}
+
+std::vector<jlong> insertRootAttachedDurableEntries(FrontierTable *frontier,
+                                                    jlong first_tag, size_t count) {
+    std::vector<jlong> tags;
+    tags.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        insertAnchorEntry(frontier, first_tag + (jlong)i, 0,
+                          JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+        tags.push_back(first_tag + (jlong)i);
+    }
+    return tags;
+}
+
+} // namespace
+
 TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolders) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -1338,14 +1409,13 @@ TEST_F(ReferenceChainsBfsTest, HeapRootCallbackReenlistsEvictedDurableAnchor) {
 
     // The next root enumeration re-reports the victim: already admitted, unchanged durable kind,
     // so the upgrade refuses and the re-enlist branch fires.
-    ReferenceChainPassContext ctx{};
-    ctx.tracker = tracker;
-    ctx.frontier = frontier;
-    ctx.hop_cap = 64;
-    ctx.budget = 1000;
+    AnchorScopedPass pass(tracker, frontier, 1000);
     jlong reported = victim;
-    ReferenceChainsTestAccessor::reportHeapRootForTest(
-        JVMTI_HEAP_ROOT_JNI_GLOBAL, -700, &reported, &ctx);
+    pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, -700, &reported);
+    // The callback only records the rediscovery; the caller's flush applies it.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::journalCountForTest());
+    pass.scope.flush();
     EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
     EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
         victim));
@@ -1389,14 +1459,13 @@ TEST_F(ReferenceChainsBfsTest, ReparentedContainerReenlistsAfterEviction) {
 
     // The next traversal report re-discovers the victim through the heap-root callback; the
     // re-enlist branch must restore it despite parent_tag != 0 and the stale root kind.
-    ReferenceChainPassContext ctx{};
-    ctx.tracker = tracker;
-    ctx.frontier = frontier;
-    ctx.hop_cap = 64;
-    ctx.budget = 1000;
+    AnchorScopedPass pass(tracker, frontier, 1000);
     jlong reported = victim;
-    ReferenceChainsTestAccessor::reportHeapRootForTest(
-        JVMTI_HEAP_ROOT_JNI_GLOBAL, -800, &reported, &ctx);
+    pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, -800, &reported);
+    // The callback only records the rediscovery; the caller's flush applies it.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::journalCountForTest());
+    pass.scope.flush();
     EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
     EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
         victim));
@@ -1433,14 +1502,12 @@ TEST_F(ReferenceChainsBfsTest, HeapReferenceCallbackReenlistsEvictedDurableAncho
 
     // The sweep re-reports the victim's class -> field edge: root-like negative class referrer,
     // unchanged durable kind - upgrade refused, re-enlist fires.
-    ReferenceChainPassContext ctx{};
-    ctx.tracker = tracker;
-    ctx.frontier = frontier;
-    ctx.hop_cap = 64;
-    ctx.budget = 1000;
+    AnchorScopedPass pass(tracker, frontier, 1000);
     jlong reported = victim;
-    ReferenceChainsTestAccessor::reportStaticFieldEdgeForTest(
-        -555, &reported, &ctx);
+    pass.staticEdge(&reported);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::journalCountForTest());
+    pass.scope.flush();
     EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(victim));
     EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
         victim));
@@ -1831,6 +1898,575 @@ TEST_F(ReferenceChainsBfsTest, WalkReclaimsCollectedLocalAnchors) {
     // search restart, no pending-buffer detour.
     ReferenceChainsTestAccessor::noteLocalRootHolderForTest(5000, -700);
     EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(5000));
+
+    tracker->stop();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Anchor observation journal: callbacks record, the traversal caller replays at its return
+// boundary. The tests below play the caller (a bound scope + flush) around the real callbacks.
+// ---------------------------------------------------------------------------------------------
+
+// Every effect kind a callback can produce stays out of the anchor index, FIFO and share maps until
+// the caller flushes; the frontier-side transition (admission, root upgrade) still happens in the
+// callback.
+TEST_F(ReferenceChainsBfsTest, AnchorCallbacksDeferIndexMutationToCaller) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const jlong kContainer = -3101;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    // The static edge driver reports class tag 0, so the chain-attached holder's rediscovery
+    // eligibility rides on class 0's shape.
+    AnchorAcc::primeClassShapeForTest(0, true);
+    const jlong rediscovered = 20001; // root-attached JNI global, unindexed: REENLIST_ELIGIBLE
+    const jlong upgraded = 20002;     // root-attached stack local, upgraded: DURABLE_ADD
+    const jlong holder = 20003;       // chain-attached container, static edge: REENLIST + AT_RISK
+    insertAnchorEntry(frontier, rediscovered, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, kContainer);
+    insertAnchorEntry(frontier, upgraded, 0, JVMTI_HEAP_REFERENCE_STACK_LOCAL, kContainer);
+    insertAnchorEntry(frontier, holder, rediscovered, 0, kContainer);
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong t_rediscovered = rediscovered, t_upgraded = upgraded, t_holder = holder;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, kContainer, &t_rediscovered));
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, kContainer, &t_upgraded));
+    EXPECT_EQ(JVMTI_VISIT_OBJECTS, pass.staticEdge(&t_holder));
+    const jlong local = reportFreshLocal(pass, kContainer);
+    ASSERT_GT(local, 0);
+
+    // One record per reporting callback; none of the index state moved yet.
+    EXPECT_EQ(4u, AnchorAcc::journalCountForTest());
+    EXPECT_EQ(0u, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, AnchorAcc::anchorOwnClassTagsSizeForTest());
+    EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest());
+    EXPECT_EQ(0u, AnchorAcc::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(0u, AnchorAcc::freshAnchorQueueSizeForTest());
+    EXPECT_EQ(0u, AnchorAcc::staticAnchorFifoSizeForTest());
+    EXPECT_FALSE(AnchorAcc::durableAnchorResweepUnservedForTest());
+    // The frontier transitions are not deferred: the root upgrade and the local admission landed.
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(upgraded, &entry));
+    EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL, entry.root_kind);
+    ASSERT_TRUE(frontier->lookup(local, &entry));
+    EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_STACK_LOCAL, entry.root_kind);
+
+    pass.scope.flush();
+    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+    for (jlong tag : {rediscovered, upgraded, holder, local}) {
+        EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(tag)) << tag;
+    }
+    EXPECT_EQ(4u, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(1u, AnchorAcc::localAnchorCountForTest());
+    EXPECT_EQ(3u, AnchorAcc::durableAnchorCountForTest());
+    EXPECT_TRUE(AnchorAcc::staticAnchorFifoContainsForTest(holder));
+    EXPECT_EQ(1u, AnchorAcc::staticAnchorFifoSizeForTest());
+
+    // A second flush of the now-empty prefix changes nothing.
+    pass.scope.flush();
+    EXPECT_EQ(4u, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(1u, AnchorAcc::staticAnchorFifoSizeForTest());
+    EXPECT_EQ(4u, AnchorAcc::freshAnchorQueueSizeForTest());
+
+    tracker->stop();
+}
+
+#include "referenceChainsAnchorJournalTests.inc"
+
+// A rejected non-static report (local root) leaves the static scan alone: no retry request.
+TEST_F(ReferenceChainsBfsTest, AnchorOverflowOnLocalReportRequestsNoStaticRetry) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const u64 gen = AnchorAcc::durableAnchorResweepGenForTest();
+
+    AnchorScopedPass pass(tracker, frontier);
+    fillJournalWithUnknownLocals(pass);
+    jlong rejected = 0;
+    EXPECT_EQ(JVMTI_ITERATION_ABORT,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, -3999, &rejected));
+    EXPECT_EQ(0, rejected);
+    EXPECT_TRUE(pass.ctx.anchor_observation_overflow);
+    pass.scope.flush();
+    EXPECT_EQ(gen, AnchorAcc::durableAnchorResweepGenForTest());
+    EXPECT_FALSE(AnchorAcc::durableAnchorResweepUnservedForTest());
+
+    tracker->stop();
+}
+
+// A report that reserves a slot but produces no effect cancels the reservation: no slot is
+// consumed (however many such reports arrive), and the slot stays usable by the next real record,
+// including the very last one of the journal.
+TEST_F(ReferenceChainsBfsTest, AnchorJournalCancelledReservationConsumesNoSlot) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr size_t kCapacity = AnchorObservationBuffer::CAPACITY;
+    const jlong kNonContainer = -3102;
+    AnchorAcc::primeClassShapeForTest(kNonContainer, false);
+    // Chain-attached non-container: a JNI-global rediscovery reserves, finds no eligible effect
+    // (non-container, not root-attached) and cancels.
+    const jlong parent = 20001, ineligible = 20002;
+    insertAnchorEntry(frontier, parent, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    insertAnchorEntry(frontier, ineligible, parent, 0, kNonContainer);
+    const jlong eligible_first = 30000;
+    insertRootAttachedDurableEntries(frontier, eligible_first, kCapacity);
+
+    AnchorScopedPass pass(tracker, frontier);
+    for (size_t i = 0; i < kCapacity - 1; i++) {
+        reportRediscovery(pass, eligible_first + (jlong)i);
+    }
+    ASSERT_EQ(kCapacity - 1, (size_t)AnchorAcc::journalCountForTest());
+    // More cancelled reservations than the journal has slots left: still no overflow.
+    for (size_t i = 0; i < 8; i++) {
+        jlong tag = ineligible;
+        EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+                  pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, kNonContainer, &tag));
+    }
+    EXPECT_FALSE(pass.ctx.anchor_observation_overflow);
+    EXPECT_FALSE(pass.scope.observeReturn());
+    EXPECT_EQ(kCapacity - 1, (size_t)AnchorAcc::journalCountForTest());
+    // The last slot is still free for a real record.
+    reportRediscovery(pass, eligible_first + (jlong)(kCapacity - 1));
+    EXPECT_EQ(kCapacity, (size_t)AnchorAcc::journalCountForTest());
+    EXPECT_FALSE(pass.ctx.anchor_observation_overflow);
+    pass.scope.flush();
+    // The negative control: the non-container was never recorded, so it is never indexed.
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(ineligible));
+
+    tracker->stop();
+}
+
+// One callback can produce two effects (re-enlist of a reparented container plus an at-risk
+// witness) in a single record: one slot, both effects applied.
+TEST_F(ReferenceChainsBfsTest, AnchorJournalRecordCarriesReenlistAndAtRiskTogether) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    // The static edge driver reports class tag 0: the reparented holder is eligible through it.
+    AnchorAcc::primeClassShapeForTest(0, true);
+    const jlong parent = 20001, holder = 20002;
+    insertAnchorEntry(frontier, parent, 0, JVMTI_HEAP_REFERENCE_STACK_LOCAL);
+    insertAnchorEntry(frontier, holder, parent, 0);
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong tag = holder;
+    EXPECT_EQ(JVMTI_VISIT_OBJECTS, pass.staticEdge(&tag));
+    EXPECT_EQ(1u, AnchorAcc::journalCountForTest());
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(holder));
+    EXPECT_FALSE(AnchorAcc::staticAnchorFifoContainsForTest(holder));
+    pass.scope.flush();
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(holder));
+    EXPECT_TRUE(AnchorAcc::freshAnchorQueueContainsForTest(holder));
+    EXPECT_TRUE(AnchorAcc::staticAnchorFifoContainsForTest(holder));
+    // The holder stays chain-attached: recording never re-attributes the entry.
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(holder, &entry));
+    EXPECT_EQ(parent, entry.parent_tag);
+
+    tracker->stop();
+}
+
+// Local, then durable, report of the same holder in one traversal: one indexed tag in the durable
+// share, the local slot released, class association and first-look order retained.
+TEST_F(ReferenceChainsBfsTest, AnchorLocalThenDurableReportLeavesOneDurableTag) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kContainer = -3101;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    const jlong earlier = 30001;
+    AnchorAcc::addToStaticAnchorIndexForTest(earlier, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    insertAnchorEntry(frontier, earlier, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong holder = 0;
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kContainer, &holder));
+    ASSERT_GT(holder, 0);
+    // The same holder, now reached through a JNI global: upgrades the root kind in the callback.
+    jlong again = holder;
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, kContainer, &again));
+    EXPECT_EQ(2u, AnchorAcc::journalCountForTest());
+    pass.scope.flush();
+
+    EXPECT_EQ(2u, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(2u, AnchorAcc::anchorOwnClassTagsSizeForTest());
+    EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest());
+    EXPECT_EQ(2u, AnchorAcc::durableAnchorCountForTest());
+    EXPECT_EQ((std::vector<jlong>{earlier, holder}), AnchorAcc::freshQueueTagsForTest());
+    // The container class association survived the promotion: once the holder is chain-attached,
+    // selectability rides on its indexed class alone.
+    ASSERT_TRUE(frontier->improveChain(holder, earlier, 0, 1, 0));
+    std::vector<jlong> selected = AnchorAcc::collectStaticFieldAnchorsForRotationForTest(8);
+    EXPECT_NE(std::find(selected.begin(), selected.end(), holder), selected.end());
+
+    tracker->stop();
+}
+
+// Durable, then local, report of the same holder: the tag stays in the durable share (the local
+// replay sees it already indexed) and is indexed once.
+TEST_F(ReferenceChainsBfsTest, AnchorDurableThenLocalReportKeepsDurableShare) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kContainer = -3101;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    const jlong holder = 20001;
+    insertAnchorEntry(frontier, holder, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, kContainer);
+
+    AnchorScopedPass pass(tracker, frontier);
+    reportRediscovery(pass, holder, kContainer);
+    jlong again = holder;
+    // A stack-local report of an already-durable holder: no upgrade, a LOCAL record.
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kContainer, &again));
+    EXPECT_EQ(2u, AnchorAcc::journalCountForTest());
+    pass.scope.flush();
+
+    EXPECT_EQ(1u, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest());
+    EXPECT_EQ(1u, AnchorAcc::durableAnchorCountForTest());
+    EXPECT_EQ(1u, AnchorAcc::freshAnchorQueueSizeForTest());
+
+    tracker->stop();
+}
+
+// A deferred durable upgrade of a local holder frees its local slot at replay: the local share,
+// full before, accepts the next local holder.
+TEST_F(ReferenceChainsBfsTest, AnchorPromotionAtReplayFreesLocalSlot) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kContainer = -3101;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    const size_t local_cap = AnchorAcc::kLocalAnchorIndexCap;
+    const jlong promoted = 20001;
+    insertAnchorEntry(frontier, promoted, 0, JVMTI_HEAP_REFERENCE_STACK_LOCAL, kContainer);
+    AnchorAcc::noteLocalRootHolderForTest(promoted, kContainer);
+    for (size_t i = 1; i < local_cap; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(30000 + (jlong)i, kContainer);
+    }
+    ASSERT_EQ(local_cap, AnchorAcc::localAnchorCountForTest());
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong tag = promoted;
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, kContainer, &tag));
+    EXPECT_EQ(local_cap, AnchorAcc::localAnchorCountForTest()); // deferred: slot still held
+    pass.scope.flush();
+    EXPECT_EQ(local_cap - 1, AnchorAcc::localAnchorCountForTest());
+    EXPECT_EQ(1u, AnchorAcc::durableAnchorCountForTest());
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(promoted));
+
+    // The freed slot admits a new local holder.
+    const jlong fresh = reportFreshLocal(pass, kContainer);
+    pass.scope.flush();
+    EXPECT_EQ(local_cap, AnchorAcc::localAnchorCountForTest());
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(fresh));
+
+    tracker->stop();
+}
+
+// The recorded observation is a callback-time snapshot: later evidence changes before the flush
+// (a demotion under a chain, a reparent under a durable root) neither undo the anchor effect nor
+// make it re-validate against the final frontier state.
+TEST_F(ReferenceChainsBfsTest, AnchorObservationIsCallbackTimeSnapshotAcrossDemotion) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kContainer = -3101;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    const jlong durable = 20001, parent = 20002, local_parent = 20003;
+    insertAnchorEntry(frontier, durable, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    insertAnchorEntry(frontier, parent, 0, JVMTI_HEAP_REFERENCE_STACK_LOCAL);
+    insertAnchorEntry(frontier, local_parent, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+
+    AnchorScopedPass pass(tracker, frontier);
+    // (1) A durable report of a holder whose class is not a container: eligible at callback time
+    // only because it is root-attached.
+    reportRediscovery(pass, durable, /*class_tag=*/-3102);
+    // (2) A local report whose holder is later reparented under a durable root.
+    const jlong local = reportFreshLocal(pass, kContainer);
+    ASSERT_GT(local, 0);
+    // Later callbacks of the same traversal: the durable holder is demoted under a chain, the local
+    // holder is moved under a durable root.
+    ASSERT_TRUE(frontier->improveChain(durable, parent, 0, 1, 0));
+    ASSERT_TRUE(frontier->improveChain(local, local_parent, 0, 1, 0));
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(durable, &entry));
+    ASSERT_EQ(parent, entry.parent_tag);
+
+    pass.scope.flush();
+    // Both anchors are indexed from their callback-time evidence although the final frontier shape
+    // no longer qualifies the durable holder (non-container, chain-attached).
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(durable));
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(local));
+    EXPECT_EQ(1u, AnchorAcc::localAnchorCountForTest());
+    ASSERT_TRUE(frontier->lookup(durable, &entry));
+    EXPECT_EQ(parent, entry.parent_tag); // the demotion itself is not undone
+
+    tracker->stop();
+}
+
+// Class-tag snapshot: a re-enlist is indexed under the CALLBACK's class tag (it decided
+// eligibility), while a deferred root upgrade is indexed under the entry's stored class tag.
+// Selectability of a chain-attached holder rides on that indexed class, so selection reads it back.
+TEST_F(ReferenceChainsBfsTest, AnchorObservationClassTagFollowsCallbackSnapshot) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kContainer = -3101, kOther = -3102, kUnclassified = -3103;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    AnchorAcc::primeClassShapeForTest(kOther, false);
+    const jlong root = 20001;
+    insertAnchorEntry(frontier, root, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    // Re-enlist: stored class is non-container, the callback reports the container class.
+    const jlong reenlisted = 20002;
+    insertAnchorEntry(frontier, reenlisted, root, 0, kOther);
+    // Upgrade: stored class is the container, the callback reports an unclassified class.
+    const jlong upgraded = 20003;
+    insertAnchorEntry(frontier, upgraded, 0, JVMTI_HEAP_REFERENCE_STACK_LOCAL, kContainer);
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong t1 = reenlisted, t2 = upgraded;
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, kContainer, &t1));
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, kUnclassified, &t2));
+    ASSERT_EQ(2u, AnchorAcc::journalCountForTest());
+    // Before the flush the upgraded holder is demoted under the root: it is then selectable only
+    // through the class it was indexed under.
+    ASSERT_TRUE(frontier->improveChain(upgraded, root, 0, 1, 0));
+    pass.scope.flush();
+    ASSERT_TRUE(AnchorAcc::anchorIndexContainsForTest(reenlisted));
+    ASSERT_TRUE(AnchorAcc::anchorIndexContainsForTest(upgraded));
+
+    std::vector<jlong> selected = AnchorAcc::collectStaticFieldAnchorsForRotationForTest(8);
+    EXPECT_NE(std::find(selected.begin(), selected.end(), reenlisted), selected.end())
+        << "re-enlist must be indexed under the callback's class tag";
+    EXPECT_NE(std::find(selected.begin(), selected.end(), upgraded), selected.end())
+        << "upgrade must be indexed under the entry's stored class tag";
+
+    tracker->stop();
+}
+
+// A cap-crossing replay evicts an earlier-indexed holder; the later rediscovery of the same holder
+// in the same journal then re-enlists it. The earlier rediscovery (holder still indexed) is skipped
+// and neither reset its first look nor coalesced the later one away.
+TEST_F(ReferenceChainsBfsTest, AnchorRepeatedReportAcrossCapCrossingWaveReenlists) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = AnchorAcc::kDurableAnchorIndexCap;
+    const size_t batch = AnchorAcc::kDurableAnchorEvictBatch;
+    const jlong victim = 20001, crossing = 20002;
+    insertAnchorEntry(frontier, victim, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    insertAnchorEntry(frontier, crossing, 0, JVMTI_HEAP_REFERENCE_STACK_LOCAL);
+    // The victim is the oldest of exactly `cap` durable entries: no eviction yet.
+    AnchorAcc::addToStaticAnchorIndexForTest(victim, -900, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    const jlong filler = 40000;
+    for (size_t i = 0; i < cap - 1; i++) {
+        AnchorAcc::addToStaticAnchorIndexForTest(filler + (jlong)i, -900,
+                                                 JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    }
+    ASSERT_EQ(cap, AnchorAcc::anchorIndexSizeForTest());
+    ASSERT_TRUE(AnchorAcc::anchorIndexContainsForTest(victim));
+    const u64 gen = AnchorAcc::durableAnchorResweepGenForTest();
+
+    AnchorScopedPass pass(tracker, frontier);
+    reportRediscovery(pass, victim); // rediscovery while still indexed
+    jlong tag = crossing;            // upgrade: replay adds the (cap+1)-th durable entry
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, -3001, &tag));
+    reportRediscovery(pass, victim); // rediscovery after the crossing evicted it
+    ASSERT_EQ(3u, AnchorAcc::journalCountForTest());
+    pass.scope.flush();
+
+    // One eviction batch, oldest first: the crossing left cap - batch entries, then the victim came
+    // back at the tail through the third record.
+    EXPECT_EQ(gen + 1, AnchorAcc::durableAnchorResweepGenForTest());
+    EXPECT_EQ(cap - batch + 1, AnchorAcc::anchorIndexSizeForTest());
+    EXPECT_EQ(AnchorAcc::anchorIndexSizeForTest(),
+              AnchorAcc::anchorOwnClassTagsSizeForTest());
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(victim));
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(crossing));
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(filler));
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(filler + (jlong)(batch - 1)));
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(filler + (jlong)batch));
+    EXPECT_EQ(victim, AnchorAcc::anchorIndexTagForTest(AnchorAcc::anchorIndexSizeForTest() - 1));
+    EXPECT_EQ(victim, AnchorAcc::freshQueueTagsForTest().back());
+
+    tracker->stop();
+}
+
+// Replay of a long durable wave reaches the eviction target without touching the local share and
+// keeps the parallel arrays, membership set and fresh queue consistent.
+TEST_F(ReferenceChainsBfsTest, AnchorReplayedDurableWaveEvictsToTargetAndSparesLocals) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kContainer = -3101;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    const size_t cap = AnchorAcc::kDurableAnchorIndexCap;
+    const size_t batch = AnchorAcc::kDurableAnchorEvictBatch;
+    const jlong first = 20000;
+    insertRootAttachedDurableEntries(frontier, first, cap + 1);
+    const u64 gen = AnchorAcc::durableAnchorResweepGenForTest();
+
+    AnchorScopedPass pass(tracker, frontier);
+    const size_t kLocals = 4;
+    std::vector<jlong> locals;
+    for (size_t i = 0; i < kLocals; i++) {
+        locals.push_back(reportFreshLocal(pass, kContainer)); // the oldest index positions
+    }
+    for (size_t i = 0; i <= cap; i++) {
+        reportRediscovery(pass, first + (jlong)i);
+    }
+    ASSERT_EQ(kLocals + cap + 1, (size_t)AnchorAcc::journalCountForTest());
+    EXPECT_EQ(0u, AnchorAcc::anchorIndexSizeForTest());
+    pass.scope.flush();
+
+    // The (cap+1)-th durable record crossed the cap exactly once.
+    EXPECT_EQ(gen + 1, AnchorAcc::durableAnchorResweepGenForTest());
+    EXPECT_EQ(cap - batch, AnchorAcc::durableAnchorCountForTest());
+    EXPECT_EQ(kLocals, AnchorAcc::localAnchorCountForTest());
+    for (jlong local : locals) {
+        EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(local));
+    }
+    for (size_t i = 0; i <= cap; i++) {
+        EXPECT_EQ(i > batch, AnchorAcc::anchorIndexContainsForTest(first + (jlong)i))
+            << "oldest " << batch + 1 << " durable entries are evicted: " << i;
+    }
+    // Parallel arrays, membership and fresh queue agree with the index.
+    const size_t size = AnchorAcc::anchorIndexSizeForTest();
+    EXPECT_EQ(size, AnchorAcc::anchorOwnClassTagsSizeForTest());
+    std::unordered_set<jlong> distinct;
+    for (size_t i = 0; i < size; i++) {
+        jlong tag = AnchorAcc::anchorIndexTagForTest(i);
+        EXPECT_TRUE(distinct.insert(tag).second) << "duplicate index tag " << tag;
+        EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(tag));
+    }
+    for (jlong queued : AnchorAcc::freshQueueTagsForTest()) {
+        EXPECT_TRUE(distinct.count(queued) > 0) << "fresh queue holds evicted tag " << queued;
+    }
+
+    tracker->stop();
+}
+
+// Replayed local reports honor the classification and capacity contracts end to end: a full local
+// share parks further confirmed containers in the pending buffer, where they displace the oldest
+// unclassified entry; unclassified reports beyond the pending cap are dropped.
+TEST_F(ReferenceChainsBfsTest, AnchorReplayedLocalsHonorPendingCapAndConfirmedPriority) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kContainer = -3101, kUnknown = -3104;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    const size_t local_cap = AnchorAcc::kLocalAnchorIndexCap;
+    const size_t pending_cap = AnchorAcc::kPendingLocalAnchorCap;
+
+    AnchorScopedPass pass(tracker, frontier);
+    for (size_t i = 0; i < local_cap; i++) {
+        ASSERT_GT(reportFreshLocal(pass, kContainer), 0);
+    }
+    std::vector<jlong> unknown;
+    for (size_t i = 0; i < pending_cap; i++) {
+        unknown.push_back(reportFreshLocal(pass, kUnknown));
+        ASSERT_GT(unknown.back(), 0);
+    }
+    const jlong confirmed = reportFreshLocal(pass, kContainer);
+    const jlong dropped = reportFreshLocal(pass, kUnknown);
+    ASSERT_GT(confirmed, 0);
+    ASSERT_GT(dropped, 0);
+    EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest()); // nothing applied before the flush
+    pass.scope.flush();
+
+    EXPECT_EQ(local_cap, AnchorAcc::localAnchorCountForTest());
+    EXPECT_EQ(pending_cap, AnchorAcc::pendingLocalAnchorCountForTest());
+    EXPECT_TRUE(AnchorAcc::pendingLocalAnchorContainsForTest(confirmed))
+        << "a confirmed container outranks an unclassified pending entry";
+    EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(unknown.front()));
+    EXPECT_TRUE(AnchorAcc::pendingLocalAnchorContainsForTest(unknown[1]));
+    EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(dropped))
+        << "an unclassified report past the pending cap is dropped";
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(confirmed)); // no free local slot yet
+
+    // Classification happens outside the callbacks: the unclassified entries are dropped, and the
+    // parked container waits for a slot (live local share, compaction backs off).
+    AnchorAcc::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(0u, AnchorAcc::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(local_cap, AnchorAcc::localAnchorCountForTest());
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(confirmed));
+
+    tracker->stop();
+}
+
+// Locals of a class classified only after the report wait in the pending buffer and are indexed by
+// the later resolution; locals of a classified non-container are never indexed or parked.
+TEST_F(ReferenceChainsBfsTest, AnchorReplayedLocalsClassifiedLaterOrRejectedAsNonContainer) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong kLater = -3105, kNonContainer = -3102;
+    AnchorAcc::primeClassShapeForTest(kNonContainer, false);
+
+    AnchorScopedPass pass(tracker, frontier);
+    std::vector<jlong> later;
+    for (int i = 0; i < 3; i++) {
+        later.push_back(reportFreshLocal(pass, kLater));
+    }
+    std::vector<jlong> rejected;
+    for (int i = 0; i < 2; i++) {
+        rejected.push_back(reportFreshLocal(pass, kNonContainer));
+    }
+    EXPECT_EQ(5u, AnchorAcc::journalCountForTest()); // classification is not a callback concern
+    pass.scope.flush();
+    EXPECT_EQ(3u, AnchorAcc::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(0u, AnchorAcc::anchorIndexSizeForTest());
+    for (jlong tag : rejected) {
+        EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(tag));
+        EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(tag));
+    }
+
+    AnchorAcc::primeClassShapeForTest(kLater, true); // reconcile classified it meanwhile
+    AnchorAcc::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(0u, AnchorAcc::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(3u, AnchorAcc::localAnchorCountForTest());
+    for (jlong tag : later) {
+        EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(tag));
+    }
 
     tracker->stop();
 }

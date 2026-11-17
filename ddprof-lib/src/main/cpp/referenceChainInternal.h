@@ -9,15 +9,74 @@
 
 #include "arch.h"
 #include "common.h"
-#include "referenceChainBatchSet.h"
+#include "referenceChains.h"
 #include <jni.h>
 
 class FrontierTable;
-class ReferenceChainTracker;
 
 ASSERT_ONLY(extern thread_local bool t_inGCCallback;)
 
+// Caller-side owner of one traversal group's journal lease. Callbacks only reserve/commit; the
+// caller observes the return and flushes. Destruction flushes any remaining prefix, then releases
+// the lease. A flush whose captured epoch is stale discards before any tag lookup.
+class ReferenceChainAnchorObservationScope {
+public:
+  explicit ReferenceChainAnchorObservationScope(ReferenceChainTracker *tracker)
+      : _tracker(tracker), _buffer(&tracker->_anchor_observations),
+        _lease(_buffer->tryLease()) {}
+  ~ReferenceChainAnchorObservationScope() {
+    flush();
+    _buffer->releaseLease(_lease); // no-op for a non-owning or stale scope
+  }
+  ReferenceChainAnchorObservationScope(const ReferenceChainAnchorObservationScope &) = delete;
+  ReferenceChainAnchorObservationScope &operator=(const ReferenceChainAnchorObservationScope &) = delete;
+
+  // Every journal operation goes through the scope's token; a non-owning scope's calls are
+  // rejected by the buffer and never touch another scope's journal.
+  AnchorObservationReservation reserve() { return AnchorObservationReservation(*_buffer, _lease); }
+  void markOverflow(bool static_attachment) { _buffer->markOverflow(_lease, static_attachment); }
+  bool ownsLease() const { return _lease.id != 0; }
+
+  // Acquires the buffer lock so the caller sees the callbacks' writes; true if the journal overflowed.
+  bool observeReturn() { return _buffer->observeOverflow(_lease); }
+
+  // Replays the accepted prefix, then resets count/static-retry/overflow while keeping the lease.
+  void flush() {
+    u32 count = 0;
+    bool static_retry = false;
+    if (!_buffer->snapshot(_lease, &count, &static_retry)) {
+      return;
+    }
+    if (count > 0 || static_retry) {
+      _tracker->replayAnchorObservations(_buffer->records(), count, static_retry);
+    }
+    _buffer->clearPrefix(_lease);
+  }
+
+private:
+  ReferenceChainTracker *_tracker;
+  AnchorObservationBuffer *_buffer;
+  AnchorObservationLease _lease;
+};
+
 struct ReferenceChainPassContext {
+  // Required binding: the owning caller's scope; there is no unscoped immediate-mutation path.
+  explicit ReferenceChainPassContext(ReferenceChainAnchorObservationScope &scope)
+      : anchor_scope(scope) {}
+
+  ReferenceChainAnchorObservationScope &anchor_scope;
+
+  // Set with `truncated` when the journal had no room; distinct from frontier_cap_hit. The rejected
+  // transition is not performed, so the source traversal obligation stays unserved.
+  bool anchor_observation_overflow = false;
+
+  // Records the overflow under the buffer lock; static_attachment requests a static-scan retry.
+  void abortForObservationOverflow(bool static_attachment) {
+    anchor_scope.markOverflow(static_attachment);
+    anchor_observation_overflow = true;
+    truncated = true;
+  }
+
   ReferenceChainTracker *tracker;
   FrontierTable *frontier;
   int hop_cap;

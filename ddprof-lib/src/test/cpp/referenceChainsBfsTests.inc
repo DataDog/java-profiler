@@ -594,17 +594,27 @@ TEST_F(ReferenceChainsBfsTest, RootContainerRemainsWalkableAfterReparentingAndMu
             tracker->frontierTable(), node_tags[node], 0, 0,
             FrontierEntryState::EXPANDED, JVMTI_HEAP_REFERENCE_STACK_LOCAL));
     }
-    ReferenceChainPassContext ctx{};
-    ctx.tracker = tracker;
-    ctx.frontier = tracker->frontierTable();
-    ctx.hop_cap = 64;
-    ctx.budget = 1000;
-    for (int repeat = 0; repeat < 2; repeat++) {
-        ReferenceChainsTestAccessor::reportHeapRootForTest(
-            JVMTI_HEAP_ROOT_STACK_LOCAL, container_class_tag,
-            &node_tags[holder], &ctx);
-        ReferenceChainsTestAccessor::reportHeapRootForTest(
-            JVMTI_HEAP_ROOT_STACK_LOCAL, -102, &node_tags[parent], &ctx);
+    {
+        // The caller-side scope owns the journal lease: the callbacks only record, and the flush
+        // after the direct callback calls is the boundary that applies them. It must be gone before
+        // the walk facade below binds its own scope.
+        ReferenceChainAnchorObservationScope scope(tracker);
+        ReferenceChainPassContext ctx(scope);
+        ctx.tracker = tracker;
+        ctx.frontier = tracker->frontierTable();
+        ctx.hop_cap = 64;
+        ctx.budget = 1000;
+        ctx.edges_admitted = 0;
+        ctx.truncated = false;
+        ctx.frontier_cap_hit = false;
+        for (int repeat = 0; repeat < 2; repeat++) {
+            ReferenceChainsTestAccessor::reportHeapRootForTest(
+                JVMTI_HEAP_ROOT_STACK_LOCAL, container_class_tag,
+                &node_tags[holder], &ctx);
+            ReferenceChainsTestAccessor::reportHeapRootForTest(
+                JVMTI_HEAP_ROOT_STACK_LOCAL, -102, &node_tags[parent], &ctx);
+        }
+        scope.flush();
     }
     // Classification runs outside the heap callback. Unknown transient roots
     // must not get a descend walk before being confirmed as containers.
@@ -2046,11 +2056,15 @@ TEST_F(ReferenceChainsBfsTest, LocalRootHolderGuardRejectsLeakAndNonPositiveTags
     ASSERT_FALSE(tracker->start(args));
 
     const jlong kClassTag = -301;
-    ReferenceChainPassContext ctx{};
+    ReferenceChainAnchorObservationScope scope(tracker);
+    ReferenceChainPassContext ctx(scope);
     ctx.tracker = tracker;
     ctx.frontier = tracker->frontierTable();
     ctx.hop_cap = 64;
     ctx.budget = 1000;
+    ctx.edges_admitted = 0;
+    ctx.truncated = false;
+    ctx.frontier_cap_hit = false;
 
     // Non-positive tags: admitObject() treats any non-zero tag as already admitted, so these
     // reach the guard with their original value.
@@ -2061,6 +2075,7 @@ TEST_F(ReferenceChainsBfsTest, LocalRootHolderGuardRejectsLeakAndNonPositiveTags
     jlong classless_tag = tracker->nextTag();
     ReferenceChainsTestAccessor::reportHeapRootForTest(
         JVMTI_HEAP_ROOT_STACK_LOCAL, 0, &classless_tag, &ctx);
+    scope.flush();
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
 
@@ -2083,6 +2098,7 @@ TEST_F(ReferenceChainsBfsTest, LocalRootHolderGuardRejectsLeakAndNonPositiveTags
     jlong plain_tag = tracker->nextTag();
     ReferenceChainsTestAccessor::reportHeapRootForTest(
         JVMTI_HEAP_ROOT_STACK_LOCAL, kClassTag, &plain_tag, &ctx);
+    scope.flush();
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
 
     tracker->stop();

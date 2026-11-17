@@ -259,10 +259,41 @@ it only on completing, so a lap in flight when the eviction lands, or a truncate
 leave the generation unserved until a full lap actually re-traverses the whole class list. A
 cursor restart on eviction would reset mid-lap progress under sustained above-cap churn and
 starve later classes, so there is none.
-Eviction and re-enlistment are pure index bookkeeping — no frontier lock — so both are legal from
-the heap-root callback. A local
-holder that a durable root later attaches moves to the durable share and stops
+Eviction and re-enlistment run only in the replay step described in
+[Deferred anchor-index updates](#deferred-anchor-index-updates), never in a JVMTI callback.
+A local holder that a durable root later attaches moves to the durable share and stops
 counting against the local cap. `restartSearch()` clears both shares and the pending buffer.
+
+### Deferred anchor-index updates
+
+Only the targeted anchor-index mutations are deferred: the local-holder note, the durable add,
+the re-enlist and the at-risk push. A heap callback does not call them. It reserves one record in
+a fixed journal (`AnchorObservationBuffer`) and commits the record when the report is admitted.
+The traversal caller replays the records in arrival order after the synchronous JVMTI call
+returns.
+
+The journal holds 16,384 records of at most 24 bytes each, so the record array uses at most 384 KiB. Metadata adds a fixed overhead. A
+reservation fails when the journal is full. The callback then aborts the traversal before the
+frontier or tag transition that the report would cause. The caller flushes the accepted prefix.
+The source traversal obligation stays unserved, so a later pass retries it:
+
+- **Root enumeration.** The scope flushes right after `IterateOverReachableObjects()` returns.
+  The rejected root is reported again by the next enumeration.
+- **Expansion batch.** `expandFrontier()` flushes after each `FollowReferences()` batch. The
+  referrer of the rejected edge stays queued.
+- **Static-field chunk.** The sweep flushes right after its `FollowReferences()` call. The chunk
+  cursor stays, the lap is marked truncated, and the replay adds one static-resweep request.
+- **Descent group.** The selected-anchor walk flushes after the walk and the at-risk requeue. The
+  candidate-thread walk flushes when its scope ends. Each group can hold several descents, and
+  all of them share the journal capacity. The partially walked anchor stays unwalked, and the
+  thread cursor stays on the thread whose descent overflowed.
+
+Other allocations in the callbacks remain. This design makes no universal claim about coverage,
+overhead or pause time. Resweep pacing is unchanged. It awaits a separate measurement.
+
+`Profiler::stop()` joins the reference-chain thread before the rest of the teardown. If the join
+fails, `stop()` returns an error and the state stays RUNNING, so a later `stop()` retries the join.
+`disableEngines()` has already disabled sampling by then.
 
 ## Search termination
 
