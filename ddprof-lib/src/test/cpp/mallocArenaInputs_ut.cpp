@@ -30,6 +30,18 @@ TEST(MallocArenaInputsParse, LastDuplicateKeyWins) {
     EXPECT_EQ(256, v);
 }
 
+TEST(MallocArenaInputsParse, InvalidDuplicateKeepsEarlierValidValue) {
+    long v = 0;
+    const char* key = "glibc.malloc.arena_max";
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=256:glibc.malloc.arena_max=invalid", key, &v));
+    EXPECT_EQ(256, v);
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=invalid:glibc.malloc.arena_max=64", key, &v));
+    EXPECT_EQ(64, v);
+    v = 7;
+    EXPECT_FALSE(parseTunableLong("glibc.malloc.arena_max=x:glibc.malloc.arena_max=4x", key, &v));
+    EXPECT_EQ(7, v);
+}
+
 TEST(MallocArenaInputsParse, ListPositions) {
     long v = 0;
     EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=4", "glibc.malloc.arena_max", &v));

@@ -58,6 +58,20 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
         arenasConfinedByMallocCheck(), "MALLOC_CHECK_ confines glibc before 2.34 to main_arena");
   }
 
+  // The event time must lie inside the interval that jdk.ActiveRecording advertises.
+  private void assertWithinRecording(JfrEvent event) {
+    JfrEvent recording = null;
+    for (JfrEvent item : verifyEvents("jdk.ActiveRecording")) {
+      recording = item;
+    }
+    assertNotNull(recording, "no jdk.ActiveRecording event");
+    long start = recording.getLong("startTime", 0);
+    long end = start + recording.getLong("duration", 0);
+    long at = event.getLong("startTime", 0);
+    assertTrue(
+        at >= start && at <= end, "event time " + at + " outside [" + start + ", " + end + "]");
+  }
+
   private JfrEvent lastStatsEvent() {
     JfrEvent last = null;
     for (JfrEvent item : verifyEvents(STATS)) {
@@ -107,6 +121,7 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
       return;
     }
     JfrEvent last = lastStatsEvent();
+    assertWithinRecording(last);
     String status = last.getString("walkStatus");
     if (Platform.isZing()) {
       assertEquals("unsupported-jvm", status);
