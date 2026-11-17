@@ -11,6 +11,7 @@
 #include "classTagAllocator.h"
 #include "common.h"
 #include "event.h"
+#include "guards.h"
 #include "painBudget.h"
 #include "pidController.h"
 #include "spinLock.h"
@@ -829,6 +830,9 @@ private:
 
   static void *threadEntry(void *self) {
     ((ReferenceChainTracker *)self)->threadLoop();
+    // The wall timer can target this thread: block before the exit mark so a
+    // sampler cannot fault on the marked identity (see Profiler::onThreadEnd).
+    blockProfilingForExit();
     ThreadExitRegistry::markCurrent();
     return nullptr;
   }

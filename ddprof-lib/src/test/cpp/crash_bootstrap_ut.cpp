@@ -587,3 +587,115 @@ TEST(CrashBootstrapTest, WrapperMarksBeforeTlsTeardown) {
     }
 }
 #endif
+
+namespace {
+static volatile sig_atomic_t profiling_signal_entries;
+
+static void countProfiledSignal(int) {
+    ++profiling_signal_entries;
+}
+
+// ThreadEnd boundary: the exit mark publishes only after profiling signals
+// are blocked, so a queued sample stays pending instead of walking a thread
+// whose crash-handler recovery the mark disables.
+static void observeThreadEndSignalBoundary() {
+    if (!ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) _exit(141);
+    sigset_t mask;
+    if (sigprocmask(SIG_BLOCK, nullptr, &mask) != 0 ||
+        !sigismember(&mask, SIGPROF) || !sigismember(&mask, SIGVTALRM)) _exit(142);
+    profiling_signal_entries = 0;
+    if (raise(SIGPROF) != 0 || raise(SIGVTALRM) != 0) _exit(143);
+    if (profiling_signal_entries != 0) _exit(144);
+    sigset_t pending;
+    if (sigpending(&pending) != 0 ||
+        !sigismember(&pending, SIGPROF) || !sigismember(&pending, SIGVTALRM)) _exit(145);
+    _exit(0);
+}
+
+static void installCountingProfiledHandlers() {
+    struct sigaction action = {};
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = countProfiledSignal;
+    if (sigaction(SIGPROF, &action, nullptr) != 0 ||
+        sigaction(SIGVTALRM, &action, nullptr) != 0) _exit(146);
+}
+
+static void disableCoreForTest() {
+    struct rlimit no_core = {0, 0};
+    setrlimit(RLIMIT_CORE, &no_core);
+}
+
+// The gtest parent can carry profiling signals blocked, and forked children
+// inherit that mask; start from a clean baseline so the block under test is
+// onThreadEnd's own.
+static void clearProfiledSignalMaskForTest() {
+    sigset_t empty;
+    sigemptyset(&empty);
+    if (sigprocmask(SIG_SETMASK, &empty, nullptr) != 0) _exit(158);
+}
+
+// The crash window: with the mark published before the signal block, an
+// armed sampler still runs on the marked thread; its recoverable walk fault
+// chains out and kills the process. With the block first, the queued sample
+// never runs and the unmarked live identity keeps its SafeAccess recovery.
+static void observeThreadEndSamplerWindow() {
+    if (!ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) _exit(147);
+    profiling_recovered = 0;
+    prefix_completed = 1;
+    if (raise(SIGVTALRM) != 0) _exit(148);
+    if (profiling_recovered != 0) _exit(149);
+    sigset_t pending;
+    if (sigpending(&pending) != 0 || !sigismember(&pending, SIGVTALRM)) _exit(150);
+    ThreadExitRegistry::clearCurrent();
+    if (SafeAccess::safeFetch64(static_cast<int64_t*>(poison), -46) != -46) _exit(151);
+    if (getInSignalDepth() != 0) _exit(152);
+    _exit(0);
+}
+}
+
+TEST(CrashBootstrapTest, ThreadEndBlocksProfilingBeforeExitMark) {
+    EXPECT_EXIT({
+        alarm(5);
+        disableCoreForTest();
+        ProfiledThread::initCurrentThread();
+        installHandlers();
+        installCountingProfiledHandlers();
+        clearProfiledSignalMaskForTest();
+        Profiler::threadEndMarkedForTest = observeThreadEndSignalBoundary;
+        Profiler::instance()->onThreadEndForTest();
+        _exit(153);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST(CrashBootstrapTest, ThreadEndBlocksProfilingBeforeExitMarkWithoutTls) {
+    EXPECT_EXIT({
+        alarm(5);
+        disableCoreForTest();
+        if (ProfiledThread::current() != nullptr) ProfiledThread::release();
+        installHandlers();
+        installCountingProfiledHandlers();
+        clearProfiledSignalMaskForTest();
+        Profiler::threadEndMarkedForTest = observeThreadEndSignalBoundary;
+        Profiler::instance()->onThreadEndForTest();
+        _exit(154);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST(CrashBootstrapTest, ThreadEndMarkedSamplerFaultIsNotAdmitted) {
+    EXPECT_EXIT({
+        alarm(5);
+        disableCoreForTest();
+        ProfiledThread::initCurrentThread();
+        installHandlers();
+        clearProfiledSignalMaskForTest();
+        poison = mmap(nullptr, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (poison == MAP_FAILED) _exit(155);
+        struct sigaction action = {};
+        sigemptyset(&action.sa_mask);
+        action.sa_handler = faultableProfilingHandler;
+        if (sigaction(SIGVTALRM, &action, nullptr) != 0) _exit(156);
+        Profiler::threadEndMarkedForTest = observeThreadEndSamplerWindow;
+        Profiler::instance()->onThreadEndForTest();
+        _exit(157);
+    }, ::testing::ExitedWithCode(0), "");
+}

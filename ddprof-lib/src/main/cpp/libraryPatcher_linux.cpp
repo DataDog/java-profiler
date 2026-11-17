@@ -245,8 +245,10 @@ public:
 // musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
 __attribute__((noinline))
 static void unregister_and_release() {
-    ThreadExitRegistry::markCurrent();
+    // Block before the exit mark so a sampler cannot fault on the marked
+    // identity (see Profiler::onThreadEnd for the recovery-order contract).
     blockProfilingForExit();
+    ThreadExitRegistry::markCurrent();
     int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
