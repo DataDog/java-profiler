@@ -1282,8 +1282,8 @@ static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
     return cc->imageBase() == (const char*)dl_info.dli_fbase;
 }
 
-// musl's dlopen() maps the whole span from file offset 0 before it maps the later
-// segments, and links the library into the list dladdr() searches only afterwards.
+// musl's dlopen() maps the whole span from the first segment's file offset before it maps
+// the later segments, and links the library into the list dladdr() searches only afterwards.
 // Until then those segments' addresses hold the wrong file bytes, or SIGBUS past EOF.
 static bool isFullyMappedOnMusl(const CodeCache* cc) {
     Dl_info dl_info;
