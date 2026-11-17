@@ -23,9 +23,9 @@ function instructionsFor(root: string, rel: string): { path: string; text: strin
   }
 }
 
-// Pi counterpart of the native-code CLAUDE.md stubs: appends the native instructions to
-// the first read, edit or write result below a directory listed in .pi/native-agents.json.
-// Once per session, and again after a compaction drops them from the context.
+// Pi counterpart of the native-code CLAUDE.md stubs: appends the native instructions to the
+// first read, edit or write result that reaches the model for a path below a directory listed
+// in .pi/native-agents.json. Once per session, and again after a compaction drops them.
 export default function (pi: ExtensionAPI) {
   let injected = false;
   // checkoutRoot per cwd, kept for the session, so that file tool calls before the first
