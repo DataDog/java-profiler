@@ -215,7 +215,12 @@ TEST(CrashBootstrapTest, FenceIsDisarmedBeforeSafefetchRecovery) {
     }, ::testing::ExitedWithCode(0), "");
 }
 
+// TSan's sigaction_impl forces sigfillset on handler masks. The three TSan-gated
+// tests require user-mask semantics for nested delivery or post-disarm recovery.
 TEST(CrashBootstrapTest, LegitimateNestingUnchangedAfterFence) {
+#if defined(TSAN_ENABLED)
+    GTEST_SKIP() << "TSan's sigaction interceptor forces sigfillset, preventing nested CPU/wall delivery";
+#else
     EXPECT_EXIT({
         alarm(5);
         ProfiledThread::initCurrentThread();
@@ -230,6 +235,7 @@ TEST(CrashBootstrapTest, LegitimateNestingUnchangedAfterFence) {
         raise(SIGPROF);
         _exit(nested_depth == 2 && getInSignalDepth() == 0 ? 0 : 106);
     }, ::testing::ExitedWithCode(0), "");
+#endif
 }
 
 TEST(CrashBootstrapTest, WakeupHandlerPerformsNoBookkeeping) {
@@ -437,7 +443,9 @@ TEST(CrashBootstrapTest, RegistryKeepsFullWidthIdentitiesDistinct) {
 }
 
 TEST(CrashBootstrapTest, ProfilingInterruptionOfFenceRecoversAccess) {
-#ifdef __linux__
+#if defined(TSAN_ENABLED)
+    GTEST_SKIP() << "TSan's sigaction interceptor forces sigfillset, blocking nested SafeFetch recovery signals";
+#elif defined(__linux__)
     for (int profiling_signal : {SIGPROF, SIGVTALRM}) {
       SCOPED_TRACE(profiling_signal);
       EXPECT_EXIT({
@@ -517,6 +525,9 @@ static void* wrappedRoutine(void* mode) {
 }
 
 TEST(CrashBootstrapTest, SafefetchNestedDuringActiveCrashHandlerBalancesAdmission) {
+#if defined(TSAN_ENABLED)
+    GTEST_SKIP() << "TSan's sigaction interceptor forces sigfillset, conflicting with unblocked fault masks after disarm";
+#else
     EXPECT_EXIT({
         alarm(5);
         ProfiledThread::initCurrentThread();
@@ -532,6 +543,7 @@ TEST(CrashBootstrapTest, SafefetchNestedDuringActiveCrashHandlerBalancesAdmissio
         _exit(ProfiledThread::current()->snapshotForTest().crash_depth == 0 &&
               getInSignalDepth() == 0 ? 0 : 132);
     }, ::testing::ExitedWithCode(0), "");
+#endif
 }
 
 TEST(CrashBootstrapTest, JvmtiMarksBeforeTeardown) {
