@@ -404,10 +404,9 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
 }
 
-// The interval validation must use the value actually assigned,
-// cpuSamplerInterval(), so a caller setting only the cpu parameter is
-// accepted. The deliberate table-allocation failure bounds the test: it
-// fails after the interval is assigned but before any handler is installed.
+// Validates the value actually assigned, cpuSamplerInterval(), so a caller
+// setting only the cpu parameter is accepted. The deliberate allocation
+// failure bounds the test: it fails after the interval is assigned.
 TEST_F(CTimerNativeMemTest, StartValidatesCpuSamplerInterval) {
   SKIP_IF_CALLOC_OVERFLOW_ABORTS();
   CTimer engine;

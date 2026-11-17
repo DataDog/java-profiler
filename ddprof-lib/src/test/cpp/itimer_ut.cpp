@@ -19,10 +19,9 @@
 #include <dlfcn.h>
 #include <sys/time.h>
 
-// This binary links itimer.o statically, so defining sigaction here binds
-// every main-library sigaction call to the interposer below at static-link
-// time. Calls forward to the real libc entry unless the flag makes a
-// SIGPROF install (act != nullptr) fail.
+// This binary links itimer.o statically, so defining sigaction here binds every
+// main-library sigaction call to the interposer below; the flag makes only
+// SIGPROF installs (act != nullptr) fail.
 static std::atomic<bool> g_fail_sigprof_install{false};
 
 typedef int (*sigaction_fn_t)(int, const struct sigaction *, struct sigaction *);
