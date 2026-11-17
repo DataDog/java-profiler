@@ -690,9 +690,10 @@ TEST_P(AsgctVtableReceiverTest, VmReceiverPrefixReservesTheStubAtShallowDepth) {
                 EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[budget - 1].method_id));
             }
             if (track_truncation) {
-                // The walk fills the extra slot past max_depth; the clamp must drop it, not the stub.
+                // The walk writes the caller stub one slot past max_depth before the final clamp.
                 EXPECT_TRUE(truncated);
-                EXPECT_NE(12345, _frames[budget].bci);
+                EXPECT_EQ(BCI_NATIVE_FRAME, _frames[budget].bci);
+                EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[budget].method_id));
                 expectCanary(budget + 1);
             } else {
                 expectCanary(budget);
