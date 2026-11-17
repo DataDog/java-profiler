@@ -23,7 +23,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <new>
 #include <unordered_set>
 
 // Manual walk driver - IterateOverReachableObjects root/stack-ref enumeration
@@ -54,47 +53,6 @@ u8 translateHeapRootKind(jvmtiHeapRootKind root_kind) {
   }
 }
 
-bool isDurableRootKind(u8 root_kind) {
-  return root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
-         root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
-}
-
-// Holds at most one journal reservation, taken only when a report can produce anchor effects. The
-// placement-new from a prvalue elides the move the non-movable reservation forbids; the destructor
-// cancels an uncommitted reservation.
-class RootReservation {
-public:
-  RootReservation() = default;
-  RootReservation(const RootReservation &) = delete;
-  RootReservation &operator=(const RootReservation &) = delete;
-  ~RootReservation() {
-    if (_live) {
-      get()->~AnchorObservationReservation();
-    }
-  }
-
-  // False when the journal had no room (or the scope does not own it); nothing is then held.
-  bool acquire(ReferenceChainAnchorObservationScope &scope) {
-    new (&_storage) AnchorObservationReservation(scope.reserve());
-    _live = true;
-    return get()->held();
-  }
-
-  void commit(const AnchorObservation &record) {
-    if (_live) {
-      get()->commit(record);
-    }
-  }
-
-private:
-  AnchorObservationReservation *get() {
-    return reinterpret_cast<AnchorObservationReservation *>(&_storage);
-  }
-
-  alignas(AnchorObservationReservation) unsigned char _storage[sizeof(AnchorObservationReservation)];
-  bool _live = false;
-};
-
 } // namespace
 
 jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
@@ -114,10 +72,10 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   // Reserve one journal record before any frontier/tag transition when this report can produce an
   // anchor effect (leak conversion or upgrade/re-enlist of a durable root, or a local holder).
   // A full journal aborts with nothing changed so root enumeration retries the report.
-  const bool durable_root = isDurableRootKind(translated_root_kind);
+  const bool durable_root = isDurableAnchorRootKind(translated_root_kind);
   const bool local_root =
       isTransientRootKind(translated_root_kind) && class_tag != 0;
-  RootReservation reservation;
+  AnchorObservationReservationGuard reservation;
   if (*tag_ptr >= 0 && ((durable_root && *tag_ptr > 0) || local_root) &&
       !reservation.acquire(ctx->anchor_scope)) {
     ctx->abortForObservationOverflow(/*static_attachment=*/false);

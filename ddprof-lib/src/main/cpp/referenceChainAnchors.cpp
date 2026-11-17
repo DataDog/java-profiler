@@ -1056,8 +1056,6 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
   int walked = 0;
   const int start = _thread_walk_anchor_cursor;
   int i = start;
-  // Descent-group scope: flushes the accepted prefix on every exit before later pass decisions.
-  ReferenceChainAnchorObservationScope scope(this);
   do {
     jobject thread_obj;
     {
@@ -1107,10 +1105,16 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
         int remaining = budget - *edges_admitted;
         if (remaining > 0) {
           bool overflow = false;
-          descendFromAnchor(jvmti, jni, scope, thread_obj, anchor_tag,
-                            anchor_depth, descend_class_tag, remaining,
-                            edges_admitted, truncated, frontier_cap_hit,
-                            safepoint_ns, &overflow);
+          {
+            ReferenceChainAnchorObservationScope scope(this);
+            descendFromAnchor(jvmti, jni, scope, thread_obj, anchor_tag,
+                              anchor_depth, descend_class_tag, remaining,
+                              edges_admitted, truncated, frontier_cap_hit,
+                              safepoint_ns, &overflow);
+            // Flush this descent before the loop advances or retains its cursor.
+            // Later traversal decisions must see its accepted observations.
+            scope.flush();
+          }
           walked++;
           if (overflow) {
             break; // retain the cursor on this thread: its walk was cut short

@@ -24,7 +24,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <new>
 #include <unordered_set>
 
 // Heap-walk engine
@@ -143,47 +142,6 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
 }
 
 namespace {
-
-bool isDurableAnchorRootKind(u8 root_kind) {
-  return root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
-         root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
-}
-
-// Takes a journal reservation only on callback branches that may produce anchor effects. Placement
-// new from a prvalue elides the move that the non-movable reservation forbids; the destructor
-// cancels an uncommitted reservation.
-class LazyReservation {
-public:
-  LazyReservation() = default;
-  LazyReservation(const LazyReservation &) = delete;
-  LazyReservation &operator=(const LazyReservation &) = delete;
-  ~LazyReservation() {
-    if (_live) {
-      get()->~AnchorObservationReservation();
-    }
-  }
-
-  // False when the journal had no room (or the scope does not own it); nothing is then held.
-  bool acquire(ReferenceChainAnchorObservationScope &scope) {
-    new (&_storage) AnchorObservationReservation(scope.reserve());
-    _live = true;
-    return get()->held();
-  }
-
-  void commit(const AnchorObservation &record) {
-    if (_live) {
-      get()->commit(record);
-    }
-  }
-
-private:
-  AnchorObservationReservation *get() {
-    return reinterpret_cast<AnchorObservationReservation *>(&_storage);
-  }
-
-  alignas(AnchorObservationReservation) unsigned char _storage[sizeof(AnchorObservationReservation)];
-  bool _live = false;
-};
 
 AnchorObservation makeAnchorObservation(jlong tag, jlong own_class_tag,
                                         u32 at_risk_klass_id, u8 actions,
@@ -347,7 +305,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
     // Reserve before the tag install: a full journal aborts with the leak tag still in place.
     const bool durable_leak = isDurableAnchorRootKind(root_kind);
-    LazyReservation leak_reservation;
+    AnchorObservationReservationGuard leak_reservation;
     if (durable_leak && !leak_reservation.acquire(ctx->anchor_scope)) {
       ctx->abortForObservationOverflow(root_kind ==
                                        (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD);
@@ -441,7 +399,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // edge kind is not recorded.
     u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
     const bool durable_admission = isDurableAnchorRootKind(root_kind);
-    LazyReservation admit_reservation;
+    AnchorObservationReservationGuard admit_reservation;
     if (durable_admission && !admit_reservation.acquire(ctx->anchor_scope)) {
       ctx->abortForObservationOverflow(root_kind ==
                                        (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD);
@@ -529,7 +487,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
           rootKindDurability(pre_improve_entry.root_kind) >= 2;
       // Reserve before improveChain(): a successful demotion cannot be undone, so a full journal
       // must abort while the entry is still root-attached.
-      LazyReservation demotion_reservation;
+      AnchorObservationReservationGuard demotion_reservation;
       if (was_root_attached_durable &&
           !demotion_reservation.acquire(ctx->anchor_scope)) {
         ctx->abortForObservationOverflow(
@@ -574,7 +532,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       const bool durable_edge =
           isDurableAnchorRootKind((u8)reference_kind);
       u8 pending_actions = 0;
-      LazyReservation root_reservation;
+      AnchorObservationReservationGuard root_reservation;
       if (durable_edge) {
         // Decide the possible anchor effects from the current entry before any mutation. A
         // possible upgrade or an eligible re-enlist/at-risk witness needs a journal slot.

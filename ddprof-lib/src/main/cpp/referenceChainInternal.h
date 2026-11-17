@@ -11,6 +11,7 @@
 #include "common.h"
 #include "referenceChains.h"
 #include <jni.h>
+#include <new>
 
 class FrontierTable;
 
@@ -57,6 +58,45 @@ private:
   ReferenceChainTracker *_tracker;
   AnchorObservationBuffer *_buffer;
   AnchorObservationLease _lease;
+};
+
+inline bool isDurableAnchorRootKind(u8 root_kind) {
+  return root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+         root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
+}
+
+// Callback branches reserve only when they can publish an anchor observation.
+// Placement-new avoids moving the non-movable reservation; destruction cancels an unused slot.
+class AnchorObservationReservationGuard {
+public:
+  AnchorObservationReservationGuard() = default;
+  AnchorObservationReservationGuard(const AnchorObservationReservationGuard &) = delete;
+  AnchorObservationReservationGuard &operator=(const AnchorObservationReservationGuard &) = delete;
+  ~AnchorObservationReservationGuard() {
+    if (_live) {
+      get()->~AnchorObservationReservation();
+    }
+  }
+
+  bool acquire(ReferenceChainAnchorObservationScope &scope) {
+    new (&_storage) AnchorObservationReservation(scope.reserve());
+    _live = true;
+    return get()->held();
+  }
+
+  void commit(const AnchorObservation &record) {
+    if (_live) {
+      get()->commit(record);
+    }
+  }
+
+private:
+  AnchorObservationReservation *get() {
+    return reinterpret_cast<AnchorObservationReservation *>(&_storage);
+  }
+
+  alignas(AnchorObservationReservation) unsigned char _storage[sizeof(AnchorObservationReservation)];
+  bool _live = false;
 };
 
 struct ReferenceChainPassContext {
