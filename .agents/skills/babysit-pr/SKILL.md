@@ -20,10 +20,13 @@ written by it, and it dies with the session — its stop summary names what rema
    before launching; a babysitter racing this session's commits corrupts both.
 4. **Worker.** Write `{"pr": <n>, "branch": "<local-branch>", "status": "running",
    "scope": [], "bits_triggered": [...]}` to `build/babysit-pr-<n>.json` **in the
-   session's checkout** — seed `bits_triggered` from the previous stopped marker's
-   list when one exists (the once-per-head record survives restarts) — that
-   copy is the dedupe record only — and pass the instruction to the worker: on start,
-   write the same-shaped marker **in its own worktree's `build/`** and maintain it
+   session's checkout** — seed `bits_triggered` from the previous marker's list
+   (the stopped copy, or the running copy when relaunching a dead run) when one
+   exists (the once-per-head record survives restarts) — that
+   copy is the dedupe record only — and pass the instruction and that list to
+   the worker: on start,
+   write the same-shaped marker **in its own worktree's `build/`**, seeded with
+   the list, and maintain it
    there (the pushing checkout is the one the pre-push guard reads; write it
    atomically — temp file plus rename — so a concurrent guard read never sees a
    truncated JSON it would skip). The `branch` field names the local branch of
@@ -88,7 +91,9 @@ findings are surfaced to the author, never auto-implemented."
    re-trigger Bits automatically; if the check is still pending on a head with
    everything else green, one ordinary PR comment `@datadog review` re-triggers
    it. Before posting, check the marker's `bits_triggered` list for this head
-   and append the head after posting — the list is the durable once-per-head
+   and append the head after posting — and report the posted head to the session
+   over the supervisor channel, so a run that dies without a stop report has
+   still seeded the session's copy. The list is the durable once-per-head
    record, so a restarted run never re-posts. On a draft PR incoming changes
    do not re-trigger Bits: the comment is required (same once-per-head record).
    Never post it in the PR body or an inline review thread; a plain top-level
