@@ -53,12 +53,38 @@ TEST(MallocArenaInputsParse, NonNumericValues) {
     EXPECT_EQ(7, v);
 }
 
-TEST(MallocArenaInputsParse, RejectsLeadingWhitespaceAndPlus) {
+TEST(MallocArenaInputsParse, AcceptsGlibcNumberSyntax) {
     long v = 0;
-    EXPECT_FALSE(parseTunableLong("glibc.malloc.arena_max= 4", "glibc.malloc.arena_max", &v));
-    EXPECT_FALSE(parseTunableLong("glibc.malloc.arena_max=+4", "glibc.malloc.arena_max", &v));
-    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=-4", "glibc.malloc.arena_max", &v));
+    const char* key = "glibc.malloc.arena_max";
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max= 4", key, &v));
+    EXPECT_EQ(4, v);
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=+4", key, &v));
+    EXPECT_EQ(4, v);
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=0x10", key, &v));
+    EXPECT_EQ(16, v);
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=0X10", key, &v));
+    EXPECT_EQ(16, v);
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=010", key, &v));
+    EXPECT_EQ(8, v);
+    EXPECT_TRUE(parseTunableLong("glibc.malloc.arena_max=-4", key, &v));
     EXPECT_EQ(-4, v);
+}
+
+TEST(MallocArenaInputsParse, RejectsTrailingCharacters) {
+    long v = 7;
+    const char* key = "glibc.malloc.arena_max";
+    EXPECT_FALSE(parseTunableLong("glibc.malloc.arena_max=4 ", key, &v));
+    EXPECT_FALSE(parseTunableLong("glibc.malloc.arena_max=4x", key, &v));
+    EXPECT_FALSE(parseTunableLong("glibc.malloc.arena_max=0x", key, &v));
+    EXPECT_EQ(7, v);
+}
+
+TEST(MallocArenaInputsLimit, HexAndOctalTunable) {
+    const char* src = NULL;
+    EXPECT_EQ(256, effectiveArenaLimit("glibc.malloc.arena_max=0x100", "16", 4, &src));
+    EXPECT_STREQ("tunable", src);
+    EXPECT_EQ(8, effectiveArenaLimit(NULL, "010", 4, &src));
+    EXPECT_STREQ("env", src);
 }
 
 TEST(MallocArenaInputsLimit, Default) {
