@@ -58,6 +58,15 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
         arenasConfinedByMallocCheck(), "MALLOC_CHECK_ confines glibc before 2.34 to main_arena");
   }
 
+  private JfrEvent lastStatsEvent() {
+    JfrEvent last = null;
+    for (JfrEvent item : verifyEvents(STATS)) {
+      last = item;
+    }
+    assertNotNull(last, "no stats event");
+    return last;
+  }
+
   // With MALLOC_CHECK_ set, glibc before 2.34 allocates only from main_arena, so no per-thread
   // arenas exist. From 2.34 on the variable has no effect without libc_malloc_debug.so.
   private static boolean arenasConfinedByMallocCheck() {
@@ -97,12 +106,7 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
       assertFalse(verifyEvents(WARNING, false).hasItems(), "no arena events on musl");
       return;
     }
-    JfrEvents stats = verifyEvents(STATS);
-    JfrEvent last = null;
-    for (JfrEvent item : stats) {
-      last = item;
-    }
-    assertNotNull(last, "no stats event");
+    JfrEvent last = lastStatsEvent();
     String status = last.getString("walkStatus");
     if (Platform.isZing()) {
       assertEquals("unsupported-jvm", status);
@@ -132,6 +136,14 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
       churn.start();
       stopProfiler();
     }
+    JfrEvent lastStats = lastStatsEvent();
+    Assumptions.assumeFalse(
+        "ok".equals(lastStats.getString("walkStatus"))
+            && lastStats.getLong("arenaCount", 0) <= recommended,
+        "the process held no more than "
+            + recommended
+            + " arenas; its arena cap is too low: "
+            + lastStats);
     JfrEvents warnings = verifyEvents(WARNING);
     boolean raised = false;
     for (JfrEvent item : warnings) {

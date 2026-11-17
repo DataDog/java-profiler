@@ -6,7 +6,6 @@
 // <stdlib.h> comes first: on glibc it pulls in features.h, which defines
 // __GLIBC__ for the guards below.
 #include <stdlib.h>
-#include <ctype.h>
 #include <errno.h>
 #include <string.h>
 
@@ -21,20 +20,20 @@
 static const char KEY_ARENA_MAX[] = "glibc.malloc.arena_max";
 static const char KEY_HUGETLB[] = "glibc.malloc.hugetlb";
 
-// Parses [begin, end) as a decimal integer with an optional leading '-'. The
-// whole range must be consumed. Leading whitespace and a leading '+' are
-// rejected, although strtol would accept them.
+// Parses [begin, end) like glibc's tunable parser: optional sign, then decimal,
+// 0x hexadecimal or leading-0 octal digits; leading whitespace is allowed. The
+// whole range must be consumed, so "4 " and "4x" fail.
 static bool parseLongRange(const char* begin, const char* end, long* out) {
     char buf[32];
     size_t len = (size_t)(end - begin);
-    if (len == 0 || len >= sizeof(buf) || *begin == '+' || isspace((unsigned char)*begin)) {
+    if (len == 0 || len >= sizeof(buf)) {
         return false;
     }
     memcpy(buf, begin, len);
     buf[len] = '\0';
     char* parsed_end = NULL;
     errno = 0;
-    long value = strtol(buf, &parsed_end, 10);
+    long value = strtol(buf, &parsed_end, 0);
     if (errno != 0 || parsed_end != buf + len) {
         return false;
     }
