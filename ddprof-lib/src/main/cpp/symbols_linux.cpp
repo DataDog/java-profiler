@@ -1282,12 +1282,22 @@ static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
     return cc->imageBase() == (const char*)dl_info.dli_fbase;
 }
 
-// musl's dlopen() maps the whole span from the first segment's file offset before it maps
-// the later segments, and links the library into the list dladdr() searches only afterwards.
-// Until then those segments' addresses hold the wrong file bytes, or SIGBUS past EOF.
+static int matchImageBase(struct dl_phdr_info* info, size_t, void* data) {
+    uintptr_t min_vaddr = UINTPTR_MAX;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        if (info->dlpi_phdr[i].p_type == PT_LOAD && info->dlpi_phdr[i].p_vaddr < min_vaddr) {
+            min_vaddr = info->dlpi_phdr[i].p_vaddr;
+        }
+    }
+    return min_vaddr != UINTPTR_MAX &&
+           ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) == (uintptr_t)data;
+}
+
+// musl's dlopen() links a library into the list dl_iterate_phdr() walks only after mapping
+// all of it; until then later segments hold the wrong file bytes, or SIGBUS. Not dladdr():
+// it misses a library mapped into an unmapped hole of the executable's or ld-musl's span.
 static bool isFullyMappedOnMusl(const CodeCache* cc) {
-    Dl_info dl_info;
-    return dladdr(cc->imageBase(), &dl_info) != 0 && cc->imageBase() == (const char*)dl_info.dli_fbase;
+    return dl_iterate_phdr(matchImageBase, (void*)cc->imageBase()) != 0;
 }
 
 UnloadProtection::UnloadProtection(const CodeCache *cc) {

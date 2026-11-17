@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "codeCache.h"
+#include "os.h"
 #include "symbols.h"
 #include "testTempFile.h"
 
@@ -27,6 +28,39 @@
 #include <unistd.h>
 
 namespace {
+
+struct ImageBaseQuery {
+  uintptr_t load_bias;
+  const char* image_base;
+};
+
+int findImageBase(struct dl_phdr_info* info, size_t, void* data) {
+  ImageBaseQuery* query = static_cast<ImageBaseQuery*>(data);
+  if (info->dlpi_addr != query->load_bias) return 0;
+  uintptr_t min_vaddr = UINTPTR_MAX;
+  for (int i = 0; i < info->dlpi_phnum; i++) {
+    if (info->dlpi_phdr[i].p_type == PT_LOAD && info->dlpi_phdr[i].p_vaddr < min_vaddr) {
+      min_vaddr = info->dlpi_phdr[i].p_vaddr;
+    }
+  }
+  uintptr_t page_mask = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE)) - 1;
+  if (min_vaddr != UINTPTR_MAX) {
+    query->image_base = reinterpret_cast<const char*>((info->dlpi_addr + min_vaddr) & ~page_mask);
+  }
+  return 1;
+}
+
+// Loads path, left loaded for the rest of the binary, and returns the start of its
+// lowest mapping, or nullptr on failure. Not dladdr(), which can miss a loaded library.
+const char* loadImageBaseOf(const char* path) {
+  void* handle = dlopen(path, RTLD_NOW);
+  EXPECT_NE(handle, nullptr) << dlerror();
+  struct link_map* map;
+  if (handle == nullptr || dlinfo(handle, RTLD_DI_LINKMAP, &map) != 0) return nullptr;
+  ImageBaseQuery query = {static_cast<uintptr_t>(map->l_addr), nullptr};
+  dl_iterate_phdr(findImageBase, &query);
+  return query.image_base;
+}
 
 class UnloadProtectionTest : public ::testing::Test {
  protected:
@@ -45,19 +79,7 @@ class UnloadProtectionTest : public ::testing::Test {
     ASSERT_EQ(access(_lib_path, R_OK), 0) << "Missing test resource " << _lib_path;
   }
 
-  // Loads the test DSO, left loaded for the rest of the binary, and returns the
-  // start of its lowest mapping, or nullptr on failure.
-  const char* loadImageBase() {
-    void* handle = dlopen(_lib_path, RTLD_NOW);
-    EXPECT_NE(handle, nullptr) << dlerror();
-    struct link_map* map;
-    Dl_info info;
-    if (handle == nullptr || dlinfo(handle, RTLD_DI_LINKMAP, &map) != 0 ||
-        dladdr(map->l_ld, &info) == 0) {
-      return nullptr;
-    }
-    return static_cast<const char*>(info.dli_fbase);
-  }
+  const char* loadImageBase() { return loadImageBaseOf(_lib_path); }
 };
 
 // Owns a read-only private mapping of a whole file; unmaps it on scope exit.
@@ -93,11 +115,11 @@ class FileMapping {
   int _error = 0;
 };
 
-// A fresh copy of a file in TMPDIR, or /tmp when unset, removed on scope exit.
+// A fresh copy of a file in dir (null: TMPDIR, or /tmp when unset), removed on scope exit.
 class TempCopy {
  public:
-  explicit TempCopy(const char* from)
-      : _error(copyToTempFile(from, nullptr, "libunloadprot", _path, sizeof(_path))) {}
+  explicit TempCopy(const char* from, const char* dir = nullptr)
+      : _error(copyToTempFile(from, dir, "libunloadprot", _path, sizeof(_path))) {}
   ~TempCopy() { if (_error == 0) unlink(_path); }
   TempCopy(const TempCopy&) = delete;
   TempCopy& operator=(const TempCopy&) = delete;
@@ -128,6 +150,25 @@ bool isLoaded(const char* path) {
 
 }  // namespace
 
+// musl's dladdr() misses a library in an unmapped hole of a kernel-mapped span (ld-musl's on
+// aarch64). Defined first so it runs before other tests fill the hole; skips if no copy lands
+// there. Copies go to /tmp, not TMPDIR, so that dlopen() works where TMPDIR is noexec.
+TEST_F(UnloadProtectionTest, AcceptsLoadedImageThatDladdrMisses) {
+  if (!OS::isMusl()) GTEST_SKIP() << "only musl's dladdr() has the gap";
+  const char* base = nullptr;
+  for (int i = 0; i < 8 && base == nullptr; i++) {
+    TempCopy copy(_lib_path, "/tmp");
+    ASSERT_EQ(copy.error(), 0) << "copy to " << copy.path() << ": " << strerror(copy.error());
+    const char* candidate = loadImageBaseOf(copy.path());
+    ASSERT_NE(candidate, nullptr);
+    Dl_info info;
+    if (dladdr(candidate, &info) == 0) base = candidate;
+  }
+  if (base == nullptr) GTEST_SKIP() << "no copy landed where dladdr() misses it";
+  CodeCache cc("copy", 0, base, base + 1, base);
+  EXPECT_TRUE(UnloadProtection(&cc).isValid());
+}
+
 // The loader's first mapping of a library it is still loading: at file offset 0,
 // not yet known to the loader. UnloadProtection ignores the mapping's protection,
 // so PROT_READ keeps the test working on a noexec TMPDIR.
@@ -151,13 +192,11 @@ TEST_F(UnloadProtectionTest, AcceptsLoadedImage) {
   EXPECT_TRUE(UnloadProtection(&cc).isValid());
 }
 
-// An address inside a loaded library that is not where its image starts.
+// An address inside a loaded library's first page that is not where its image starts.
 TEST_F(UnloadProtectionTest, RejectsLoadedImageAtWrongBase) {
   const char* base = loadImageBase();
   ASSERT_NE(base, nullptr);
   const char* inside = base + 16;
-  Dl_info info;
-  ASSERT_NE(dladdr(inside, &info), 0) << "the address must belong to the loaded library";
   CodeCache cc(_lib_path, 0, inside, inside + 1, inside);
   EXPECT_FALSE(UnloadProtection(&cc).isValid());
 }
