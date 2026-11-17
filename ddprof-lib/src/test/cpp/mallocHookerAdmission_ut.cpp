@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include "common.h"
 #include "codeCache.h"
 #include "libraries.h"
 #include "mallocAdmission.h"
@@ -36,8 +37,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+#if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
 #define ADMISSION_UT_SANITIZER 1
 #endif
 
