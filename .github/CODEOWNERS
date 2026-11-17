@@ -21,10 +21,16 @@
 # run the release and approval automation.
 /.github/workflows/bits-review-gate.yml @DataDog/profiling-java
 
-# Release and publishing automation: signs and publishes builds and holds deploy keys.
+# Release and publishing automation: signs and publishes builds and holds
+# deploy keys — the release workflows, the version helper, the GitLab
+# pipeline that runs the Sonatype/GPG deploy script, and the deploy script
+# itself.
 /.github/workflows/release.yml @DataDog/profiling-java
 /.github/workflows/release-validated.yml @DataDog/profiling-java
+/.github/workflows/update_assets.yml @DataDog/profiling-java
 /utils/compute-version.sh @DataDog/profiling-java
+/.gitlab-ci.yml @DataDog/profiling-java
+/.gitlab/ @DataDog/profiling-java
 
 # Trivial-approval machinery: a workflow that can auto-approve PRs. Its workflow
 # and validation script must stay co-owned.

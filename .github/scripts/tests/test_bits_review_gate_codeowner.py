@@ -258,16 +258,13 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         self.assertEqual(self.evaluate(transport)[1], "success")
 
-    def test_fork_head_uses_the_live_files_read(self):
+    def test_fork_head_fails_closed(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101, fork=True)]),
-            FakeResponse(200, files_page(".github/scripts/bits_review_gate.py")),
-            FakeResponse(200, reviews_page([])),
-            FakeResponse(200, pr(101, fork=True)),
         ])
         kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("approval from @DataDog/profiling-java required", description)
+        self.assertIn("fork pull request", description)
 
     def test_moved_head_after_reads_writes_nothing(self):
         transport = testlib.FakeTransport([
@@ -393,10 +390,6 @@ class EvaluateShaTest(unittest.TestCase):
         transport = testlib.FakeTransport([
             FakeResponse(200, [testlib.build_pr_record(
                 101, sha=SHA, user={"id": 5})]),
-            FakeResponse(200, files_page(
-                ".github/scripts/bits_review_gate.py")),
-            FakeResponse(200, reviews_page([
-                review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
         ])
         kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
@@ -515,6 +508,7 @@ class PublishTest(unittest.TestCase):
                 ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page([])),
             FakeResponse(200, [{"login": "owner-a"}]),
+            FakeResponse(200, pr(101)),
             FakeResponse(200, []),
             FakeResponse(200, []),
         ])

@@ -49,13 +49,6 @@ class CodeownerClient(gate.GitHubClient):
     """GitHubClient plus the two reads this gate adds: changed files and
     team membership. Pagination reuses the base client's helpers."""
 
-    def list_pr_files(self, number):
-        """Every changed file of PR ``number``, all pages: name plus
-        status; renames carry both names, so matching uses both."""
-        url = "%s/repos/%s/pulls/%d/files?per_page=%d" % (
-            self._api_url, self._repo, number, gate.REST_PER_PAGE)
-        return self._fetch_json_pages(url)
-
     def team_logins(self, org, team_slug):
         """The login of every member of ``org``'s ``team_slug`` team, all
         pages, cached for the process lifetime. The read goes out with the
@@ -155,6 +148,13 @@ def load_sensitive_patterns(path):
             # so an unanchored entry is rejected instead of mis-evaluated.
             raise gate.ApiError(
                 "%s entry %r is not root-anchored; prefix it with /"
+                % (path, pattern))
+        if pattern.endswith("/") and ("*" in pattern or "?" in pattern):
+            # A wildcard directory pattern matches only under the loader's
+            # literal-prefix rule, which under-blocks; reject the form.
+            raise gate.ApiError(
+                "%s entry %r combines a wildcard with a trailing slash; "
+                "list the directory or files it covers"
                 % (path, pattern))
         patterns.append(pattern)
     return patterns
@@ -267,19 +267,28 @@ def evaluate_sha(sha, client, patterns):
             # cannot hold, so the record is malformed, not merely odd.
             return ("failure", "failure", "cannot evaluate: malformed PR record", None)
         author_login = user.get("login")
+        base = pr.get("base")
+        base_ref = base.get("ref") if isinstance(base, dict) else None
+        if not isinstance(base_ref, str):
+            return ("failure", "failure",
+                    "cannot evaluate: malformed PR record", None)
+        head_repo = (pr.get("head") or {}).get("repo")
+        same_repo = (isinstance(head_repo, dict)
+                     and head_repo.get("full_name") == client.repo)
+        if not same_repo:
+            # A fork head cannot be compared on the base repository with a
+            # pinned SHA, and the live files read is racy: the author can
+            # swap a sensitive head for a benign one for the duration of the
+            # read. Fail closed instead of trusting a racy file list.
+            decisions.append((number, "failure",
+                              "cannot evaluate: fork pull request"))
+            continue
         # Same-repo heads are read through the three-dot compare with the
         # evaluated SHA as the immutable head side; the PR files endpoint
         # always returns the PR's current head, so a push between the open-PR
-        # listing and the read could pass a head that was never checked. Fork
-        # heads are not reachable through the base repository's compare and
-        # fall back to the live read, where the post-read revalidation below
-        # narrows the race to the read-to-revalidate window.
+        # listing and the read could pass a head that was never checked.
         try:
-            head_repo = (pr.get("head") or {}).get("repo")
-            if isinstance(head_repo, dict) and head_repo.get("full_name") == client.repo:
-                files = client.compare_files(pr["base"]["ref"], sha)
-            else:
-                files = client.list_pr_files(number)
+            files = client.compare_files(base_ref, sha)
         except (gate.ApiError, gate.RateLimitError):
             decisions.append((number, "failure",
                               "cannot evaluate: PR %d files read failed" % (number,)))
@@ -397,6 +406,9 @@ def publish(sha, client, status_token):
         kind, state, description, target_url = evaluate_sha(sha, client, patterns)
     if kind == "empty":
         return 0
+    # GitHub caps status descriptions at 140 characters; an oversized one is
+    # rejected with 422 and would leave a stale status in place.
+    description = description[:140]
     payload = {"state": state, "context": STATUS_CONTEXT, "description": description}
     if target_url:
         payload["target_url"] = target_url
