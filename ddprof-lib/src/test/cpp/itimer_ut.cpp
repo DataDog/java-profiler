@@ -13,21 +13,26 @@
 #include <atomic>
 #include <cerrno>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <sys/time.h>
 
 // This binary links itimer.o statically, so defining sigaction here binds
 // every main-library sigaction call to the interposer below at static-link
-// time. Calls are forwarded to the real libc entry; the test flag makes only
-// SIGPROF installs (act != nullptr) fail, deterministically, for as long as
-// it is set.
+// time. Calls forward to the real libc entry unless the flag makes a
+// SIGPROF install (act != nullptr) fail.
 static std::atomic<bool> g_fail_sigprof_install{false};
 
 typedef int (*sigaction_fn_t)(int, const struct sigaction *, struct sigaction *);
 
 static sigaction_fn_t real_sigaction() {
   static sigaction_fn_t fn = (sigaction_fn_t)dlsym(RTLD_NEXT, "sigaction");
+  if (fn == nullptr) {
+    fprintf(stderr, "dlsym(RTLD_NEXT, sigaction) failed\n");
+    abort();
+  }
   return fn;
 }
 
@@ -182,14 +187,14 @@ TEST_F(ITimerTest, JvmtiStartDefaultsInterval) {
   EXPECT_TRUE(itimerDisarmed());
 }
 
-// cpuSamplerInterval() returns 0 for a non-CPU event; a CPU engine must
-// reject it instead of arming a zero (disarmed) timer.
+// cpuSamplerInterval() returns 0 for a non-CPU event; the engine must reject
+// it instead of arming a zero (disarmed) timer. _interval is left at its
+// default 0, which the pre-fix validation did not reject.
 TEST_F(ITimerTest, JvmtiStartRejectsNonCpuEvent) {
   ITimerJvmti engine;
   Arguments args;
   args._event = EVENT_WALL;
   args._cpu = 1000000;
-  args._interval = -1;
   struct sigaction before = sigprofDisposition();
 
   Error error = engine.start(args);
@@ -207,7 +212,6 @@ TEST_F(ITimerTest, StartRejectsNonCpuEvent) {
   Arguments args;
   args._event = EVENT_WALL;
   args._cpu = 1000000;
-  args._interval = -1;
   struct sigaction before = sigprofDisposition();
 
   Error error = engine.start(args);
