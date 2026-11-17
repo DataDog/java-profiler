@@ -18,13 +18,16 @@ written by it, and it dies with the session — its stop summary names what rema
    dedupe record, not a source file.
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
-4. **Worker.** Write `{"pr": <n>, "branch": "<branch>", "status": "running",
+4. **Worker.** Write `{"pr": <n>, "branch": "<local-branch>", "status": "running",
    "scope": []}` to `build/babysit-pr-<n>.json` **in the session's checkout** — that
    copy is the dedupe record only — and pass the instruction to the worker: on start,
    write the same-shaped marker **in its own worktree's `build/`** and maintain it
    there (the pushing checkout is the one the pre-push guard reads; write it
    atomically — temp file plus rename — so a concurrent guard read never sees a
-   truncated JSON it would skip). Then launch the `babysit-pr` agent — shipped with the skill in `.pi/agents/` (Pi)
+   truncated JSON it would skip). The `branch` field names the local branch of
+   the pushing checkout — the branch the worker actually has checked out (Pi:
+   `<branch>`; Claude Code: `<branch>-babysit`) — because the pre-push guard keys
+   on that local branch; a name that differs skips enforcement. Then launch the `babysit-pr` agent — shipped with the skill in `.pi/agents/` (Pi)
    and `.claude/agents/` (Claude Code); it reads the loop below from the checkout —
    as an async background subagent with worktree isolation, passing the PR number,
    the checkout path, and the branch in the task (Pi: `subagent` with `worktree:true`;
