@@ -26,10 +26,7 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
     if (method.endsWith("Dwarf")) {
       return "cpu=1ms,cstack=dwarf";
     }
-    if (method.endsWith("Vm")) {
-      return "cpu=1ms,cstack=vm";
-    }
-    return "cpu=1ms";
+    return "cpu=1ms,cstack=vm";
   }
 
   abstract static class Shape {
@@ -69,11 +66,7 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
     return result;
   }
 
-  @RetryingTest(5)
-  public void testVtableReceiverFrameInCpuSamples() throws Exception {
-    assertVtableReceiverFrame();
-  }
-
+  // The default cstack resolves to vm or dwarf per platform, so it would repeat one of these.
   @RetryingTest(5)
   public void testVtableReceiverFrameInCpuSamplesDwarf() throws Exception {
     assertVtableReceiverFrame();
@@ -94,7 +87,6 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
 
     JfrEvents events = verifyEvents("datadog.ExecutionSample");
     int stubs = 0;
-    int receivers = 0;
     boolean foundVtableWithReceiver = false;
     for (JfrEvent sample : events) {
       assertNotNull(sample.get("stackTrace"), "CPU sample is missing its stackTrace field");
@@ -106,7 +98,6 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
           stubs++;
         }
         if ("<vtable_receiver>".equals(frame.methodName())) {
-          receivers++;
           String receiver = frame.className();
           assertNotNull(receiver, "Vtable receiver frame is missing its declaring class");
           if ((Circle.class.getName().equals(receiver)
@@ -114,21 +105,13 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
                   || Triangle.class.getName().equals(receiver))
               && i + 1 < frames.size()
               && "vtable stub".equals(frames.get(i + 1).methodName())) {
-            if (!foundVtableWithReceiver) {
-              System.out.println(
-                  "Vtable receiver: "
-                      + receiver
-                      + "."
-                      + frame.methodName()
-                      + " -> "
-                      + frames.get(i + 1).methodName());
-            }
             foundVtableWithReceiver = true;
           }
         }
       }
     }
-    System.out.println("Vtable stubs=" + stubs + ", receivers=" + receivers);
+    // Separates a workload that never sampled a vtable stub from a missing receiver frame.
+    assertTrue(stubs > 0, "No CPU sample contained a vtable stub frame");
     assertTrue(
         foundVtableWithReceiver,
         "No CPU sample contained a <vtable_receiver> method declared by a workload receiver "
