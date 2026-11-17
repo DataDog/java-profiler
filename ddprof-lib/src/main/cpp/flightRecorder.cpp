@@ -1790,11 +1790,11 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   pool_count += writeClasses(buf, &lookup);
   pool_count += writePackages(buf, &lookup);
   {
-    // Must follow every pool that looks up a symbol: failed() is final only
-    // then. The scope frees the map before the next pools collect theirs.
+    // seal() asserts that no pool looks up a symbol after this point. The scope
+    // frees the map before the next pools collect theirs.
     std::map<u32, const char *> symbols;
     lookup._symbols.collect(symbols);
-    if (lookup._symbols.failed()) {
+    if (lookup._symbols.seal()) {
       symbols[SymbolDictionary::UNRESOLVED_ID] = "<unresolved>";
     }
     pool_count += writeConstantPoolSection(buf, T_SYMBOL, symbols);

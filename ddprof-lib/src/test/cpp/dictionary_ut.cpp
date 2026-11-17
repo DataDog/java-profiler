@@ -27,11 +27,12 @@
 // Fault-injection builds fail a key allocation at random, so an insert that must
 // succeed retries; without injection it succeeds on the first try.
 static unsigned int mustLookup(Dictionary &d, const char *key, size_t length) {
-    unsigned int id;
-    do {
-        id = d.lookup(key, length);
-    } while (id == 0);
-    return id;
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        unsigned int id = d.lookup(key, length);
+        if (id != 0) return id;
+    }
+    ADD_FAILURE() << "insert of '" << key << "' kept failing";
+    return 0;
 }
 
 TEST(DictionaryTest, LookupReturnsSameIdForSameKey) {
@@ -54,7 +55,7 @@ TEST(DictionaryTest, NativeMemAccountingBalancesAcrossLifecycle) {
         for (int i = 0; i < 5000; i++) {
             char key[32];
             snprintf(key, sizeof(key), "symbol_%d", i);
-            d.lookup(key, strlen(key));  // inserts key strings + overflow tables
+            mustLookup(d, key, strlen(key));  // inserts key strings + overflow tables
         }
         EXPECT_GT(NativeMem::live(NM_DICTIONARY), after_ctor);  // grew
 
@@ -117,17 +118,14 @@ TEST(DictionaryTest, OverflowTableAllocationFailureFailsTheInsert) {
     long long live_before = NativeMem::live(NM_DICTIONARY);
 
     d.failTableAllocationForTest(true);
-    int failed = 0;
     long long added_bytes = 0;
     for (int i = 0; i < 20000; i++) {
         snprintf(key, sizeof(key), "new_%d", i);
-        if (d.lookup(key, strlen(key)) == 0) {  // must not crash
-            failed++;
-        } else {
+        if (d.lookup(key, strlen(key)) != 0) {  // a failed insert must not crash
             added_bytes += (long long)strlen(key) + 1;
         }
     }
-    EXPECT_GT(failed, 0) << "no insert needed an overflow table";
+    EXPECT_GT(d.tableAllocFailuresForTest(), 0) << "no insert needed an overflow table";
     EXPECT_GT(added_bytes, 0);  // keys that fit were still added
     // Only the keys that were inserted are accounted: failures leak nothing and
     // no table was allocated.
@@ -159,6 +157,7 @@ TEST(DictionaryTest, SymbolDictionaryResolvesFailedInsertsToUnresolvedId) {
         ASSERT_NE(0U, id);
         if (id == SymbolDictionary::UNRESOLVED_ID) unresolved++;
     }
+    EXPECT_GT(d.tableAllocFailuresForTest(), 0);
     EXPECT_GT(unresolved, 0);
     EXPECT_TRUE(d.failed());
 }

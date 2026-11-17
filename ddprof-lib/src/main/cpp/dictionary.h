@@ -19,6 +19,7 @@
 
 #include "counters.h"
 #include "nativeMem.h"
+#include <cassert>
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
@@ -54,7 +55,14 @@ private:
   volatile int _size;
 #ifdef UNIT_TEST
   bool _fail_table_alloc_for_test = false;
-  bool failTableAlloc() const { return _fail_table_alloc_for_test; }
+  int _table_alloc_failures_for_test = 0;
+  bool failTableAlloc() {
+    if (_fail_table_alloc_for_test) {
+      _table_alloc_failures_for_test++;
+      return true;
+    }
+    return false;
+  }
 #else
   bool failTableAlloc() const { return false; }
 #endif
@@ -87,6 +95,7 @@ public:
   void failTableAllocationForTest(bool fail) {
     _fail_table_alloc_for_test = fail;
   }
+  int tableAllocFailuresForTest() const { return _table_alloc_failures_for_test; }
 #endif
 
   bool         check(const char* key);
@@ -108,11 +117,13 @@ public:
 class SymbolDictionary : public Dictionary {
 private:
   bool _failed = false;
+  bool _sealed = false;
 
 public:
   static constexpr unsigned int UNRESOLVED_ID = 0xFFFFFFFFU;
 
   unsigned int lookup(const char *key, size_t length) {
+    assert(!_sealed);
     unsigned int id = Dictionary::lookup(key, length);
     if (id == 0) {
       _failed = true;
@@ -123,6 +134,11 @@ public:
   unsigned int lookup(const char *key) { return lookup(key, strlen(key)); }
 
   bool failed() const { return _failed; }
+  // Returns failed() and forbids further inserts, which would make it stale.
+  bool seal() {
+    _sealed = true;
+    return _failed;
+  }
 };
 
 #endif // _DICTIONARY_H
