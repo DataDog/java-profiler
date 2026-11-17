@@ -1290,14 +1290,14 @@ static int matchImageBase(struct dl_phdr_info* info, size_t, void* data) {
         }
     }
     return min_vaddr != UINTPTR_MAX &&
-           ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) == (uintptr_t)data;
+           ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) == reinterpret_cast<uintptr_t>(data);
 }
 
 // musl's dlopen() links a library into the list dl_iterate_phdr() walks only after mapping
 // all of it; until then later segments hold the wrong file bytes, or SIGBUS. Not dladdr():
 // it misses a library mapped into an unmapped hole of the executable's or ld-musl's span.
 static bool isFullyMappedOnMusl(const CodeCache* cc) {
-    return dl_iterate_phdr(matchImageBase, (void*)cc->imageBase()) != 0;
+    return dl_iterate_phdr(matchImageBase, const_cast<char*>(cc->imageBase())) != 0;
 }
 
 UnloadProtection::UnloadProtection(const CodeCache *cc) {

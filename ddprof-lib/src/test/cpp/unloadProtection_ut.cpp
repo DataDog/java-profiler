@@ -43,9 +43,9 @@ int findImageBase(struct dl_phdr_info* info, size_t, void* data) {
       min_vaddr = info->dlpi_phdr[i].p_vaddr;
     }
   }
-  uintptr_t page_mask = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE)) - 1;
   if (min_vaddr != UINTPTR_MAX) {
-    query->image_base = reinterpret_cast<const char*>((info->dlpi_addr + min_vaddr) & ~page_mask);
+    query->image_base =
+        reinterpret_cast<const char*>((info->dlpi_addr + min_vaddr) & ~OS::page_mask);
   }
   return 1;
 }
