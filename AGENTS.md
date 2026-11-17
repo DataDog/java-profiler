@@ -165,7 +165,7 @@ before working on a subsystem.
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc interception, pinned Linux import-layout validation, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
-| SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
+| SIGSEGV-safe library patching; crash-handler bootstrap (raw-identity exit registry, Linux-only fault/profiling-mask fence) | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
 | Memory requirements & budgets | [doc/reference/ProfilerMemoryRequirements.md](doc/reference/ProfilerMemoryRequirements.md) |
 | Remote symbolication (+frame types) | [doc/reference/RemoteSymbolication.md](doc/reference/RemoteSymbolication.md), [doc/reference/RemoteSymbolicationFrameTypes.md](doc/reference/RemoteSymbolicationFrameTypes.md) |
@@ -282,6 +282,11 @@ holds an `InflightGuard`.
 **Thread termination.** An exiting thread calls `blockProfilingForExit()` before
 unregistering from the engines and before releasing its `ProfiledThread`
 (`Profiler::onThreadEnd()`, `unregister_and_release()` in `libraryPatcher_linux.cpp`).
+The wrapper, JVMTI ThreadEnd and normal engine returns mark `ThreadExitRegistry`
+before pthread teardown; the TSD destructor is a later fallback. Unhooked threads
+and J9 cancellation can remain unmarked; an unusable handler-entry stack is not
+protected (no `sigaltstack`). Darwin has no fault-mask fence, and lifetime pressure
+can evict marks. See [SigsegvPatching.md](doc/architecture/SigsegvPatching.md).
 Otherwise a signal can sample a half-torn-down thread, or re-acquire a
 `ProfiledThread` that is never freed. The block is never undone: calling it on a
 thread that keeps running silently stops profiling that thread — use `SignalBlocker`

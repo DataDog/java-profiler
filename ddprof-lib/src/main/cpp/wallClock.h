@@ -15,6 +15,7 @@
 #include "profiler.h"
 #include "reservoirSampler.h"
 #include "threadLocalData.inline.h"
+#include "threadExitRegistry.h"
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
@@ -45,6 +46,7 @@ class BaseWallClock : public Engine {
 
     static void *threadEntry(void *wall_clock) {
       ((BaseWallClock *)wall_clock)->timerLoop();
+      ThreadExitRegistry::markCurrent();
       return NULL;
     }
 
