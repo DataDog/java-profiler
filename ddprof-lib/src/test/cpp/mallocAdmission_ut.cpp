@@ -23,8 +23,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+#include "common.h"
+
+#if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
 #define ADMISSIONS_UT_SANITIZER 1
 #endif
 
