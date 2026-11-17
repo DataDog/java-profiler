@@ -10,3 +10,4 @@ claim_pattern:
 
 permissions:
   statuses: write
+  members: read

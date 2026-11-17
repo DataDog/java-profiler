@@ -18,13 +18,19 @@ therefore cannot drift apart.
 
 import argparse
 import fnmatch
+import json
 import os
 import sys
+import urllib.parse
 
 import bits_review_gate as gate
 
 STATUS_CONTEXT = "codeowner-review/head"
-CODEOWNERS_PATH = os.path.join(".github", "CODEOWNERS")
+# Anchored to this file, not the process cwd: the workflow runs from the
+# repository root, but a different cwd must not change the sensitive list.
+CODEOWNERS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".github", "CODEOWNERS")
 #: The repository-wide default rule: it covers every path for change
 #: attribution and never marks a path sensitive.
 DEFAULT_RULE_PATTERN = "*"
@@ -34,6 +40,9 @@ OWNER_ORG = "DataDog"
 OWNER_TEAM_SLUG = "profiling-java"
 OWNER_TEAM = "@%s/%s" % (OWNER_ORG, OWNER_TEAM_SLUG)
 CODEOWNERS_MAX_ENTRIES = 1024
+#: The compare endpoint caps its file list and offers no pagination; a full
+#: list is indistinguishable from a truncation and fails closed.
+_COMPARE_FILE_CAP = 300
 
 
 class CodeownerClient(gate.GitHubClient):
@@ -49,17 +58,63 @@ class CodeownerClient(gate.GitHubClient):
 
     def team_logins(self, org, team_slug):
         """The login of every member of ``org``'s ``team_slug`` team, all
-        pages, cached for the process lifetime."""
+        pages, cached for the process lifetime. The read goes out with the
+        membership token — the repository-scoped read token cannot
+        authorize organization-team lookups — paginated with the same
+        page-following rules as the base client's list reads."""
         cached = getattr(self, "_team_logins", None)
         if cached is None:
             url = "%s/orgs/%s/teams/%s/members?per_page=%d" % (
                 self._api_url, org, team_slug, gate.REST_PER_PAGE)
-            pages = self._fetch_json_pages(url)
+            token = getattr(self, "_membership_token", None)
+            pages = 0
+            members = []
+            while url is not None:
+                body, link = self._fetch(url, token=token)
+                try:
+                    page = json.loads(body)
+                except ValueError as error:
+                    raise gate.ApiError("malformed JSON from %s" % (url,)) from error
+                if not isinstance(page, list):
+                    raise gate.ApiError("expected a JSON array from %s" % (url,))
+                members.extend(page)
+                pages += 1
+                if pages >= gate.MAX_FETCH_PAGES:
+                    raise gate.ApiError(
+                        "team membership for %s exceeds %d pages"
+                        % (team_slug, gate.MAX_FETCH_PAGES))
+                url = gate._next_link(link, self._api_url)
             cached = frozenset(
-                member.get("login") for member in pages
+                member.get("login") for member in members
                 if isinstance(member, dict))
             self._team_logins = cached
         return cached
+
+    def compare_files(self, base_ref, head_sha):
+        """The changed files between ``base_ref`` and the immutable head
+        SHA ``head_sha`` (three-dot compare, so the base side is the merge
+        base): name plus status; renames carry both names.
+
+        The compare response caps the file list at 300 entries and offers
+        no pagination, so a full page is indistinguishable from a
+        truncation and fails closed.
+        """
+        base = urllib.parse.quote(base_ref, safe="")
+        url = "%s/repos/%s/compare/%s...%s" % (
+            self._api_url, self._repo, base, head_sha)
+        body, _ = self._fetch(url)
+        try:
+            document = json.loads(body)
+        except ValueError as error:
+            raise gate.ApiError("malformed JSON from %s" % (url,)) from error
+        if not isinstance(document, dict) or not isinstance(document.get("files"), list):
+            raise gate.ApiError("compare response for %s misses files" % (head_sha,))
+        files = document["files"]
+        if len(files) >= _COMPARE_FILE_CAP:
+            raise gate.ApiError(
+                "compare for %s reports %d files, at or above the %d cap"
+                % (head_sha, len(files), _COMPARE_FILE_CAP))
+        return files
 
 
 def load_sensitive_patterns(path):
@@ -175,27 +230,30 @@ def _repo_url():
 
 
 def evaluate_sha(sha, client, patterns):
-    """The decision for one head SHA: ``(state, description, target_url)``.
+    """The decision for one head SHA: ``(kind, state, description,
+    target_url)``.
 
-    Every open ``main`` PR whose head is ``sha`` must pass. The
-    decision is fail-closed: an unreadable CODEOWNERS, a failed pulls
-    read, a malformed PR record or a failed files/reviews read publishes
-    ``failure`` — a transient API outage must never yield a pass.
+    Every open ``main`` PR whose head is ``sha`` must pass. The decision
+    is fail-closed: an unreadable CODEOWNERS, a failed read or a
+    malformed record publishes ``failure`` — a transient API outage must
+    never yield a pass. ``kind`` is ``"empty"`` when no open PR sits at
+    ``sha`` (or one moved away mid-read): the caller writes nothing, so a
+    closed or advanced head cannot inherit a stale success.
     """
     try:
         open_prs = client.list_open_main_prs()
     except (gate.ApiError, gate.RateLimitError):
-        return ("failure", "cannot evaluate: pulls read failed", None)
+        return ("failure", "failure", "cannot evaluate: pulls read failed", None)
     members = []
     for pr in open_prs:
         if not isinstance(pr, dict):
-            return ("failure", "cannot evaluate: malformed PR record", None)
+            return ("failure", "failure", "cannot evaluate: malformed PR record", None)
         head = pr.get("head")
         # A record with a missing or malformed head SHA cannot be scoped to
         # this SHA: skipping it would leave its sensitive change unchecked,
         # so it fails the whole snapshot.
         if not isinstance(head, dict) or not isinstance(head.get("sha"), str):
-            return ("failure", "cannot evaluate: malformed PR record", None)
+            return ("failure", "failure", "cannot evaluate: malformed PR record", None)
         if head.get("sha") != sha:
             continue
         members.append(pr)
@@ -207,10 +265,21 @@ def evaluate_sha(sha, client, patterns):
                 or not isinstance(user.get("login"), str):
             # Without a usable author identity the self-approval exclusion
             # cannot hold, so the record is malformed, not merely odd.
-            return ("failure", "cannot evaluate: malformed PR record", None)
+            return ("failure", "failure", "cannot evaluate: malformed PR record", None)
         author_login = user.get("login")
+        # Same-repo heads are read through the three-dot compare with the
+        # evaluated SHA as the immutable head side; the PR files endpoint
+        # always returns the PR's current head, so a push between the open-PR
+        # listing and the read could pass a head that was never checked. Fork
+        # heads are not reachable through the base repository's compare and
+        # fall back to the live read, where the post-read revalidation below
+        # narrows the race to the read-to-revalidate window.
         try:
-            files = client.list_pr_files(number)
+            head_repo = (pr.get("head") or {}).get("repo")
+            if isinstance(head_repo, dict) and head_repo.get("full_name") == client.repo:
+                files = client.compare_files(pr["base"]["ref"], sha)
+            else:
+                files = client.list_pr_files(number)
         except (gate.ApiError, gate.RateLimitError):
             decisions.append((number, "failure",
                               "cannot evaluate: PR %d files read failed" % (number,)))
@@ -265,10 +334,52 @@ def evaluate_sha(sha, client, patterns):
     failures = [decision for decision in decisions if decision[1] != "pass"]
     if failures:
         number, _, description = failures[0]
-        return ("failure", description, "%s/pull/%d" % (_repo_url(), number))
+        return ("failure", "failure", description,
+                "%s/pull/%d" % (_repo_url(), number))
+    # Revalidate every contributing PR after the reads: a head that moved on
+    # or a PR that closed between the listing and here must not leave a
+    # success attached to this SHA — the next evaluation of the new head
+    # publishes its own status instead.
     if not members:
-        return ("success", "no open pull request at this head", None)
-    return ("success", "sensitive-path owner review satisfied", None)
+        return ("empty", None, None, None)
+    for pr in members:
+        try:
+            fresh = client.get_pr(pr["number"])
+        except (gate.ApiError, gate.RateLimitError):
+            return ("failure", "failure",
+                    "cannot evaluate: PR %d revalidation failed" % (pr["number"],),
+                    "%s/pull/%d" % (_repo_url(), pr["number"]))
+        fresh_head = fresh.get("head") if isinstance(fresh, dict) else None
+        if (not isinstance(fresh, dict) or fresh.get("state") != "open"
+                or not isinstance(fresh_head, dict)
+                or fresh_head.get("sha") != sha):
+            return ("empty", None, None, None)
+    return ("success", "success", "sensitive-path owner review satisfied", None)
+
+
+def _selected_status(statuses):
+    """The newest recorded status of this gate's context from its own
+    creator, or None — other actors' statuses are never candidates for
+    suppression."""
+    latest = None
+    for status in statuses:
+        if not isinstance(status, dict):
+            continue
+        if (status.get("context") != STATUS_CONTEXT
+                or (status.get("creator") or {}).get("login") != gate.STATUS_CREATOR):
+            continue
+        if latest is None or status.get("id", 0) > latest.get("id", 0):
+            latest = status
+    return latest
+
+
+def _matches_status(status, payload):
+    """True when the recorded status equals the payload in every field the
+    write would carry."""
+    return (status.get("state") == payload["state"]
+            and status.get("description") == payload["description"]
+            and status.get("target_url") == payload.get("target_url")
+            and status.get("context") == payload["context"])
 
 
 def publish(sha, client, status_token):
@@ -276,16 +387,27 @@ def publish(sha, client, status_token):
     exit code: 0 for success, 1 for failure or a failed write. The team
     roster is fetched only after evaluation asks for it: a head with no
     open PR spends one read, not two."""
+    client._membership_token = status_token
     try:
         patterns = load_sensitive_patterns(CODEOWNERS_PATH)
     except gate.ApiError as error:
-        state, description = "failure", "cannot evaluate: %s" % (error,)
-        target_url = None
+        kind, state, description, target_url = (
+            "decision", "failure", "cannot evaluate: %s" % (error,), None)
     else:
-        state, description, target_url = evaluate_sha(sha, client, patterns)
+        kind, state, description, target_url = evaluate_sha(sha, client, patterns)
+    if kind == "empty":
+        return 0
     payload = {"state": state, "context": STATUS_CONTEXT, "description": description}
     if target_url:
         payload["target_url"] = target_url
+    try:
+        recorded = client.read_statuses(sha)
+    except (gate.ApiError, gate.RateLimitError):
+        recorded = None  # a failed read never suppresses a safety update
+    if recorded is not None:
+        current = _selected_status(recorded)
+        if current is not None and _matches_status(current, payload):
+            return 0 if state == "success" else 1
     try:
         client.create_status(sha, payload, status_token)
     except (gate.ApiError, gate.RateLimitError):

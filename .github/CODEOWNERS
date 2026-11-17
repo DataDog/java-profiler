@@ -12,26 +12,19 @@
 # This file must own itself: an unreviewed edit here could un-own the sensitive paths.
 /.github/CODEOWNERS @DataDog/profiling-java
 
-# Bits review merge gate: the gate workflow, its evaluator and the policy module
-# define who can publish the trusted gate status, and the codeowner-review
-# evaluator decides which heads need an owner approval.
-/.github/workflows/bits-review-gate.yml @DataDog/profiling-java
-/.github/scripts/bits_review_gate.py @DataDog/profiling-java
-/.github/scripts/bits_review_gate_policy.py @DataDog/profiling-java
-/.github/scripts/codeowner_review_gate.py @DataDog/profiling-java
+# The whole scripts tree is sensitive: a sibling `__init__.py` or `json.py`
+# added beside the gate evaluator would shadow its imports (sys.path[0] is
+# this directory), so individual entries cannot protect it.
+/.github/scripts/ @DataDog/profiling-java
 
-# Gate validation tests: they assert the publisher-token binding the gate relies on.
-/.github/scripts/tests/test_bits_review_gate_workflows.py @DataDog/profiling-java
-/.github/scripts/tests/test_bits_review_gate.sh @DataDog/profiling-java
-/.github/scripts/tests/test_bits_review_gate_codeowner.py @DataDog/profiling-java
-/.github/scripts/tests/fixtures/bits_review_gate/ @DataDog/profiling-java
+# Gate workflows: they define who can publish the trusted gate statuses and
+# run the release and approval automation.
+/.github/workflows/bits-review-gate.yml @DataDog/profiling-java
 
 # Release and publishing automation: signs and publishes builds and holds deploy keys.
 /.github/workflows/release.yml @DataDog/profiling-java
 /.github/workflows/release-validated.yml @DataDog/profiling-java
-/.github/scripts/release.sh @DataDog/profiling-java
-/.github/scripts/validate-trivial-approval.sh @DataDog/profiling-java
-/.github/scripts/tests/test_release_automation.sh @DataDog/profiling-java
+/utils/compute-version.sh @DataDog/profiling-java
 
 # Trivial-approval machinery: a workflow that can auto-approve PRs. Its workflow
 # and validation script must stay co-owned.

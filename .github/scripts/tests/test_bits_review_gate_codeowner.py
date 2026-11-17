@@ -44,18 +44,25 @@ def make_client(transport):
         "GITHUB_TOKEN": GITHUB_TOKEN})
 
 
-def files_url(number):
-    return "%s/repos/%s/pulls/%d/files?per_page=100" % (API, REPO, number)
+COMPARE_URL = "%s/repos/%s/compare/main...%s" % (API, REPO, SHA)
+GET_PR_URL = "%s/repos/%s/pulls/101" % (API, REPO)
+
+
+def compare_page(*names):
+    return {"files": files_page(*names)}
 
 
 def files_page(*names):
     return [{"filename": name, "status": "modified"} for name in names]
 
 
-def pr(number, **overrides):
-    return testlib.build_pr_record(
-        number, sha=SHA,
-        user={"login": "pr-author"}, **overrides)
+def pr(number, head_sha=None, fork=False, **overrides):
+    record = testlib.build_pr_record(number, sha=head_sha or SHA)
+    record["head"] = {"sha": head_sha or SHA,
+                      "repo": {"full_name": "other/fork" if fork else REPO}}
+    record["user"] = {"login": "pr-author"}
+    record.update(overrides)
+    return record
 
 
 def review(login, state, submitted_at, review_id=1, commit_oid=SHA):
@@ -237,28 +244,57 @@ class EvaluateShaTest(unittest.TestCase):
         return cogate.evaluate_sha(SHA, client,
                                    [".github/scripts/bits_review_gate.py"])
 
-    def test_no_open_pr_at_sha_passes(self):
+    def test_no_open_pr_at_sha_yields_empty(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, []),
         ])
-        self.assertEqual(self.evaluate(transport),
-                         ("success", "no open pull request at this head", None))
+        self.assertEqual(self.evaluate(transport)[0], "empty")
 
     def test_pr_without_sensitive_paths_passes(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, files_page("doc/README.md")),
+            FakeResponse(200, compare_page("doc/README.md")),
+            FakeResponse(200, pr(101)),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "success")
+        self.assertEqual(self.evaluate(transport)[1], "success")
+
+    def test_fork_head_uses_the_live_files_read(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101, fork=True)]),
+            FakeResponse(200, files_page(".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([])),
+            FakeResponse(200, pr(101, fork=True)),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("approval from @DataDog/profiling-java required", description)
+
+    def test_moved_head_after_reads_writes_nothing(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page("doc/README.md")),
+            FakeResponse(200, pr(101, head_sha="3" * 40)),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "empty")
+
+    def test_closed_pr_after_reads_writes_nothing(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page("doc/README.md")),
+            FakeResponse(200, testlib.build_pr_record(
+                101, sha=SHA, state="closed")),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "empty")
 
     def test_sensitive_path_without_owner_review_fails_with_target_url(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, files_page(
+            FakeResponse(200, compare_page(
                 "doc/README.md", ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page([])),
+            FakeResponse(200, pr(101)),
         ])
-        state, description, target_url = self.evaluate(transport)
+        kind, state, description, target_url = self.evaluate(transport)
         self.assertEqual(state, "failure")
         self.assertIn("approval from @DataDog/profiling-java required", description)
         self.assertEqual(target_url, "https://github.com/" + REPO + "/pull/101")
@@ -266,42 +302,46 @@ class EvaluateShaTest(unittest.TestCase):
     def test_sensitive_path_with_owner_review_passes(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, files_page(
+            FakeResponse(200, compare_page(
                 ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page(
                 [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, pr(101)),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "success")
+        self.assertEqual(self.evaluate(transport)[1], "success")
 
     def test_self_approval_on_sensitive_path_fails(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, files_page(
+            FakeResponse(200, compare_page(
                 ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page(
                 [review("pr-author", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, pr(101)),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "failure")
+        self.assertEqual(self.evaluate(transport)[1], "failure")
 
     def test_non_member_approval_on_sensitive_path_fails(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, files_page(
+            FakeResponse(200, compare_page(
                 ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page(
                 [review("outsider", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, pr(101)),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "failure")
+        self.assertEqual(self.evaluate(transport)[1], "failure")
 
     def test_renamed_sensitive_file_is_caught_by_previous_name(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, [
+            FakeResponse(200, {"files": [
                 {"filename": "renamed-away.py", "status": "renamed",
-                 "previous_filename": ".github/scripts/bits_review_gate.py"}]),
+                 "previous_filename": ".github/scripts/bits_review_gate.py"}]}),
             FakeResponse(200, reviews_page([])),
+            FakeResponse(200, pr(101)),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "failure")
+        self.assertEqual(self.evaluate(transport)[1], "failure")
 
     def test_failed_files_read_fails_closed(self):
         transport = testlib.FakeTransport([
@@ -310,18 +350,28 @@ class EvaluateShaTest(unittest.TestCase):
             FakeResponse(500, []),
             FakeResponse(500, []),
         ])
-        state, description, _ = self.evaluate(transport)
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("files read failed", description)
+
+    def test_compare_at_the_file_cap_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, {"files": files_page(*(
+                "f/%d.py" % index for index in range(300)))}),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
         self.assertIn("files read failed", description)
 
     def test_failed_reviews_read_fails_closed(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, files_page(
+            FakeResponse(200, compare_page(
                 ".github/scripts/bits_review_gate.py")),
             gate.RateLimitError("rate limit"),
         ])
-        state, description, _ = self.evaluate(transport)
+        kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
         self.assertIn("reviews read failed", description)
 
@@ -329,13 +379,13 @@ class EvaluateShaTest(unittest.TestCase):
         transport = testlib.FakeTransport([
             FakeResponse(200, ["not-a-record"]),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "failure")
+        self.assertEqual(self.evaluate(transport)[1], "failure")
 
     def test_pr_with_malformed_head_sha_fails_closed(self):
         transport = testlib.FakeTransport([
-            FakeResponse(200, [pr(101, head={"sha": None})]),
+            FakeResponse(200, [testlib.build_pr_record(101, head={"sha": None})]),
         ])
-        state, description, _ = self.evaluate(transport)
+        kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
         self.assertIn("malformed PR record", description)
 
@@ -348,14 +398,14 @@ class EvaluateShaTest(unittest.TestCase):
             FakeResponse(200, reviews_page([
                 review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
         ])
-        state, description, _ = self.evaluate(transport)
+        kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
         self.assertIn("malformed PR record", description)
 
     def test_failed_team_roster_read_fails_closed(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, files_page(
+            FakeResponse(200, compare_page(
                 ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page([])),
             FakeResponse(500, []),
@@ -363,7 +413,7 @@ class EvaluateShaTest(unittest.TestCase):
             FakeResponse(500, []),
         ])
         client = make_client(transport)
-        state, description, _ = cogate.evaluate_sha(
+        kind, state, description, _ = cogate.evaluate_sha(
             SHA, client, [".github/scripts/bits_review_gate.py"])
         self.assertEqual(state, "failure")
         self.assertIn("team roster read failed", description)
@@ -371,9 +421,9 @@ class EvaluateShaTest(unittest.TestCase):
     def test_malformed_file_entry_fails_closed(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
-            FakeResponse(200, [{"status": "modified"}]),
+            FakeResponse(200, {"files": [{"status": "modified"}]}),
         ])
-        state, description, _ = self.evaluate(transport)
+        kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
         self.assertIn("files read failed", description)
 
@@ -387,12 +437,14 @@ class EvaluateShaTest(unittest.TestCase):
     def test_failing_member_in_conjunction_fails_the_sha(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101), pr(102)]),
-            FakeResponse(200, files_page("doc/README.md")),
-            FakeResponse(200, files_page(
+            FakeResponse(200, compare_page("doc/README.md")),
+            FakeResponse(200, pr(101)),
+            FakeResponse(200, compare_page(
                 ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page([])),
+            FakeResponse(200, pr(102)),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "failure")
+        self.assertEqual(self.evaluate(transport)[1], "failure")
 
     def test_failed_pulls_read_fails_closed(self):
         transport = testlib.FakeTransport([
@@ -400,7 +452,7 @@ class EvaluateShaTest(unittest.TestCase):
             FakeResponse(500, []),
             FakeResponse(500, []),
         ])
-        self.assertEqual(self.evaluate(transport)[0], "failure")
+        self.assertEqual(self.evaluate(transport)[1], "failure")
 
 
 class PublishTest(unittest.TestCase):
@@ -423,19 +475,28 @@ class PublishTest(unittest.TestCase):
             os.unlink(name)
 
     def response_for_flow(self, sensitive, approval):
-        """Responses for one PR flow: pulls, files, reviews, and the 200
-        that the status POST consumes. The roster comes from the seeded
-        client cache, not from a queued response."""
+        """Responses for one PR flow: pulls, compare, reviews (sensitive
+        only), the revalidation read, the statuses read for suppression,
+        and the 200 that the status POST consumes. The roster comes from
+        the seeded client cache, not from a queued response."""
         responses = [FakeResponse(200, [pr(101)]),
                      FakeResponse(
-                         200, files_page(".github/scripts/bits_review_gate.py"
-                                         if sensitive else "doc/README.md"))]
+                         200, compare_page(".github/scripts/bits_review_gate.py"
+                                           if sensitive else "doc/README.md"))]
         if sensitive:
             nodes = [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")] \
                 if approval else []
             responses.append(FakeResponse(200, reviews_page(nodes)))
+        responses.append(FakeResponse(200, pr(101)))
+        responses.append(FakeResponse(200, []))
         responses.append(FakeResponse(200, []))
         return responses
+
+    def recorded_status(self, state):
+        return {"id": 1, "context": cogate.STATUS_CONTEXT, "state": state,
+                "description": "sensitive-path owner review satisfied",
+                "target_url": None,
+                "creator": {"login": gate.STATUS_CREATOR}}
 
     def test_pass_publishes_success_with_context(self):
         transport = testlib.FakeTransport(self.response_for_flow(False, False))
@@ -446,6 +507,57 @@ class PublishTest(unittest.TestCase):
         payload = json.loads(request.data)
         self.assertEqual(payload["context"], "codeowner-review/head")
         self.assertEqual(payload["state"], "success")
+
+    def test_membership_read_uses_the_status_token(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([])),
+            FakeResponse(200, [{"login": "owner-a"}]),
+            FakeResponse(200, []),
+            FakeResponse(200, []),
+        ])
+        client = make_client(transport)
+        self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 1)
+        member_calls = [call for call in transport.calls
+                        if "/teams/profiling-java/members" in call.full_url]
+        self.assertEqual(len(member_calls), 1)
+        self.assertEqual(member_calls[0].headers.get("Authorization"),
+                         "Bearer " + STATUS_TOKEN)
+
+    def test_identical_status_is_not_republished(self):
+        # Drop the plain statuses-read and the POST slot; the recorded
+        # status becomes the statuses-read response.
+        transport = testlib.FakeTransport(self.response_for_flow(True, True)[:-2]
+                                          + [FakeResponse(200, [
+                                              self.recorded_status("success")])])
+        client = make_client(transport)
+        client._team_logins = TEAM_LOGINS
+        self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 0)
+        self.assertFalse(
+            any(call.full_url.endswith("/statuses/" + SHA)
+                for call in transport.calls))
+
+    def test_changed_status_is_republished(self):
+        transport = testlib.FakeTransport(self.response_for_flow(True, False)[:-2]
+                                          + [FakeResponse(200, [
+                                              self.recorded_status("success")])])
+        client = make_client(transport)
+        client._team_logins = TEAM_LOGINS
+        self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 1)
+        self.assertTrue(
+            any("/statuses/" in call.full_url for call in transport.calls))
+
+    def test_no_open_pr_writes_nothing(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, []),
+        ])
+        client = make_client(transport)
+        self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 0)
+        self.assertFalse(
+            any(call.full_url.endswith("/statuses/" + SHA)
+                for call in transport.calls))
 
     def test_missing_owner_review_publishes_failure_and_exits_one(self):
         transport = testlib.FakeTransport(self.response_for_flow(True, False))
