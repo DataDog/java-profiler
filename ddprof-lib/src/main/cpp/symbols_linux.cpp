@@ -618,6 +618,12 @@ static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
     return relaent != 0 ? relaent : relent;
 }
 
+// DT_RELAENT, or 0 (skip the table) when smaller than an Elf64_Rela: a shorter
+// stride would read one entry's r_addend and the next r_offset as r_offset/r_info.
+static size_t relaEntrySize(size_t relaent) {
+    return relaent >= sizeof(Elf64_Rela) ? relaent : 0;
+}
+
 // Bytes of the DT_RELACOUNT/DT_RELCOUNT leading relative relocations, clamped to
 // the table size without multiplying first, so a huge count cannot wrap.
 static size_t relativeBytes(size_t count, size_t ent, size_t size) {
@@ -706,6 +712,7 @@ void ElfParser::parseDynamicSection() {
             }
         }
 
+        relaent = relaEntrySize(relaent);
         if (symtab == NULL || strtab == NULL || syment == 0) {
             return;
         }
@@ -1487,6 +1494,7 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
             case DT_RELCOUNT:  relcount = dyn->d_un.d_val; break;
         }
     }
+    relaent = relaEntrySize(relaent);
     // ElfParser::parseDynamicSection() records no imports without these.
     if (symtab == 0 || strtab == 0 || syment == 0) return true;
     if (strsz == 0 || !image.readable(strtab, strsz)) return false;

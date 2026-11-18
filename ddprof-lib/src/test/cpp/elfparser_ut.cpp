@@ -1146,6 +1146,41 @@ void** parsedPthreadCreateImport(char* image) {
     return cc.peekImport(im_pthread_create);
 }
 
+#if defined(__x86_64__)
+constexpr uint32_t GLOB_DAT_TYPE = R_X86_64_GLOB_DAT;
+#elif defined(__aarch64__)
+constexpr uint32_t GLOB_DAT_TYPE = R_AARCH64_GLOB_DAT;
+#else
+constexpr uint32_t GLOB_DAT_TYPE = 0;  // tests using it skip
+#endif
+
+// An image whose only relocation table is the given .rela.dyn / .rel.dyn: one
+// GLOB_DAT entry importing pthread_create (the buildPltImage() entry, whose leading
+// r_offset and r_info read the same as an Elf64_Rel).
+std::unique_ptr<void, decltype(&free)> buildGotImage(int64_t tag, int64_t size_tag, uint64_t size,
+                                                     int64_t ent_tag, uint64_t ent,
+                                                     int64_t count_tag, uint64_t count) {
+    auto mem = buildPltImage({
+        {DT_SYMTAB, {DYN_SYM_OFF}},
+        {DT_STRTAB, {DYN_STR_OFF}},
+        {DT_SYMENT, {sizeof(Elf64_Sym)}},
+        {DT_STRSZ, {sizeof("\0pthread_create")}},
+        {tag, {DYN_JMPREL_OFF}},
+        {size_tag, {size}},
+        {ent_tag, {ent}},
+        {count_tag, {count}},
+        {DT_NULL, {0}},
+    });
+    if (mem) {
+        char* image = static_cast<char*>(mem.get());
+        Elf64_Rela rela;
+        memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
+        rela.r_info = ELF64_R_INFO(1, GLOB_DAT_TYPE);
+        memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+    }
+    return mem;
+}
+
 }  // namespace
 
 // gABI: a library with only PLT relocations has no DT_RELENT/DT_RELAENT; the
@@ -1182,14 +1217,7 @@ TEST_F(ElfTest, pltRelOverridesRelaent) {
 // 2^60 * 16 are 0 mod 2^64) must skip the whole .rela.dyn / .rel.dyn, not a
 // wrapped-to-zero prefix, in the parse and the fingerprint.
 TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
-#if defined(__x86_64__)
-    const uint32_t glob_dat = R_X86_64_GLOB_DAT;
-#elif defined(__aarch64__)
-    const uint32_t glob_dat = R_AARCH64_GLOB_DAT;
-#else
-    GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
-    const uint32_t glob_dat = 0;
-#endif
+    if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
     struct Table {
         const char* name;
         int64_t tag, size_tag, ent_tag, count_tag;
@@ -1201,31 +1229,8 @@ TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
     };
     for (const Table& t : tables) {
         SCOPED_TRACE(t.name);
-        // The .rela.plt entry of buildPltImage() doubles as a one-entry table; its
-        // leading r_offset and r_info read the same as an Elf64_Rel.
-        auto build = [&](uint64_t count) {
-            auto mem = buildPltImage({
-                {DT_SYMTAB, {DYN_SYM_OFF}},
-                {DT_STRTAB, {DYN_STR_OFF}},
-                {DT_SYMENT, {sizeof(Elf64_Sym)}},
-                {DT_STRSZ, {sizeof("\0pthread_create")}},
-                {t.tag, {DYN_JMPREL_OFF}},
-                {t.size_tag, {t.ent}},
-                {t.ent_tag, {t.ent}},
-                {t.count_tag, {count}},
-                {DT_NULL, {0}},
-            });
-            if (mem) {
-                char* image = static_cast<char*>(mem.get());
-                Elf64_Rela rela;
-                memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
-                rela.r_info = ELF64_R_INFO(1, glob_dat);
-                memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
-            }
-            return mem;
-        };
-
-        auto control = build(0);  // no relative prefix: the entry is an import
+        // No relative prefix: the entry is an import.
+        auto control = buildGotImage(t.tag, t.size_tag, t.ent, t.ent_tag, t.ent, t.count_tag, 0);
         ASSERT_THAT(control.get(), ::testing::NotNull());
         char* image = static_cast<char*>(control.get());
         EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
@@ -1233,7 +1238,7 @@ TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
         EXPECT_NE(fp.first, 0u);
         EXPECT_NE(fp.second, fp.first);
 
-        auto wrapped = build(t.wrapping_count);
+        auto wrapped = buildGotImage(t.tag, t.size_tag, t.ent, t.ent_tag, t.ent, t.count_tag, t.wrapping_count);
         ASSERT_THAT(wrapped.get(), ::testing::NotNull());
         image = static_cast<char*>(wrapped.get());
         EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
@@ -1241,6 +1246,20 @@ TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
         EXPECT_NE(fp.first, 0u);
         EXPECT_EQ(fp.second, fp.first);  // the skipped entry is not hashed
     }
+}
+
+// A DT_RELAENT smaller than an Elf64_Rela on a DT_RELA table is invalid: the table
+// is skipped in the parse and the fingerprint instead of walked at the wrong stride.
+TEST_F(ElfTest, relaEntrySizeBelowElf64RelaSkipsTable) {
+    if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
+    auto mem = buildGotImage(DT_RELA, DT_RELASZ, sizeof(Elf64_Rela), DT_RELAENT, sizeof(Elf64_Rel),
+                             DT_RELACOUNT, 0);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
+    auto fp = fingerprintAroundSlotMove(image);
+    EXPECT_NE(fp.first, 0u);
+    EXPECT_EQ(fp.second, fp.first);
 }
 
 // .dynsym loads without any relocation table or entry-size tag, as in the vDSO.
