@@ -92,9 +92,9 @@ static bool sameSigmask(const sigset_t &a, const sigset_t &b) {
 }
 
 static bool sameDisposition(const struct sigaction &a, const struct sigaction &b) {
-  // glibc strips its internal SA_RESTORER from the read-back sa_flags; musl
-  // leaves it set. The bit is libc bookkeeping, not part of the
-  // application-level disposition, so mask it where the macro is defined.
+  // Some libcs set SA_RESTORER at install and return it in the read-back
+  // sa_flags; the bit is libc bookkeeping, not part of the application-level
+  // disposition, so mask it where the macro exists (musl; glibc/macOS: no-op).
 #ifdef SA_RESTORER
   constexpr unsigned long kLibcInternal = SA_RESTORER;
 #else

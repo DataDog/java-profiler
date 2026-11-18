@@ -22,6 +22,7 @@
 
 class ITimer : public Engine {
   friend class ITimerTestAccessor;
+
 private:
   static bool _enabled;
   static long _interval;
@@ -54,6 +55,7 @@ public:
 // stack walking rather than relying on the signal-frame PC.
 class ITimerJvmti : public Engine {
   friend class ITimerTestAccessor;
+
 private:
   static bool _enabled;
   static long _interval;
