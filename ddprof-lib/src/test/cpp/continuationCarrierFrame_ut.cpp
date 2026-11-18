@@ -12,6 +12,7 @@ class VMStructsTestAccessor {
     int _stack_args = VMStructs::_constmethod_stack_arg_slots_offset;
     const void* _return_pc = VMStructs::_cont_entry_return_pc;
     address _return_pc_addr = VMStructs::_cont_entry_return_pc_addr;
+    int _entry_bci = VMStructs::_nmethod_entry_bci_offset;
 
 public:
     VMStructsTestAccessor() {
@@ -26,10 +27,12 @@ public:
         VMStructs::_constmethod_stack_arg_slots_offset = _stack_args;
         VMStructs::_cont_entry_return_pc = _return_pc;
         VMStructs::_cont_entry_return_pc_addr = _return_pc_addr;
+        VMStructs::_nmethod_entry_bci_offset = _entry_bci;
     }
 
     static void setReturnPcAddress(const void** value) { VMStructs::_cont_entry_return_pc_addr = value; }
     static void clearStackArgOffset() { VMStructs::_constmethod_stack_arg_slots_offset = -1; }
+    static void setEntryBciOffset(int offset) { VMStructs::_nmethod_entry_bci_offset = offset; }
 };
 
 class ContinuationCarrierFrameTest : public ::testing::Test {
@@ -50,6 +53,17 @@ TEST_F(ContinuationCarrierFrameTest, RecoversSavedCarrierSlotsWithoutAFramePoint
     ASSERT_EQ((uintptr_t)&_stack[8], entry_fp);
     EXPECT_EQ((uintptr_t)&_stack[32], *(uintptr_t*)entry_fp);
     EXPECT_EQ((uintptr_t)&_stack[40], ((uintptr_t*)entry_fp)[1]);
+}
+
+TEST_F(ContinuationCarrierFrameTest, TreatsMissingEntryBciOffsetAsOsr) {
+    int standard_bci = -1;
+    int osr_bci = 7;
+    VMStructsTestAccessor::setEntryBciOffset(0);
+    EXPECT_FALSE(VMNMethod::cast_raw(&standard_bci)->isOsr());
+    EXPECT_TRUE(VMNMethod::cast_raw(&osr_bci)->isOsr());
+    // Without the offset, a standard nmethod must not be trusted for argument recovery.
+    VMStructsTestAccessor::setEntryBciOffset(-1);
+    EXPECT_TRUE(VMNMethod::cast_raw(&standard_bci)->isOsr());
 }
 
 TEST_F(ContinuationCarrierFrameTest, AccountsForStackArgumentsAndAlignment) {

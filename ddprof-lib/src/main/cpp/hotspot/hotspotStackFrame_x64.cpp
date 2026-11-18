@@ -210,6 +210,14 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     return words;
 }
 
+// Inline compare of code bytes: checkFault() cannot recover a fault inside libc memcmp.
+static bool codeBytesEqual(const unsigned char* p, const unsigned char* expected, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        if (p[i] != expected[i]) return false;
+    }
+    return true;
+}
+
 // Bounded instruction shapes used only by gen_continuation_enter's VM-leaf
 // resolver. Do not turn these into general native unwind heuristics.
 static int continuationCallSize(const unsigned char* p, const unsigned char* end) {
@@ -293,22 +301,22 @@ bool HotspotStackFrame::continuationEntryExceptionLayout(VMNMethod* nm, const vo
         last_store = p;
         p += 7;
     }
-    if (pairs < 2 || last_store == nullptr || memcmp(last_store, normal_add - 7, 7) != 0 ||
-            end - p < add_size + 1 || memcmp(p, normal_add, add_size) != 0 || p[add_size] != 0x5d) return false;
+    if (pairs < 2 || last_store == nullptr || !codeBytesEqual(last_store, normal_add - 7, 7) ||
+            end - p < add_size + 1 || !codeBytesEqual(p, normal_add, add_size) || p[add_size] != 0x5d) return false;
     phase(p, words, true); // before releasing entry storage
     p += add_size;
     phase(p++, 2, true);   // before pop rbp
 
     const unsigned char args[] = {0x49, 0x8b, 0xff, 0x48, 0x8b, 0x34, 0x24, 0x50};
-    if (end - p < (int)sizeof(args) || memcmp(p, args, sizeof(args)) != 0) return false;
+    if (end - p < (int)sizeof(args) || !codeBytesEqual(p, args, sizeof(args))) return false;
     phase(p, 1, false);
     phase(p + 3, 1, false);
     phase(p + 7, 1, false); // before push exception
     p += sizeof(args);
     const unsigned char test[] = {0xf7, 0xc4, 0x0f, 0, 0, 0}; // test esp, 15
     const unsigned char byte_test[] = {0x40, 0xf6, 0xc4, 0x0f}; // optimized test spl, 15; REX is required
-    int test_size = end - p >= (int)sizeof(test) && memcmp(p, test, sizeof(test)) == 0 ? sizeof(test) :
-            end - p >= (int)sizeof(byte_test) && memcmp(p, byte_test, sizeof(byte_test)) == 0 ? sizeof(byte_test) : 0;
+    int test_size = end - p >= (int)sizeof(test) && codeBytesEqual(p, test, sizeof(test)) ? sizeof(test) :
+            end - p >= (int)sizeof(byte_test) && codeBytesEqual(p, byte_test, sizeof(byte_test)) ? sizeof(byte_test) : 0;
     if (test_size == 0) return false;
     phase(p, 2, false); // the overwritten FP slot now holds the exception oop
     p += test_size;
@@ -318,7 +326,7 @@ bool HotspotStackFrame::continuationEntryExceptionLayout(VMNMethod* nm, const vo
     phase(p, 2, false);
     p += branch_size;
     const unsigned char sub[] = {0x48, 0x83, 0xec, 0x08};
-    if (end - p < 4 || memcmp(p, sub, 4) != 0) return false;
+    if (end - p < 4 || !codeBytesEqual(p, sub, 4)) return false;
     phase(p, 2, false);
     p += 4;
     int call_size = continuationCallSize(p, end);
@@ -328,7 +336,7 @@ bool HotspotStackFrame::continuationEntryExceptionLayout(VMNMethod* nm, const vo
     p += call_size;
     phase(p, 3, false, true); // return from the padding branch's resolver
     const unsigned char add[] = {0x48, 0x83, 0xc4, 0x08};
-    if (end - p < 4 || memcmp(p, add, 4) != 0) return false;
+    if (end - p < 4 || !codeBytesEqual(p, add, 4)) return false;
     p += 4;
     const unsigned char* tail;
     branch_size = continuationBranchSize(p, end, false, tail);
@@ -343,7 +351,7 @@ bool HotspotStackFrame::continuationEntryExceptionLayout(VMNMethod* nm, const vo
     p += call_size;
     if (p != tail) return false;
     const unsigned char finish[] = {0x48, 0x8b, 0xd8, 0x58, 0x5a, 0xff, 0xe3};
-    if (end - p < (int)sizeof(finish) || memcmp(p, finish, sizeof(finish)) != 0) return false;
+    if (end - p < (int)sizeof(finish) || !codeBytesEqual(p, finish, sizeof(finish))) return false;
     phase(p, 2, false, true); // return from the aligned resolver
     phase(p + 3, 2, false);  // before pop exception
     phase(p + 4, 1, false);  // before pop return PC

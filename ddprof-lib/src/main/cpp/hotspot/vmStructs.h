@@ -578,14 +578,15 @@ class VMStructs {
         return _cont_return_barrier != nullptr && pc == _cont_return_barrier;
     }
 
-    // True when the bottom VT frame's return PC is cont_entry_return_pc, meaning all
-    // VT frames are thawed (CPU-bound VT that never yielded).
-    // Available on JDK 21+ via vmStructs or symbol fallback.
+    // Re-reads the JVM's static: the enterSpecial wrapper can be generated after init.
     static const void* contEntryReturnPc() {
         return _cont_entry_return_pc_addr != nullptr
                 ? __atomic_load_n((const void**)_cont_entry_return_pc_addr, __ATOMIC_ACQUIRE) : _cont_entry_return_pc;
     }
 
+    // True when the bottom VT frame's return PC is cont_entry_return_pc, meaning all
+    // VT frames are thawed (CPU-bound VT that never yielded).
+    // Available on JDK 21+ via vmStructs or symbol fallback.
     static bool isContEntryReturnPc(const void* pc) {
         const void* return_pc = contEntryReturnPc();
         return return_pc != nullptr && pc == return_pc;
@@ -1108,8 +1109,9 @@ static inline bool startsWith(const char* s, const char (&pattern)[N]) {
 }
 
 DECLARE(VMNMethod)
+    // Without an exported entry BCI, report OSR so callers skip argument-based recovery.
     bool isOsr() const {
-        assert(_nmethod_entry_bci_offset >= 0);
+        if (_nmethod_entry_bci_offset < 0) return true;
         return *(const int*)at(_nmethod_entry_bci_offset) != -1;
     }
 
