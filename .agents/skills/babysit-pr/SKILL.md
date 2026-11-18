@@ -134,7 +134,7 @@ flagged, threads left for the author, `bits_triggered` heads.
    author, **regardless of replies** — a reply never closes a thread: an
    untrusted reply must not hide a trusted finding, and replies only matter to
    the one-reply cap (a thread in the worker's `replied` record — or carrying
-   a reply with the worker's signature — is done; the
+   a signature reply from the worker's own account id — is done; the
    record decides, never the reply's author: the worker posts with the PR
    author's login, so the author's own reply must not count as the worker's).
    Improvised alternatives (counting reviews, filtering by date, trusting a
@@ -219,13 +219,17 @@ flagged, threads left for the author, `bits_triggered` heads.
    a run that dies before its stop report still leaves its replies known —
    the session folds them into its dedupe copy; and every reply the worker
    posts ends with the invisible signature `<!-- babysit-pr v1 -->`, which the
-   census sees in the reply body — a thread carrying a signature reply is
+   census sees in the reply body — a thread carrying a signature reply from
+   the worker's own account is
    done even when the marker never learned it, closing the
-   died-between-posting-and-reporting window; the signature is a
-   trusted-principal convention, not authentication — the author shares the
-   worker's login and could append it to their own reply, and a forged one
-   only suppresses the worker's reply (the thread root is still classified
-   in step 4, regardless of replies)) — a trusted root
+   died-between-posting-and-reporting window. The marker alone proves nothing
+   on a public repo — anyone can post a reply ending with it — so a marked
+   reply counts as the worker's only when its body ends with the signature
+   AND its REST `user.id` matches the account the worker posts from
+   (resolved once per run, with the same credentials:
+   `$GH api user --jq .id`); a forged marker from any other account never
+   closes a thread, and the thread root is still classified in step 4
+   regardless of replies)) — a trusted root
    that carries no finding (a question, an FYI, a thanks) still gets its one
    reply as a brief factual answer or acknowledgement: a refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply; an
