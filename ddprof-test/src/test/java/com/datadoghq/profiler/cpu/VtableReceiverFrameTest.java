@@ -8,25 +8,33 @@ package com.datadoghq.profiler.cpu;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.junit.CStack;
+import com.datadoghq.profiler.junit.RetryTest;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
-import org.junit.jupiter.api.Assumptions;
-import org.junitpioneer.jupiter.RetryingTest;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.params.provider.ValueSource;
 
-public class VtableReceiverFrameTest extends AbstractProfilerTest {
+public class VtableReceiverFrameTest extends CStackAwareAbstractProfilerTest {
+  public VtableReceiverFrameTest(@CStack String cstack) {
+    super(cstack);
+  }
 
   @Override
   protected String getProfilerCommand() {
-    String method = testInfo.getTestMethod().get().getName();
-    if (method.endsWith("Dwarf")) {
-      return "cpu=1ms,cstack=dwarf";
-    }
-    return "cpu=1ms,cstack=vm";
+    return "cpu=1ms";
+  }
+
+  // Vtable stubs and their receiver frames are HotSpot-specific. Checked before the profiler
+  // starts, so the cstack mode CStackInjector falls back to on these JVMs is never used.
+  @Override
+  protected boolean isPlatformSupported() {
+    return !(Platform.isZing() || Platform.isJ9() || Platform.isGraal());
   }
 
   abstract static class Shape {
@@ -66,21 +74,14 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
     return result;
   }
 
-  // The default cstack is vm on Linux with VM stack structs, else dwarf where supported,
-  // so a default-cstack variant would only repeat one of these.
-  @RetryingTest(5)
-  public void testVtableReceiverFrameInCpuSamplesDwarf() throws Exception {
-    assertVtableReceiverFrame();
-  }
-
-  @RetryingTest(5)
-  public void testVtableReceiverFrameInCpuSamplesVm() throws Exception {
-    assertVtableReceiverFrame();
-  }
-
-  /** Verifies the synthetic method's declaring class, not unrelated Java callers in the trace. */
-  private void assertVtableReceiverFrame() throws Exception {
-    Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal());
+  /**
+   * Verifies the synthetic method's declaring class, not unrelated Java callers in the trace.
+   * {@code dwarf} unwinds through ASGCT stub recovery, {@code vm} through {@code walkVM}.
+   */
+  @RetryTest(5)
+  @TestTemplate
+  @ValueSource(strings = {"vm", "dwarf"})
+  public void testVtableReceiverFrameInCpuSamples(@CStack String cstack) throws Exception {
     waitForProfilerReady(2000);
     int result = profiledWork(new Circle(), new Square(), new Triangle());
     System.err.println(result);
