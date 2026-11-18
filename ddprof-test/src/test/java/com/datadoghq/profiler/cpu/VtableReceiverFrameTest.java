@@ -86,6 +86,7 @@ public class VtableReceiverFrameTest extends CStackAwareAbstractProfilerTest {
     int result = profiledWork(new Circle(), new Square(), new Triangle());
     System.err.println(result);
     stopProfiler();
+    verifyCStackSettings();
 
     JfrEvents events = verifyEvents("datadog.ExecutionSample");
     int stubs = 0;
@@ -113,11 +114,12 @@ public class VtableReceiverFrameTest extends CStackAwareAbstractProfilerTest {
       }
     }
     // Separates a workload that never sampled a vtable stub from a missing receiver frame.
-    assertTrue(stubs > 0, "No CPU sample contained a vtable stub frame");
+    assertTrue(stubs > 0, "No CPU sample contained a vtable stub frame with cstack=" + cstack);
     assertTrue(
         foundVtableWithReceiver,
         "No CPU sample contained a <vtable_receiver> method declared by a workload receiver "
             + "class (Circle/Square/Triangle) immediately before its vtable stub; "
-            + "signal-handler capture or dump-time resolution is broken");
+            + "signal-handler capture or dump-time resolution is broken with cstack="
+            + cstack);
   }
 }
