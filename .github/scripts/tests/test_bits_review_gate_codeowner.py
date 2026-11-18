@@ -85,7 +85,8 @@ class SensitivePatternsTest(unittest.TestCase):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "..", "..", ".github", "CODEOWNERS")
         patterns = cogate.load_sensitive_patterns(path)
-        self.assertIn("/.github/workflows/bits-review-gate.yml", patterns)
+        self.assertIn("/.github/workflows/", patterns)
+        self.assertIn("/.github/scripts/", patterns)
         self.assertNotIn("*", patterns)
 
     def test_comments_blanks_and_default_rule_are_skipped(self):
@@ -359,8 +360,42 @@ class EvaluateShaTest(unittest.TestCase):
             FakeResponse(200, reviews_page(
                 [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
             FakeResponse(200, pr(101)),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
         ])
         self.assertEqual(self.evaluate(transport)[1], "success")
+
+    def test_withdrawn_approval_during_evaluation_fails(self):
+        # An approval dismissed between the first read and the revalidation
+        # must not leave a success: the fresh reviews no longer hold one.
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, pr(101)),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "DISMISSED", "2026-01-02T00:00:00Z", 2)])),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("approval from @DataDog/profiling-java required",
+                      description)
+
+    def test_failed_revalidation_reviews_read_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, pr(101)),
+            gate.RateLimitError("rate limit"),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("PR 101 revalidation failed", description)
 
     def test_self_approval_on_sensitive_path_fails(self):
         transport = testlib.FakeTransport([
@@ -592,6 +627,10 @@ class PublishTest(unittest.TestCase):
                 if approval else []
             responses.append(FakeResponse(200, reviews_page(nodes)))
         responses.append(FakeResponse(200, pr(101)))
+        if sensitive and approval:
+            # The approval is re-read in the revalidation window.
+            responses.append(FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])))
         responses.append(FakeResponse(200, []))
         responses.append(FakeResponse(200, []))
         return responses
@@ -730,6 +769,20 @@ class PublishTest(unittest.TestCase):
     def test_sha_argument_must_be_forty_hex(self):
         with self.assertRaises(SystemExit):
             cogate.main(["publish", "--sha", "not-a-sha"])
+
+    def test_missing_status_token_is_rejected_before_any_read(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STATUS_TOKEN", None)
+            with self.assertRaises(SystemExit):
+                cogate.main(["publish", "--sha", SHA])
+
+
+class MembershipTokenTest(unittest.TestCase):
+    def test_token_is_armed_through_the_method_not_a_private_attribute(self):
+        client = make_client(testlib.FakeTransport([]))
+        self.assertIsNone(client._membership_token)
+        client.set_membership_token("token-1")
+        self.assertEqual(client._membership_token, "token-1")
 
 
 class SelectedStatusTest(unittest.TestCase):

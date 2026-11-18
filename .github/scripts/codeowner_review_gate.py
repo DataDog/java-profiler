@@ -56,6 +56,15 @@ class CodeownerClient(gate.GitHubClient):
     """GitHubClient plus the two reads this gate adds: changed files and
     team membership. Pagination reuses the base client's helpers."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._membership_token = None
+
+    def set_membership_token(self, token):
+        """Arm the org-team reads with the status token: the repository-
+        scoped read token cannot authorize organization-team lookups."""
+        self._membership_token = token
+
     def _collect_member_login(self, entry, url):
         """The login of one member record, fail-closed: a malformed record
         shrinks the roster, and a shrunk roster could accept an approval
@@ -286,6 +295,8 @@ def evaluate_sha(sha, client, patterns):
             continue
         members.append(pr)
     decisions = []
+    approved_prs = []
+    approved_author = {}
     for pr in members:
         number = pr.get("number")
         user = pr.get("user")
@@ -365,6 +376,8 @@ def evaluate_sha(sha, client, patterns):
             continue
         if owner_approval(records, author_login, team_logins, sha):
             decisions.append((number, "pass", None))
+            approved_prs.append(number)
+            approved_author[number] = author_login
         else:
             decisions.append((
                 number, "failure",
@@ -403,6 +416,25 @@ def evaluate_sha(sha, client, patterns):
                     "%s/pull/%d" % (_repo_url(), pr["number"]))
         if fresh["state"] != "open" or fresh_head["sha"] != sha:
             return ("empty", None, None, None)
+    # An approval read earlier can be dismissed before the status lands:
+    # the revalidation window is exactly when the author or a maintainer
+    # would withdraw it. Re-read the reviews of every PR that passed on an
+    # approval and require the approval to still hold on the fresh read.
+    for number in approved_prs:
+        try:
+            fresh_records = [gate.normalize_review(node)
+                             for node in client.fetch_reviews(number)]
+        except (gate.ApiError, gate.RateLimitError):
+            return ("failure", "failure",
+                    "cannot evaluate: PR %d revalidation failed" % (number,),
+                    "%s/pull/%d" % (_repo_url(), number))
+        if not owner_approval(fresh_records, approved_author[number],
+                              client.team_logins(OWNER_ORG, OWNER_TEAM_SLUG),
+                              sha):
+            return ("failure", "failure",
+                    "sensitive paths changed: approval from @DataDog/"
+                    "profiling-java required",
+                    "%s/pull/%d" % (_repo_url(), number))
     return ("success", "success", "sensitive-path owner review satisfied", None)
 
 
@@ -436,7 +468,7 @@ def publish(sha, client, status_token):
     exit code: 0 for success, 1 for failure or a failed write. The team
     roster is fetched only after evaluation asks for it: a head with no
     open PR spends one read, not two."""
-    client._membership_token = status_token
+    client.set_membership_token(status_token)
     try:
         patterns = load_sensitive_patterns(CODEOWNERS_PATH)
     except gate.ApiError as error:
@@ -475,6 +507,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not gate._SHA_RE.fullmatch(args.sha):
         parser.error("--sha must be a 40-hex commit SHA")
+    if not os.environ.get("STATUS_TOKEN"):
+        parser.error("STATUS_TOKEN is not set; the roster read and the status "
+                     "write cannot be authorized")
     repo = os.environ.get("GITHUB_REPOSITORY", "DataDog/java-profiler")
     client = CodeownerClient(repo)
     return publish(args.sha, client, os.environ.get("STATUS_TOKEN"))

@@ -17,34 +17,31 @@
 # this directory), so individual entries cannot protect it.
 /.github/scripts/ @DataDog/profiling-java
 
-# Gate workflows: they define who can publish the trusted gate statuses and
-# run the release and approval automation.
-/.github/workflows/bits-review-gate.yml @DataDog/profiling-java
+# Every workflow is sensitive: once on `main`, a new or edited workflow can
+# run with repository secrets (e.g. SSH_PUSH_SECRET in the release pipeline).
+/.github/workflows/ @DataDog/profiling-java
 
 # Release and publishing automation: signs and publishes builds and holds
-# deploy keys — the release workflows, the version helper, the GitLab
-# pipeline that runs the Sonatype/GPG deploy script, and the deploy script
-# itself. The deploy script exports the Sonatype and GPG credentials and
-# then executes ./gradlew, so the Gradle wrapper, configuration and plugin
-# sources are executable inputs of a credentialed run and need the same
-# owner approval.
-/.github/workflows/release.yml @DataDog/profiling-java
-/.github/workflows/release-validated.yml @DataDog/profiling-java
-/.github/workflows/update_assets.yml @DataDog/profiling-java
+# deploy keys — the version helper, the GitLab pipeline that runs the
+# Sonatype/GPG deploy script, and the deploy script itself. The deploy
+# script exports the Sonatype and GPG credentials and then runs Gradle,
+# so every Gradle input that Gradle automatically loads — wrapper,
+# settings and build scripts (Groovy and Kotlin), properties, buildSrc
+# and build-logic sources — is executable input of a credentialed run
+# and needs the same owner approval. The root GitLab pipeline includes
+# .adms/python/gitlab.yaml, whose jobs merge into the deploy job.
 /utils/compute-version.sh @DataDog/profiling-java
 /.gitlab-ci.yml @DataDog/profiling-java
 /.gitlab/ @DataDog/profiling-java
+/.adms/python/gitlab.yaml @DataDog/profiling-java
 /gradlew @DataDog/profiling-java
 /gradlew.bat @DataDog/profiling-java
 /gradle/ @DataDog/profiling-java
-/build.gradle.kts @DataDog/profiling-java
 /**/*.gradle.kts @DataDog/profiling-java
-/settings.gradle.kts @DataDog/profiling-java
+/**/*.gradle @DataDog/profiling-java
+/**/gradle.properties @DataDog/profiling-java
+/buildSrc/ @DataDog/profiling-java
 /build-logic/ @DataDog/profiling-java
-
-# Trivial-approval machinery: a workflow that can auto-approve PRs. Its workflow
-# and validation script must stay co-owned.
-/.github/workflows/approve-trivial.yml @DataDog/profiling-java
 
 # Publisher trust policies: every file grants a token through the dd-octo-sts
 # installation; the directory glob covers all present and future policies.
