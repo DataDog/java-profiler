@@ -221,7 +221,11 @@ flagged, threads left for the author, `bits_triggered` heads.
    posts ends with the invisible signature `<!-- babysit-pr v1 -->`, which the
    census sees in the reply body — a thread carrying a signature reply is
    done even when the marker never learned it, closing the
-   died-between-posting-and-reporting window) — a trusted root
+   died-between-posting-and-reporting window; the signature is a
+   trusted-principal convention, not authentication — the author shares the
+   worker's login and could append it to their own reply, and a forged one
+   only suppresses the worker's reply (the thread root is still classified
+   in step 4, regardless of replies)) — a trusted root
    that carries no finding (a question, an FYI, a thanks) still gets its one
    reply as a brief factual answer or acknowledgement: a refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply; an
