@@ -31,6 +31,9 @@ summary) and `noprof` (NMT, no profiler). The PR check runs only `nmt` and `nopr
 | `memcheck:unit-tests` | Runs `utils/memcheck/test/evaluate_test.sh`. |
 | `memcheck-calibrate:x64` | Five parallel calibration jobs. Runs only on request, see below. |
 
+When a run fails, its job copies the logs of every run into `build/memcheck-*/diagnostics/`
+in the job artifacts.
+
 ## What is checked
 
 - The `native_mem_*` counters of the profiler, as the mean of the `nmt` runs. These need
