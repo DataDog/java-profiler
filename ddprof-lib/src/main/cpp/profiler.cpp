@@ -2397,20 +2397,6 @@ Error Profiler::check(Arguments &args) {
     return error;
   }
 
-  // Select the CPU engine before the capability probing: its probes are
-  // JVM-independent, and the interval rule below needs the selected engine.
-  Engine *cpu_engine = NULL;
-  if (args._event != NULL || args._cpu >= 0) {
-    cpu_engine = selectCpuEngine(args);
-    // Mirror start()'s interval rejection for the engines that enforce it
-    // (the timer family); perf_events and the J9 sampler fall back to their
-    // own defaults for 0, so the rule must not reject for them.
-    if (cpu_engine->enforcesCpuSamplerInterval() &&
-        args.cpuSamplerInterval() <= 0) {
-      return Error("interval must be positive");
-    }
-  }
-
   error = checkJvmCapabilities();
 
   // check() runs while the profiler is IDLE, after stop(): unregistration is
@@ -2418,20 +2404,39 @@ Error Profiler::check(Arguments &args) {
   // only its unregisterThread() closes. Selecting into the slots here would
   // route those exits to the new engine and leak the fds, so check() selects
   // into locals. checkState() rejects a RUNNING profiler before this point.
-  if (!error && cpu_engine != NULL) {
-    error = cpu_engine->check(args);
+  // start() treats a CPU engine failure as recoverable when another mode
+  // carries the recording, so the preflight skips a rejected CPU engine and
+  // only fails when no other requested mode validates.
+  Engine *cpu_engine = NULL;
+  bool cpu_rejected = false;
+  bool other_mode_ok = false;
+  if (!error && (args._event != NULL || args._cpu >= 0)) {
+    cpu_engine = selectCpuEngine(args);
+    if (cpu_engine->enforcesCpuSamplerInterval() &&
+        args.cpuSamplerInterval() <= 0) {
+      cpu_rejected = true;
+    } else {
+      error = cpu_engine->check(args);
+    }
   }
   if (!error && args._wall >= 0) {
     error = selectWallEngine(args)->check(args);
+    other_mode_ok = other_mode_ok || !error;
   }
   if (!error && args._memory >= 0) {
     error = selectAllocEngine(args)->check(args);
+    other_mode_ok = other_mode_ok || !error;
   }
   if (!error && args._nativemem >= 0) {
     error = malloc_tracer.check(args);
+    other_mode_ok = other_mode_ok || !error;
   }
   if (!error && args._nativesocket) {
     error = NativeSocketSampler::instance()->check(args);
+    other_mode_ok = other_mode_ok || !error;
+  }
+  if (!error && cpu_rejected && !other_mode_ok) {
+    return Error("interval must be positive");
   }
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
