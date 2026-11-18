@@ -42,8 +42,8 @@ check() {
 
 R="$TMP/run"
 # Two profiled runs and one no-profiler run of "alpha", one of each of "beta".
-record "$R" alpha nmt 1 '{"native_mem_max_bytes":1048576,"line_number_tables":105}' '{"class":3000,"internal":500}' '{"VmRSS":200000}'
-record "$R" alpha nmt 2 '{"native_mem_max_bytes":1153434,"line_number_tables":115}' '{"class":3010,"internal":520}' '{"VmRSS":202000}'
+record "$R" alpha nmt 1 '{"native_mem_max_bytes":1048576,"native_mem_max_bytes.calltrace":524288,"line_number_tables":105}' '{"class":3000,"internal":500}' '{"VmRSS":200000}'
+record "$R" alpha nmt 2 '{"native_mem_max_bytes":1153434,"native_mem_max_bytes.calltrace":524288,"line_number_tables":115}' '{"class":3010,"internal":520}' '{"VmRSS":202000}'
 record "$R" alpha noprof 1 '{}' '{"class":1000,"internal":400}' '{"VmRSS":180000}'
 record "$R" beta nmt 1 '{"native_mem_max_bytes":2097152,"line_number_tables":7}' '{"class":10}'
 record "$R" beta noprof 1 '{}' '{"class":10}'
@@ -82,6 +82,8 @@ check "missing measured column" 2 "alpha native_mem_max_bytes 1MiB" "budget line
 check "half of the coverage options" 2 "alpha native_mem_max_bytes 1MiB - per_method=1" "per_method and ref_methods go together"
 check "absent on a counter" 2 "alpha native_mem_max_bytes absent -" "'absent' only applies to nmt.<category>"
 check "comments and blank lines" 0 $'# header\n\nalpha native_mem_max_bytes 2MiB -   # trailing' "| alpha | \`native_mem_max_bytes\` | 1.05 MiB |"
+# Per-category counters have dots in their names; they are counters, not nmt./proc. lines.
+check "dotted counter name" 0 "alpha native_mem_max_bytes.calltrace 1MiB -" "| \`native_mem_max_bytes.calltrace\` | 512 KiB |"
 # (1048576 + 1153434) / 2 = 1101005 B: a value equal to its limit is within budget.
 check "value equal to the limit" 0 "alpha native_mem_max_bytes 1101005B -" "| 1.05 MiB | 0 KiB | ok |"
 
@@ -99,6 +101,23 @@ cp -r "$R" "$R6"
 record "$R6" alpha noprof 2 '{}' '{"internal":400}'
 RUN="$R6"
 check "nmt value missing in a no-profiler run" 2 "alpha nmt.class 3MiB -" "1 run(s) of scenario alpha lack nmt.class"
+RUN="$R"
+
+# A counter missing from one profiled run must not count as 0 either: 1 MiB, 1.1 MiB and an
+# empty record would average to 0.7 MiB.
+R7="$TMP/run7"
+cp -r "$R" "$R7"
+record "$R7" alpha nmt 3 '{"line_number_tables":110}' '{"class":3000,"internal":500}'
+RUN="$R7"
+check "counter missing in one run" 2 "alpha native_mem_max_bytes 2MiB -" \
+  "1 run(s) of scenario alpha lack native_mem_max_bytes (budget line 1)"
+check "report-only counter missing in one run" 0 "alpha native_mem_max_bytes - -"
+R8="$TMP/run8"
+cp -r "$R" "$R8"
+record "$R8" alpha nmt 3 '{"native_mem_max_bytes":1048576}' '{"class":3000,"internal":500}'
+RUN="$R8"
+check "method count missing in one run" 2 "alpha native_mem_max_bytes 2MiB - per_method=1024 ref_methods=100" \
+  "1 run(s) of scenario alpha lack line_number_tables"
 RUN="$R"
 
 # A truncated record and a record without a scenario: input errors (2), never "over budget" (1).
@@ -207,7 +226,7 @@ for j in 1 2; do
   for rep in 1 2; do
     noisy=$((10 * MIB + (2 * rep - 3) * 102400 * (2 - j)))
     m=$((980 + 20 * rep))
-    record "$dir" flat nmt "$rep" "{\"native_mem_max_bytes\":$((10 * MIB))}" "{\"class\":$class}"
+    record "$dir" flat nmt "$rep" "{\"native_mem_max_bytes\":$((10 * MIB)),\"line_number_tables\":500}" "{\"class\":$class}"
     record "$dir" noisy nmt "$rep" "{\"native_mem_max_bytes\":$noisy}" '{"class":3000}'
     record "$dir" cov nmt "$rep" "{\"native_mem_max_bytes\":$((MIB + 500 * (m - 1000))),\"line_number_tables\":$m}" '{}'
     cm=$((900 + 200 * rep))
@@ -244,6 +263,14 @@ calibrate "one profiled run per job" 2 "single native_mem_max_bytes 1MiB 1MiB" \
   "budget line 1: every job needs at least 2 profiled runs of single"
 calibrate "no no-profiler runs" 2 "noisy nmt.class 1MiB 1MiB" "a job has no no-profiler runs of noisy"
 calibrate "nmt value missing" 2 "cov nmt.class 1MiB 1MiB" "4 run(s) of cov lack nmt.class"
+# The coverage fit pools the counters-only runs, so they need the counter and the method count too.
+CM="$TMP/cal-missing"
+cp -r "$TMP/cal" "$CM"
+record "$CM/memcheck-1" cov counters 3 "{\"native_mem_max_bytes\":$MIB}" '{}'
+JOBS="$CM/memcheck-1 $CM/memcheck-2"
+calibrate "method count missing in a counters-only run" 2 "cov native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
+  "1 run(s) of cov lack line_number_tables"
+JOBS="$C1 $C2"
 calibrate "missing counter" 2 "flat native_mem_bogus 1MiB 1MiB" "lacks counter native_mem_bogus"
 calibrate "no coverage variation" 2 "flat native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
   "line_number_tables does not vary in flat"

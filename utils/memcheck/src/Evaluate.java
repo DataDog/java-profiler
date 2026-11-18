@@ -291,21 +291,23 @@ public class Evaluate {
                 errors.add("no no-profiler runs for scenario " + scenario + " (budget line " + b.line + ")");
                 return new Row(b, scenario, null, "MISSING", true);
             }
-            // A report-only line cannot fail the check, so a category missing from one arm shows as 0.
-            long lacking = b.limit == null ? 0 : lacking(Stream.concat(profiled.stream(), noProfiler.stream()), b.metric);
-            if (lacking > 0) {
-                errors.add(lacking + " run(s) of scenario " + scenario + " lack " + b.metric + " (budget line " + b.line + ")");
+            // A report-only line shows a category missing from one arm as 0; a gated line needs it in every run.
+            if (b.limit != null && missing(b, scenario, Stream.concat(profiled.stream(), noProfiler.stream()), b.metric, errors)) {
                 return new Row(b, scenario, null, "MISSING", true);
             }
-            value = mean(profiled, delta(b.metric)) - mean(noProfiler, delta(b.metric));
+            value = mean(profiled, valueOf(b.metric)) - mean(noProfiler, valueOf(b.metric));
         } else {
             if (profiled.stream().noneMatch(r -> r.counters.containsKey(b.metric))) {
                 errors.add("no counter " + b.metric + " in scenario " + scenario + " (budget line " + b.line + ")");
                 return new Row(b, scenario, null, "MISSING", true);
             }
-            value = mean(profiled, r -> r.counters.getOrDefault(b.metric, 0.0));
+            if (b.limit != null && (missing(b, scenario, profiled.stream(), b.metric, errors)
+                    || b.options.containsKey("per_method") && missing(b, scenario, profiled.stream(), "line_number_tables", errors))) {
+                return new Row(b, scenario, null, "MISSING", true);
+            }
+            value = mean(profiled, valueOf(b.metric));
             if (b.options.containsKey("per_method")) {
-                double methods = mean(profiled, r -> r.counters.getOrDefault("line_number_tables", 0.0));
+                double methods = mean(profiled, valueOf("line_number_tables"));
                 value -= Double.parseDouble(b.options.get("per_method"))
                         * (methods - Double.parseDouble(b.options.get("ref_methods")));
             }
@@ -317,17 +319,17 @@ public class Evaluate {
         return new Row(b, scenario, value, over ? "OVER" : "ok", over);
     }
 
-    /** The values an {@code nmt.} or {@code proc.} metric reads from in one run. */
+    /** The values a metric reads from in one run: NMT, /proc, or the counters (whose names may contain dots). */
     private static java.util.function.Function<Run, Map<String, Double>> section(String metric) {
-        return metric.startsWith("nmt.") ? r -> r.nmt : r -> r.proc;
+        return metric.startsWith("nmt.") ? r -> r.nmt : metric.startsWith("proc.") ? r -> r.proc : r -> r.counters;
     }
 
     private static String key(String metric) {
-        return metric.substring(metric.indexOf('.') + 1);
+        return metric.startsWith("nmt.") || metric.startsWith("proc.") ? metric.substring(metric.indexOf('.') + 1) : metric;
     }
 
-    /** The value of an {@code nmt.} or {@code proc.} metric in one run, 0 if the run lacks it. */
-    private static java.util.function.ToDoubleFunction<Run> delta(String metric) {
+    /** The value of a metric in one run, 0 if the run lacks it. */
+    private static java.util.function.ToDoubleFunction<Run> valueOf(String metric) {
         java.util.function.Function<Run, Map<String, Double>> section = section(metric);
         String key = key(metric);
         return r -> section.apply(r).getOrDefault(key, 0.0);
@@ -338,6 +340,15 @@ public class Evaluate {
         java.util.function.Function<Run, Map<String, Double>> section = section(metric);
         String key = key(metric);
         return runs.filter(r -> !section.apply(r).containsKey(key)).count();
+    }
+
+    /** Adds an error and returns true if any of the runs lacks the metric. */
+    private static boolean missing(Budget b, String scenario, Stream<Run> runs, String metric, List<String> errors) {
+        long lacking = lacking(runs, metric);
+        if (lacking > 0) {
+            errors.add(lacking + " run(s) of scenario " + scenario + " lack " + metric + " (budget line " + b.line + ")");
+        }
+        return lacking > 0;
     }
 
     private static double mean(List<Run> runs, java.util.function.ToDoubleFunction<Run> f) {
@@ -414,7 +425,7 @@ public class Evaluate {
             if (lacking > 0) {
                 throw new IllegalArgumentException(lacking + " run(s) of " + b.scenario + " lack " + b.metric);
             }
-            value = delta(b.metric);
+            value = valueOf(b.metric);
         } else {
             if (profiled.stream().flatMap(List::stream).anyMatch(r -> !r.counters.containsKey(b.metric))) {
                 throw new IllegalArgumentException("a profiled run of " + b.scenario + " lacks counter " + b.metric);
@@ -426,6 +437,12 @@ public class Evaluate {
                 List<Run> both = jobs.stream().flatMap(List::stream)
                         .filter(r -> r.scenario.equals(b.scenario) && (r.arm.equals(PROFILED) || r.arm.equals(COUNTERS_ONLY)))
                         .collect(Collectors.toList());
+                for (String metric : List.of(b.metric, "line_number_tables")) {
+                    long lacking = lacking(both.stream(), metric);
+                    if (lacking > 0) {
+                        throw new IllegalArgumentException(lacking + " run(s) of " + b.scenario + " lack " + metric);
+                    }
+                }
                 double mx = mean(both, methods);
                 double my = mean(both, raw);
                 double sxx = both.stream().mapToDouble(r -> Math.pow(methods.applyAsDouble(r) - mx, 2)).sum();
