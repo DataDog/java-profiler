@@ -591,14 +591,14 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
     const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
     const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    const char strtab[] = "\0main";  // sizeof includes the literal's terminating NUL
     Elf64_Sym sym;
     memset(&sym, 0, sizeof(sym));
-    sym.st_name = 6;  // == sizeof(strtab) below: one past the end
+    sym.st_name = sizeof(strtab);  // one past the end
     sym.st_value = 0x1000;
     sym.st_size = 4;
     sym.st_shndx = 1;  // defined, so the filter does not drop it before strAt()
     const uint64_t str_off = sym_off + sizeof(sym);
-    const char strtab[] = "\0main\0";  // 6 bytes; index 6 is out of bounds
 
     Elf64_Ehdr e = validEhdr();
     e.e_shoff = shoff;
