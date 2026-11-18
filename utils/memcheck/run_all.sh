@@ -9,7 +9,7 @@
 # A failed run is logged and skipped; the loop carries on, and the exit
 # status is non-zero at the end if any run failed.
 #
-# Usage: phase0.sh   (environment as for run_scenario.sh, plus)
+# Usage: run_all.sh   (environment as for run_scenario.sh, plus)
 #   REPS (10), NOPROF_REPS (3), SCENARIOS ("threads traces classesM allocs mixed"),
 #   ARMS ("counters nmt"; the PR check uses "nmt", whose records carry the
 #   counters too)
@@ -37,5 +37,5 @@ for rep in $(seq 1 "$REPS"); do
     done
   done
 done
-echo "phase0 done: $failures failed run(s)"
+echo "run_all done: $failures failed run(s)"
 [ "$failures" -eq 0 ]

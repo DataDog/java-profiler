@@ -1,10 +1,11 @@
-# Memory budget for the memcheck PR check (utils/memcheck, PROF-16186).
+# Memory budget for the memcheck PR check (utils/memcheck).
 #
 # Over a limit fails the check. Either fix the regression, or raise the limit
 # in the same PR and say why in the PR description; this file is reviewed like
 # code. Format: scenario metric limit measured [key=value...], see the javadoc
 # of utils/memcheck/src/Evaluate.java. 'measured' is the value when the limit
 # was last set, so the report can show growth that stays below the limit.
+# To recalibrate, see doc/building/MemoryOverheadCheck.md.
 #
 # Set 2026-11-18 from GitLab run at ce1cd6898 (5 jobs, pipeline 154255597),
 # -XX:+UseG1GC -XX:ActiveProcessorCount=4, JDK 21.0.3. limit = measured +
@@ -43,7 +44,7 @@ mixed     nmt.internal           0.70MiB  0.40MiB   # SD 5 KiB, per-job spread 6
 # Tripwire: ddprof standalone allocates nothing under NMT's Tracing category.
 *         nmt.tracing            absent   -
 
-# Report only: too noisy on the shared runners to gate (see HANDOVER.md).
+# Report only: too noisy on the shared runners to gate.
 *         nmt.code               -        -
 *         nmt.gc                 -        -
 *         nmt.total              -        -

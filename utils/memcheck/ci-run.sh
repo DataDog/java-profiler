@@ -2,20 +2,15 @@
 # Copyright 2026, Datadog, Inc.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Runs Phase 0 directly on a CI runner, without a container: records the
-# runner's shape, builds the release library from the checked-out tree, then
-# runs phase0.sh. The JSON records land in OUT/runs, and OUT gets the same
-# metadata files as phase0-container.sh, so analyze_phase0.py reads it as is.
+# Runs the memcheck scenarios on a CI runner: records the runner's shape in
+# OUT/runner.txt, builds the release library from the checked-out tree, then
+# runs run_all.sh. The JSON records land in OUT/runs.
 #
-# It cannot pin cores: on the shared GitLab amd64 runners a pod's CPU set
-# differs between jobs (52 to 93 CPUs in the first CI run) and changes during
-# a job. Pinning to fixed CPU IDs with taskset made the JVM fall back to
-# Serial GC in most runs, as it does when it sees a single CPU.
-# run_scenario.sh instead sets -XX:ActiveProcessorCount=$CPUS and the
-# collector, so the JVM sizes itself for CPUS cores on any pod. runner.txt
-# records the pod's shape (CPU count and quota, CPU model, memory limit).
+# It cannot pin cores: a shared GitLab amd64 pod's CPU set differs between
+# jobs and changes during a job, and taskset made the JVM pick Serial GC.
+# run_scenario.sh sets -XX:ActiveProcessorCount=$CPUS and G1 instead.
 #
-# Usage: ci-phase0.sh [OUT]   (default OUT: build/memcheck)
+# Usage: ci-run.sh [OUT]   (default OUT: build/memcheck)
 #   CPUS (4), ARMS, REPS, NOPROF_REPS, SCENARIOS, STEADY_MS, DUMP_AFTER_MS, SAMPLE_DELAY_S
 set -euo pipefail
 
@@ -51,7 +46,7 @@ echo "$CPUS" > "$OUT/cpus.txt"
 
 cd "$ROOT"
 ./gradlew -q --console=plain --no-daemon :ddprof-lib:assembleReleaseJar \
-  -Pskip-tests -Pskip-gtest -Pskip-debug-extraction=true > "$OUT/build.log" 2>&1 \
+  -Pskip-tests -Pskip-gtest > "$OUT/build.log" 2>&1 \
   || { echo "build failed, see $OUT/build.log"; tail -50 "$OUT/build.log"; exit 1; }
 
 export DDPROF_LIB
@@ -62,4 +57,4 @@ export DDPROF_CLASSES="$ROOT/ddprof-lib/build/classes/java/main"
 export MEMCHECK_CLASSES="$ROOT/build/mc-scratch/classes"
 export WORKDIR="$ROOT/build/mc-scratch"
 export OUTDIR="$OUT/runs"
-"$HERE/phase0.sh" 2>&1 | tee "$OUT/phase0.log"
+"$HERE/run_all.sh" 2>&1 | tee "$OUT/run_all.log"
