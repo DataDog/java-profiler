@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <vector>
 #include "codeCache.h"
 #include "counters.h"
 #include "hotspot/frozenStackWalker.h"
@@ -719,6 +720,86 @@ protected:
     }
 
 };
+
+// Drives append directly over the configured one-frame chunk: each guard must
+// reject without consuming output, and chunk chains are bounded and counted.
+TEST_F(OriginAnchorFrozenTest, AppendGuardsRejectUnsafeStatesAndBoundChunkChains) {
+    ASSERT_EXIT({
+        configure();
+        if (::testing::Test::HasFailure()) _exit(1);
+        VMThread* vm_thread = VMThread::current();
+        ASGCT_CallFrame frames[CAPACITY]{};
+        volatile int depth = 0;
+        auto append = [&](const void* origin, unsigned int continuation_depth, int max_depth) {
+            depth = 0;
+            return FrozenStackWalker::append(vm_thread, origin, continuation_depth, frames, depth,
+                                             max_depth, false);
+        };
+        ASSERT_TRUE(append(pc(0), 0, CAPACITY));
+        ASSERT_EQ(1, depth);
+        EXPECT_EQ(ids[3], frames[0].method_id);
+        EXPECT_EQ(FrameType::encode(FRAME_INTERPRETED, OLDER_BCI), frames[0].bci);
+
+        // Early rejects leave the output untouched.
+        auto rejects = [&](const void* origin, unsigned int continuation_depth, int max_depth) {
+            return !append(origin, continuation_depth, max_depth) && depth == 0;
+        };
+        EXPECT_TRUE(rejects(pc(0), 1, CAPACITY));
+        EXPECT_TRUE(rejects(pc(0), 0, 0));
+        EXPECT_TRUE(rejects(pc(1), 0, CAPACITY)); // stub origin
+        blocks[2].blob.level = 0;                 // native wrapper / interpreter-level nmethod
+        EXPECT_TRUE(rejects(pc(2), 0, CAPACITY));
+        blocks[2].blob.level = 4;
+        EXPECT_TRUE(append(pc(2), 0, CAPACITY));
+        EXPECT_EQ(1, depth);
+        EXPECT_EQ(ids[3], frames[0].method_id);
+        thread.state = _thread_in_native;
+        EXPECT_TRUE(rejects(pc(0), 0, CAPACITY));
+        thread.state = _thread_in_Java;
+
+        // Only a single outermost continuation is recovered.
+        Continuation outer{};
+        continuation.parent = &outer;
+        EXPECT_TRUE(rejects(pc(0), 0, CAPACITY));
+        continuation.parent = nullptr;
+
+        // Invalid chunk geometry ends recovery before any frame is written.
+        chunk->sp = chunk->size + 1;
+        EXPECT_TRUE(rejects(pc(0), 0, CAPACITY));
+        chunk->sp = 2;
+
+        // A full output buffer stops before writing past max_depth.
+        Chunk second{};
+        second.size = 16;
+        second.sp = 2;
+        second.bottom = 16;
+        memcpy(second.words, chunk->words, sizeof(second.words));
+        chunk->parent = &second;
+        EXPECT_FALSE(append(pc(0), 0, 1));
+        EXPECT_EQ(1, depth);
+        auto parents = Counters::getCounter(WALKVM_FROZEN_PARENT);
+        EXPECT_TRUE(append(pc(0), 0, CAPACITY));
+        EXPECT_EQ(2, depth);
+        EXPECT_EQ(parents + 1, Counters::getCounter(WALKVM_FROZEN_PARENT));
+
+        // A self-linked chunk cannot loop; empty chunks are bounded to 256.
+        second.parent = &second;
+        EXPECT_FALSE(append(pc(0), 0, CAPACITY));
+        std::vector<Chunk> empty(257);
+        for (size_t i = 0; i < empty.size(); i++) {
+            empty[i].size = empty[i].sp = empty[i].bottom = 16;
+            empty[i].parent = i + 1 < empty.size() ? &empty[i + 1] : nullptr;
+        }
+        second.parent = &empty[0];
+        empty[254].parent = nullptr; // chunk, second and 255 empties: 257 chunks
+        EXPECT_FALSE(append(pc(0), 0, CAPACITY));
+        empty[253].parent = nullptr; // exactly 256 chunks
+        EXPECT_TRUE(append(pc(0), 0, CAPACITY));
+        EXPECT_EQ(2, depth);
+        chunk->parent = nullptr;
+        _exit(::testing::Test::HasFailure() ? 1 : 0);
+    }, ::testing::ExitedWithCode(0), "");
+}
 
 TEST_F(OriginAnchorFrozenTest, OriginalPcDiscriminatesFrozenRecoveryAfterAnchorRedirect) {
     ASSERT_EXIT({
