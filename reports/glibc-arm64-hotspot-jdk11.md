@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-11-18 13:22:09 EST
+**Date:** 2026-11-18 13:43:03 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 52 |
+| CPU Cores (end) | 52 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 93 |
-| Sample Rate | 1.55/sec |
-| Health Score | 97% |
-| Threads | 10 |
-| Allocations | 72 |
+| CPU Samples | 25 |
+| Sample Rate | 0.42/sec |
+| Health Score | 26% |
+| Threads | 6 |
+| Allocations | 19 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (2 unique values: 47-52 cores)</summary>
 
 ```
-1795025872 48
-1795025877 48
-1795025882 48
-1795025887 48
-1795025892 48
-1795025897 48
-1795025902 48
-1795025907 48
-1795025912 48
-1795025917 48
-1795025922 48
-1795025927 48
-1795025932 48
-1795025937 48
-1795025942 48
-1795025947 48
-1795025952 48
-1795025957 48
-1795025962 48
-1795025967 48
+1795027114 52
+1795027119 47
+1795027124 47
+1795027129 47
+1795027134 47
+1795027139 47
+1795027144 47
+1795027149 47
+1795027154 47
+1795027159 47
+1795027164 47
+1795027169 47
+1795027174 52
+1795027179 52
+1795027184 52
+1795027189 52
+1795027194 52
+1795027199 52
+1795027204 52
+1795027209 52
 ```
 </details>
 
