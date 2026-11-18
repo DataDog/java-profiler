@@ -37,6 +37,8 @@ public:
 
   long interval() const { return _interval; }
 
+  bool enforcesCpuSamplerInterval() const { return true; }
+
   Error check(Arguments &args);
   Error start(Arguments &args);
   void stop();
@@ -66,6 +68,8 @@ public:
   const char *units() { return "ns"; }
   const char *name()  { return "ITimerJvmti"; }
   long interval() const { return _interval; }
+
+  bool enforcesCpuSamplerInterval() const { return true; }
 
   Error check(Arguments &args);
   Error start(Arguments &args);

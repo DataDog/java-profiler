@@ -222,14 +222,13 @@ private:
   bool _persistent;
   const char *expandFilePattern(const char *pattern);
   static long parseUnits(const char *str, const Multiplier *multipliers);
-
-public:
-  // event == NULL will default to EVENT_CPU. Public because the Profiler
-  // preflight gates the start()-time interval validation on it.
   static bool isCpuEvent(const char *event) {
+    // event == NULL will default to EVENT_CPU
     return event == NULL || strcmp(event, EVENT_CPU) == 0 ||
            strcmp(event, EVENT_ITIMER) == 0 || strcmp(event, EVENT_CTIMER) == 0;
   }
+
+public:
   Action _action;
   Ring _ring;
   const char *_event;

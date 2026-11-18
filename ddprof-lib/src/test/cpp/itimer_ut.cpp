@@ -271,6 +271,16 @@ TEST_F(ITimerTest, StartRejectsNonCpuEvent) {
   EXPECT_TRUE(itimerDisarmed());
 }
 
+// Only the timer-family engines enforce the resolved CPU interval at start();
+// perf_events (hardware default period) and the J9 sampler fall back to their
+// own defaults for 0, so any preflight rule must track the selected engine.
+TEST_F(ITimerTest, CpuIntervalEnforcementMatrix) {
+  Engine base;
+  EXPECT_FALSE(base.enforcesCpuSamplerInterval());
+  EXPECT_TRUE(ITimer().enforcesCpuSamplerInterval());
+  EXPECT_TRUE(ITimerJvmti().enforcesCpuSamplerInterval());
+}
+
 TEST_F(ITimerTest, StartAcceptsCpuOnlyArguments) {
   ITimer engine;
   Arguments args;

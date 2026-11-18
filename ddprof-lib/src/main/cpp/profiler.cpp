@@ -2397,12 +2397,18 @@ Error Profiler::check(Arguments &args) {
     return error;
   }
 
-  // Mirror start()'s interval rejection for the configurations that run a
-  // real CPU engine (cpu set, or a CPU event); args validation precedes
-  // capability probing, and event=wall/alloc/noop without cpu still pass.
-  if ((args._cpu >= 0 || Arguments::isCpuEvent(args._event)) &&
-      args.cpuSamplerInterval() <= 0) {
-    return Error("interval must be positive");
+  // Select the CPU engine before the capability probing: its probes are
+  // JVM-independent, and the interval rule below needs the selected engine.
+  Engine *cpu_engine = NULL;
+  if (args._event != NULL || args._cpu >= 0) {
+    cpu_engine = selectCpuEngine(args);
+    // Mirror start()'s interval rejection for the engines that enforce it
+    // (the timer family); perf_events and the J9 sampler fall back to their
+    // own defaults for 0, so the rule must not reject for them.
+    if (cpu_engine->enforcesCpuSamplerInterval() &&
+        args.cpuSamplerInterval() <= 0) {
+      return Error("interval must be positive");
+    }
   }
 
   error = checkJvmCapabilities();
@@ -2412,9 +2418,7 @@ Error Profiler::check(Arguments &args) {
   // only its unregisterThread() closes. Selecting into the slots here would
   // route those exits to the new engine and leak the fds, so check() selects
   // into locals. checkState() rejects a RUNNING profiler before this point.
-  Engine *cpu_engine = NULL;
-  if (!error && (args._event != NULL || args._cpu >= 0)) {
-    cpu_engine = selectCpuEngine(args);
+  if (!error && cpu_engine != NULL) {
     error = cpu_engine->check(args);
   }
   if (!error && args._wall >= 0) {

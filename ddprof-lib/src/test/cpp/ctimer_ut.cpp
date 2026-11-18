@@ -13,6 +13,7 @@
 #include "engine.h"
 #include "nativeMem.h"
 #include "os.h"
+#include "perfEvents.h"
 #include "profiler.h"
 
 #include <atomic>
@@ -510,6 +511,15 @@ TEST_F(CTimerNativeMemTest, CheckPreflightAcceptsWallWithoutCpu) {
   EXPECT_TRUE((bool)error);
   EXPECT_STREQ("Could not find Thread ID field. Unsupported JVM?",
                error.message());
+}
+
+// Only the timer-family engines enforce the resolved CPU interval at start();
+// perf_events falls back to the hardware event's default period for 0.
+TEST(CTimerEnforcementTest, EnforcementMatrix) {
+  CTimer ctimer;
+  EXPECT_TRUE(ctimer.enforcesCpuSamplerInterval());
+  PerfEvents perf;
+  EXPECT_FALSE(perf.enforcesCpuSamplerInterval());
 }
 
 // A table survives to start() only when stop() could not drain hook calls, so

@@ -75,6 +75,8 @@ public:
 
   long interval() const { return _interval; }
 
+  bool enforcesCpuSamplerInterval() const { return true; }
+
   Error check(Arguments &args);
   Error start(Arguments &args);
   void stop();
