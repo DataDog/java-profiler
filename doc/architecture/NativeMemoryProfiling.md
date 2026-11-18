@@ -129,8 +129,8 @@ The GOT-patching state lives in `MallocHooker` (`_patch_lock`, `_patched_libs`,
    subsequent calls.
 
    On Linux, each pinned image must match the cached fingerprint before any import access.
-   The fingerprint covers relocation slots and symbol names.
-   Missing fingerprints and replacement images are skipped.
+   The loader supplies the live program headers and load bias; file offsets need not be mapped.
+   The fingerprint covers relocation slots and symbol names; missing or mismatched identities are skipped.
 
 `patchLibraries()` is called again on every `start()` to pick up any libraries
 loaded between profiler sessions.

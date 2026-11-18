@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <link.h>
+#include <memory>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -772,6 +773,68 @@ TEST_F(MallocHookerIdentityTest, RejectsDifferentImageAtSamePathAndBase) {
     if (new_image.fingerprint == old_image.fingerprint) exitRemoving(path, CHILD_SAME_FINGERPRINT);
     void* before = *slot;
     if (before == nullptr || before == dlsym(handle, "malloc")) exitRemoving(path, CHILD_NO_IMPORT);
+    {
+      UnloadProtection pin(cc);
+      if (!pin.isValid()) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    }
+    MallocHooker::patchLibraries();
+    exitRemoving(path, *slot == before ? CHILD_OK : CHILD_CORRUPTED);
+  });
+}
+
+// Keep the replacement loadable while its file-only table has no corresponding mapped address.
+static off_t moveProgramHeadersOutsideLoadSegments(const char* path) {
+  std::unique_ptr<FILE, decltype(&fclose)> file(fopen(path, "r+b"), fclose);
+  if (!file) _exit(CHILD_DLOPEN_FAILED);
+  ElfW(Ehdr) header;
+  if (fread(&header, sizeof(header), 1, file.get()) != 1) _exit(CHILD_WRONG_LAYOUT);
+  ElfW(Phdr) phdrs[16];
+  if (header.e_phnum > 16 || fseeko(file.get(), header.e_phoff, SEEK_SET) != 0
+      || fread(phdrs, sizeof(phdrs[0]), header.e_phnum, file.get()) != header.e_phnum) {
+    _exit(CHILD_WRONG_LAYOUT);
+  }
+  constexpr off_t file_phoff = 1 << 30;
+  for (int i = 0; i < header.e_phnum; i++) {
+    if (phdrs[i].p_type == PT_PHDR
+        || (phdrs[i].p_type == PT_LOAD && phdrs[i].p_offset + phdrs[i].p_filesz >= file_phoff)) {
+      _exit(CHILD_WRONG_LAYOUT);
+    }
+  }
+  if (fseeko(file.get(), file_phoff, SEEK_SET) != 0
+      || fwrite(phdrs, sizeof(phdrs[0]), header.e_phnum, file.get()) != header.e_phnum) {
+    _exit(CHILD_WRONG_LAYOUT);
+  }
+  header.e_phoff = file_phoff;
+  if (fseeko(file.get(), 0, SEEK_SET) != 0 || fwrite(&header, sizeof(header), 1, file.get()) != 1) {
+    _exit(CHILD_WRONG_LAYOUT);
+  }
+  return file_phoff;
+}
+
+TEST_F(MallocHookerIdentityTest, RejectsReplacementWithProgramHeadersOutsideLoadSegments) {
+  if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    CodeCache* cc = loadMallocTarget(path, sizeof(path), &handle);
+    void** slot = cc->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    void* base = loadBaseOf(handle);
+    if (!unload(handle, slot, path)) exitRemoving(path, CHILD_WRONG_BASE);
+
+    char source[PATH_MAX], replacement[64];
+    testLibPath(source, sizeof(source), "/libnoid-valloc.so");
+    copyLibToTemp(replacement, sizeof(replacement), source);
+    off_t phoff = moveProgramHeadersOutsideLoadSegments(replacement);
+    if (rename(replacement, path) != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    handle = dlopen(path, RTLD_NOW);
+    if (handle == nullptr) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    if (loadBaseOf(handle) != base) exitRemoving(path, CHILD_WRONG_BASE);
+    void* file_phdr_address = static_cast<char*>(base) + phoff;
+    if (msync(file_phdr_address, sysconf(_SC_PAGESIZE), MS_ASYNC) == 0 || errno != ENOMEM) {
+      exitRemoving(path, CHILD_WRONG_LAYOUT);
+    }
+    void* before = *slot;
     {
       UnloadProtection pin(cc);
       if (!pin.isValid()) exitRemoving(path, CHILD_DLOPEN_FAILED);
