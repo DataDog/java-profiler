@@ -110,11 +110,9 @@ public:
 #endif
 
   bool         check(const char* key);
-  // NOT signal-safe: the inserting lookup overloads call malloc/calloc on miss
-  // (see allocateKey and the calloc in dictionary.cpp). Signal handlers must use
-  // bounded_lookup(key, length, 0) instead, which never inserts and returns
-  // INT_MAX on miss. If an insert's allocation fails, lookup() returns 0 and
-  // bounded_lookup() returns INT_MAX; neither is a valid id.
+  // NOT signal-safe: inserting lookups malloc/calloc on miss. Signal handlers use
+  // bounded_lookup(key, length, 0), which never inserts and returns INT_MAX on
+  // miss. A failed insert allocation returns 0 (lookup) or INT_MAX (bounded).
   unsigned int lookup(const char *key);
   unsigned int lookup(const char *key, size_t length);
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);
