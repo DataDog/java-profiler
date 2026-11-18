@@ -41,7 +41,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
-- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, real-VM qualification, integration JVM identity checks, and local workflows
+- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, real-VM qualification, integration runtime applicability and JVM identity checks, and local workflows
 - [Versioning](building/Versioning.md) - Version computation from git tags
   - [Bounded local container runs](building/TestingGuide.md#bounded-local-container-runs) - Exact Git worktrees, offline cache-only execution, worker limits, and retained test artifacts
 

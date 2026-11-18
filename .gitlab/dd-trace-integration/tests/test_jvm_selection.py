@@ -129,7 +129,7 @@ class JvmSelectionTest(unittest.TestCase):
                 self.assertNotIn("\ncurl ", self.calls.read_text())
                 self.assertIn("Verified integration JVM: JVM_TYPE=hotspot", result.stdout)
 
-    def test_all_musl_openj9_cells_fail_explicitly_without_downloading(self):
+    def test_direct_musl_openj9_provisioning_still_fails_closed_without_downloading(self):
         for arch in ("x64", "arm64"):
             for major in VERSIONS:
                 with self.subTest(arch=arch, major=major):
@@ -161,6 +161,7 @@ class JvmSelectionTest(unittest.TestCase):
         result = self.run_cell()
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertNotIn("Verified integration JVM:", result.stdout)
+        self.assertNotIn("java ", self.calls.read_text())
 
     def test_archive_requires_both_executable_java_and_javac(self):
         for missing in ("java", "javac"):
@@ -208,29 +209,51 @@ class JvmSelectionTest(unittest.TestCase):
         self.assertFalse((self.path / "integration-test-results").exists())
         self.assertNotIn("Installing prerequisites", result.stdout)
 
-    def test_openj9_musl_failures_are_not_allowed_by_effective_ci_rules(self):
+    def test_openj9_musl_cells_are_not_applicable_by_effective_ci_rules(self):
         config = (SCRIPTS / ".gitlab-ci.yml").read_text()
         base = config.split(".integration_test_base:\n", 1)[1].split("\n  script:", 1)[0]
         rule = re.search(
-            r"    - if: '([^'\n]+)'\n      allow_failure: (true|false)\n    - when: on_success\n",
+            r"    - if: '([^'\n]+)'\n      when: (never)\n    - when: on_success\n",
             base,
         )
-        self.assertIsNotNone(rule, "Require an allow_failure rule before the terminal rule")
+        self.assertIsNotNone(rule, "Require a not-applicable skip rule before the terminal rule")
         terms = re.fullmatch(r'\$(\w+) == "(\w+)" && \$(\w+) == "(\w+)"', rule[1])
         self.assertIsNotNone(terms, "Expected a conjunction of matrix-variable equalities")
         condition = ((terms[1], terms[2]), (terms[3], terms[4]))
-        fallback = re.search(r"^  allow_failure: (true|false)$", base, re.MULTILINE)
-        self.assertIsNotNone(fallback)
+        skipped = 0
+        scheduled = 0
         for arch in ("x64", "arm64"):
             for libc in ("glibc", "musl"):
                 job = config.split(f"\nintegration-test-{arch}-{libc}:\n", 1)[1].split("\n\n", 1)[0]
-                self.assertNotIn("allow_failure:", job, "Cell override must not bypass the base policy")
+                self.assertNotIn("rules:", job, "Cell override must not bypass the base applicability rule")
+                self.assertIn("extends: .integration_test_base", job)
                 for vm in ("hotspot", "openj9"):
-                    with self.subTest(arch=arch, libc=libc, vm=vm):
-                        variables = {"JVM_TYPE": vm, "LIBC_VARIANT": libc}
-                        matches = all(variables.get(key) == value for key, value in condition)
-                        effective = (rule[2] if matches else fallback[1]) == "true"
-                        self.assertEqual(effective, not (vm == "openj9" and libc == "musl"))
+                    for major in VERSIONS:
+                        with self.subTest(arch=arch, libc=libc, vm=vm, major=major):
+                            variables = {"JVM_TYPE": vm, "LIBC_VARIANT": libc}
+                            matches = all(variables.get(key) == value for key, value in condition)
+                            effective = rule[2] if matches else "on_success"
+                            self.assertEqual(effective, "never" if vm == "openj9" and libc == "musl"
+                                             else "on_success")
+                            skipped += effective == "never"
+                            scheduled += effective == "on_success"
+        self.assertEqual(skipped, 10)
+        self.assertEqual(scheduled, 30)
+
+    def test_applicability_keeps_existing_pipeline_exclusions_and_failure_policy(self):
+        config = (SCRIPTS / ".gitlab-ci.yml").read_text()
+        base = config.split(".integration_test_base:\n", 1)[1].split("\n  script:", 1)[0]
+        exclusions = [
+            "    - !reference [.skip-on-release, rules]",
+            '    - if: \'$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null\'\n'
+            "      when: never",
+            '    - if: \'$CI_PIPELINE_SOURCE == "merge_request_event"\'\n      when: never',
+        ]
+        positions = [base.index(exclusion) for exclusion in exclusions]
+        self.assertEqual(positions, sorted(positions))
+        self.assertLess(positions[-1], base.index('$JVM_TYPE == "openj9"'))
+        self.assertRegex(base, r"(?m)^  allow_failure: true$")
+        self.assertNotIn("allow_failure: false", base)
 
     def test_ci_keeps_all_labeled_cells_and_runs_regression_tests(self):
         config = (SCRIPTS / ".gitlab-ci.yml").read_text()
