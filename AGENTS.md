@@ -73,6 +73,7 @@ dependency-free leak-demo app; not published).
 
 **Supported JVMs:** HotSpot, J9, Zing — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
+Linux OpenJ9 requires glibc; see the [runtime matrix](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
 
 ## Operating Rules for Agent Sessions
 
@@ -127,7 +128,8 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   [doc/building/TestingGuide.md](doc/building/TestingGuide.md).
 
 GitLab dd-trace integration selects and verifies the labeled JVM and JDK major;
-OpenJ9 uses Semeru on glibc and fails explicitly on musl (no runtime configured).
+OpenJ9 uses Semeru on glibc. Musl/OpenJ9 cells are not scheduled and are reported
+as not applicable because upstream publishes no musl runtime.
 See [TestingGuide](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
 
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:

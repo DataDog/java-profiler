@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Testing Guide
 
 This document describes the complete test strategy for the java-profiler project:
@@ -166,9 +168,24 @@ as artifacts.
 
 **Pipeline:** `.gitlab/dd-trace-integration/.gitlab-ci.yml`
 
-**Matrix:** amd64 and aarch64 × glibc and musl × HotSpot + OpenJ9, JDK 8–25.
+**Runtime matrix:** JDK 8, 11, 17, 21 and 25 on each applicable platform.
+
+| Architecture | libc | HotSpot | OpenJ9 |
+|--------------|------|---------|--------|
+| amd64 | glibc | Scheduled | Scheduled (IBM Semeru) |
+| aarch64 | glibc | Scheduled | Scheduled (IBM Semeru) |
+| amd64 | musl | Scheduled | Not applicable (no upstream runtime) |
+| aarch64 | musl | Scheduled | Not applicable (no upstream runtime) |
+
+[Upstream OpenJ9 platform support](https://github.com/eclipse-openj9/openj9-docs/blob/e2f1f05b69b04b45c262ea9ed3527e1bb861df08/docs/openj9_support.md)
+requires glibc on Linux for all five JDK lines. Upstream publishes no musl runtime.
+
+The CI applicability rule does not schedule the ten musl/OpenJ9 combinations.
+The PR reporter counts them as not applicable, not as passes, failures or missing results.
+The other 30 configurations still require validation logs; missing results fail the report.
+
 OpenJ9 glibc cells install pinned IBM Semeru JDKs, not distro OpenJDK packages.
-OpenJ9 musl cells fail without `allow_failure`: no OpenJ9 musl runtime is configured.
+Direct musl/OpenJ9 provisioning still fails closed, as do failed downloads and invalid JDK archives.
 
 `verify-jvm.sh` checks `java.vm.name` and the JDK major before prerequisites and tests.
 A mismatch or failed identity query fails the cell. The verified identity is in the job log.
@@ -184,7 +201,7 @@ replaces the bundled (relocated) profiler classes inside the agent with the vers
 under test, keeping the classloader/relocation path identical to production.
 
 It tests end-to-end agent startup, profiling data collection, and tracer/profiler
-co-existence across the full JDK × libc matrix. Failures are posted as PR comments
+co-existence across the applicable runtime matrix. Failures are posted as PR comments
 and published to GitHub Pages as a compatibility matrix.
 
 No sanitizers are applied here. The goal is compatibility verification, not crash
