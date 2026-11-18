@@ -36,8 +36,9 @@ SignalFrame::Result SignalFrame::decode(const void* pc, uintptr_t sp, uintptr_t 
     trampoline |= instruction == 0xd4000001U &&
                   (SafeAccess::safeFetch32(reinterpret_cast<int*>(ip - 1), 0) & 0x7fffffffU) == 0x52801168U;
     if (!trampoline) return Result::NOT_SIGNAL;
-    // SA_RESTORER permits user trampolines, whose FP chain cannot establish
-    // the interrupted PC. Only the known vDSO signal layout is recoverable.
+    // SA_RESTORER trampolines (musl's __restore_rt, user code) get the same
+    // rt_sigframe, but only the vDSO pair proves SP addresses one. Others
+    // truncate rather than let their FP chain fabricate callers.
     if (!vdso) return Result::INVALID;
 
     // Linux arm64 rt_sigframe contains siginfo_t followed by ucontext_t.

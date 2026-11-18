@@ -123,6 +123,15 @@ TEST(StackFrameArgumentsTest, CallAtMethodStartDoesNotReadBeforeEntry) {
     EXPECT_EQ(0x1000u, sp);
 }
 
+TEST(StackFrameArgumentsTest, NativeLeafCallAtMethodStartIgnoresPushBeforeEntry) {
+    // The dummy-link push sits before entry, so it belongs to another method.
+    instruction_t code[] = {0xa9bf27ff, 0xd63f0100, 0xd503201f};
+    StackFrame frame(nullptr);
+    uintptr_t sp = 0x1000;
+    frame.adjustSP(code + 1, code + 2, sp);
+    EXPECT_EQ(0x1000u, sp);
+}
+
 TEST(StackFrameArgumentsTest, RejectsUnrelatedAddressSetup) {
     instruction_t code[] = {0xa9bf07e0, 0xd503201f, 0xd63f0100, 0xf84107e0};
     StackFrame frame(nullptr);

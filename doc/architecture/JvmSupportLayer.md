@@ -230,7 +230,11 @@ Recognized restorers whose saved context is invalid remain marked truncated.
 Linux also permits custom restorers through `SA_RESTORER`
 (`arch/arm64/kernel/signal.c`, `setup_return`). An exact `mov w8/x8, #139;
 svc #0` sequence outside the vDSO stops with truncation when signal CFI is
-absent, preventing the interrupted FP chain from fabricating callers. A row
+absent, preventing the interrupted FP chain from fabricating callers.
+The kernel builds the same signal frame for these restorers. The walker does
+not trust the instruction pair alone to locate it outside the vDSO.
+musl always installs its own restorer, `__restore_rt`. On musl arm64, walks
+across a nested signal handler therefore stop there with truncation. A row
 explicitly marked as a signal frame follows its CFI instead. Other syscall
 numbers do not activate this fallback.
 Custom-restorer instruction probes, including anonymous mappings without a
