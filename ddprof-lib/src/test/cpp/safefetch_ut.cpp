@@ -273,6 +273,7 @@ TEST_F(SafeFetchTest, mprotectedMemory64) {
 // Owns a readable page followed by a PROT_NONE guard page, unmapped on scope
 // exit. The guard stays mapped, unlike a munmap()ed page that a concurrent
 // mmap may reuse, so a read past the readable page always faults.
+namespace {
 class GuardedPage {
 public:
   GuardedPage()
@@ -301,6 +302,7 @@ private:
   size_t _page_size;
   void* _region;
 };
+} // namespace
 
 TEST_F(SafeFetchTest, safeCopy_happyPath) {
   const char src[] = "java/lang/Object";
@@ -329,6 +331,13 @@ TEST_F(SafeFetchTest, safeCopy_shortLength_doesNotOverwriteDst) {
   }
 }
 
+TEST_F(SafeFetchTest, safeCopy_unmappedSource_returnsFalse) {
+  // Page zero is never mapped, so unlike a munmap()ed page no concurrent mmap
+  // can make it readable. safeCopy must return false rather than SIGSEGV.
+  char dst[64] = {0};
+  EXPECT_FALSE(SafeAccess::safeCopy(dst, nullptr, 32));
+}
+
 TEST_F(SafeFetchTest, safeCopy_protNoneSource_returnsFalse) {
   // mprotect-PROT_NONE the page (similar to mprotectedMemory32). safeCopy
   // must return false on the first faulting word, not crash.
@@ -347,15 +356,14 @@ TEST_F(SafeFetchTest, safeCopy_protNoneSource_returnsFalse) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_tailNearGuardPage_stillSucceeds) {
-  // Place src so the bytes we ask for end inside the readable page but the
-  // (over-read of the) next 4-byte word would touch the guard page. The
-  // aligned-load strategy must keep the load within the readable page →
-  // success, not fault.
+  // The requested bytes end exactly at the guard page, so any read past
+  // src+len faults there and fails the copy.
   GuardedPage region;
   ASSERT_TRUE(region.ok());
+  ASSERT_FALSE(SafeAccess::isReadable(region.guardStart()));
 
   char* mapped_end = region.guardStart();
-  char* src = mapped_end - 2;  // 2 bytes from page boundary, k = 2
+  char* src = mapped_end - 2;  // 2 bytes from page boundary
   src[0] = 'X';
   src[1] = 'Y';
 
@@ -430,15 +438,12 @@ TEST_F(SafeFetchTest, safeCopy_unalignedSource_allMisalignments) {
 
 TEST_F(SafeFetchTest, safeCopy_unalignedShortAtPageEnd_stillSucceeds) {
   // Combine misalignment with proximity to the guard page: src is
-  // misaligned AND only a few bytes from the end of the readable page.
-  // The front fixup reads backward (into the same page) → success.
+  // misaligned AND its 3 requested bytes end at the readable page's end.
   GuardedPage region;
   ASSERT_TRUE(region.ok());
 
   char* mapped_end = region.guardStart();
-  // mapped_end is 4-byte aligned (pages are 4 KiB-aligned). Place src
-  // 3 bytes back from the boundary so k = 1 and only 3 bytes are wanted.
-  char* src = mapped_end - 3;
+  char* src = mapped_end - 3;  // page-aligned boundary - 3: misaligned
   src[0] = 'P';
   src[1] = 'Q';
   src[2] = 'R';
