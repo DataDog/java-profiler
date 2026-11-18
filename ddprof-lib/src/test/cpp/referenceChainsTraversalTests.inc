@@ -913,16 +913,22 @@ struct T8JournalFill {
     static inline jlong holder_class_tag = -9101;
     static inline u32 count_after_fill = 0;
 
-    static void reset() {
+    // The fill saturates the journal by staging LOCAL reports production would bound to what
+    // replay can absorb; the unbounded override is active from seedHolder() until reset().
+    static void reset(ReferenceChainTracker *tracker = nullptr) {
         fill_on_ior = false;
         fill_on_follow_call = -1;
         follow_calls = 0;
         holder_tag = 0;
         count_after_fill = 0;
+        if (tracker != nullptr) {
+            T8Acc::setLocalStagingBudgetOverrideForTest(0);
+        }
     }
 
     // Keeps one fixture frontier entry for tests that assert the count after a rejected report.
     static void seedHolder(ReferenceChainTracker *tracker) {
+        T8Acc::setLocalStagingBudgetOverrideForTest(0xFFFFFFFFu);
         holder_tag = tracker->nextTag();
         T8Acc::primeClassShapeForTest(holder_class_tag, false);
         ASSERT_TRUE(T8Acc::insertFrontierEntry(
@@ -1032,7 +1038,7 @@ TEST_F(ReferenceChainsBfsTest, RootEnumerationOverflowLeavesLeakTagForRetry) {
     node_tags[leak_node] = leak_tag;
     script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, leak_node, -1}};
 
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     T8JournalFill::seedHolder(tracker);
     T8JournalFill::fill_on_ior = true;
     jvmti_tbl.IterateOverReachableObjects = &t8FillingIterate;
@@ -1051,7 +1057,7 @@ TEST_F(ReferenceChainsBfsTest, RootEnumerationOverflowLeavesLeakTagForRetry) {
     EXPECT_EQ(0u, T8Acc::journalCountForTest()) << "the full prefix is replayed and cleared";
 
     jvmti_tbl.IterateOverReachableObjects = &mock_IterateOverReachableObjects;
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     t8AllowRootEnumeration();
     truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
@@ -1079,7 +1085,7 @@ TEST_F(ReferenceChainsBfsTest, RootEnumerationOverflowLeavesRootKindUnchangedFor
                                            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
     script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, node, -1}};
 
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     T8JournalFill::seedHolder(tracker);
     T8JournalFill::fill_on_ior = true;
     jvmti_tbl.IterateOverReachableObjects = &t8FillingIterate;
@@ -1098,7 +1104,7 @@ TEST_F(ReferenceChainsBfsTest, RootEnumerationOverflowLeavesRootKindUnchangedFor
     EXPECT_FALSE(T8Acc::anchorIndexContainsForTest(tag));
 
     jvmti_tbl.IterateOverReachableObjects = &mock_IterateOverReachableObjects;
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     t8AllowRootEnumeration();
     truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
@@ -1142,7 +1148,7 @@ TEST_F(ReferenceChainsBfsTest, ExpansionOverflowKeepsDemotionAndBatchForRetry) {
                                            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
     T8Acc::pushPendingExpandForTest(T8DemotionSeed::kParentTag);
 
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     T8JournalFill::seedHolder(tracker);
     T8JournalFill::fill_on_follow_call = 0;
     jvmti_tbl.FollowReferences = &t8FillingFollow;
@@ -1168,7 +1174,7 @@ TEST_F(ReferenceChainsBfsTest, ExpansionOverflowKeepsDemotionAndBatchForRetry) {
     EXPECT_EQ(FrontierEntryState::FRONTIER, parent_entry.state);
 
     jvmti_tbl.FollowReferences = &mock_FollowReferences;
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     edges = 0;
     T8Acc::expandFrontierWithBudgetForTest(&mock_jvmti, &mock_jni, 1000, &edges, &truncated);
     EXPECT_FALSE(truncated);
@@ -1324,7 +1330,7 @@ TEST_F(ReferenceChainsBfsTest, StaticSweepOverflowRetriesChunkWithoutServing) {
     addClass((void *)&node_tags[class_node], "Lcom/rc/statics/OverflowHolder;");
     script = {{JVMTI_HEAP_REFERENCE_STATIC_FIELD, class_node, holder, -1}};
 
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     T8JournalFill::seedHolder(tracker);
     T8JournalFill::fill_on_follow_call = 0; // no candidates: the sweep is the first Follow call
     jvmti_tbl.FollowReferences = &t8FillingFollow;
@@ -1345,7 +1351,7 @@ TEST_F(ReferenceChainsBfsTest, StaticSweepOverflowRetriesChunkWithoutServing) {
     EXPECT_EQ(0u, T8Acc::journalCountForTest());
 
     jvmti_tbl.FollowReferences = &mock_FollowReferences;
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     t8AllowRootEnumeration();
     truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
@@ -1522,7 +1528,7 @@ TEST_F(ReferenceChainsBfsTest, StaticSweepMultiChunkTruncatedChunkRetriesWithout
     const int saved_cursor = T8Acc::staticFieldSweepCursorForTest();
 
     // Chunk 1 with a full journal: its new static attachments are rejected.
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     T8JournalFill::seedHolder(tracker);
     T8JournalFill::fill_on_follow_call = 0; // the sweep is the first Follow call of the pass
     jvmti_tbl.FollowReferences = &t8FillingFollow;
@@ -1540,7 +1546,7 @@ TEST_F(ReferenceChainsBfsTest, StaticSweepMultiChunkTruncatedChunkRetriesWithout
 
     // Retry: the chunk completes the lap; the overflow-requested generation stays unserved.
     jvmti_tbl.FollowReferences = &mock_FollowReferences;
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_FALSE(truncated);
@@ -1583,7 +1589,7 @@ TEST_F(ReferenceChainsBfsTest, SelectedAnchorWalkOverflowRequeuesAnchorForRetry)
                                            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
     T8Acc::pushStaticAnchorFifoForTest(105, 28366);
 
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     T8JournalFill::seedHolder(tracker);
     T8JournalFill::fill_on_follow_call = 0; // the anchor walk is the pass's only Follow call
     jvmti_tbl.FollowReferences = &t8FillingFollow;
@@ -1602,7 +1608,7 @@ TEST_F(ReferenceChainsBfsTest, SelectedAnchorWalkOverflowRequeuesAnchorForRetry)
     EXPECT_EQ(0u, T8Acc::journalCountForTest());
 
     jvmti_tbl.FollowReferences = &mock_FollowReferences;
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     t8AllowRootEnumeration();
     truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
@@ -1659,7 +1665,7 @@ TEST_F(ReferenceChainsBfsTest, CandidateThreadWalkOverflowStopsGroupAndFlushesPr
     tracker->registerThreadObject(&mock_jni, 777, reinterpret_cast<jthread>(&node_tags[thread1]));
     tracker->registerThreadObject(&mock_jni, 778, reinterpret_cast<jthread>(&node_tags[thread2]));
 
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     T8JournalFill::seedHolder(tracker);
     T8JournalFill::fill_on_follow_call = 0;
     jvmti_tbl.FollowReferences = &t8FillingFollow;
@@ -1675,7 +1681,7 @@ TEST_F(ReferenceChainsBfsTest, CandidateThreadWalkOverflowStopsGroupAndFlushesPr
     EXPECT_EQ(0u, T8Acc::journalCountForTest()) << "the group's scope flushed on exit";
 
     jvmti_tbl.FollowReferences = &mock_FollowReferences;
-    T8JournalFill::reset();
+    T8JournalFill::reset(tracker);
     edges = 0;
     T8Acc::walkCandidateThreadLocalsForTest(&mock_jvmti, &mock_jni, 1000, &edges);
     ASSERT_TRUE(frontier->lookup(107, &entry));

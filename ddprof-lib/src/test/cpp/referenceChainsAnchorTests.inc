@@ -2002,6 +2002,9 @@ TEST_F(ReferenceChainsBfsTest, AnchorOverflowOnLocalReportRequestsNoStaticRetry)
     FrontierTable *frontier = tracker->frontierTable();
     const u64 gen = AnchorAcc::durableAnchorResweepGenForTest();
 
+    // Unbounded LOCAL staging: this test exercises the journal's own capacity mechanics, while
+    // production bounds staging to what replay absorbs (localStagingAbsorbable()).
+    ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(0xFFFFFFFFu);
     AnchorScopedPass pass(tracker, frontier);
     fillJournalWithUnknownLocals(pass);
     jlong rejected = 0;
@@ -2012,6 +2015,7 @@ TEST_F(ReferenceChainsBfsTest, AnchorOverflowOnLocalReportRequestsNoStaticRetry)
     pass.scope.flush();
     EXPECT_EQ(gen, AnchorAcc::durableAnchorResweepGenForTest());
     EXPECT_FALSE(AnchorAcc::durableAnchorResweepUnservedForTest());
+    ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(0);
 
     tracker->stop();
 }
@@ -2422,6 +2426,9 @@ TEST_F(ReferenceChainsBfsTest, AnchorReplayedLocalsHonorPendingCapAndConfirmedPr
     const size_t local_cap = AnchorAcc::kLocalAnchorIndexCap;
     const size_t pending_cap = AnchorAcc::kPendingLocalAnchorCap;
 
+    // This test exercises replay's pending-cap and displacement mechanics, so staging is unbounded.
+    // Set the override before constructing the scope, which snapshots the production budget.
+    ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(0xFFFFFFFFu);
     AnchorScopedPass pass(tracker, frontier);
     for (size_t i = 0; i < local_cap; i++) {
         ASSERT_GT(reportFreshLocal(pass, kContainer), 0);
@@ -2435,6 +2442,7 @@ TEST_F(ReferenceChainsBfsTest, AnchorReplayedLocalsHonorPendingCapAndConfirmedPr
     const jlong dropped = reportFreshLocal(pass, kUnknown);
     ASSERT_GT(confirmed, 0);
     ASSERT_GT(dropped, 0);
+    ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(0);
     EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest()); // nothing applied before the flush
     pass.scope.flush();
 

@@ -207,6 +207,7 @@ void fillJournalWithUnknownLocals(AnchorScopedPass &pass) {
     }
     ASSERT_EQ(AnchorObservationBuffer::CAPACITY,
               (size_t)ReferenceChainsTestAccessor::journalCountForTest());
+    ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(0);
 }
 
 // A stable durable population at the journal capacity is re-reported by every enumeration. Before
@@ -365,6 +366,56 @@ TEST_F(ReferenceChainsBfsTest, RootEnumProgressStampBoundaries) {
         21007, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 0, false));
     EXPECT_TRUE(frontier->rootReportCompleted(
         21007, JVMTI_HEAP_REFERENCE_JNI_LOCAL, true, 0, 0, false));
+
+    tracker->stop();
+}
+
+// LOCAL staging cannot exceed replay capacity or refill the same journal prefix on every retry.
+// At zero budget, fresh locals stay unstaged while a durable root report in the same scope still
+// stages; this keeps refused locals from starving later roots.
+TEST_F(ReferenceChainsBfsTest, LocalStagingBoundStopsRecordsReplayWouldRefuse) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const jlong kContainer = -3155;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+
+    // Fill the local index and pending buffer with confirmed containers. With no displaceable
+    // pending victim, replay cannot absorb further LOCAL reports.
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        const int kSaturate = 4096 + 1024;
+        for (int i = 0; i < kSaturate; i++) {
+            jlong reported = 0;
+            EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+                      pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kContainer, &reported));
+            EXPECT_GT(reported, 0);
+        }
+        pass.scope.flush();
+        EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+    }
+
+    // A fresh scope: the absorbable budget is zero. LOCAL reports of distinct fresh holders stage
+    // nothing; a durable root report still stages its re-enlist record.
+    AnchorScopedPass pass(tracker, frontier);
+    const int kOverflowAttempts = 64;
+    for (int i = 0; i < kOverflowAttempts; i++) {
+        jlong reported = 0;
+        EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+                  pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kContainer, &reported));
+        EXPECT_EQ(0u, AnchorAcc::journalCountForTest())
+            << "a saturated absorbable budget stages no LOCAL records";
+    }
+    insertAnchorEntry(frontier, 4242, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    jlong durable_tag = 4242;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, 0, &durable_tag));
+    EXPECT_EQ(1u, AnchorAcc::journalCountForTest())
+        << "the durable root still stages with the LOCAL budget exhausted";
+    pass.scope.flush();
 
     tracker->stop();
 }
@@ -647,6 +698,9 @@ TEST_F(ReferenceChainsBfsTest, AnchorOverflowOnStaticReportRequestsOneStaticRetr
     insertAnchorEntry(frontier, static_holder, 0, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
     const u64 gen = AnchorAcc::durableAnchorResweepGenForTest();
 
+    // Unbounded LOCAL staging: this test exercises the journal's own capacity mechanics, while
+    // production bounds staging to what replay absorbs (localStagingAbsorbable()).
+    ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(0xFFFFFFFFu);
     AnchorScopedPass pass(tracker, frontier);
     fillJournalWithUnknownLocals(pass);
     for (int i = 0; i < 2; i++) {
@@ -660,6 +714,7 @@ TEST_F(ReferenceChainsBfsTest, AnchorOverflowOnStaticReportRequestsOneStaticRetr
     EXPECT_TRUE(AnchorAcc::durableAnchorResweepUnservedForTest());
     // The accepted prefix was applied: the unknown locals parked in the capped pending buffer.
     EXPECT_EQ(AnchorAcc::kPendingLocalAnchorCap, AnchorAcc::pendingLocalAnchorCountForTest());
+    ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(0);
 
     tracker->stop();
 }

@@ -107,6 +107,7 @@ public:
         t->_static_field_sweep_lap_request_gen = 0;
         t->_static_field_sweep_served_gen = 0;
         t->_pending_local_evict_cursor = 0;
+        t->_local_staging_budget_override_for_test = 0;
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
         t->_class_shape_cache.clear();
@@ -190,6 +191,10 @@ public:
 
     static void setCandidateCountForTest(int n) {
         ReferenceChainTracker::instance()->setCandidateCountForTest(n);
+    }
+
+    static void setLocalStagingBudgetOverrideForTest(u32 budget) {
+        ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(budget);
     }
 
     // Canary-lane backoff state wrappers - see _canary_backoff_mult's own comment
@@ -640,7 +645,8 @@ public:
                t->_pending_local_anchor_tags.empty() &&
                t->_local_compact_backoff == 0 &&
                t->_durable_anchor_resweep_gen == t->_static_field_sweep_served_gen &&
-               t->_pending_local_evict_cursor == 0;
+               t->_pending_local_evict_cursor == 0 &&
+               t->_local_staging_budget_override_for_test == 0;
     }
 
     // Local-root anchor seams (see noteLocalRootHolder()/resolvePendingLocalAnchors()).

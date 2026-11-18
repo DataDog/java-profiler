@@ -272,6 +272,9 @@ The traversal caller replays the records in arrival order after the synchronous 
 returns. Callbacks skip known no-op LOCAL and AT_RISK actions before reserving a record; the
 scope-local indexes suppress duplicate actions across records in the same prefix.
 
+Each scope limits LOCAL records to the index room, pending slots and displaceable entries replay
+can absorb. Excess holders are offered again by the next root enumeration.
+
 The journal holds 16,384 records of at most 24 bytes each, so the record array uses at most
 384 KiB. Two scope-local indexes suppress duplicate LOCAL and AT_RISK actions. Each index has
 32,768 16-bit slots and a 4 KiB occupancy bitmap; together they add 136 KiB. The record and index

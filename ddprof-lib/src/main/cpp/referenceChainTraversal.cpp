@@ -82,20 +82,20 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         ctx->root_enum_attempt_id, ctx->root_enum_previous_attempt_id,
         ctx->root_enum_retrying_incomplete);
   }
+  // Only reserve LOCAL records replay can absorb; repeated refusals would fill the same prefix and
+  // starve later roots.
   bool durable_observation_complete = false;
-  bool local_action_checked = false;
-  bool local_action_may_be_needed = local_root;
-  if (local_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
-    // A known frontier tag stays unchanged in admitObject(), so skip a full-journal no-op here.
-    local_action_checked = true;
-    local_action_may_be_needed =
-        ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag) &&
-        !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL);
+  bool stage_local = false;
+  if (local_root && *tag_ptr >= 0 && !isLeakTag(*tag_ptr) &&
+      ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag) &&
+      !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL) &&
+      ctx->anchor_scope.local_staging_budget() > 0) {
+    stage_local = true;
+    ctx->anchor_scope.consume_local_staging_budget();
   }
   AnchorObservationReservationGuard reservation;
   if (*tag_ptr >= 0 &&
-      ((durable_root && *tag_ptr > 0 && !completed_durable_report) ||
-       local_action_may_be_needed) &&
+      ((durable_root && *tag_ptr > 0 && !completed_durable_report) || stage_local) &&
       !reservation.acquire(ctx->anchor_scope)) {
     ctx->abortForObservationOverflow(/*static_attachment=*/false);
     return JVMTI_ITERATION_ABORT;
@@ -190,22 +190,10 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   default:
     break;
   }
-  // Remember local holders before expansion can reparent them into a deeper chain; known
-  // collections still need bounded descend walks after that to observe replacement backing
-  // storage. Only confirmed containers enter the anchor index (capped), an unclassified holder
-  // waits in the pending buffer. Skipped under the same conditions noteLocalRootHolder() returns
-  // unchanged (see localHolderNeedsObservation()): a stable local population must not refill the
-  // journal with its own no-op records every enumeration.
-  if (local_root && local_action_may_be_needed && *tag_ptr > 0 &&
-      !isLeakTag(*tag_ptr)) {
-    if (!local_action_checked) {
-      local_action_may_be_needed =
-          ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag) &&
-          !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL);
-    }
-    if (local_action_may_be_needed) {
-      actions |= AnchorObservation::LOCAL;
-    }
+  // Remember eligible local holders before expansion reparents them into deeper chains.
+  // Stage only reports accepted by the pre-admission gate and this scope's replay budget.
+  if (stage_local && *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    actions |= AnchorObservation::LOCAL;
   }
   if (actions != 0) {
     AnchorObservation record{};

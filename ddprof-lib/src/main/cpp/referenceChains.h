@@ -1196,6 +1196,21 @@ private:
   bool localHolderNeedsObservation(jlong tag, jlong own_class_tag) const;
   // Mirrors pushAtRiskStaticAnchor() so callbacks do not stage known queue no-ops.
   bool atRiskAnchorNeedsObservation(jlong tag, u32 klass_id) const;
+  // Bounds LOCAL records by available index and pending-buffer capacity for this scope.
+  // Only replay mutates these capacities, after the same-thread traversal completes.
+  // The test override lets journal-overflow tests deliberately stage a larger prefix.
+  u32 localStagingAbsorbable() const {
+#ifdef UNIT_TEST
+    if (_local_staging_budget_override_for_test != 0) {
+      return _local_staging_budget_override_for_test;
+    }
+#endif
+    size_t index_room = _local_anchor_tags.size() < LOCAL_ANCHOR_INDEX_CAP
+                            ? LOCAL_ANCHOR_INDEX_CAP - _local_anchor_tags.size()
+                            : 0;
+    size_t buffer_room = PENDING_LOCAL_ANCHOR_CAP - _pending_local_anchors.size();
+    return (u32)(index_room + buffer_room + _pending_local_unresolved_count);
+  }
   // At-risk anchor push: deduped, capped, and quota-limited per klass.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   // Add `tag` to _static_anchor_index if its root_kind is a durable anchor-tier kind (STATIC_FIELD
@@ -1460,6 +1475,13 @@ public:
     _last_canary_pass_ns = last_pass_ns;
   }
   void setOomRampActiveForTest(bool active) { _oom_ramp_active = active; }
+#ifdef UNIT_TEST
+  // Test-only LOCAL staging bound override; absent from profiler builds.
+  u32 _local_staging_budget_override_for_test = 0;
+  void setLocalStagingBudgetOverrideForTest(u32 budget) {
+    _local_staging_budget_override_for_test = budget;
+  }
+#endif
   int candidateCountForTest() const { return _candidate_count; }
   void setCandidateCountForTest(int n) { _candidate_count = n; }
   void setCandidateKlassIdForTest(int idx, u32 klass_id) {

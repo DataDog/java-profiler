@@ -24,7 +24,8 @@ class ReferenceChainAnchorObservationScope {
 public:
   explicit ReferenceChainAnchorObservationScope(ReferenceChainTracker *tracker)
       : _tracker(tracker), _buffer(&tracker->_anchor_observations),
-        _lease(_buffer->tryLease()) {}
+        _lease(_buffer->tryLease()),
+        _local_staging_budget(tracker->localStagingAbsorbable()) {}
   ~ReferenceChainAnchorObservationScope() {
     flush();
     _buffer->releaseLease(_lease); // no-op for a non-owning or stale scope
@@ -38,6 +39,12 @@ public:
   bool containsAction(jlong tag, u8 action) {
     return _buffer->containsAction(_lease, tag, action);
   }
+
+  // Replay can absorb only local-index room, pending slots, and displaceable victims.
+  // Only replay changes those capacities, after the same-thread traversal completes.
+  // Refusing excess LOCAL reports prevents journal overflow from starving later roots.
+  u32 local_staging_budget() const { return _local_staging_budget; }
+  void consume_local_staging_budget() { _local_staging_budget--; }
   void markOverflow(bool static_attachment) { _buffer->markOverflow(_lease, static_attachment); }
   bool ownsLease() const { return _lease.id != 0; }
 
@@ -61,6 +68,7 @@ private:
   ReferenceChainTracker *_tracker;
   AnchorObservationBuffer *_buffer;
   AnchorObservationLease _lease;
+  u32 _local_staging_budget;
 };
 
 inline bool isDurableAnchorRootKind(u8 root_kind) {

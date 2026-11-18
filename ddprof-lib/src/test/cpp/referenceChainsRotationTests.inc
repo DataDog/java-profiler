@@ -1016,16 +1016,21 @@ struct T9RJournalFill {
     static inline u32 count_after_fill = 0;
     static inline std::vector<jobject> follow_seeds;
 
-    static void reset() {
+    static void reset(ReferenceChainTracker *tracker = nullptr) {
         fill_on_follow_call = -1;
         follow_calls = 0;
         holder_tag = 0;
         count_after_fill = 0;
         follow_seeds.clear();
+        if (tracker != nullptr) {
+            T9RAcc::setLocalStagingBudgetOverrideForTest(0);
+        }
     }
 
-    // Keeps one fixture frontier entry for tests that assert the count after a rejected report.
+    // Keep the fixture entry used by count assertions; LOCAL fill reports are intentionally
+    // unbounded so tests can exercise the journal's overflow behavior.
     static void seedHolder(ReferenceChainTracker *tracker) {
+        T9RAcc::setLocalStagingBudgetOverrideForTest(0xFFFFFFFFu);
         holder_tag = tracker->nextTag();
         T9RAcc::primeClassShapeForTest(holder_class_tag, false);
         ASSERT_TRUE(T9RAcc::insertFrontierEntry(
@@ -1059,8 +1064,8 @@ struct T9RTestGuard {
     explicit T9RTestGuard(ReferenceChainsMockHeap &f) : fixture(f) {}
     ~T9RTestGuard() {
         fixture.jvmti_tbl.FollowReferences = &ReferenceChainsMockHeap::mock_FollowReferences;
-        T9RJournalFill::reset();
         ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+        T9RJournalFill::reset(tracker);
         tracker->releaseAllThreadObjects(&fixture.mock_jni);
         tracker->stop();
     }
@@ -1108,7 +1113,7 @@ void t9RBuildAtRiskScenario(ReferenceChainsMockHeap &f, ReferenceChainTracker *t
 
 // Runs one pass whose selected-anchor walk meets a full journal at its kT9RWalked-th anchor.
 void t9RRunOverflowPass(ReferenceChainsMockHeap &f, ReferenceChainTracker *tracker) {
-    T9RJournalFill::reset();
+    T9RJournalFill::reset(tracker);
     T9RJournalFill::seedHolder(tracker);
     ASSERT_FALSE(::testing::Test::HasFatalFailure());
     T9RJournalFill::fill_on_follow_call = kT9RWalked;
@@ -1188,7 +1193,7 @@ void t9RCheckRejectedDemotionsDeliveredOnRetry(ReferenceChainsMockHeap &f,
                 << (walked[i] ? ": accepted demotion applied" : ": rejected demotion performed");
         }
     }
-    T9RJournalFill::reset();
+    T9RJournalFill::reset(tracker);
     f.jvmti_tbl.FollowReferences = &ReferenceChainsMockHeap::mock_FollowReferences;
     f.gotw_resolution_order.clear();
     T9RAcc::setRootEnumRawStateForTest(0, 0);
@@ -1355,7 +1360,7 @@ TEST_F(ReferenceChainsBfsTest, CandidateThreadWalkOverflowRetainsCursorOnCutShor
     }
 
     // The walk starts at thread 0 (accepted), and the journal fills before thread 1's walk.
-    T9RJournalFill::reset();
+    T9RJournalFill::reset(tracker);
     T9RJournalFill::seedHolder(tracker);
     ASSERT_FALSE(HasFatalFailure());
     T9RJournalFill::fill_on_follow_call = 1;
@@ -1373,7 +1378,7 @@ TEST_F(ReferenceChainsBfsTest, CandidateThreadWalkOverflowRetainsCursorOnCutShor
 
     // The retry resumes at thread 1 (a cursor advanced past it would start at thread 2).
     jvmti_tbl.FollowReferences = &t9RFollow;
-    T9RJournalFill::reset();
+    T9RJournalFill::reset(tracker);
     edges = 0;
     T9RAcc::walkCandidateThreadLocalsForTest(&mock_jvmti, &mock_jni, 1000, &edges);
     ASSERT_GE(T9RJournalFill::follow_seeds.size(), 2u);
