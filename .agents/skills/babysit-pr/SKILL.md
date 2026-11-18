@@ -97,7 +97,7 @@ are fixed and pushed automatically; design decisions are always brought to you.
 
 </details>
 
-👀 *watching · since 12:30 UTC · CI running · 0 findings answered*
+👀 *watching · since 12:30 UTC · CI running · 0 findings answered · Bits pending*
 ```
 
 The content is live, never repeated boilerplate: append one line to the run
