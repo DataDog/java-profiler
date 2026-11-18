@@ -61,9 +61,9 @@
 // fillJavaMethodInfo requires and which is impractical to fake in a plain
 // gtest) by exercising the exact validation shape above against buffers
 // standing in for whatever GetLineNumberTable() might hand back -- a valid
-// table, an unreadable (PROT_NONE) one, one made readable again, a
-// zero-size one, and corrupted size values --
-// regardless of the precise reason the JVMTI call produced them.
+// table, an unreadable (PROT_NONE) one that is then made readable again, a
+// zero-size one, and corrupted size values -- regardless of the precise
+// reason the JVMTI call produced them.
 
 #include <gtest/gtest.h>
 #include <cstring>
@@ -201,26 +201,10 @@ TEST(LineNumberTableCopyRawTest, UnguardedAccessCrashesWhenSourceUnmapped) {
       "");
 }
 
-// Documents the fix: probing with SafeAccess::isReadableRange() turns the crash
-// into a clean rejection. PROT_NONE, not munmap(): a concurrent mmap may reuse
-// an unmapped address before the probe, while this page stays test-owned.
-TEST_F(LineNumberTableCopyTest, RejectsUnreadableSource) {
-  ScopedPage page;
-  ASSERT_NE(page.addr(), MAP_FAILED);
-
-  jint line_number_table_size = 4;
-  jvmtiLineNumberEntry *line_number_table =
-      makeFakeLineNumberTable(page.addr(), line_number_table_size);
-
-  ASSERT_EQ(0, mprotect(page.addr(), page.size(), PROT_NONE));
-
-  EXPECT_FALSE(
-      isLineNumberTableReadable(line_number_table, line_number_table_size));
-}
-
-// The probe must follow the page's current protection on the same pointer:
-// rejected while PROT_NONE, accepted once read access is restored.
-TEST_F(LineNumberTableCopyTest, TracksSourceProtectionChanges) {
+// Documents the fix: the probe rejects a PROT_NONE source, then accepts the
+// same pointer once readable. PROT_NONE, not munmap(): a concurrent mmap may
+// reuse an unmapped address before the probe, while this page stays owned.
+TEST_F(LineNumberTableCopyTest, RejectsUnreadableSourceUntilReadable) {
   ScopedPage page;
   ASSERT_NE(page.addr(), MAP_FAILED);
 
