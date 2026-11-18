@@ -393,7 +393,19 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("files read failed", description)
+        self.assertIn("split the pull request", description)
+
+    def test_file_cap_is_labeled_as_a_size_problem_not_a_read_failure(self):
+        # The author must be able to tell a deliberate size cap from a
+        # transient read failure: only the cap message says what to do.
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, {"files": files_page(*(
+                "f/%d.py" % index for index in range(300)))}),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertIn("at or above the 300 cap", description)
+        self.assertNotIn("read failed", description)
 
     def test_failed_reviews_read_fails_closed(self):
         transport = testlib.FakeTransport([
@@ -718,6 +730,12 @@ class SelectedStatusTest(unittest.TestCase):
     def test_highest_id_wins_regardless_of_order(self):
         statuses = [self.status(9), self.status(12), self.status(4)]
         self.assertEqual(cogate._selected_status(statuses)["id"], 12)
+
+    def test_equal_id_keeps_the_first_seen(self):
+        # A duplicated id must not let the later record replace the first
+        # candidate: >= here would make the choice order-dependent.
+        statuses = [self.status(9, state="failure"), self.status(9)]
+        self.assertEqual(cogate._selected_status(statuses)["state"], "failure")
 
     def test_no_candidate_returns_none(self):
         self.assertIsNone(cogate._selected_status(

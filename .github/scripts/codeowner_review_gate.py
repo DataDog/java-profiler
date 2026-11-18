@@ -45,6 +45,13 @@ CODEOWNERS_MAX_ENTRIES = 1024
 _COMPARE_FILE_CAP = 300
 
 
+class FileCapExceeded(gate.ApiError):
+    """The compare endpoint returned a full page: the head changed more
+    files than the cap, and a truncated list cannot be told apart from a
+    complete one. Distinct from a failed read so the published status can
+    tell the author what to do about it."""
+
+
 class CodeownerClient(gate.GitHubClient):
     """GitHubClient plus the two reads this gate adds: changed files and
     team membership. Pagination reuses the base client's helpers."""
@@ -71,12 +78,16 @@ class CodeownerClient(gate.GitHubClient):
                 if not isinstance(page, list):
                     raise gate.ApiError("expected a JSON array from %s" % (url,))
                 members.extend(page)
+                url = gate._next_link(link, self._api_url)
+                if url is None:
+                    # The last page is in hand; the cap only bounds a read
+                    # that would continue, like the base client's pages.
+                    break
                 pages += 1
                 if pages >= gate.MAX_FETCH_PAGES:
                     raise gate.ApiError(
                         "team membership for %s exceeds %d pages"
                         % (team_slug, gate.MAX_FETCH_PAGES))
-                url = gate._next_link(link, self._api_url)
             cached = frozenset(
                 member.get("login") for member in members
                 if isinstance(member, dict))
@@ -104,8 +115,9 @@ class CodeownerClient(gate.GitHubClient):
             raise gate.ApiError("compare response for %s misses files" % (head_sha,))
         files = document["files"]
         if len(files) >= _COMPARE_FILE_CAP:
-            raise gate.ApiError(
-                "compare for %s reports %d files, at or above the %d cap"
+            raise FileCapExceeded(
+                "compare for %s reports %d files, at or above the %d cap; "
+                "split the pull request"
                 % (head_sha, len(files), _COMPARE_FILE_CAP))
         return files
 
@@ -173,15 +185,15 @@ def is_sensitive(path, patterns):
     which can only over-block a path GitHub attributes more narrowly —
     the fail-safe direction.
     """
+    parts = path.split("/")
+    prefixes = ["/".join(parts[:end]) for end in range(1, len(parts) + 1)]
     for pattern in patterns:
         if pattern.startswith("/"):
             pattern = pattern[1:]
         if pattern.endswith("/"):
             pattern = pattern[:-1]
         if "*" in pattern or "?" in pattern:
-            parts = path.split("/")
-            if any(fnmatch.fnmatchcase("/".join(parts[:end]), pattern)
-                   for end in range(1, len(parts) + 1)):
+            if any(fnmatch.fnmatchcase(prefix, pattern) for prefix in prefixes):
                 return True
         elif path == pattern or path.startswith(pattern + "/"):
             # GitHub treats a ``/dir`` entry as covering the directory's
@@ -290,6 +302,9 @@ def evaluate_sha(sha, client, patterns):
         # listing and the read could pass a head that was never checked.
         try:
             files = client.compare_files(base_ref, sha)
+        except FileCapExceeded as error:
+            decisions.append((number, "failure", "cannot evaluate: %s" % (error,)))
+            continue
         except (gate.ApiError, gate.RateLimitError):
             decisions.append((number, "failure",
                               "cannot evaluate: PR %d files read failed" % (number,)))
