@@ -22,7 +22,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
-- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, raw-identity exit admission, loader-backed Linux import-layout validation and allocation sampling
+- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, raw-identity exit admission, loader-before-mutex Linux import-layout validation and allocation sampling
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; filtered wall reservoir and epoch accounting; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control

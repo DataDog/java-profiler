@@ -57,7 +57,11 @@ class UnloadProtection {
 
     bool isValid() const { return _valid; }
     // Returns true for valid pins; Linux also requires a matching live import-layout fingerprint.
+    // Validation enters the loader; callers must not hold a patch mutex.
     bool importsAreCurrent(const CodeCache* cc) const;
+#ifdef UNIT_TEST
+    static void (*beforeImportWalkForTest)();
+#endif
 };
 
 #endif // _SYMBOLS_H

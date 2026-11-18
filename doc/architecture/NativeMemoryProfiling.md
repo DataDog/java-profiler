@@ -123,10 +123,12 @@ The GOT-patching state lives in `MallocHooker` (`_patch_lock`, `_patched_libs`,
    `patchLibraries()` already sees `running() == true` and patches the new library
    itself.
 
-4. **`MallocHooker::patchLibraries()`** — under `_patch_lock`, walks the native
-   libraries not yet patched and writes the hook addresses into each library's GOT.
-   `_patched_libs` is a monotonic index, so already-patched libraries are skipped on
-   subsequent calls.
+4. **`MallocHooker::patchLibraries()`** selects the next cache under `_patch_lock`,
+   then pins and validates it outside that mutex. It reacquires the mutex to recheck
+   the monotonic cursor and patch; a concurrent patcher's cursor advance causes a retry.
+
+   The patch mutex is released before the pin closes. No loader function runs while
+   that mutex is held, so a foreign loader callback can patch without lock inversion.
 
    On Linux, each pinned image must match the cached fingerprint before any import access.
    The loader supplies the live program headers and load bias; file offsets need not be mapped.

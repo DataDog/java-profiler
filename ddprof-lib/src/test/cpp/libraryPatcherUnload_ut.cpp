@@ -844,6 +844,68 @@ TEST_F(MallocHookerIdentityTest, RejectsReplacementWithProgramHeadersOutsideLoad
   });
 }
 
+class MallocHookerTestAccessor {
+ public:
+  static void beginAt(CodeCache* cache) {
+    const CodeCacheArray& libraries = Libraries::instance()->native_libs();
+    for (int i = 0; i < libraries.count(); ++i) {
+      if (libraries[i] == cache) {
+        MallocHooker::_patched_libs = i;
+        return;
+      }
+    }
+    _exit(CHILD_LIB_NOT_FOUND);
+  }
+};
+
+static std::atomic<bool> g_malloc_walk_entered{false};
+static std::atomic<bool> g_foreign_malloc_patch_finished{false};
+
+static void pauseFirstMallocImportWalk() {
+  if (!g_malloc_walk_entered.exchange(true, std::memory_order_acq_rel)) {
+    while (!g_foreign_malloc_patch_finished.load(std::memory_order_acquire)) sched_yield();
+  }
+}
+
+static void* patchMallocConcurrently(void*) {
+  MallocHooker::patchLibraries();
+  return nullptr;
+}
+
+// A foreign callback must finish while another patcher pauses before its live-header walk.
+// Holding the patch mutex across that boundary would block this callback indefinitely.
+static int patchMallocInsideForeignWalk(struct dl_phdr_info*, size_t, void* data) {
+  pthread_t* patcher = static_cast<pthread_t*>(data);
+  if (pthread_create(patcher, nullptr, patchMallocConcurrently, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
+  while (!g_malloc_walk_entered.load(std::memory_order_acquire)) sched_yield();
+  MallocHooker::patchLibraries();
+  g_foreign_malloc_patch_finished.store(true, std::memory_order_release);
+  return 1;
+}
+
+TEST_F(MallocHookerIdentityTest, ForeignWalkPatchesWhileConcurrentPatcherIsBeforeImportWalk) {
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    loadMallocTarget(path, sizeof(path), &handle);
+    CodeCache* writer = Libraries::instance()->findLibraryByAddress(reinterpret_cast<void*>(MallocTracer::recordMalloc));
+    if (writer == nullptr) exitRemoving(path, CHILD_LIB_NOT_FOUND);
+    void** slot = writer->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    // The main executable needs no dlopen pin before the instrumented live-header walk.
+    MallocHookerTestAccessor::beginAt(writer);
+    UnloadProtection::beforeImportWalkForTest = pauseFirstMallocImportWalk;
+    signal(SIGALRM, [](int) { _exit(CHILD_DEADLOCK); });
+    alarm(5);
+    pthread_t patcher;
+    dl_iterate_phdr(patchMallocInsideForeignWalk, &patcher);
+    if (pthread_join(patcher, nullptr) != 0) exitRemoving(path, CHILD_THREAD_FAILED);
+    alarm(0);
+    UnloadProtection::beforeImportWalkForTest = nullptr;
+    exitRemoving(path, *slot == reinterpret_cast<void*>(malloc_hook) ? CHILD_OK : CHILD_SLOT_NOT_HOOKED);
+  });
+}
+
 // Set by the stopping thread just before it calls unpatch_socket_functions().
 std::atomic<bool> g_stopper_started{false};
 

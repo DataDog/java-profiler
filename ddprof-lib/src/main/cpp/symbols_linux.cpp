@@ -1303,12 +1303,19 @@ static int checkLiveImportIdentity(struct dl_phdr_info* info, size_t, void* data
     return 1;
 }
 
+#ifdef UNIT_TEST
+void (*UnloadProtection::beforeImportWalkForTest)() = nullptr;
+#endif
+
 bool UnloadProtection::importsAreCurrent(const CodeCache* cc) const {
     if (!_valid || cc->imageFingerprint() == 0) return false;
 
     // A pin prevents unloading, but e_phoff is a file offset and need not address mapped headers.
     // The loader supplies live headers and load bias, even for a file-only program-header table.
     ImportIdentityQuery query = {cc, false};
+#ifdef UNIT_TEST
+    if (beforeImportWalkForTest != nullptr) beforeImportWalkForTest();
+#endif
     dl_iterate_phdr(checkLiveImportIdentity, &query);
     return query.matches;
 }

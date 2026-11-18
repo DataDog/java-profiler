@@ -19,6 +19,9 @@ class MallocHooker {
     static Mutex _patch_lock;
     static int _patched_libs;
     static bool _initialized;
+#ifdef UNIT_TEST
+    friend class MallocHookerTestAccessor;
+#endif
 
     static void detectNestedMalloc();
 
