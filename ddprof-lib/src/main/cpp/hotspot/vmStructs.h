@@ -730,11 +730,14 @@ DECLARE(VMKlass)
         return VMKlass::cast((const void*)handle);
     }
 
+    // Reads the oop header with SafeAccess and validates the decoded klass, so unreadable
+    // memory yields nullptr instead of faulting the caller's stack walk. SafeAccess returns
+    // 0 on a fault; a valid mark word or narrow klass is never 0.
     static VMKlass* fromOop(uintptr_t oop) {
         if (_narrow_klass_shift >= 0) {
             uintptr_t narrow_klass;
             if (_compact_object_headers) {
-                uintptr_t mark = *(uintptr_t*)oop;
+                uintptr_t mark = reinterpret_cast<uintptr_t>(SafeAccess::load(reinterpret_cast<void**>(oop)));
                 if (mark & MONITOR_BIT) {
                     // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
                     // reading the mark word and dereferencing the monitor pointer. Use
@@ -757,11 +760,15 @@ DECLARE(VMKlass)
                 }
                 narrow_klass = mark >> _markWord_klass_shift;
             } else {
-                narrow_klass = *(unsigned int*)(oop + _oop_klass_offset);
+                narrow_klass = static_cast<uint32_t>(
+                    SafeAccess::load32(reinterpret_cast<int32_t*>(oop + _oop_klass_offset)));
             }
-            return VMKlass::cast((const void*)(_narrow_klass_base + (narrow_klass << _narrow_klass_shift)));
+            if (narrow_klass == 0) {
+                return nullptr;
+            }
+            return VMKlass::cast_or_null(_narrow_klass_base + (narrow_klass << _narrow_klass_shift));
         } else {
-            return VMKlass::load_then_cast((const void*)(oop + _oop_klass_offset));
+            return VMKlass::cast_or_null(SafeAccess::load(reinterpret_cast<void**>(oop + _oop_klass_offset)));
         }
     }
 

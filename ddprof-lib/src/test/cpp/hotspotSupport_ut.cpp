@@ -5,7 +5,6 @@
 #include <gtest/gtest.h>
 #include <cstddef>
 #include <functional>
-#include <memory>
 #include <vector>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -405,6 +404,15 @@ protected:
 #endif
     }
 
+    // Switches to compressed klass pointers and decodes the receiver's klass word to `klass`.
+    void decodeReceiverKlassTo(const void* klass) {
+        constexpr uintptr_t narrow_klass = 16;
+        _layout.set(_compact_object_headers, false);
+        _layout.set(_narrow_klass_shift, 0);
+        _layout.set(_narrow_klass_base, const_cast<char*>(static_cast<const char*>(klass)) - narrow_klass);
+        _oop[1] = narrow_klass;
+    }
+
     void prepareWalk() {
         asgct_budgets.clear();
         asgct_pcs.clear();
@@ -433,19 +441,42 @@ protected:
 
 AsgctVtableReceiverTest::Block AsgctVtableReceiverTest::_blocks[2]{};
 
-// Installs the production crash handlers: SafeAccess faults resume in place, and any
-// other fault in the walk siglongjmps to withUcontextFaultRecovery's landing pad.
+// Installs the production crash handlers and restores the full previous actions. SafeAccess
+// faults resume in place; any other walk fault siglongjmps to the walker's landing pad.
 class ProfilerFaultHandlersScope {
-    SigAction _segv = OS::replaceSigsegvHandler(Profiler::segvHandler);
-    SigAction _bus = OS::replaceSigbusHandler(Profiler::busHandler);
+    struct sigaction _segv{};
+    struct sigaction _bus{};
+    static void install(int signo, SigAction handler, struct sigaction* old) {
+        struct sigaction action{};
+        action.sa_sigaction = handler;
+        action.sa_flags = SA_SIGINFO | SA_NODEFER;
+        sigemptyset(&action.sa_mask);
+        EXPECT_EQ(0, sigaction(signo, &action, old));
+    }
 public:
-    ProfilerFaultHandlersScope() = default;
+    ProfilerFaultHandlersScope() {
+        install(SIGSEGV, Profiler::segvHandler, &_segv);
+        install(SIGBUS, Profiler::busHandler, &_bus);
+    }
     ~ProfilerFaultHandlersScope() {
-        OS::replaceSigsegvHandler(_segv);
-        OS::replaceSigbusHandler(_bus);
+        EXPECT_EQ(0, sigaction(SIGSEGV, &_segv, nullptr));
+        EXPECT_EQ(0, sigaction(SIGBUS, &_bus, nullptr));
     }
     ProfilerFaultHandlersScope(const ProfilerFaultHandlersScope&) = delete;
     ProfilerFaultHandlersScope& operator=(const ProfilerFaultHandlersScope&) = delete;
+};
+
+class UnreadablePage {
+    size_t _size = static_cast<size_t>(getpagesize());
+    void* _addr = mmap(nullptr, _size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+public:
+    UnreadablePage() = default;
+    ~UnreadablePage() {
+        if (_addr != MAP_FAILED) munmap(_addr, _size);
+    }
+    UnreadablePage(const UnreadablePage&) = delete;
+    UnreadablePage& operator=(const UnreadablePage&) = delete;
+    void* addr() const { return _addr; }
 };
 
 TEST_P(AsgctVtableReceiverTest, VmReceiverPrefixReservesTheStubAtShallowDepth) {
@@ -557,39 +588,65 @@ TEST_P(AsgctVtableReceiverTest, NotWalkableJavaAlsoCapturesReceiverBeforeRetry) 
     expectCanary(3);
 }
 
-TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheReceiverFrame) {
-    size_t page_size = static_cast<size_t>(getpagesize());
-    auto unmap = [page_size](void* page) { munmap(page, page_size); };
-    std::unique_ptr<void, decltype(unmap)> bad_page(
-        mmap(nullptr, page_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0), unmap);
-    ASSERT_NE(MAP_FAILED, bad_page.get());
+TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheAsgctReceiverFrame) {
+    UnreadablePage bad_page;
+    ASSERT_NE(MAP_FAILED, bad_page.addr());
     ProfilerFaultHandlersScope handlers;
     ProfiledThread* thread = ProfiledThread::current();
-    // An unreadable oop header, then a compressed klass pointer decoded into that page.
-    for (bool unreadable_klass : {false, true}) {
-        SCOPED_TRACE(unreadable_klass ? "klass" : "receiver");
-        if (unreadable_klass) {
-            _layout.set(_compact_object_headers, false);
-            _layout.set(_narrow_klass_shift, 0);
-            _layout.set(_narrow_klass_base, static_cast<char*>(bad_page.get()));
-            _oop[1] = 0;
-        } else {
-            setReceiver(reinterpret_cast<uintptr_t>(bad_page.get()));
-        }
+    auto walk_with_recovery = [&]() {
         prepareWalk();
         bool truncated = false;
         StackContext java_ctx{};
-        {
-            AsyncSampleMutex mutex(thread);
-            ASSERT_TRUE(mutex.acquired());
-            ASSERT_EQ(2, HotspotSupportTestAccessor::getJavaTraceAsyncWithRecovery(
-                &_ctx, _frames, 3, &java_ctx, &truncated));
-        }
+        AsyncSampleMutex mutex(thread);
+        EXPECT_TRUE(mutex.acquired());
+        int depth = HotspotSupportTestAccessor::getJavaTraceAsyncWithRecovery(
+            &_ctx, _frames, 3, &java_ctx, &truncated);
         EXPECT_FALSE(truncated);
+        return depth;
+    };
+    for (bool via_klass : {false, true}) {
+        SCOPED_TRACE(via_klass ? "compressed klass" : "receiver header");
+        if (via_klass) decodeReceiverKlassTo(&(VtableReceiverCaptureTest::_klass));
+        // Readable memory first, so every other capture gate is shown to pass.
+        ASSERT_EQ(3, walk_with_recovery());
+        EXPECT_EQ(BCI_VTABLE_RECEIVER, _frames[0].bci);
+        if (via_klass) {
+            decodeReceiverKlassTo(bad_page.addr());
+        } else {
+            setReceiver(reinterpret_cast<uintptr_t>(bad_page.addr()));
+        }
+        ASSERT_EQ(2, walk_with_recovery());
         EXPECT_EQ(BCI_NATIVE_FRAME, _frames[0].bci);
         EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[0].method_id));
         EXPECT_EQ(reinterpret_cast<jmethodID>(0x1230), _frames[1].method_id);
         EXPECT_EQ(std::vector<int>({3, 2}), asgct_budgets);
+        expectCanary(2);
+        setReceiver(reinterpret_cast<uintptr_t>(_oop));
+    }
+}
+
+TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheVmReceiverFrame) {
+    UnreadablePage bad_page;
+    ASSERT_NE(MAP_FAILED, bad_page.addr());
+    ProfilerFaultHandlersScope handlers;
+    // Keep the native-transition anchor empty so the walk stays on the interrupted leaf.
+    _thread.anchor = {};
+    for (bool via_klass : {false, true}) {
+        SCOPED_TRACE(via_klass ? "compressed klass" : "receiver header");
+        if (via_klass) decodeReceiverKlassTo(&(VtableReceiverCaptureTest::_klass));
+        prepareWalk();
+        ASSERT_EQ(2, HotspotSupportTestAccessor::walkVM(&_ctx, _frames, 2, _features, false));
+        EXPECT_EQ(BCI_VTABLE_RECEIVER, _frames[0].bci);
+        if (via_klass) {
+            decodeReceiverKlassTo(bad_page.addr());
+        } else {
+            setReceiver(reinterpret_cast<uintptr_t>(bad_page.addr()));
+        }
+        prepareWalk();
+        // The leaf stub and its caller stub fill the budget; a recovered fault would end the walk.
+        ASSERT_EQ(2, HotspotSupportTestAccessor::walkVM(&_ctx, _frames, 2, _features, false));
+        EXPECT_EQ(BCI_NATIVE_FRAME, _frames[0].bci);
+        EXPECT_EQ(BCI_NATIVE_FRAME, _frames[1].bci);
         expectCanary(2);
         setReceiver(reinterpret_cast<uintptr_t>(_oop));
     }

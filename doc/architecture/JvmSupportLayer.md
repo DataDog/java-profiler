@@ -224,7 +224,7 @@ This requires `vtable_target` and class-name VMStructs; `cstack=no` omits both f
 The `cpu` option enables the feature; `event=cpu` and implicit CPU defaults do not.
 
 Capture runs inside the walker's crash-protection scope, before unwinding.
-It checks the receiver header and its klass with `SafeAccess` before it reads them.
+`VMKlass::fromOop` reads the receiver header with `SafeAccess` and validates the decoded klass.
 An unreadable receiver drops only the receiver frame.
 PC/SP/FP must match the interrupted leaf to prevent redirected callers from using stale arguments.
 

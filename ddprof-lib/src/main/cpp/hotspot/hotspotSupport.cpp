@@ -258,15 +258,10 @@ VMSymbol* HotspotSupport::captureVtableReceiver(HotspotStackFrame& frame, uintpt
         return nullptr;
     }
     uintptr_t receiver = frame.jarg0();
-    // Mark word plus klass word; compact headers read only the mark word.
-    constexpr size_t oop_header_read_size = 2 * sizeof(uintptr_t);
-    // Pre-checked so an unreadable receiver drops only this optional frame. A raw fault
-    // here would make withUcontextFaultRecovery discard the caller's whole ASGCT trace.
-    if (receiver == 0 || !SafeAccess::isReadableRange(reinterpret_cast<const void*>(receiver), oop_header_read_size)) {
+    if (receiver == 0) {
         return nullptr;
     }
-    // fromOop does not validate a decoded compressed klass pointer; cast_or_null does.
-    VMKlass* klass = VMKlass::cast_or_null(VMKlass::fromOop(receiver));
+    VMKlass* klass = VMKlass::fromOop(receiver);
     return klass != nullptr ? klass->name() : nullptr;
 }
 
