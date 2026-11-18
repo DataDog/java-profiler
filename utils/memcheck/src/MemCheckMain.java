@@ -104,7 +104,15 @@ public class MemCheckMain {
         }
         String dumpPath = System.getProperty("memcheck.dumpPath",
                 System.getProperty("java.io.tmpdir") + "/memcheck-middump.jfr");
-        markerAfter(Long.parseLong(dumpAfter), () -> profiler.dump(Paths.get(dumpPath)));
+        markerAfter(Long.parseLong(dumpAfter), () -> {
+            profiler.dump(Paths.get(dumpPath));
+            // dump() reports no failure, so check its output: without a rotation the sample
+            // would miss the memory that serializing the constant pools grows.
+            File recording = new File(dumpPath);
+            if (!recording.isFile() || recording.length() == 0) {
+                throw new IllegalStateException("the rotation wrote no recording to " + dumpPath);
+            }
+        });
     }
 
     private static void markerAfter(long delayMs, Runnable action) {

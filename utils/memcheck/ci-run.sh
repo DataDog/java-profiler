@@ -57,4 +57,10 @@ export DDPROF_CLASSES="$ROOT/ddprof-lib/build/classes/java/main"
 export MEMCHECK_CLASSES="$ROOT/build/mc-scratch/classes"
 export WORKDIR="$ROOT/build/mc-scratch"
 export OUTDIR="$OUT/runs"
-"$HERE/run_all.sh" 2>&1 | tee "$OUT/run_all.log"
+if ! "$HERE/run_all.sh" 2>&1 | tee "$OUT/run_all.log"; then
+  # The failure messages point into the scratch space, which is not an artifact.
+  mkdir -p "$OUT/diagnostics"
+  (cd "$WORKDIR/runs" && find . -type f \( -name '*.log' -o -name '*.txt' \) \
+    -exec cp --parents -- {} "$OUT/diagnostics/" \;) || true
+  exit 1
+fi

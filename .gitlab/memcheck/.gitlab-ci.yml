@@ -56,6 +56,7 @@ memcheck:unit-tests:
   timeout: 10m
   script:
     - bash utils/memcheck/test/evaluate_test.sh
+    - bash utils/memcheck/test/run_scenario_test.sh
 
 # Memory overhead check for every PR. Each scenario runs with and without the
 # profiler in the same job, so the NMT overhead is profiled minus no-profiler on
