@@ -84,8 +84,9 @@ one status comment; at stop it removes the label and edits that same comment —
 the status line flips to stopped — one timeline entry per run, never a reply. A missing
 label is flagged in the stop report, never created (the worker does not create repo
 labels). The status comment
-is fixed boilerplate — one visible line, the rest collapsed, and a quiet
-status footer that flips at stop (never removed: one timeline entry per run):
+is fixed boilerplate — one visible line stating what the babysitter does, a
+collapsed "How it works" details block, and a quiet italic status footer that
+flips at stop (never removed: one timeline entry per run):
 
 ```
 🐶 **babysit-pr** is watching this PR — CI breakages and mechanical findings
