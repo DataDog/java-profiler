@@ -133,7 +133,8 @@ flagged, threads left for the author, `bits_triggered` heads.
    roots. The classification set in step 4 is every thread root from a trusted
    author, **regardless of replies** — a reply never closes a thread: an
    untrusted reply must not hide a trusted finding, and replies only matter to
-   the one-reply cap (a thread in the worker's `replied` record is done — the
+   the one-reply cap (a thread in the worker's `replied` record — or carrying
+   a reply with the worker's signature — is done; the
    record decides, never the reply's author: the worker posts with the PR
    author's login, so the author's own reply must not count as the worker's).
    Improvised alternatives (counting reviews, filtering by date, trusting a
@@ -151,10 +152,14 @@ flagged, threads left for the author, `bits_triggered` heads.
    do not re-trigger Bits: the comment is required (same once-per-head record).
    Never post it in the PR body or an inline review thread; a plain top-level
    comment is what the bot reads.
-2. **CI red.** One flaky retry per failing check, in that check's provider:
-   `$GH run rerun --failed <run>` for GitHub Actions checks; for `dd-gitlab/*`
-   checks follow the check's details link to the GitLab job and retry it there
-   (the mosaic job page, or the GitLab API). A failure that
+2. **CI red.** One flaky rerun per underlying target: for GitHub Actions,
+   one `$GH run rerun --failed <run>` per workflow RUN, not per failing check —
+   when two checks fail in the same run, a second rerun is refused while the
+   first is in progress, so defer classifying that run's other failed checks
+   until the in-flight rerun finishes. For `dd-gitlab/*`, the
+   `default-pipeline` check is a pipeline summary, not a job — follow its
+   details link to the failed jobs and retry each underlying job once (the
+   mosaic job page, or the GitLab API). A failure that
    survives its retry, or a job that cannot be retried, is real. Fetch the logs from
    the failing provider, reproduce through
    the build-and-summarize wrapper (never the bare Gradle wrapper), and follow
@@ -212,7 +217,11 @@ flagged, threads left for the author, `bits_triggered` heads.
    previous marker's list like `bits_triggered`; each replied id is also
    reported to the session over the supervisor channel at posting time, so
    a run that dies before its stop report still leaves its replies known —
-   the session folds them into its dedupe copy) — a trusted root
+   the session folds them into its dedupe copy; and every reply the worker
+   posts ends with the invisible signature `<!-- babysit-pr v1 -->`, which the
+   census sees in the reply body — a thread carrying a signature reply is
+   done even when the marker never learned it, closing the
+   died-between-posting-and-reporting window) — a trusted root
    that carries no finding (a question, an FYI, a thanks) still gets its one
    reply as a brief factual answer or acknowledgement: a refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply; an
