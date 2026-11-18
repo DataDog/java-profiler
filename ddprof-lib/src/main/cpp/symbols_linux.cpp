@@ -730,11 +730,11 @@ void ElfParser::parseDynamicSection() {
         // though the intent is just "sym addresses are already absolute". Do the
         // addition in integer space, same fix as the .plt case above.
         uintptr_t base_addr = (uintptr_t)this->base();
-        // Records one table's imports after its leading `skip` (<= size) bytes of
-        // relative relocations. Walking only while a whole entry fits keeps offs += ent
-        // from wrapping. only_got_slots keeps .rela.dyn's GLOB_DAT/ABS64 entries.
+        // Records one table's imports after its leading `skip` bytes of relative relocations.
+        // The skip guard (callers pass skip <= size) and walking only while a whole entry
+        // fits keep offs within the table. only_got_slots keeps GLOB_DAT/ABS64 entries.
         auto addImports = [&](char* table, size_t size, size_t ent, size_t skip, bool only_got_slots) {
-            if (table == NULL || size == 0 || ent < sizeof(ElfRelocation)) return;
+            if (table == NULL || size == 0 || ent < sizeof(ElfRelocation) || skip > size) return;
             for (size_t offs = skip; ent <= size - offs; offs += ent) {
                 ElfRelocation r = relocationAt(table + offs);
                 if (only_got_slots && ELF_R_TYPE(r.r_info) != R_GLOB_DAT && ELF_R_TYPE(r.r_info) != R_ABS64) {
@@ -1493,9 +1493,9 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
 
     // Same tables and entry sizes as parseDynamicSection(). Entries smaller than
     // sizeof(ElfRelocation) are skipped; the leading `skip` bytes are relative
-    // relocations, without a symbol.
+    // relocations, without a symbol; the skip guard is defensive (callers pass skip <= size).
     auto hashTable = [&](uintptr_t table, size_t size, size_t ent, size_t skip) {
-        if (table == 0 || size == 0 || ent < sizeof(ElfRelocation)) return true;
+        if (table == 0 || size == 0 || ent < sizeof(ElfRelocation) || skip > size) return true;
         if (!image.readable(table, size)) return false;
         return hashSymbolRelocations(image, table + skip, size - skip, ent, symtab, syment, strtab, strsz, hash);
     };
