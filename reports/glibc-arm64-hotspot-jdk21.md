@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-18 10:07:53 EST
+**Date:** 2026-11-18 10:20:01 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 305 |
-| Sample Rate | 5.08/sec |
-| Health Score | 318% |
+| CPU Samples | 296 |
+| Sample Rate | 4.93/sec |
+| Health Score | 308% |
 | Threads | 9 |
-| Allocations | 135 |
+| Allocations | 159 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 91 |
-| Sample Rate | 1.52/sec |
-| Health Score | 95% |
-| Threads | 13 |
-| Allocations | 71 |
+| CPU Samples | 81 |
+| Sample Rate | 1.35/sec |
+| Health Score | 84% |
+| Threads | 12 |
+| Allocations | 55 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
+<summary>CPU Timeline (2 unique values: 33-38 cores)</summary>
 
 ```
-1795014252 33
-1795014257 33
-1795014262 33
-1795014267 33
-1795014272 33
-1795014277 33
-1795014282 33
-1795014287 33
-1795014292 33
-1795014297 33
-1795014302 33
-1795014307 33
-1795014312 33
-1795014317 33
-1795014322 33
-1795014327 33
-1795014332 33
-1795014337 33
-1795014342 33
-1795014347 33
+1795014969 33
+1795014974 38
+1795014979 38
+1795014984 33
+1795014989 33
+1795014994 33
+1795014999 33
+1795015004 33
+1795015009 33
+1795015014 33
+1795015019 33
+1795015024 33
+1795015029 33
+1795015034 33
+1795015039 33
+1795015044 33
+1795015049 33
+1795015054 33
+1795015059 33
+1795015064 33
 ```
 </details>
 
