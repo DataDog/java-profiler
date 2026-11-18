@@ -229,7 +229,10 @@ flagged, threads left for the author, `bits_triggered` heads.
    (resolved once per run, with the same credentials:
    `$GH api user --jq .id`); a forged marker from any other account never
    closes a thread, and the thread root is still classified in step 4
-   regardless of replies)) — a trusted root
+   regardless of replies — the check cannot catch the PR author: the
+   worker posts with the author's login, so an author-appended marker
+   passes the id check; there a forged marker only suppresses the
+   worker's reply, and the marker's `replied` record still decides)) — a trusted root
    that carries no finding (a question, an FYI, a thanks) still gets its one
    reply as a brief factual answer or acknowledgement: a refuted finding
    (scanner noise, premise false against the code) gets a one-line factual reply; an
