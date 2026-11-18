@@ -3,12 +3,9 @@
  */
 
 #include <gtest/gtest.h>
-#include <gtest/gtest-spi.h>
-#include <cerrno>
 #include <cstddef>
 #include <functional>
 #include <memory>
-#include <system_error>
 #include <vector>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -51,10 +48,6 @@ public:
             [&](HotspotStackFrame::RegisterSnapshot& snapshot) {
                 depth = HotspotSupport::getJavaTraceAsync(context, frames, max_depth, java_ctx, truncated, snapshot);
             });
-    }
-
-    static uintptr_t receiverCapturePC() {
-        return reinterpret_cast<uintptr_t>(&HotspotSupport::captureVtableReceiver);
     }
 
     static int walkVM(void* context, ASGCT_CallFrame* frames, int max_depth,
@@ -440,235 +433,20 @@ protected:
 
 AsgctVtableReceiverTest::Block AsgctVtableReceiverTest::_blocks[2]{};
 
-static void expectSignalActionRestored(int signo, const struct sigaction& before) {
-    SCOPED_TRACE(signo);
-    struct sigaction after{};
-    ASSERT_EQ(0, sigaction(signo, nullptr, &after));
-    EXPECT_EQ(before.sa_flags, after.sa_flags);
-    if (before.sa_flags & SA_SIGINFO) {
-        EXPECT_EQ(before.sa_sigaction, after.sa_sigaction);
-    } else {
-        EXPECT_EQ(before.sa_handler, after.sa_handler);
-    }
-    for (int signal = 1; signal < NSIG; signal++) {
-        EXPECT_EQ(sigismember(&before.sa_mask, signal), sigismember(&after.sa_mask, signal)) << signal;
-    }
-}
-
-static void expectOriginalSignalActionRestored(int signo, const struct sigaction& before) {
-    // Default/ignored dispositions can expose different opaque masks through signal interceptors.
-    // Callable actions remain the full flags/mask preservation oracle.
-    if (before.sa_handler == SIG_DFL || before.sa_handler == SIG_IGN) {
-        struct sigaction after{};
-        ASSERT_EQ(0, sigaction(signo, nullptr, &after));
-        EXPECT_EQ(before.sa_handler, after.sa_handler);
-    } else {
-        expectSignalActionRestored(signo, before);
-    }
-}
-
-// Each member restores its own full action, including when a later install throws.
-class ReceiverReadSignalActionScope {
-    int _signo;
-    struct sigaction _old{};
+// Installs the production crash handlers: SafeAccess faults resume in place, and any
+// other fault in the walk siglongjmps to withUcontextFaultRecovery's landing pad.
+class ProfilerFaultHandlersScope {
+    SigAction _segv = OS::replaceSigsegvHandler(Profiler::segvHandler);
+    SigAction _bus = OS::replaceSigbusHandler(Profiler::busHandler);
 public:
-    ReceiverReadSignalActionScope(int signo, const struct sigaction& action) : _signo(signo) {
-        if (sigaction(signo, &action, &_old) != 0) {
-            throw std::system_error(errno, std::generic_category(), "install receiver-read signal action");
-        }
+    ProfilerFaultHandlersScope() = default;
+    ~ProfilerFaultHandlersScope() {
+        OS::replaceSigsegvHandler(_segv);
+        OS::replaceSigbusHandler(_bus);
     }
-    ~ReceiverReadSignalActionScope() {
-        EXPECT_EQ(0, sigaction(_signo, &_old, nullptr));
-        expectOriginalSignalActionRestored(_signo, _old);
-    }
-    ReceiverReadSignalActionScope(const ReceiverReadSignalActionScope&) = delete;
-    ReceiverReadSignalActionScope& operator=(const ReceiverReadSignalActionScope&) = delete;
+    ProfilerFaultHandlersScope(const ProfilerFaultHandlersScope&) = delete;
+    ProfilerFaultHandlersScope& operator=(const ProfilerFaultHandlersScope&) = delete;
 };
-
-class ReceiverReadBaselineScope {
-    ReceiverReadSignalActionScope _segv;
-    ReceiverReadSignalActionScope _bus;
-
-    static void handler(int signo) { _exit(128 + signo); }
-    static void siginfoHandler(int signo, siginfo_t*, void*) { _exit(128 + signo); }
-    static struct sigaction segvAction() {
-        struct sigaction action{};
-        action.sa_sigaction = siginfoHandler;
-        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
-        EXPECT_EQ(0, sigemptyset(&action.sa_mask));
-        EXPECT_EQ(0, sigaddset(&action.sa_mask, SIGUSR1));
-        return action;
-    }
-    static struct sigaction busAction() {
-        struct sigaction action{};
-        action.sa_handler = handler;
-        action.sa_flags = SA_RESTART;
-        EXPECT_EQ(0, sigemptyset(&action.sa_mask));
-        EXPECT_EQ(0, sigaddset(&action.sa_mask, SIGUSR2));
-        return action;
-    }
-
-public:
-    ReceiverReadBaselineScope() : _segv(SIGSEGV, segvAction()), _bus(SIGBUS, busAction()) {}
-    ReceiverReadBaselineScope(const ReceiverReadBaselineScope&) = delete;
-    ReceiverReadBaselineScope& operator=(const ReceiverReadBaselineScope&) = delete;
-};
-
-class ReceiverReadFaultScope {
-    ReceiverReadSignalActionScope _segv;
-    ReceiverReadSignalActionScope _bus;
-    static volatile sig_atomic_t _count;
-    static volatile uintptr_t _address;
-    static volatile uintptr_t _pc;
-
-    static void recordFault(siginfo_t* info, void* context) {
-        _count++;
-        _address = reinterpret_cast<uintptr_t>(info->si_addr);
-        _pc = StackFrame(context).pc();
-    }
-    static void segvHandler(int signo, siginfo_t* info, void* context) {
-        recordFault(info, context);
-        Profiler::segvHandler(signo, info, context);
-        _exit(128 + signo);
-    }
-    static void busHandler(int signo, siginfo_t* info, void* context) {
-        recordFault(info, context);
-        Profiler::busHandler(signo, info, context);
-        _exit(128 + signo);
-    }
-    static struct sigaction faultAction(SigAction handler) {
-        struct sigaction action{};
-        sigemptyset(&action.sa_mask);
-        action.sa_sigaction = handler;
-        action.sa_flags = SA_SIGINFO | SA_RESTART | SA_NODEFER;
-        return action;
-    }
-
-public:
-    static constexpr uintptr_t RANGE_MARGIN = 256 * 1024;
-    ReceiverReadFaultScope() : _segv(SIGSEGV, faultAction(segvHandler)), _bus(SIGBUS, faultAction(busHandler)) {
-        _count = 0;
-        _address = _pc = 0;
-        uintptr_t capture_pc = HotspotSupportTestAccessor::receiverCapturePC();
-        Profiler::setAddressRangeForTest(capture_pc - RANGE_MARGIN, capture_pc + RANGE_MARGIN);
-    }
-    ~ReceiverReadFaultScope() {
-        Profiler::resetAddressRangeForTest();
-    }
-    ReceiverReadFaultScope(const ReceiverReadFaultScope&) = delete;
-    ReceiverReadFaultScope& operator=(const ReceiverReadFaultScope&) = delete;
-    static int count() { return _count; }
-    static uintptr_t address() { return _address; }
-    static uintptr_t pc() { return _pc; }
-};
-
-volatile sig_atomic_t ReceiverReadFaultScope::_count = 0;
-volatile uintptr_t ReceiverReadFaultScope::_address = 0;
-volatile uintptr_t ReceiverReadFaultScope::_pc = 0;
-
-TEST(ReceiverReadBaselineScopeTest, InstallsDistinctCallableActions) {
-    ReceiverReadBaselineScope baseline;
-    struct sigaction segv{}, bus{};
-    ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &segv));
-    ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &bus));
-    constexpr int flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART | SA_NODEFER;
-    EXPECT_EQ(SA_SIGINFO | SA_ONSTACK, segv.sa_flags & flags);
-    EXPECT_EQ(SA_RESTART, bus.sa_flags & flags);
-    EXPECT_NE(SIG_DFL, segv.sa_handler);
-    EXPECT_NE(SIG_IGN, segv.sa_handler);
-    EXPECT_NE(SIG_DFL, bus.sa_handler);
-    EXPECT_NE(SIG_IGN, bus.sa_handler);
-    for (int signal = 1; signal < NSIG; signal++) {
-        EXPECT_EQ(signal == SIGUSR1, sigismember(&segv.sa_mask, signal)) << signal;
-        EXPECT_EQ(signal == SIGUSR2, sigismember(&bus.sa_mask, signal)) << signal;
-    }
-}
-
-TEST(ReceiverReadBaselineScopeTest, SiginfoBaselineFailsSafelyOnUnexpectedSignal) {
-    EXPECT_EXIT({
-        ReceiverReadBaselineScope baseline;
-        raise(SIGSEGV);
-        _exit(0);
-    }, ::testing::ExitedWithCode(128 + SIGSEGV), "");
-}
-
-TEST(ReceiverReadBaselineScopeTest, OneArgumentBaselineFailsSafelyOnUnexpectedSignal) {
-    EXPECT_EXIT({
-        ReceiverReadBaselineScope baseline;
-        raise(SIGBUS);
-        _exit(0);
-    }, ::testing::ExitedWithCode(128 + SIGBUS), "");
-}
-
-TEST(ReceiverReadBaselineScopeTest, OriginalSentinelCleanupChecksDispositionNotOpaqueFields) {
-    ReceiverReadBaselineScope callable_originals;
-    for (auto disposition : {SIG_DFL, SIG_IGN}) {
-        SCOPED_TRACE(disposition == SIG_DFL ? "default" : "ignored");
-        struct sigaction sentinel{};
-        sentinel.sa_handler = disposition;
-        ASSERT_EQ(0, sigemptyset(&sentinel.sa_mask));
-        ReceiverReadSignalActionScope segv_scope(SIGSEGV, sentinel);
-        ReceiverReadSignalActionScope bus_scope(SIGBUS, sentinel);
-        {
-            ReceiverReadBaselineScope baseline;
-        }
-        // Deliberately vary opaque fields to verify they are not the sentinel cleanup oracle.
-        sentinel.sa_flags = SA_RESTART;
-        ASSERT_EQ(0, sigaddset(&sentinel.sa_mask, SIGUSR1));
-        expectOriginalSignalActionRestored(SIGSEGV, sentinel);
-        expectOriginalSignalActionRestored(SIGBUS, sentinel);
-        sentinel.sa_handler = disposition == SIG_DFL ? SIG_IGN : SIG_DFL;
-        EXPECT_NONFATAL_FAILURE(expectOriginalSignalActionRestored(SIGSEGV, sentinel), "sa_handler");
-        EXPECT_NONFATAL_FAILURE(expectOriginalSignalActionRestored(SIGBUS, sentinel), "sa_handler");
-    }
-}
-
-TEST(ReceiverReadFaultScopeTest, RestoresDistinctFullActionsAcrossRepeatedScopes) {
-    ReceiverReadBaselineScope baseline;
-    struct sigaction before_segv{}, before_bus{};
-    ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &before_segv));
-    ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &before_bus));
-    for (int repetition = 0; repetition < 2; repetition++) {
-        SCOPED_TRACE(repetition);
-        {
-            ReceiverReadFaultScope fault_scope;
-            for (int signo : {SIGSEGV, SIGBUS}) {
-                struct sigaction installed{};
-                ASSERT_EQ(0, sigaction(signo, nullptr, &installed));
-                constexpr int fault_flags = SA_SIGINFO | SA_RESTART | SA_NODEFER;
-                EXPECT_EQ(fault_flags, installed.sa_flags & fault_flags);
-                EXPECT_NE(before_segv.sa_sigaction, installed.sa_sigaction);
-                EXPECT_NE(before_bus.sa_handler, installed.sa_handler);
-                EXPECT_NE(SIG_IGN, installed.sa_handler);
-                for (int signal = 1; signal < NSIG; signal++) {
-                    EXPECT_EQ(0, sigismember(&installed.sa_mask, signal)) << signal;
-                }
-            }
-        }
-        expectSignalActionRestored(SIGSEGV, before_segv);
-        expectSignalActionRestored(SIGBUS, before_bus);
-    }
-}
-
-TEST(ReceiverReadFaultScopeTest, RollsBackEarlierActionWhenLaterInstallationFails) {
-    ReceiverReadBaselineScope baseline;
-    struct sigaction before_segv{}, before_bus{};
-    ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &before_segv));
-    ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &before_bus));
-    struct sigaction action{};
-    action.sa_handler = SIG_IGN;
-    ASSERT_EQ(0, sigemptyset(&action.sa_mask));
-    ASSERT_EQ(0, sigaddset(&action.sa_mask, SIGUSR1));
-    EXPECT_THROW({
-        ReceiverReadSignalActionScope segv_scope(SIGSEGV, action);
-        struct sigaction installed{};
-        ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &installed));
-        ASSERT_EQ(SIG_IGN, installed.sa_handler);
-        ReceiverReadSignalActionScope invalid_scope(-1, action);
-    }, std::system_error);
-    expectSignalActionRestored(SIGSEGV, before_segv);
-    expectSignalActionRestored(SIGBUS, before_bus);
-}
 
 TEST_P(AsgctVtableReceiverTest, VmReceiverPrefixReservesTheStubAtShallowDepth) {
     // Keep the native-transition anchor empty so the walk stays on the interrupted leaf.
@@ -779,53 +557,42 @@ TEST_P(AsgctVtableReceiverTest, NotWalkableJavaAlsoCapturesReceiverBeforeRetry) 
     expectCanary(3);
 }
 
-TEST_P(AsgctVtableReceiverTest, ReceiverReadFaultRecoversThroughProductionUcontextWrapper) {
+TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheReceiverFrame) {
     size_t page_size = static_cast<size_t>(getpagesize());
     auto unmap = [page_size](void* page) { munmap(page, page_size); };
     std::unique_ptr<void, decltype(unmap)> bad_page(
         mmap(nullptr, page_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0), unmap);
     ASSERT_NE(MAP_FAILED, bad_page.get());
-    ReceiverReadBaselineScope baseline;
-    struct sigaction before_segv{}, before_bus{};
-    ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &before_segv));
-    ASSERT_EQ(0, sigaction(SIGBUS, nullptr, &before_bus));
-    {
-        ReceiverReadFaultScope fault_scope;
+    ProfilerFaultHandlersScope handlers;
+    ProfiledThread* thread = ProfiledThread::current();
+    // An unreadable oop header, then a compressed klass pointer decoded into that page.
+    for (bool unreadable_klass : {false, true}) {
+        SCOPED_TRACE(unreadable_klass ? "klass" : "receiver");
+        if (unreadable_klass) {
+            _layout.set(_compact_object_headers, false);
+            _layout.set(_narrow_klass_shift, 0);
+            _layout.set(_narrow_klass_base, static_cast<char*>(bad_page.get()));
+            _oop[1] = 0;
+        } else {
+            setReceiver(reinterpret_cast<uintptr_t>(bad_page.get()));
+        }
         prepareWalk();
-        setReceiver(reinterpret_cast<uintptr_t>(bad_page.get()));
         bool truncated = false;
-        ProfiledThread* thread = ProfiledThread::current();
-        ASSERT_FALSE(thread->isProtected());
-        sigjmp_buf outer_ctx;
-        JmpCtxScope outer_scope(thread);
-        outer_scope.install(&outer_ctx);
         StackContext java_ctx{};
         {
             AsyncSampleMutex mutex(thread);
             ASSERT_TRUE(mutex.acquired());
-            ASSERT_EQ(0, HotspotSupportTestAccessor::getJavaTraceAsyncWithRecovery(
+            ASSERT_EQ(2, HotspotSupportTestAccessor::getJavaTraceAsyncWithRecovery(
                 &_ctx, _frames, 3, &java_ctx, &truncated));
-            EXPECT_TRUE(thread->is_unwinding_Java());
         }
-        EXPECT_TRUE(truncated);
-        EXPECT_EQ(1, ReceiverReadFaultScope::count());
-        EXPECT_EQ(reinterpret_cast<uintptr_t>(bad_page.get()) + sizeof(uintptr_t), ReceiverReadFaultScope::address());
-        uintptr_t capture_pc = HotspotSupportTestAccessor::receiverCapturePC();
-        EXPECT_GE(ReceiverReadFaultScope::pc(), capture_pc - ReceiverReadFaultScope::RANGE_MARGIN);
-        EXPECT_LT(ReceiverReadFaultScope::pc(), capture_pc + ReceiverReadFaultScope::RANGE_MARGIN);
-        EXPECT_EQ(std::vector<int>({3}), asgct_budgets);
-        EXPECT_EQ(std::vector<uintptr_t>({leafPC()}), asgct_pcs);
-        EXPECT_EQ(leafPC(), HotspotStackFrame(&_ctx).pc());
-        EXPECT_EQ(reinterpret_cast<uintptr_t>(_stack), HotspotStackFrame(&_ctx).sp());
-        EXPECT_EQ(0u, HotspotStackFrame(&_ctx).fp());
-        EXPECT_EQ(&outer_ctx, thread->getJmpCtx());
-        EXPECT_FALSE(thread->is_unwinding_Java());
-        EXPECT_EQ(0, thread->signalDepth());
-        expectCanary(0);
-        expectCanary(3);
+        EXPECT_FALSE(truncated);
+        EXPECT_EQ(BCI_NATIVE_FRAME, _frames[0].bci);
+        EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[0].method_id));
+        EXPECT_EQ(reinterpret_cast<jmethodID>(0x1230), _frames[1].method_id);
+        EXPECT_EQ(std::vector<int>({3, 2}), asgct_budgets);
+        expectCanary(2);
+        setReceiver(reinterpret_cast<uintptr_t>(_oop));
     }
-    expectSignalActionRestored(SIGSEGV, before_segv);
-    expectSignalActionRestored(SIGBUS, before_bus);
 }
 
 TEST_P(AsgctVtableReceiverTest, CapturesReceiverBeforeUnwindingAndReservesRetrySlot) {
