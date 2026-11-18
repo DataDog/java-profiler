@@ -273,6 +273,24 @@ bool BaseWallClock::wallPrecheckForTest(
 }
 #endif
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+bool BaseWallClock::awaitInitialSamplingEpochForTest(u64 timeout_nanos) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  u64 start = OS::nanotime();
+  while (WallClockCounters::samplingEpochStart() == 0) {
+    if (OS::nanotime() - start >= timeout_nanos) return false;
+    OS::sleep(1000000);
+  }
+  return true;
+}
+
+WallClockTestEpochGuard::WallClockTestEpochGuard(u64 timeout_nanos) {
+  if (BaseWallClock::awaitInitialSamplingEpochForTest(timeout_nanos)) {
+    _lock = BaseWallClock::samplingEpochLock();
+  }
+}
+#endif
+
 #ifdef DEBUG
 // Only the synchronous JNI test driver supplies this argument. It inserts a
 // real dump at a boundary outside the profiler stripe locks, without waiting
@@ -282,11 +300,14 @@ struct WallPrecheckDumpTest {
   const char* path;
   int path_length;
   bool dump_after_primary;
+  WallClockTestEpochGuard& epoch_guard;
   Error error = Error::OK;
 
   void dumpAtBoundary(bool publication) {
     if (publication == dump_after_primary) {
-      error = Profiler::instance()->dump(path, path_length);
+      epoch_guard.withoutEpochLock([&] {
+        error = Profiler::instance()->dump(path, path_length);
+      });
     }
   }
 };
@@ -315,9 +336,13 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   auto* tracker = profiler->blockTracker();
   WallClockBlockTracker::BlockState* slot = tracker->slotForId(slot_id);
   if (slot == nullptr || slot->activeBlockOwner() != BlockRunOwner::NONE) return false;
+  // The timer's epoch writer takes the recorder exclusively; this synchronous
+  // driver needs deterministic writes, unlike try-and-drop signal sampling.
+  WallClockTestEpochGuard epoch_guard(5 * NANOTIME_FREQ);
+  if (!epoch_guard.ownsLock()) return false;
   tracker->resetSlot(slot_id);
 
-  WallPrecheckDumpTest dump_test{thread, path, path_length, dump_after_primary};
+  WallPrecheckDumpTest dump_test{thread, path, path_length, dump_after_primary, epoch_guard};
   ExecutionEvent event;
   event._thread_state = OSThreadState::SLEEPING;
   event._execution_mode = ExecutionMode::JAVA;
