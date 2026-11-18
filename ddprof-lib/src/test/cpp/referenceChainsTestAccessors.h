@@ -302,10 +302,20 @@ public:
         return std::vector<jlong>(tags, tags + count);
     }
 
+    // Defaults to EVICT (noise-eviction semantics); pass rebuild=true for the improveChain/
+    // reparent/root-kind-upgrade REBUILD kind.
     static void deferResolvedChainInvalidation(
-        jlong tag, const std::vector<jlong> &snapshot) {
+        jlong tag, const std::vector<jlong> &snapshot, bool rebuild = false) {
         ReferenceChainTracker::instance()->deferResolvedChainInvalidation(
-            tag, snapshot.data(), (int)snapshot.size());
+            tag, snapshot.data(), (int)snapshot.size(),
+            rebuild ? ReferenceChainTracker::ChainInvalidationKind::REBUILD
+                    : ReferenceChainTracker::ChainInvalidationKind::EVICT);
+    }
+
+    // The leak-tag binding step of tagLeakInstances() (correlation of a frontier entry).
+    static bool correlateAdmittedLeakTag(jlong frontier_tag, jlong leak_tag, u32 klass_id) {
+        return ReferenceChainTracker::instance()->correlateAdmittedLeakTag(
+            frontier_tag, leak_tag, klass_id);
     }
 
     static size_t pendingChainInvalidationCount() {
@@ -330,6 +340,44 @@ public:
 
     static void drainPendingChainInvalidations() {
         ReferenceChainTracker::instance()->drainPendingChainInvalidations();
+    }
+
+    static int maxChainRebuildsPerPoll() {
+        return ReferenceChainTracker::MAX_CHAIN_REBUILDS_PER_POLL;
+    }
+
+    static int maxPendingChainInvalidations() {
+        return ReferenceChainTracker::MAX_PENDING_CHAIN_INVALIDATIONS;
+    }
+
+    // The REBUILD publish step of applyPendingChainInvalidations() (replace-only, generation
+    // checked, never re-stamps source_search_ns).
+    static bool replaceResolvedChain(jlong tag, ReferenceChainEvent event, u64 search_ns) {
+        return ReferenceChainTracker::instance()->replaceResolvedChain(
+            tag, std::move(event), search_ns);
+    }
+
+    // Cached chain depth for tag, 0 when absent (callers check hasResolvedChainForTag first).
+    static u32 resolvedChainDepth(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        auto it = t->_resolved_chains.find(tag);
+        return it == t->_resolved_chains.end() ? 0u : (u32)it->second.event._depth;
+    }
+
+    // Search generation the cached chain for tag was stored under, 0 when absent.
+    static u64 resolvedChainSearchNs(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        auto it = t->_resolved_chains.find(tag);
+        return it == t->_resolved_chains.end() ? 0u : it->second.source_search_ns;
+    }
+
+    // Holds/releases the private _pending_chain_invalidations_lock, so a test can prove the
+    // rebuild publish step never takes it.
+    static void lockPendingChainInvalidationsForTest() {
+        ReferenceChainTracker::instance()->_pending_chain_invalidations_lock.lock();
+    }
+    static void unlockPendingChainInvalidationsForTest() {
+        ReferenceChainTracker::instance()->_pending_chain_invalidations_lock.unlock();
     }
 
     static bool hasResolvedChainForTag(jlong tag) {
