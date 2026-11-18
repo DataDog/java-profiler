@@ -23,7 +23,7 @@ static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
 
-void signal_handle_wrapper(int signo, siginfo_t* siginfo, void* context) {
+static void signal_handle_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (!SafeAccess::handle_safefetch(signo, context)) {
     if (signo == SIGBUS && orig_busHandler != nullptr) {
        orig_busHandler(signo, siginfo, context);
@@ -270,36 +270,37 @@ TEST_F(SafeFetchTest, mprotectedMemory64) {
 //   - copy real data faithfully regardless of its byte values
 // ---------------------------------------------------------------------------
 
+namespace {
 // Owns a readable page followed by a PROT_NONE guard page, unmapped on scope
 // exit. The guard stays mapped, unlike a munmap()ed page that a concurrent
 // mmap may reuse, so a read past the readable page always faults.
-namespace {
 class GuardedPage {
 public:
   GuardedPage()
-      : _page_size(static_cast<size_t>(sysconf(_SC_PAGESIZE))),
-        _region(mmap(NULL, 2 * _page_size, PROT_READ | PROT_WRITE,
+      : _region(mmap(NULL, 2 * OS::page_size, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) {
     if (_region != MAP_FAILED &&
-        mprotect(guardStart(), _page_size, PROT_NONE) != 0) {
-      munmap(_region, 2 * _page_size);
+        mprotect(guardStart(), OS::page_size, PROT_NONE) != 0) {
+      munmap(_region, 2 * OS::page_size);
       _region = MAP_FAILED;
     }
   }
   ~GuardedPage() {
     if (_region != MAP_FAILED) {
-      munmap(_region, 2 * _page_size);
+      munmap(_region, 2 * OS::page_size);
     }
   }
   GuardedPage(const GuardedPage&) = delete;
   GuardedPage& operator=(const GuardedPage&) = delete;
 
-  bool ok() const { return _region != MAP_FAILED; }
+  // Mapped and the guard verifiably faults; needs the fixture's handlers.
+  bool ok() const {
+    return _region != MAP_FAILED && !SafeAccess::isReadable(guardStart());
+  }
   // One past the last readable byte: the first byte of the guard page.
-  char* guardStart() const { return static_cast<char*>(_region) + _page_size; }
+  char* guardStart() const { return static_cast<char*>(_region) + OS::page_size; }
 
 private:
-  size_t _page_size;
   void* _region;
 };
 } // namespace
@@ -332,28 +333,20 @@ TEST_F(SafeFetchTest, safeCopy_shortLength_doesNotOverwriteDst) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_unmappedSource_returnsFalse) {
-  // Page zero stays unmapped (vm.mmap_min_addr on Linux, __PAGEZERO on macOS),
-  // so unlike a munmap()ed page no ordinary concurrent mmap can make it
+  // Page zero stays unmapped (default vm.mmap_min_addr on Linux, __PAGEZERO on
+  // macOS), so unlike a munmap()ed page no concurrent mmap can make it
   // readable. safeCopy must return false rather than SIGSEGV.
   char dst[64] = {0};
   EXPECT_FALSE(SafeAccess::safeCopy(dst, nullptr, 32));
 }
 
 TEST_F(SafeFetchTest, safeCopy_protNoneSource_returnsFalse) {
-  // mprotect-PROT_NONE the page (similar to mprotectedMemory32). safeCopy
-  // must return false on the first faulting byte, not crash.
-  void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  ASSERT_NE(page, MAP_FAILED);
-  memcpy(page, "ignored", 7);
-  ASSERT_EQ(0, mprotect(page, 4096, PROT_NONE));
+  // A source that starts on a PROT_NONE page must fail on its first byte.
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
 
   char dst[64] = {0};
-  EXPECT_FALSE(SafeAccess::safeCopy(dst, page, 32));
-
-  // Restore so munmap can run cleanly.
-  ASSERT_EQ(0, mprotect(page, 4096, PROT_READ | PROT_WRITE));
-  munmap(page, 4096);
+  EXPECT_FALSE(SafeAccess::safeCopy(dst, region.guardStart(), 32));
 }
 
 TEST_F(SafeFetchTest, safeCopy_tailNearGuardPage_stillSucceeds) {
@@ -361,7 +354,6 @@ TEST_F(SafeFetchTest, safeCopy_tailNearGuardPage_stillSucceeds) {
   // src+len faults there and fails the copy.
   GuardedPage region;
   ASSERT_TRUE(region.ok());
-  ASSERT_FALSE(SafeAccess::isReadable(region.guardStart()));
 
   char* mapped_end = region.guardStart();
   char* src = mapped_end - 2;  // 2 bytes from page boundary
@@ -420,15 +412,14 @@ TEST_F(SafeFetchTest, safeCopy_partialPrefixCopiedBeforeFault) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_unalignedSource_allMisalignments) {
-  // safeCopy has no alignment requirement on src: every misalignment
-  // k ∈ {1, 2, 3} must copy the bytes exactly.
+  // safeCopy has no alignment requirement on src: every offset k ∈ [1, 7]
+  // from an 8-byte boundary must copy the bytes exactly.
   static const char kSentinel[] = "ABCDEFGHIJKLMNOP";  // 16 bytes
-  // Use a 4-byte-aligned buffer so we can shift src forward by k.
-  alignas(4) char buf[32];
-  memcpy(buf + 4, kSentinel, 16);  // place payload at aligned offset 4
+  alignas(8) char buf[32];
+  memcpy(buf + 8, kSentinel, 16);  // payload starts 8-byte aligned
 
-  for (size_t k = 1; k <= 3; k++) {
-    const char* src = buf + 4 + k;  // misaligned by k
+  for (size_t k = 1; k <= 7; k++) {
+    const char* src = buf + 8 + k;  // misaligned by k
     size_t len = 16 - k;            // copy the rest of the payload
     char dst[16];
     memset(dst, 0, sizeof(dst));
@@ -437,28 +428,9 @@ TEST_F(SafeFetchTest, safeCopy_unalignedSource_allMisalignments) {
   }
 }
 
-TEST_F(SafeFetchTest, safeCopy_unalignedShortAtPageEnd_stillSucceeds) {
-  // Combine misalignment with proximity to the guard page: src is
-  // misaligned AND its 3 requested bytes end at the readable page's end.
-  GuardedPage region;
-  ASSERT_TRUE(region.ok());
-
-  char* mapped_end = region.guardStart();
-  char* src = mapped_end - 3;  // page-aligned boundary - 3: misaligned
-  src[0] = 'P';
-  src[1] = 'Q';
-  src[2] = 'R';
-
-  char dst[8] = {0};
-  EXPECT_TRUE(SafeAccess::safeCopy(dst, src, 3));
-  EXPECT_EQ('P', dst[0]);
-  EXPECT_EQ('Q', dst[1]);
-  EXPECT_EQ('R', dst[2]);
-}
-
-TEST_F(SafeFetchTest, safeCopy_dataMatchingSingleSentinel_stillSucceeds) {
-  // Real data is copied faithfully regardless of its byte values (the copy
-  // no longer uses sentinel values to detect faults).
+TEST_F(SafeFetchTest, safeCopy_sentinelLikeData_stillSucceeds) {
+  // A fault is reported by the pc redirect to safecopy_cont, not by a data
+  // value, so a sentinel-like pattern must copy faithfully.
   uint32_t real_data = 0x55AA55AA;
   char dst[4];
   ASSERT_TRUE(SafeAccess::safeCopy(dst, &real_data, 4));
