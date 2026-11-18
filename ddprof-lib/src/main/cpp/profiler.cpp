@@ -2420,12 +2420,15 @@ Error Profiler::check(Arguments &args) {
     }
   }
   if (!error && args._wall >= 0) {
-    error = selectWallEngine(args)->check(args);
-    other_mode_ok = other_mode_ok || !error;
+    Engine *wall_engine = selectWallEngine(args);
+    error = wall_engine->check(args);
+    // A no-op engine validates but start() skips it: it carries nothing.
+    other_mode_ok = other_mode_ok || (wall_engine != &noop_engine && !error);
   }
   if (!error && args._memory >= 0) {
-    error = selectAllocEngine(args)->check(args);
-    other_mode_ok = other_mode_ok || !error;
+    Engine *alloc_engine = selectAllocEngine(args);
+    error = alloc_engine->check(args);
+    other_mode_ok = other_mode_ok || (alloc_engine != &noop_engine && !error);
   }
   if (!error && args._nativemem >= 0) {
     error = malloc_tracer.check(args);

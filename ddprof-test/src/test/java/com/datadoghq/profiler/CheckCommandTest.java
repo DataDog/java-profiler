@@ -8,6 +8,7 @@ package com.datadoghq.profiler;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import org.junit.jupiter.api.Test;
 
@@ -40,14 +41,17 @@ public class CheckCommandTest extends AbstractProfilerTest {
 
   @Test
   public void checkPreflightRejectsNonCpuEventWithCpu() {
+    // OpenJ9 may select the JVMTI sampler as the CPU engine; it accepts a
+    // zero resolved CPU interval, so the rejection only holds on timer-backed
+    // engines.
+    assumeFalse(Platform.isJ9());
     stopProfiler();
     // A timer-family CPU engine is selected for cpu=N with a non-CPU event
     // and rejects the resolved interval; with no other requested mode the
     // preflight fails the configuration, matching start().
     IllegalStateException e =
         assertThrows(
-            IllegalStateException.class,
-            () -> profiler.execute("check,event=wall,cpu=1ms"));
+            IllegalStateException.class, () -> profiler.execute("check,event=wall,cpu=1ms"));
     assertEquals("interval must be positive", e.getMessage());
   }
 
@@ -56,8 +60,7 @@ public class CheckCommandTest extends AbstractProfilerTest {
     stopProfiler();
     // start() recovers from the CPU engine rejection when the wall engine
     // carries the recording, so the preflight reports the wall path as OK.
-    assertTrue(
-        profiler.execute("check,event=wall,cpu=1ms,wall=10ms").startsWith("OK"));
+    assertTrue(profiler.execute("check,event=wall,cpu=1ms,wall=10ms").startsWith("OK"));
   }
 
   @Test
