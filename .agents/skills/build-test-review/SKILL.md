@@ -13,25 +13,28 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    acceptance criteria and the Build plan. If one is missing, stop. Tell the engineer
    which sign-off is missing, and suggest that they finish the Design phase first,
    with the `work-planning` skill. Do not start that phase. Otherwise create the
-   task's worktree and branch, from the base that the Build plan names, inside the
-   main checkout:
-   `git worktree add -b <branch> .claude/worktrees/<name> refs/remotes/origin/<base>`.
+   task's worktree and branch, from the base that the Build plan names, under the
+   main checkout's root `<root>`, which
+   `dirname "$(git rev-parse --path-format=absolute --git-common-dir)"` prints from
+   any worktree or subdirectory:
+   `git worktree add -b <branch> <root>/.claude/worktrees/<name> refs/remotes/origin/<base>`.
    `<name>` is the ticket key in lower case, for example `prof-1234`. When the Build
-   plan has several PRs, create one worktree for each and add `-<PR id>`, for example
-   `prof-1234-pr2`. A worktree outside the checkout is outside the session's working
-   directories: the shell leaves it after each command, and the review gate refuses a
-   `gh pr` command that contains `cd`.
+   plan has several PRs, create one worktree for each and add `-pr<n>` to every name,
+   with `<n>` from the Build plan's PR column: `prof-1234-pr1`, `prof-1234-pr2`. If
+   `git worktree list` already shows a worktree for the branch, reuse it.
    In Claude Code, then enter the worktree with `EnterWorktree` `path:`, which keeps
    the file tools out of the main checkout. Before working in another PR's worktree,
    enter that one with `path:`. Do not create a worktree with `EnterWorktree`
-   `name:`: it cannot set the branch name or the base.
+   `name:`: it cannot set the branch name or the base. A worktree outside the main
+   checkout is outside the session's working directories: the shell leaves it after
+   each command, and the review gate refuses a `gh pr` command that contains `cd`.
 
 2. **Checklist.** Derive a "Sub-sessions" section from the Build plan and add it to the
    ticket description. It needs no separate sign-off; the engineer can edit it. It
-   names the branch, the worktree and the base, then has three parts, in run order:
-   S1 Implement, S2 Review and S3 Test. Each part lists its checks as checkboxes and
-   ends with a "Done:" line that names its output. Each part is self-contained: a
-   fresh session can do it from the ticket alone.
+   names the branch, the worktree by its absolute path and the base, then has three
+   parts, in run order: S1 Implement, S2 Review and S3 Test. Each part lists its
+   checks as checkboxes and ends with a "Done:" line that names its output. Each part
+   is self-contained: a fresh session can do it from the ticket alone.
 
 3. **Sub-sessions.** In Claude Code, run each sub-session as a fresh subagent: the
    `Agent` tool with `general-purpose`, never `fork`, which inherits this conversation.
@@ -104,8 +107,8 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 ## Pi
 
 In Pi, a `cd` does not persist between commands. After step 1, stop and ask the
-engineer to start Pi in the worktree with project trust (`pi -a`), then to continue
-there with step 2.
+engineer to start Pi in the worktree, named by its absolute path, with project trust
+(`pi -a`), then to continue there with step 2.
 
 In Pi, do not call a subagent tool for any purpose, also when an extension such as
 `pi-subagents` provides one. Say so, then run S1, S2 and S3 one after another in
