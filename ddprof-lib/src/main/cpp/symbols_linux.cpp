@@ -462,7 +462,7 @@ class ElfParser {
         return _header->e_type == ET_EXEC ? NULL : _vaddr_diff;
     }
 
-    char* dyn_ptr(ElfDyn* dyn) {
+    char* dyn_ptr(const ElfDyn* dyn) {
         // GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
         // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
         if (_relocate_dyn || (_base != NULL && (char*)dyn->d_un.d_ptr < _base)) {
@@ -618,6 +618,12 @@ static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
     return relaent != 0 ? relaent : relent;
 }
 
+// Bytes of the DT_RELACOUNT/DT_RELCOUNT leading relative relocations, clamped to
+// the table size without multiplying first, so a huge count cannot wrap.
+static size_t relativeBytes(size_t count, size_t ent, size_t size) {
+    return ent != 0 && count < size / ent ? count * ent : size;
+}
+
 void ElfParser::parseDynamicSection() {
     ElfProgramHeader* dynamic = findProgramHeader(PT_DYNAMIC);
     if (dynamic != NULL) {
@@ -636,12 +642,10 @@ void ElfParser::parseDynamicSection() {
         uint32_t nsyms = 0;
 
         const char* dyn_start = at(dynamic);
-        // at(dynamic) is NULL when dynamic->p_vaddr == 0 - same null-base
-        // pointer-arithmetic UB as the other fixes in this file.
         // Whole entries only: a p_memsz that is not a multiple of sizeof(ElfDyn)
         // must not make the loop read a partial one.
         size_t dyn_count = dynamic->p_memsz / sizeof(ElfDyn);
-        ElfDyn* dyn = reinterpret_cast<ElfDyn*>(const_cast<char*>(dyn_start));
+        const ElfDyn* dyn = reinterpret_cast<const ElfDyn*>(dyn_start);
         // The array ends at the first DT_NULL; slots after it (patchelf, prelink)
         // are padding and must not override real tags.
         for (size_t i = 0; i < dyn_count && dyn[i].d_tag != DT_NULL; i++) {
@@ -751,8 +755,8 @@ void ElfParser::parseDynamicSection() {
         // Imports can also be in .rela.dyn / .rel.dyn, for example if a shared
         // library is built without PLT (-fno-plt). If both tables exist,
         // addImport saves them both.
-        addImports(rela, relasz, relaent, relacount * relaent, true);
-        addImports(rel, relsz, relent, relcount * relent, true);
+        addImports(rela, relasz, relaent, relativeBytes(relacount, relaent, relasz), true);
+        addImports(rel, relsz, relent, relativeBytes(relcount, relent, relsz), true);
     }
 }
 
@@ -1000,11 +1004,11 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
     return result;
 }
 
-// Whether st_value is an in-image address (gABI "Symbol Values"). Not for SHN_UNDEF
-// (an executable's PLT stub address), reserved indices such as SHN_ABS/SHN_COMMON
-// (absolute value or alignment), STT_TLS (TLS offset) or STT_SECTION/STT_FILE.
-static bool isCodeAddressSymbol(const ElfSymbol& entry) {
-    if (entry.st_shndx == SHN_UNDEF || entry.st_shndx >= SHN_LORESERVE) {
+// Whether the symbol defines an object at an in-image st_value (gABI "Symbol Values").
+// Not SHN_UNDEF (defined elsewhere), reserved indices other than SHN_XINDEX (absolute
+// value or alignment), STT_TLS (TLS offset) or STT_SECTION/STT_FILE.
+static bool isDefinedInImageSymbol(const ElfSymbol& entry) {
+    if (entry.st_shndx == SHN_UNDEF || (entry.st_shndx >= SHN_LORESERVE && entry.st_shndx != SHN_XINDEX)) {
         return false;
     }
     switch (ELF64_ST_TYPE(entry.st_info)) {
@@ -1034,7 +1038,7 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
         // aliasing mapped bytes through a typed pointer.
         ElfSymbol entry;
         memcpy(&entry, symbols + off, sizeof(entry));
-        if (entry.st_name != 0 && entry.st_value != 0 && isCodeAddressSymbol(entry)) {
+        if (entry.st_name != 0 && entry.st_value != 0 && isDefinedInImageSymbol(entry)) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
             // out of bounds.
@@ -1497,8 +1501,8 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
         return hashSymbolRelocations(image, table + skip, size - skip, ent, symtab, syment, strtab, strsz, hash);
     };
     return hashTable(jmprel, pltrelsz, pltEntrySize(pltrel, relent, relaent), 0)
-        && hashTable(rela, relasz, relaent, relacount * relaent)
-        && hashTable(rel, relsz, relent, relcount * relent);
+        && hashTable(rela, relasz, relaent, relativeBytes(relacount, relaent, relasz))
+        && hashTable(rel, relsz, relent, relativeBytes(relcount, relent, relsz));
 }
 
 }  // namespace

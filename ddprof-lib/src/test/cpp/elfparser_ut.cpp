@@ -596,6 +596,7 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     sym.st_name = 6;  // == sizeof(strtab) below: one past the end
     sym.st_value = 0x1000;
     sym.st_size = 4;
+    sym.st_shndx = 1;  // defined, so the filter does not drop it before strAt()
     const uint64_t str_off = sym_off + sizeof(sym);
     const char strtab[] = "\0main\0";  // 6 bytes; index 6 is out of bounds
 
@@ -974,18 +975,20 @@ TEST_F(ElfTest, dynamicSectionInvalidRelocationEntrySize) {
 }
 
 // gABI "Symbol Values": TLS offsets, absolute/common values, section and file
-// entries and undefined symbols (an executable's PLT stub address) are not
-// in-image addresses and must not become code-cache entries.
+// entries and undefined symbols are not in-image definitions and must not become
+// code-cache entries. The last regular index and SHN_XINDEX are kept.
 TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
     const uint16_t NSEC = 4;
     const uint64_t shoff = sizeof(Elf64_Ehdr);
     const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
     const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
     const uint64_t sym_off = shstr_off + sizeof(shstrtab);
-    const char strtab[] = "\0good_func\0tls_var\0abs_sym\0undef_stub\0common_sym\0sect_sym\0file_sym\0";
-    enum { GOOD = 1, TLS = 11, ABS = 19, UNDEF = 27, COMMON = 38, SECT = 49, FILE_SYM = 58 };
+    const char strtab[] = "\0good_func\0tls_var\0abs_sym\0undef_stub\0common_sym\0sect_sym\0file_sym\0"
+                          "last_regular\0xindex_sym\0loreserve_sym\0";
+    enum { GOOD = 1, TLS = 11, ABS = 19, UNDEF = 27, COMMON = 38, SECT = 49, FILE_SYM = 58,
+           LAST_REGULAR = 67, XINDEX = 80, LORESERVE = 91 };
 
-    Elf64_Sym sym[7];
+    Elf64_Sym sym[10];
     memset(sym, 0, sizeof(sym));
     auto set = [&](int i, uint32_t name, unsigned char type, uint16_t shndx, uint64_t value) {
         sym[i].st_name = name;
@@ -1001,6 +1004,9 @@ TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
     set(4, COMMON, STT_OBJECT, SHN_COMMON, 0x10);
     set(5, SECT, STT_SECTION, 1, 0x50000);
     set(6, FILE_SYM, STT_FILE, 1, 0x60000);
+    set(7, LAST_REGULAR, STT_FUNC, SHN_LORESERVE - 1, 0x70000);
+    set(8, XINDEX, STT_FUNC, SHN_XINDEX, 0x80000);
+    set(9, LORESERVE, STT_FUNC, SHN_LORESERVE, 0x90000);
     const uint64_t str_off = sym_off + sizeof(sym);
 
     Elf64_Ehdr e = validEhdr();
@@ -1040,7 +1046,10 @@ TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
     CodeCache cc("regress");
     ASSERT_NO_FATAL_FAILURE(parseElfBytes(b, &cc, /*use_debug=*/true));
     EXPECT_EQ(cc.findSymbol("good_func"), reinterpret_cast<const void*>(0x20000));
-    for (const char* name : {"tls_var", "abs_sym", "undef_stub", "common_sym", "sect_sym", "file_sym"}) {
+    EXPECT_EQ(cc.findSymbol("last_regular"), reinterpret_cast<const void*>(0x70000));
+    EXPECT_EQ(cc.findSymbol("xindex_sym"), reinterpret_cast<const void*>(0x80000));
+    for (const char* name : {"tls_var", "abs_sym", "undef_stub", "common_sym", "sect_sym", "file_sym",
+                             "loreserve_sym"}) {
         EXPECT_EQ(cc.findSymbol(name), nullptr) << name;
     }
 }
@@ -1135,6 +1144,21 @@ TEST_F(ElfTest, pltOnlyImportsWithoutRelent) {
     rela.r_offset = PLT_SLOT + 2 * sizeof(void*);
     memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
     EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image)), before);
+}
+
+// DT_PLTREL fixes the DT_JMPREL stride: a conflicting DT_RELAENT too small for an
+// entry (which would skip the table) must not override it.
+TEST_F(ElfTest, pltRelOverridesRelaent) {
+    auto dyn = pltDyn();
+    dyn.push_back({DT_RELAENT, {8}});
+    dyn.push_back({DT_NULL, {0}});
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+
+    CodeCache cc("inmem");
+    ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+    EXPECT_EQ(cc.peekImport(im_pthread_create), reinterpret_cast<void**>(image + PLT_SLOT));
 }
 
 // gABI: the dynamic array ends at the first DT_NULL. Slots after it (patchelf and
