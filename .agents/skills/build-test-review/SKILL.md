@@ -25,9 +25,11 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    - `<start>` is `refs/remotes/origin/<base>`, with the base that the Build plan
      names. A stacked PR starts from the local branch of the PR below it,
      `refs/heads/<branch>`: create its worktree once that branch has its commits.
-   - If `git worktree list` shows a worktree for the branch, reuse it. If the branch
-     exists without one, run `git worktree add <path> <branch>`, without `-b`. Never
-     use `-B`: it resets the branch, and its local commits are lost.
+   - If `git worktree list` shows the branch at `<path>`, reuse that worktree. If it
+     shows the branch checked out anywhere else, stop and ask the engineer; do not
+     move or remove that checkout. If the branch exists without a worktree, run
+     `git worktree add <path> <branch>`, without `-b`. Never use `-B`: it resets
+     the branch, and its local commits are lost.
 
    In Claude Code, enter the worktree with `EnterWorktree` `path:`, which keeps the
    file tools out of the main checkout. Inside `<root>`, the worktree is one of the
