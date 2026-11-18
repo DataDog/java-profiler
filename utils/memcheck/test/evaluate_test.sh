@@ -83,6 +83,95 @@ check "half of the coverage options" 2 "alpha native_mem_max_bytes 1MiB - per_me
 check "absent on a counter" 2 "alpha native_mem_max_bytes absent -" "'absent' only applies to nmt.<category>"
 check "comments and blank lines" 0 $'# header\n\nalpha native_mem_max_bytes 2MiB -   # trailing' "| alpha | \`native_mem_max_bytes\` | 1.05 MiB |"
 
+# calibrate <name> <expected-exit> <budget-text> <grep-pattern>...   (job dirs from $JOBS)
+# Patterns are checked in the written budget on success, in stderr on failure.
+calibrate() {
+  local name=$1 want=$2 budget=$3 rc pattern out
+  shift 3
+  printf '%s\n' "$budget" > "$TMP/budget.txt"
+  rm -f "$TMP/new-budget.txt"
+  # shellcheck disable=SC2086
+  java "$EVALUATE" --calibrate "$TMP/budget.txt" "$TMP/new-budget.txt" $JOBS > "$TMP/stdout.txt" 2> "$TMP/stderr.txt"
+  rc=$?
+  if [ "$rc" -ne "$want" ]; then
+    echo "FAIL $name: exit $rc, want $want"; cat "$TMP/stdout.txt" "$TMP/stderr.txt"; failures=$((failures + 1)); return
+  fi
+  out="$TMP/new-budget.txt"
+  if [ "$want" -ne 0 ]; then
+    out="$TMP/stderr.txt"
+    if [ -e "$TMP/new-budget.txt" ]; then
+      echo "FAIL $name: wrote a budget despite errors"; failures=$((failures + 1)); return
+    fi
+  fi
+  for pattern in "$@"; do
+    if ! grep -qF -- "$pattern" "$out"; then
+      echo "FAIL $name: output lacks '$pattern'"; cat "$out"; failures=$((failures + 1)); return
+    fi
+  done
+  echo "ok   $name"
+}
+
+MIB=1048576
+# Two calibration jobs. flat: 10 MiB in every run. noisy: job 1 runs 10 MiB -/+ 100 KiB.
+# cov: native_mem_max_bytes = 1 MiB + 500 B per method above 1000; methods 1000/1020
+# (profiled) and 1100/1300 (counters-only) in both jobs, mean 1105 over both arms. NMT class:
+# job 1 3000 KiB, job 2 3100 KiB profiled, 1000 KiB no-profiler in both.
+C1="$TMP/cal/memcheck-1"
+C2="$TMP/cal/memcheck-2"
+for j in 1 2; do
+  dir="$TMP/cal/memcheck-$j"
+  class=$((2900 + 100 * j))
+  for rep in 1 2; do
+    noisy=$((10 * MIB + (2 * rep - 3) * 102400 * (2 - j)))
+    m=$((980 + 20 * rep))
+    record "$dir" flat nmt "$rep" "{\"native_mem_max_bytes\":$((10 * MIB))}" "{\"class\":$class}"
+    record "$dir" noisy nmt "$rep" "{\"native_mem_max_bytes\":$noisy}" '{}'
+    record "$dir" cov nmt "$rep" "{\"native_mem_max_bytes\":$((MIB + 500 * (m - 1000))),\"line_number_tables\":$m}" '{}'
+    cm=$((900 + 200 * rep))
+    record "$dir" cov counters "$rep" "{\"native_mem_max_bytes\":$((MIB + 500 * (cm - 1000))),\"line_number_tables\":$cm}" '{}'
+  done
+  record "$dir" flat noprof 1 '{}' '{"class":1000}'
+  record "$dir" single nmt 1 "{\"native_mem_max_bytes\":$MIB}" '{}'
+done
+JOBS="$C1 $C2"
+
+# SD 0: limit = 10 MiB + the 256 KiB floor = 10.25 MiB exactly, which must not round up to 10.30.
+calibrate "floor, exact multiple kept" 0 "flat native_mem_max_bytes 1MiB 1MiB" \
+  "flat      native_mem_max_bytes   10.25MiB  10.00MiB   # SD 0 KiB, per-job spread 0 KiB"
+# Job 1 SD = 141 KiB, 4 * SD = 566 KiB > floor: 10 MiB + 566 KiB = 10.55 MiB, rounded up to 10.60.
+calibrate "4 SD term, rounded up" 0 "noisy native_mem_max_bytes 1MiB 1MiB" \
+  "noisy     native_mem_max_bytes   10.60MiB  10.00MiB   # SD 141 KiB"
+# Per-job deltas 2000 and 2100 KiB: measured 2050 KiB = 2.00 MiB, limit 2306 KiB = 2.25 -> 2.30.
+calibrate "nmt per-job delta and spread" 0 "flat nmt.class 1MiB 1MiB" \
+  "flat      nmt.class              2.30MiB  2.00MiB   # SD 0 KiB, per-job spread 100 KiB"
+# Slope 500 B, ref = mean 1105 over both arms rounded to 1100 (profiled runs alone: 1000);
+# corrected value 1 MiB + 500 * (1100 - 1000) B = 1.05 MiB, limit 1.30 MiB.
+calibrate "coverage slope over both arms" 0 "cov native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
+  "1.30MiB  1.05MiB  per_method=500 ref_methods=1100"
+calibrate "kept lines" 0 $'# header comment\nflat native_mem_max_bytes 1MiB 1MiB\n* nmt.tracing absent -\nflat nmt.code - -' \
+  "# header comment" "* nmt.tracing absent -" "flat nmt.code - -"
+calibrate "calibrated budget accepts its own data" 0 "flat native_mem_max_bytes 1MiB 1MiB"
+if java "$EVALUATE" "$TMP/new-budget.txt" "$TMP/report.md" $JOBS > /dev/null 2>&1; then
+  echo "ok   calibrated budget passes evaluation"
+else
+  echo "FAIL calibrated budget passes evaluation"; cat "$TMP/report.md"; failures=$((failures + 1))
+fi
+
+calibrate "one profiled run per job" 2 "single native_mem_max_bytes 1MiB 1MiB" \
+  "budget line 1: every job needs at least 2 profiled runs of single"
+calibrate "no no-profiler runs" 2 "noisy nmt.class 1MiB 1MiB" "a job has no no-profiler runs of noisy"
+calibrate "missing counter" 2 "flat native_mem_bogus 1MiB 1MiB" "lacks counter native_mem_bogus"
+calibrate "no coverage variation" 2 "flat native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
+  "line_number_tables does not vary in flat"
+# NMT class 100 KiB profiled, 200 KiB without the profiler: a delta of -100 KiB.
+NEG="$TMP/neg"
+for j in 1 2; do
+  for rep in 1 2; do record "$NEG/memcheck-$j" low nmt "$rep" '{}' '{"class":100}'; done
+  record "$NEG/memcheck-$j" low noprof 1 '{}' '{"class":200}'
+done
+JOBS="$NEG/memcheck-1 $NEG/memcheck-2"
+calibrate "negative measured" 2 "low nmt.class 1MiB 1MiB" "is negative"
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures test(s) failed"
   exit 1

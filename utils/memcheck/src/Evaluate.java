@@ -46,13 +46,26 @@ import java.util.stream.Stream;
  * profiler's memory grows with the number of distinct methods seen in sampled stacks, which the
  * {@code line_number_tables} counter reports and which varies with the load on a shared runner.
  * The checked value is {@code value - per_method * (mean line_number_tables - ref_methods)}.
+ *
+ * <p>Calibration: {@code java Evaluate.java --calibrate <budget.txt> <new-budget.txt> <job-dir>...}
+ * recomputes every gated line of a single scenario from a calibration run, one dir per CI job,
+ * and writes the budget with those lines replaced; comments, {@code *} lines and report-only
+ * lines are kept as they are. See {@link #calibrate(Budget, List)} for the rule. Exit status 2
+ * and no file written if a line cannot be recomputed.
  */
 public class Evaluate {
 
     private static final Pattern SIZE = Pattern.compile("(\\d+(?:\\.\\d+)?)(B|KiB|MiB|GiB)");
     private static final double KIB = 1024;
+    private static final double MIB = KIB * KIB;
+    /** Smallest margin between the measured value and the limit. */
+    private static final double FLOOR = 256 * KIB;
+    /** Limits are rounded up to a multiple of this. */
+    private static final double STEP = 0.05 * MIB;
     private static final String PROFILED = "nmt";
     private static final String NO_PROFILER = "noprof";
+    /** The arm whose records carry the counters but no NMT; calibration pools it for the coverage slope. */
+    private static final String COUNTERS_ONLY = "counters";
 
     /** One budget line. {@code limit} is null for report-only and tripwire lines. */
     static final class Budget {
@@ -111,7 +124,29 @@ public class Evaluate {
         }
     }
 
+    /** Values derived for one budget line from a calibration run. {@code perMethod} is null without coverage correction. */
+    static final class Calibration {
+        final double measured;
+        final double limit;
+        final double sd;
+        final double spread;
+        final Long perMethod;
+        final Long refMethods;
+
+        Calibration(double measured, double limit, double sd, double spread, Long perMethod, Long refMethods) {
+            this.measured = measured;
+            this.limit = limit;
+            this.sd = sd;
+            this.spread = spread;
+            this.perMethod = perMethod;
+            this.refMethods = refMethods;
+        }
+    }
+
     public static void main(String[] args) throws IOException {
+        if (args.length > 0 && args[0].equals("--calibrate")) {
+            System.exit(calibrateMain(args));
+        }
         if (args.length < 3) {
             System.err.println("usage: java Evaluate.java <budget.txt> <report.md> <dir>...");
             System.exit(2);
@@ -263,6 +298,132 @@ public class Evaluate {
 
     private static double mean(List<Run> runs, java.util.function.ToDoubleFunction<Run> f) {
         return runs.stream().mapToDouble(f).average().orElse(Double.NaN);
+    }
+
+    private static double sd(List<Run> runs, java.util.function.ToDoubleFunction<Run> f) {
+        double m = mean(runs, f);
+        double ss = runs.stream().mapToDouble(r -> Math.pow(f.applyAsDouble(r) - m, 2)).sum();
+        return Math.sqrt(ss / (runs.size() - 1));
+    }
+
+    static int calibrateMain(String[] args) throws IOException {
+        if (args.length < 4) {
+            System.err.println("usage: java Evaluate.java --calibrate <budget.txt> <new-budget.txt> <job-dir>...");
+            return 2;
+        }
+        List<String> lines = Files.readAllLines(Paths.get(args[1]), StandardCharsets.UTF_8);
+        List<String> errors = new ArrayList<>();
+        List<Budget> budget = parseBudget(lines, errors);
+        List<List<Run>> jobs = new ArrayList<>();
+        for (int i = 3; i < args.length; i++) {
+            jobs.add(readRuns(Paths.get(args[i], "runs")));
+        }
+        List<String> out = new ArrayList<>(lines);
+        for (Budget b : budget) {
+            if (b.limit == null || b.scenario.equals("*")) {
+                continue;
+            }
+            try {
+                Calibration c = calibrate(b, jobs);
+                out.set(b.line - 1, budgetLine(b, c));
+                System.out.printf(Locale.ROOT, "line %d %s %s: limit %s -> %s, measured %s -> %s%n", b.line, b.scenario,
+                        b.metric, fmt(b.limit, false), fmt(c.limit, false),
+                        b.measured == null ? "-" : fmt(b.measured, false), fmt(c.measured, false));
+            } catch (IllegalArgumentException e) {
+                errors.add("budget line " + b.line + ": " + e.getMessage());
+            }
+        }
+        if (!errors.isEmpty()) {
+            errors.forEach(e -> System.err.println("error: " + e));
+            return 2;
+        }
+        Files.write(Paths.get(args[2]), (String.join("\n", out) + "\n").getBytes(StandardCharsets.UTF_8));
+        return 0;
+    }
+
+    /**
+     * Derives one budget line from a calibration run: {@code limit = measured + max(FLOOR, 4 * sd)},
+     * rounded up to a multiple of {@code STEP}, where {@code sd} is the largest within-job standard
+     * deviation of the profiled runs, so the limit covers the noise of the noisiest pod. Counters
+     * take {@code measured} as the mean of all profiled runs; NMT and /proc lines as the mean over
+     * jobs of each job's profiled minus no-profiler mean, as {@link #check} computes it. With
+     * coverage correction, the slope comes from a least-squares fit over the profiled and the
+     * counters-only runs together (the per-job fits scatter too much), and {@code ref_methods} is
+     * their mean method count, rounded to 100.
+     */
+    static Calibration calibrate(Budget b, List<List<Run>> jobs) {
+        List<List<Run>> profiled = new ArrayList<>();
+        for (List<Run> job : jobs) {
+            List<Run> p = select(job, b.scenario, PROFILED);
+            if (p.size() < 2) {
+                throw new IllegalArgumentException("every job needs at least 2 profiled runs of " + b.scenario);
+            }
+            profiled.add(p);
+        }
+        java.util.function.ToDoubleFunction<Run> value;
+        boolean delta = b.metric.startsWith("nmt.") || b.metric.startsWith("proc.");
+        Long perMethod = null;
+        Long refMethods = null;
+        if (delta) {
+            boolean nmt = b.metric.startsWith("nmt.");
+            String key = b.metric.substring(b.metric.indexOf('.') + 1);
+            value = r -> (nmt ? r.nmt : r.proc).getOrDefault(key, 0.0);
+        } else {
+            if (profiled.stream().flatMap(List::stream).anyMatch(r -> !r.counters.containsKey(b.metric))) {
+                throw new IllegalArgumentException("a profiled run of " + b.scenario + " lacks counter " + b.metric);
+            }
+            java.util.function.ToDoubleFunction<Run> raw = r -> r.counters.get(b.metric);
+            value = raw;
+            if (b.options.containsKey("per_method")) {
+                java.util.function.ToDoubleFunction<Run> methods = r -> r.counters.getOrDefault("line_number_tables", 0.0);
+                List<Run> both = jobs.stream().flatMap(List::stream)
+                        .filter(r -> r.scenario.equals(b.scenario) && (r.arm.equals(PROFILED) || r.arm.equals(COUNTERS_ONLY)))
+                        .collect(Collectors.toList());
+                double mx = mean(both, methods);
+                double my = mean(both, raw);
+                double sxx = both.stream().mapToDouble(r -> Math.pow(methods.applyAsDouble(r) - mx, 2)).sum();
+                if (sxx == 0) {
+                    throw new IllegalArgumentException("line_number_tables does not vary in " + b.scenario + "; no coverage slope");
+                }
+                double sxy = both.stream().mapToDouble(r -> (methods.applyAsDouble(r) - mx) * (raw.applyAsDouble(r) - my)).sum();
+                long slope = Math.round(sxy / sxx);
+                long ref = Math.round(mx / 100) * 100;
+                perMethod = slope;
+                refMethods = ref;
+                value = r -> raw.applyAsDouble(r) - slope * (methods.applyAsDouble(r) - ref);
+            }
+        }
+        double sd = 0;
+        List<Double> jobMeans = new ArrayList<>();
+        for (int j = 0; j < jobs.size(); j++) {
+            List<Run> p = profiled.get(j);
+            sd = Math.max(sd, sd(p, value));
+            double m = mean(p, value);
+            if (delta) {
+                List<Run> noProfiler = select(jobs.get(j), b.scenario, NO_PROFILER);
+                if (noProfiler.isEmpty()) {
+                    throw new IllegalArgumentException("a job has no no-profiler runs of " + b.scenario);
+                }
+                m -= mean(noProfiler, value);
+            }
+            jobMeans.add(m);
+        }
+        double measured = delta ? jobMeans.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN)
+                : mean(profiled.stream().flatMap(List::stream).collect(Collectors.toList()), value);
+        if (measured < 0) {
+            throw new IllegalArgumentException("measured " + fmt(measured, true) + " is negative; sizes cannot be negative");
+        }
+        double spread = jobMeans.stream().mapToDouble(Double::doubleValue).max().getAsDouble()
+                - jobMeans.stream().mapToDouble(Double::doubleValue).min().getAsDouble();
+        double limit = Math.ceil((measured + Math.max(FLOOR, 4 * sd)) / STEP) * STEP;
+        return new Calibration(measured, limit, sd, spread, perMethod, refMethods);
+    }
+
+    static String budgetLine(Budget b, Calibration c) {
+        String options = c.perMethod == null ? "" : "  per_method=" + c.perMethod + " ref_methods=" + c.refMethods;
+        return String.format(Locale.ROOT, "%-9s %-22s %.2fMiB  %.2fMiB%s   # SD %d KiB, per-job spread %d KiB",
+                b.scenario, b.metric, c.limit / MIB, c.measured / MIB, options, Math.round(c.sd / KIB),
+                Math.round(c.spread / KIB));
     }
 
     static String report(List<Row> rows, List<String> errors, Path firstDir) throws IOException {
