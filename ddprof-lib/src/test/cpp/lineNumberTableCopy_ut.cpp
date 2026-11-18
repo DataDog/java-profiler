@@ -11,6 +11,7 @@
 #include <cstring>
 #include <signal.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "flightRecorder.h"
@@ -100,24 +101,33 @@ private:
 
 } // namespace
 
-// Reading an unreadable table without the validation crashes the process,
-// which is why fillJavaMethodInfo() must validate before caching the pair and
-// MethodInfo::getLineNumber() later reads it unchecked.
+// The child must die from the fault itself, not from a setup failure exit.
+static bool killedByMemoryFault(int status) {
+  return WIFSIGNALED(status) &&
+         (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS);
+}
+
+// Reading an unreadable table without the validation crashes the process.
+// fillJavaMethodInfo() must validate before caching the pair, because
+// MethodInfo::getLineNumber() later reads the cached pair unchecked.
 TEST(LineNumberTableCopyRawTest, UnguardedAccessCrashesWhenSourceUnreadable) {
-  EXPECT_DEATH(
+  EXPECT_EXIT(
       {
         ScopedPage page;
         if (page.addr() == MAP_FAILED) {
-          _exit(1); // a failed mmap still ends the child with non-zero status
+          _exit(1);
         }
         jvmtiLineNumberEntry *line_number_table =
             makeFakeLineNumberTable(page.addr(), 4);
-        mprotect(page.addr(), page.size(), PROT_NONE);
+        if (mprotect(page.addr(), page.size(), PROT_NONE) != 0) {
+          _exit(1);
+        }
 
         volatile jint sink = line_number_table[0].line_number; // faults here
         (void)sink;
+        _exit(0);
       },
-      "");
+      killedByMemoryFault, "");
 }
 
 // The probe rejects a PROT_NONE source and accepts the same pointer once it is
@@ -151,17 +161,17 @@ TEST_F(LineNumberTableCopyTest, AcceptsValidSourceAndHoldsItDirectly) {
   ASSERT_TRUE(
       isLineNumberTableReadable(line_number_table, line_number_table_size));
 
-  // ~SharedLineNumberTable() calls jvmti->Deallocate(), so it is built on the
-  // stack and its pointer cleared before it runs on this stack buffer.
+  // ~SharedLineNumberTable() calls jvmti->Deallocate() on _table; null it
+  // before scope exit so the destructor skips this stack buffer.
   SharedLineNumberTable held(line_number_table_size, line_number_table);
   EXPECT_EQ(line_number_table, held._table);
   EXPECT_EQ(line_number_table_size, held._size);
   held._table = nullptr;
 }
 
-// HotSpot returns size == 0 with a non-null pointer for methods without line
-// info. isReadableRange() asserts size > 0, so a zero-size table must take the
-// single-address isReadable() probe instead of aborting debug builds.
+// HotSpot can return size == 0 with a non-null pointer, which is validated
+// before it is dropped. isReadableRange() asserts size > 0, so a zero-size
+// table must take the single-address isReadable() probe instead.
 TEST_F(LineNumberTableCopyTest, AcceptsZeroSizeTableWithoutRangeCheckAssert) {
   jvmtiLineNumberEntry entry{};
   EXPECT_TRUE(isLineNumberTableReadable(&entry, 0));
