@@ -424,13 +424,16 @@ def evaluate_sha(sha, client, patterns):
         try:
             fresh_records = [gate.normalize_review(node)
                              for node in client.fetch_reviews(number)]
+            # The roster is process-cached by now, but the read must stay
+            # guarded on its own terms: a cache-less future must fail the
+            # publish, not crash it before any status is written.
+            team_logins = client.team_logins(OWNER_ORG, OWNER_TEAM_SLUG)
         except (gate.ApiError, gate.RateLimitError):
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (number,),
                     "%s/pull/%d" % (_repo_url(), number))
         if not owner_approval(fresh_records, approved_author[number],
-                              client.team_logins(OWNER_ORG, OWNER_TEAM_SLUG),
-                              sha):
+                              team_logins, sha):
             return ("failure", "failure",
                     "sensitive paths changed: approval from @DataDog/"
                     "profiling-java required",
@@ -446,8 +449,10 @@ def _selected_status(statuses):
     for status in statuses:
         if not isinstance(status, dict):
             continue
+        creator = status.get("creator")
         if (status.get("context") != STATUS_CONTEXT
-                or (status.get("creator") or {}).get("login") != gate.STATUS_CREATOR):
+                or not isinstance(creator, dict)
+                or creator.get("login") != gate.STATUS_CREATOR):
             continue
         if latest is None or status.get("id", 0) > latest.get("id", 0):
             latest = status

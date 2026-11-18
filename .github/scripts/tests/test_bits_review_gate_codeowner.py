@@ -815,6 +815,12 @@ class SelectedStatusTest(unittest.TestCase):
         self.assertIsNone(cogate._selected_status(
             [self.status(1, creator="someone-else")]))
 
+    def test_malformed_creator_is_not_a_candidate(self):
+        # A truthy non-dict creator must be skipped, not crash the publish
+        # on an AttributeError and leave a recorded success standing.
+        self.assertIsNone(cogate._selected_status(
+            [self.status(1, creator="dd-octo-sts[bot]")]))
+
     def test_every_field_must_match_for_suppression(self):
         recorded = self.status(
             1, description="sensitive-path owner review satisfied")
