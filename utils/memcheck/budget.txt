@@ -13,7 +13,7 @@
 # counters are corrected for sampling coverage to ref_methods methods seen,
 # at per_method bytes each (regression over the 5-job run, both arms).
 
-threads   native_mem_live_bytes  19.35MiB  19.09MiB    # SD 8 KiB, per-job spread 6 KiB
+threads   native_mem_live_bytes  19.00MiB  19.09MiB    # SD 8 KiB, per-job spread 6 KiB
 threads   native_mem_max_bytes   20.40MiB  20.11MiB    # SD 8 KiB, per-job spread 8 KiB
 threads   nmt.class              0.40MiB  0.11MiB   # SD 0 KiB, per-job spread 0 KiB
 threads   nmt.internal           0.45MiB  0.16MiB   # SD 5 KiB, per-job spread 4 KiB
