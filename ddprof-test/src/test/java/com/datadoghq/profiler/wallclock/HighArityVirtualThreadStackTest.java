@@ -13,6 +13,8 @@ import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.JfrStackTrace;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.FutureTask;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -59,11 +61,13 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
   public void retainsCarrierWithMoreThan128StackArgumentWords() throws Exception {
     waitForProfilerReady(2_000);
     Runnable workload = new Loader().workload();
-    parking = false;
-    logicalStack = null;
+    // Warm up with the park path taken: a never-taken branch compiles to an uncommon trap,
+    // and enabling it later would deoptimize the leaf during the sampling window.
+    parking = true;
     // The generated recursive method has no back edge, so it cannot be an OSR entry.
     for (int i = 0; i < 2_000; i++) workload.run();
-    parking = true;
+    // Warm-up ran on a platform thread; capture the virtual thread's stack instead.
+    logicalStack = null;
     FutureTask<Void> task =
         new FutureTask<>(
             () -> {
@@ -92,7 +96,9 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
     assertTrue(
         profiler.getDebugCounters().getOrDefault("walkvm_cont_barrier_hit", 0L) > 0,
         "The workload must exercise a continuation return barrier");
-    String[] firstInvalidCarrierStack = {null};
+    // [0]: first sample without exactly one carrier; [1]: first complete-looking partial sample.
+    String[] firstBadStack = {null, null};
+    Map<String, Integer> excludedBreaks = new TreeMap<>();
     int[] counts =
         reduceEvents(
             "datadog.MethodSample",
@@ -103,7 +109,8 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
               boolean outer = false;
               int carriers = 0;
               int errors = 0;
-              boolean stoppedBeforeBoundary = false;
+              boolean crossedBoundary = false;
+              String otherBreak = null;
               for (JfrFrame frame : trace.frames()) {
                 if (GENERATED.replace('/', '.').equals(frame.className())) {
                   compiled |=
@@ -114,13 +121,17 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 }
                 if ("java.util.concurrent.ForkJoinWorkerThread".equals(frame.className())
                     && "run".equals(frame.methodName())) carriers++;
+                crossedBoundary |= isCarrierSideFrame(frame);
                 if (frame.methodName() != null && frame.methodName().startsWith("break_cont_"))
                   errors++;
                 else if (frame.methodName() != null && frame.methodName().startsWith("break_"))
-                  stoppedBeforeBoundary = true;
+                  otherBreak = frame.methodName();
               }
               if (compiled && !outer) {
-                if (stoppedBeforeBoundary && errors == 0 && carriers == 0) {
+                // Only a walk that stopped before reaching the carrier is outside this test's
+                // scope.
+                if (otherBreak != null && !crossedBoundary && errors == 0 && carriers == 0) {
+                  excludedBreaks.merge(otherBreak, 1, Integer::sum);
                   count[4]++;
                   return;
                 }
@@ -128,10 +139,12 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 count[1] += errors;
                 if (carriers != 1) {
                   count[2]++;
-                  if (firstInvalidCarrierStack[0] == null)
-                    firstInvalidCarrierStack[0] = sample.getStackTraceString();
+                  if (firstBadStack[0] == null) firstBadStack[0] = sample.getStackTraceString();
                 }
-                if (!trace.isTruncated()) count[3]++;
+                if (!trace.isTruncated()) {
+                  count[3]++;
+                  if (firstBadStack[1] == null) firstBadStack[1] = sample.getStackTraceString();
+                }
               }
             });
     System.out.println(
@@ -140,14 +153,26 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
             + " continuationErrors="
             + counts[1]
             + " stopsBeforeBoundary="
-            + counts[4]);
+            + counts[4]
+            + " "
+            + excludedBreaks);
     assertTrue(counts[0] > 0, "No compiled high-arity sample left callers frozen");
-    assertEquals(0, counts[1], "High-arity carrier recovery rejected valid argument metadata");
     assertEquals(
         0,
-        counts[2],
-        "High-arity samples must retain exactly one carrier\n" + firstInvalidCarrierStack[0]);
-    assertEquals(0, counts[3], "Skipped frozen callers must remain marked truncated");
+        counts[1],
+        "High-arity carrier recovery rejected valid argument metadata\n" + firstBadStack[0]);
+    assertEquals(
+        0, counts[2], "High-arity samples must retain exactly one carrier\n" + firstBadStack[0]);
+    assertEquals(
+        0, counts[3], "Skipped frozen callers must remain marked truncated\n" + firstBadStack[1]);
+  }
+
+  /** Frames below the continuation entry, present only once the walk reached the carrier. */
+  private static boolean isCarrierSideFrame(JfrFrame frame) {
+    return ("jdk.internal.vm.Continuation".equals(frame.className())
+            && "run".equals(frame.methodName()))
+        || ("java.lang.VirtualThread".equals(frame.className())
+            && "runContinuation".equals(frame.methodName()));
   }
 
   /** Captures the JVM's logical callers once, independently of the profiler's physical walk. */
