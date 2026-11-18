@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-18 08:31:19 EST
+**Date:** 2026-11-18 08:37:32 EST
 
 ### Configuration
 | Setting | Value |
@@ -19,7 +19,7 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | CPU Cores (start) | 64 |
-| CPU Cores (end) | 64 |
+| CPU Cores (end) | 54 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 193 |
-| Sample Rate | 3.22/sec |
-| Health Score | 201% |
-| Threads | 8 |
+| CPU Samples | 446 |
+| Sample Rate | 7.43/sec |
+| Health Score | 464% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
+<summary>CPU Timeline (3 unique values: 54-66 cores)</summary>
 
 ```
-1795008474 64
-1795008479 64
-1795008484 64
-1795008489 64
-1795008494 64
-1795008499 64
-1795008504 64
-1795008509 64
-1795008514 64
-1795008519 64
-1795008524 64
-1795008529 64
-1795008534 64
-1795008539 64
-1795008544 64
-1795008549 64
-1795008554 64
-1795008559 64
-1795008564 64
-1795008569 64
+1795008440 64
+1795008445 64
+1795008450 64
+1795008455 64
+1795008460 64
+1795008465 64
+1795008470 66
+1795008475 66
+1795008480 54
+1795008485 54
+1795008490 54
+1795008495 54
+1795008500 54
+1795008505 54
+1795008510 54
+1795008515 54
+1795008520 54
+1795008525 54
+1795008530 54
+1795008535 54
 ```
 </details>
 
