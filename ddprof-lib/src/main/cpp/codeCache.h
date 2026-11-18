@@ -63,6 +63,12 @@ enum Mark {
     MARK_CONT_RUNTIME = 6,   // Continuation freeze/thaw runtime (FreezeBase/ThawBase/entries)
 };
 
+// MARK_CONT_RUNTIME only annotates a frame: it keeps its symbol and native
+// walks continue through it, unlike the marks that end or redirect a walk.
+static inline bool isWalkControlMark(char mark) {
+    return mark != 0 && mark != MARK_CONT_RUNTIME;
+}
+
 class NativeFunc {
 private:
   short _lib_index;

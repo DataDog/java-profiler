@@ -425,8 +425,8 @@ protected:
     };
 
     // Expected shape per control: the interrupted native frame is emitted for
-    // unmarked origins with a resolvable name; freeze/thaw-marked origins and
-    // any anchor-mediated jump reject the frozen-caller recovery.
+    // origins with a resolvable name; freeze/thaw-marked origins and any
+    // anchor-mediated jump reject the frozen-caller recovery.
     struct Expected {
         bool recovers;
         bool has_native_frame;
@@ -442,7 +442,7 @@ protected:
         static const Expected table[] = {
                 /* JavaOriginA */ {true, false, false, false, true, true, false, 1, 0},
                 /* NativeCallAnchorB */ {true, true, false, false, true, true, false, 1, 0},
-                /* FreezeRuntimeAnchorB2 */ {false, false, false, false, true, true, false, 1, 0},
+                /* FreezeRuntimeAnchorB2 */ {false, true, false, false, true, true, false, 1, 0},
                 /* NativeCallFallbackB3 */ {false, true, false, false, true, true, false, 0, 1},
                 /* NativeCallUnclassifiableB4 */ {false, true, false, false, true, true, false, 1, 0},
                 /* OneMountedFrameB5 */ {true, true, false, false, true, false, false, 1, 0},
@@ -581,6 +581,8 @@ protected:
             Profiler::NativeFrameResolution resolution =
                     Profiler::instance()->resolveNativeFrameForWalkVM(frame.pc(), false, 0);
             ASSERT_EQ(control == FreezeRuntimeAnchorB2, resolution.mark == MARK_CONT_RUNTIME);
+            ASSERT_EQ(BCI_NATIVE_FRAME, resolution.bci);
+            ASSERT_NE(nullptr, resolution.method_name);
             if (control == GenericAnchorRedirectB6) {
                 ASSERT_EQ(nullptr, Profiler::instance()->libraries()->findLibraryByAddress(unresolvedPc()));
                 ASSERT_EQ(0, thread.anchor.fp); // compiled-frame anchor
@@ -641,7 +643,9 @@ protected:
             int i = 0;
             if (exp.has_native_frame) {
                 EXPECT_EQ(BCI_NATIVE_FRAME, frames[i].bci);
-                EXPECT_STREQ(control == NativeCallFallbackB3 || control == GenericAnchorRedirectB6
+                // The freeze/thaw mark annotates B2's frame without dropping its symbol.
+                EXPECT_STREQ(control == FreezeRuntimeAnchorB2 ? kFreezeSymbol
+                             : control == NativeCallFallbackB3 || control == GenericAnchorRedirectB6
                                      ? "JVM_NanoTimeSlow" : kNativeCallSymbol,
                              reinterpret_cast<const char*>(frames[i].method_id));
                 i++;
