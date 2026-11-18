@@ -973,19 +973,19 @@ TEST_F(ElfTest, dynamicSectionInvalidRelocationEntrySize) {
     }
 }
 
-// gABI "Symbol Values": st_value is an in-image address only for a defined,
-// non-TLS, non-ABS symbol. TLS offsets, absolute values and undefined symbols
-// (an executable's PLT stub address) must not become code-cache entries.
+// gABI "Symbol Values": TLS offsets, absolute/common values, section and file
+// entries and undefined symbols (an executable's PLT stub address) are not
+// in-image addresses and must not become code-cache entries.
 TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
     const uint16_t NSEC = 4;
     const uint64_t shoff = sizeof(Elf64_Ehdr);
     const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
     const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
     const uint64_t sym_off = shstr_off + sizeof(shstrtab);
-    const char strtab[] = "\0good_func\0tls_var\0abs_sym\0undef_stub\0";
-    enum { GOOD = 1, TLS = 11, ABS = 19, UNDEF = 27 };
+    const char strtab[] = "\0good_func\0tls_var\0abs_sym\0undef_stub\0common_sym\0sect_sym\0file_sym\0";
+    enum { GOOD = 1, TLS = 11, ABS = 19, UNDEF = 27, COMMON = 38, SECT = 49, FILE_SYM = 58 };
 
-    Elf64_Sym sym[4];
+    Elf64_Sym sym[7];
     memset(sym, 0, sizeof(sym));
     auto set = [&](int i, uint32_t name, unsigned char type, uint16_t shndx, uint64_t value) {
         sym[i].st_name = name;
@@ -998,6 +998,9 @@ TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
     set(1, TLS, STT_TLS, 1, 0x8);
     set(2, ABS, STT_NOTYPE, SHN_ABS, 0x30000);
     set(3, UNDEF, STT_FUNC, SHN_UNDEF, 0x40000);
+    set(4, COMMON, STT_OBJECT, SHN_COMMON, 0x10);
+    set(5, SECT, STT_SECTION, 1, 0x50000);
+    set(6, FILE_SYM, STT_FILE, 1, 0x60000);
     const uint64_t str_off = sym_off + sizeof(sym);
 
     Elf64_Ehdr e = validEhdr();
@@ -1036,18 +1039,16 @@ TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
 
     CodeCache cc("regress");
     ASSERT_NO_FATAL_FAILURE(parseElfBytes(b, &cc, /*use_debug=*/true));
-    EXPECT_EQ(cc.findSymbol("good_func"), (const void*)0x20000);
-    EXPECT_EQ(cc.findSymbol("tls_var"), nullptr);
-    EXPECT_EQ(cc.findSymbol("abs_sym"), nullptr);
-    EXPECT_EQ(cc.findSymbol("undef_stub"), nullptr);
+    EXPECT_EQ(cc.findSymbol("good_func"), reinterpret_cast<const void*>(0x20000));
+    for (const char* name : {"tls_var", "abs_sym", "undef_stub", "common_sym", "sect_sym", "file_sym"}) {
+        EXPECT_EQ(cc.findSymbol(name), nullptr) << name;
+    }
 }
 
 namespace {
 
-// A loaded image with one PT_LOAD, a PT_DYNAMIC holding `dyn` (the caller supplies
-// the terminator), and a .rela.plt with one entry importing pthread_create into
-// GOT slot PLT_SLOT. The dynamic array and tables sit at fixed offsets, so a test
-// controls exactly which tags exist. Returns the image, or null on failure.
+// An in-memory image whose PT_DYNAMIC holds exactly `dyn` (caller adds DT_NULL) and
+// whose .rela.plt imports pthread_create into GOT slot PLT_SLOT; null on failure.
 constexpr uint64_t PLT_SLOT = 0x800;
 constexpr size_t DYN_IMAGE_SIZE = 4096;
 constexpr int DYN_NPH = 2;
@@ -1123,17 +1124,17 @@ TEST_F(ElfTest, pltOnlyImportsWithoutRelent) {
 
     CodeCache cc("inmem");
     ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
-    EXPECT_EQ(cc.peekImport(im_pthread_create), (void**)(image + PLT_SLOT));
+    EXPECT_EQ(cc.peekImport(im_pthread_create), reinterpret_cast<void**>(image + PLT_SLOT));
 
     const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
-    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, (uintptr_t)image);
+    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
     EXPECT_NE(before, 0u);
     // The PLT table is hashed: moving its GOT slot must change the fingerprint.
     Elf64_Rela rela;
     memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
     rela.r_offset = PLT_SLOT + 2 * sizeof(void*);
     memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
-    EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, (uintptr_t)image), before);
+    EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image)), before);
 }
 
 // gABI: the dynamic array ends at the first DT_NULL. Slots after it (patchelf and
@@ -1148,7 +1149,7 @@ TEST_F(ElfTest, dynamicSectionStopsAtDtNull) {
 
     CodeCache cc("inmem");
     ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
-    EXPECT_EQ(cc.peekImport(im_pthread_create), (void**)(image + PLT_SLOT));
+    EXPECT_EQ(cc.peekImport(im_pthread_create), reinterpret_cast<void**>(image + PLT_SLOT));
 }
 
 #endif //__linux__

@@ -609,10 +609,9 @@ void ElfParser::calcVirtualLoadAddress() {
     _vaddr_diff = _base;
 }
 
-// Size of one DT_JMPREL entry. DT_PLTREL says whether the table holds Elf_Rel or
-// Elf_Rela entries (gABI), so the stride does not depend on DT_RELENT/DT_RELAENT,
-// which a library with only PLT relocations does not have. Without DT_PLTREL fall
-// back to the entry size of the DT_REL/DT_RELA table; 0 means unknown.
+// Size of one DT_JMPREL entry, from DT_PLTREL (gABI): a library with only PLT
+// relocations has no DT_RELENT/DT_RELAENT. Without DT_PLTREL, fall back to the
+// DT_RELA/DT_REL entry size; 0 means unknown.
 static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
     if (pltrel == DT_REL) return sizeof(Elf64_Rel);
     if (pltrel == DT_RELA) return sizeof(Elf64_Rela);
@@ -642,7 +641,7 @@ void ElfParser::parseDynamicSection() {
         // Whole entries only: a p_memsz that is not a multiple of sizeof(ElfDyn)
         // must not make the loop read a partial one.
         size_t dyn_count = dynamic->p_memsz / sizeof(ElfDyn);
-        ElfDyn* dyn = (ElfDyn*)dyn_start;
+        ElfDyn* dyn = reinterpret_cast<ElfDyn*>(const_cast<char*>(dyn_start));
         // The array ends at the first DT_NULL; slots after it (patchelf, prelink)
         // are padding and must not override real tags.
         for (size_t i = 0; i < dyn_count && dyn[i].d_tag != DT_NULL; i++) {
@@ -660,11 +659,11 @@ void ElfParser::parseDynamicSection() {
                     strsz = dyn[i].d_un.d_val;
                     break;
                 case DT_HASH:
-                    nsyms = ((uint32_t*)dyn_ptr(&dyn[i]))[1];
+                    nsyms = reinterpret_cast<uint32_t*>(dyn_ptr(&dyn[i]))[1];
                     break;
                 case DT_GNU_HASH:
                     if (nsyms == 0) {
-                        nsyms = getSymbolCount((uint32_t*)dyn_ptr(&dyn[i]));
+                        nsyms = getSymbolCount(reinterpret_cast<uint32_t*>(dyn_ptr(&dyn[i])));
                     }
                     break;
                 case DT_JMPREL:
@@ -727,12 +726,9 @@ void ElfParser::parseDynamicSection() {
         // though the intent is just "sym addresses are already absolute". Do the
         // addition in integer space, same fix as the .plt case above.
         uintptr_t base_addr = (uintptr_t)this->base();
-        // Records the imports of one relocation table. Entries smaller than
-        // r_offset plus r_info cannot be read (hashImportLayout() skips them too).
-        // Walking only while a whole entry fits keeps offs within the table, so
-        // offs += ent cannot wrap. The leading `skip` bytes are relative
-        // relocations, without a symbol. only_got_slots keeps the GLOB_DAT and
-        // ABS64 entries of .rela.dyn; PLT entries are all imports.
+        // Records one table's imports after its leading `skip` bytes of relative
+        // relocations. Walking only while a whole entry fits keeps offs += ent from
+        // wrapping. only_got_slots keeps .rela.dyn's GLOB_DAT/ABS64 entries.
         auto addImports = [&](char* table, size_t size, size_t ent, size_t skip, bool only_got_slots) {
             if (table == NULL || size == 0 || ent < sizeof(ElfRelocation)) return;
             for (size_t offs = skip < size ? skip : size; ent <= size - offs; offs += ent) {
@@ -744,7 +740,7 @@ void ElfParser::parseDynamicSection() {
                 if (st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, st_name);
                     if (sym_name != NULL) {
-                        _cc->addImport((void**)(base_addr + r.r_offset), sym_name);
+                        _cc->addImport(reinterpret_cast<void**>(base_addr + r.r_offset), sym_name);
                     }
                 }
             }
@@ -1004,14 +1000,9 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
     return result;
 }
 
-// Whether st_value of this symbol is a virtual address inside the image (gABI,
-// "Symbol Values"). Excluded:
-//  - SHN_UNDEF: defined elsewhere. In an executable a non-zero st_value is the
-//    address of the PLT stub, which must not be named after the real function.
-//  - SHN_ABS / SHN_COMMON and other reserved indices: st_value is an absolute
-//    value or an alignment, not an address to relocate by the load bias.
-//  - STT_TLS: st_value is an offset into the TLS template, not an address.
-//  - STT_SECTION / STT_FILE: bookkeeping entries, not code or data objects.
+// Whether st_value is an in-image address (gABI "Symbol Values"). Not for SHN_UNDEF
+// (an executable's PLT stub address), reserved indices such as SHN_ABS/SHN_COMMON
+// (absolute value or alignment), STT_TLS (TLS offset) or STT_SECTION/STT_FILE.
 static bool isCodeAddressSymbol(const ElfSymbol& entry) {
     if (entry.st_shndx == SHN_UNDEF || entry.st_shndx >= SHN_LORESERVE) {
         return false;
