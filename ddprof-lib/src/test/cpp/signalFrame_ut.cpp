@@ -8,6 +8,7 @@
 #include "dwarfStep.inline.h"
 #include "libraries.h"
 #include <array>
+#include <cstddef>
 #include <new>
 #include <signal.h>
 
@@ -25,7 +26,7 @@ public:
 
 namespace {
 alignas(16) uint32_t trampoline_code[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
-alignas(16) uint32_t ordinary_code[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+alignas(16) uint32_t custom_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 alignas(16) uint32_t other_syscall_code[] = {0xd503201f, 0xd2801588, 0xd4000001, 0xd503201f}; // getpid
 alignas(16) uint32_t unregistered_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 alignas(16) uint32_t leaf_code[] = {0xd503201f, 0xd65f03c0};
@@ -36,8 +37,8 @@ void registerLibraries() {
     static const bool registered = [] {
         static CodeCache vdso("[vdso]", -1, (const char*)trampoline_code,
                               (const char*)(trampoline_code + 4));
-        static CodeCache ordinary("ordinary-syscall", -1, (const char*)ordinary_code,
-                                  (const char*)(ordinary_code + 4));
+        static CodeCache custom("custom-restorer", -1, (const char*)custom_restorer,
+                                (const char*)(custom_restorer + 4));
         static CodeCache leaf("native-clock-leaf", -1, (const char*)leaf_code,
                               (const char*)(leaf_code + 2));
         static CodeCache other_syscall("other-syscall", -1, (const char*)other_syscall_code,
@@ -50,7 +51,7 @@ void registerLibraries() {
         leaf.setDwarfTable(nullptr, 0, leaf_row);
         other_syscall.setDwarfTable(nullptr, 0, leaf_row);
         bool ok = Libraries::instance()->addLibraryForTest(&vdso);
-        ok = Libraries::instance()->addLibraryForTest(&ordinary) && ok;
+        ok = Libraries::instance()->addLibraryForTest(&custom) && ok;
         ok = Libraries::instance()->addLibraryForTest(&other_syscall) && ok;
         ok = Libraries::instance()->addLibraryForTest(&cfi) && ok;
         return Libraries::instance()->addLibraryForTest(&leaf) && ok;
@@ -137,7 +138,7 @@ TEST_F(SignalFrameTest, DecoderLeavesOutputUnchangedWhenRestorerIsInvalid) {
     savedContext(stack);
     SignalFrame result{stack.data(), caller_pc, 16, 32};
     EXPECT_EQ(SignalFrame::Result::INVALID,
-              SignalFrame::decode(ordinary_code + 1, reinterpret_cast<uintptr_t>(stack.data()),
+              SignalFrame::decode(custom_restorer + 1, reinterpret_cast<uintptr_t>(stack.data()),
                                   reinterpret_cast<uintptr_t>(stack.data() + stack.size()), nullptr, result));
     EXPECT_EQ(stack.data(), result.context);
     EXPECT_EQ(caller_pc, result.pc);
@@ -159,6 +160,24 @@ TEST_F(SignalFrameTest, RejectsIncompleteOrMisalignedSignalFrame) {
         EXPECT_FALSE(step(pc, sp, fp, bottom, 2, frame, &truncated));
         EXPECT_TRUE(truncated);
         EXPECT_EQ((const void*)(trampoline_code + 1), pc.raw());
+    }
+}
+
+TEST_F(SignalFrameTest, AcceptsFrameEndingAtSavedPc) {
+    constexpr size_t required = sizeof(siginfo_t) + offsetof(ucontext_t, uc_mcontext.pc) + sizeof(uint64_t);
+    alignas(16) SignalStack stack{};
+    auto* saved = savedContext(stack);
+    uintptr_t base = reinterpret_cast<uintptr_t>(stack.data());
+    saved->uc_mcontext.sp = base + sizeof(siginfo_t); // keep the interrupted SP inside the bound
+    for (size_t span : {required, required - 1}) {
+        ucontext_t sampled{};
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(trampoline_code + 1);
+        uintptr_t sp = base, fp = 0;
+        bool truncated = false;
+        EXPECT_EQ(span == required, step(pc, sp, fp, base + span, 2, frame, &truncated));
+        EXPECT_EQ(span != required, truncated);
     }
 }
 
@@ -205,19 +224,19 @@ TEST_F(SignalFrameTest, DoesNotRestoreAtUnrecognizedVdsoInstruction) {
     EXPECT_TRUE(frame.isInterruptedPC(trampoline_code + 3));
 }
 
-TEST_F(SignalFrameTest, DoesNotTreatOrdinarySyscallCodeAsSignalTrampoline) {
+TEST_F(SignalFrameTest, TruncatesAtRestorerOutsideVdso) {
     alignas(16) SignalStack stack{};
     savedContext(stack);
     ucontext_t sampled{};
-    sampled.uc_mcontext.pc = (uintptr_t)(ordinary_code + 1);
+    sampled.uc_mcontext.pc = (uintptr_t)(custom_restorer + 1);
     StackFrame frame(&sampled);
     WalkPc pc;
-    pc.setReturnAddress(ordinary_code + 1);
+    pc.setReturnAddress(custom_restorer + 1);
     uintptr_t sp = (uintptr_t)stack.data(), fp = 0;
     bool truncated = false;
     EXPECT_FALSE(step(pc, sp, fp, (uintptr_t)(stack.data() + stack.size()), 2, frame, &truncated));
     EXPECT_TRUE(truncated);
-    EXPECT_TRUE(frame.isInterruptedPC(ordinary_code + 1));
+    EXPECT_TRUE(frame.isInterruptedPC(custom_restorer + 1));
 }
 
 TEST_F(SignalFrameTest, SuccessfulRecoveryPreservesPriorTruncation) {

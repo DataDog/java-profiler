@@ -141,6 +141,28 @@ TEST(DwarfEhFrame, RestoreUsesCieDefinedReturnAddressRule) {
     }
 }
 
+TEST(DwarfEhFrame, NopDoesNotEndInstructionParsing) {
+    for (bool indexed : {false, true}) {
+        int count;
+        auto rows = parseInstructionRows({0x00, 0x0e, 32, 0x41}, count, {}, indexed);
+        ASSERT_GE(count, 2);
+        EXPECT_EQ(32, static_cast<int>(rows.get()[0].cfa) >> 8);
+    }
+}
+
+TEST(DwarfEhFrame, AdvanceInCieInitialRulesAddsNoRow) {
+    for (bool indexed : {false, true}) {
+        for (const auto& advance : std::vector<std::vector<uint8_t>>{
+                 {0x41}, {0x02, 1}, {0x03, 1, 0}, {0x04, 1, 0, 0, 0}}) {
+            // A CIE row would sit at loc 0, before the FDE's first row.
+            int count;
+            auto rows = parseInstructionRows({0x0e, 32}, count, advance, indexed);
+            ASSERT_GE(count, 1);
+            EXPECT_EQ(32, static_cast<int>(rows.get()[0].cfa) >> 8);
+        }
+    }
+}
+
 TEST(DwarfEhFrame, LeafReturnAddressUsesArchitectureRegisterOrStackSlot) {
     int count;
     auto rows = parseInstructionRows({}, count);
