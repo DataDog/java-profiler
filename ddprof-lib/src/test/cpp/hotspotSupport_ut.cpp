@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <vector>
 #include <sys/mman.h>
@@ -157,15 +158,24 @@ public:
         set(VMStructs::_narrow_klass_shift, shift);
         set(VMStructs::_narrow_klass_base, base);
     }
-    // Models inflated marks as ObjectMonitor pointers; useObjectMonitorTable() switches that.
+    // Models inflated marks as ObjectMonitor pointers until another inflated layout is set.
     void useCompactHeaders(char* base, int shift, long mark_klass_shift) {
         set(VMStructs::_compact_object_headers, true);
-        set(VMStructs::_object_monitor_table, false);
+        set(VMStructs::_inflated_mark, VMStructs::InflatedMark::MonitorPointer);
         set(VMStructs::_narrow_klass_shift, shift);
         set(VMStructs::_markWord_klass_shift, mark_klass_shift);
         set(VMStructs::_narrow_klass_base, base);
     }
-    void useObjectMonitorTable() { set(VMStructs::_object_monitor_table, true); }
+    void useInflatedMarkHeader() { set(VMStructs::_inflated_mark, VMStructs::InflatedMark::Header); }
+    void useUnknownInflatedMark() { set(VMStructs::_inflated_mark, VMStructs::InflatedMark::Unknown); }
+    static const char* inflatedMarkFor(const bool* object_monitor_table) {
+        switch (VMStructs::inflatedMarkFor(object_monitor_table)) {
+        case VMStructs::InflatedMark::Unknown: return "unknown";
+        case VMStructs::InflatedMark::MonitorPointer: return "monitor pointer";
+        case VMStructs::InflatedMark::Header: return "header";
+        }
+        return "invalid";
+    }
     static uintptr_t monitorBit() { return VMStructs::MONITOR_BIT; }
     static uintptr_t lockMask() { return VMStructs::LOCK_MASK; }
 };
@@ -236,7 +246,7 @@ protected:
     // headers the header read is the klass word; with them it is the mark word.
     enum class ReceiverLayout {
         UncompressedKlassWord, UncompressedKlass, CompressedKlassWord, CompressedKlass,
-        CompactMarkWord, CompactKlass, CompactMonitor, CompactMonitorSentinel, CompactMonitorTable
+        CompactMarkWord, CompactKlass, CompactMonitor, CompactMonitorSentinel
     };
     struct ReceiverCase {
         ReceiverLayout kind;
@@ -250,10 +260,9 @@ protected:
         {ReceiverLayout::CompactMarkWord, "compact mark word"},
         {ReceiverLayout::CompactKlass, "compact klass"},
         {ReceiverLayout::CompactMonitor, "compact monitor"},
-        {ReceiverLayout::CompactMonitorSentinel, "compact monitor with sentinel mark"},
-        {ReceiverLayout::CompactMonitorTable, "compact monitor table"}};
+        {ReceiverLayout::CompactMonitorSentinel, "compact monitor with sentinel mark"}};
     static_assert(sizeof(kReceiverCases) / sizeof(kReceiverCases[0])
-                  == static_cast<size_t>(ReceiverLayout::CompactMonitorTable) + 1, "one case per layout");
+                  == static_cast<size_t>(ReceiverLayout::CompactMonitorSentinel) + 1, "one case per layout");
 
     // Models `kind` in `layout` with every read readable. A non-null `fault_page` replaces
     // the read that `kind` names; the decoded klass lands 16 bytes into that page.
@@ -301,13 +310,6 @@ protected:
             _monitor = 1;
             _oop[0] = monitor;
             break;
-        case ReceiverLayout::CompactMonitorTable:
-            // The inflated mark keeps its klass bits; only the lock bits change.
-            layout.useCompactHeaders(base, kNarrowKlassShift, kMarkKlassShift);
-            layout.useObjectMonitorTable();
-            _oop[0] |= VMStructsTestAccessor::monitorBit();
-            if (fault != nullptr) receiver = reinterpret_cast<uintptr_t>(fault);
-            break;
         }
         setReceiver(receiver);
     }
@@ -350,12 +352,51 @@ TEST_F(VtableReceiverCaptureTest, NullReceiverKlassAndSymbolAreNotCaptured) {
     EXPECT_EQ(nullptr, capture());
 }
 
+TEST_F(VtableReceiverCaptureTest, InflatedMarkLayoutFollowsUseObjectMonitorTable) {
+    bool table = true;
+    bool no_table = false;
+    EXPECT_STREQ("header", VMStructsTestAccessor::inflatedMarkFor(&table));
+    EXPECT_STREQ("monitor pointer", VMStructsTestAccessor::inflatedMarkFor(&no_table));
+    EXPECT_STREQ("unknown", VMStructsTestAccessor::inflatedMarkFor(nullptr));
+}
+
+TEST_F(VtableReceiverCaptureTest, InflatedHeaderMarkKeepsItsKlassBits) {
+    VMStructsTestAccessor layout;
+    pointReceiverAt(layout, ReceiverLayout::CompactMarkWord, nullptr);
+    layout.useInflatedMarkHeader();
+    _oop[0] |= VMStructsTestAccessor::monitorBit();
+    EXPECT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
+}
+
+TEST_F(VtableReceiverCaptureTest, UnknownInflatedMarkIsNotDecoded) {
+    VMStructsTestAccessor layout;
+    // Each mark decodes to the klass in one known layout, so neither may be guessed.
+    pointReceiverAt(layout, ReceiverLayout::CompactMonitor, nullptr);
+    ASSERT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
+    layout.useUnknownInflatedMark();
+    EXPECT_EQ(nullptr, capture());
+    pointReceiverAt(layout, ReceiverLayout::CompactMarkWord, nullptr);
+    layout.useInflatedMarkHeader();
+    _oop[0] |= VMStructsTestAccessor::monitorBit();
+    ASSERT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
+    layout.useUnknownInflatedMark();
+    EXPECT_EQ(nullptr, capture());
+}
+
 TEST_F(VtableReceiverCaptureTest, MarkedCompactHeaderIsNotDecoded) {
     VMStructsTestAccessor layout;
-    // The monitor table mode would otherwise decode a marked header's upper bits as klass bits.
-    pointReceiverAt(layout, ReceiverLayout::CompactMonitorTable, nullptr);
+    // Header mode would decode the marked header's upper bits as klass bits.
+    pointReceiverAt(layout, ReceiverLayout::CompactMarkWord, nullptr);
+    layout.useInflatedMarkHeader();
     ASSERT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
     _oop[0] |= VMStructsTestAccessor::lockMask();
+    EXPECT_EQ(nullptr, capture());
+    // Pointer mode would fetch from (mark ^ MONITOR_BIT), one byte into this planted header.
+    alignas(8) unsigned char forwardee[2 * sizeof(uintptr_t)] = {};
+    uintptr_t header = kNarrowKlass << kMarkKlassShift;
+    memcpy(forwardee + 1, &header, sizeof(header));
+    pointReceiverAt(layout, ReceiverLayout::CompactMonitor, nullptr);
+    _oop[0] = reinterpret_cast<uintptr_t>(forwardee) | VMStructsTestAccessor::lockMask();
     EXPECT_EQ(nullptr, capture());
 }
 

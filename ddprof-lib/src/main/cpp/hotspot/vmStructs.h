@@ -411,7 +411,13 @@ class VMStructs {
     static bool _has_native_thread_id;
     static bool _can_dereference_jmethod_id;
     static bool _compact_object_headers;
-    static bool _object_monitor_table;
+    // What an inflated compact mark holds; Unknown when UseObjectMonitorTable is not a bool flag.
+    enum class InflatedMark { Unknown, MonitorPointer, Header };
+    static InflatedMark _inflated_mark;
+    static InflatedMark inflatedMarkFor(const bool* object_monitor_table) {
+        if (object_monitor_table == nullptr) return InflatedMark::Unknown;
+        return *object_monitor_table ? InflatedMark::Header : InflatedMark::MonitorPointer;
+    }
     
     static int _narrow_klass_shift;
     static char* _code_heap[3];
@@ -739,13 +745,13 @@ DECLARE(VMKlass)
             uintptr_t narrow_klass;
             if (_compact_object_headers) {
                 uintptr_t mark = reinterpret_cast<uintptr_t>(SafeAccess::load(reinterpret_cast<void**>(oop)));
-                if ((mark & LOCK_MASK) == LOCK_MASK) {
-                    // Marked: the upper bits are a GC pointer, not the header.
+                uintptr_t lock = mark & LOCK_MASK;
+                // A marked header's upper bits are a GC pointer; an Unknown inflated mark may be one.
+                if (lock == LOCK_MASK || (lock == MONITOR_BIT && _inflated_mark == InflatedMark::Unknown)) {
                     return nullptr;
                 }
-                // With UseObjectMonitorTable an inflated mark keeps its header; otherwise it
-                // points to the ObjectMonitor that holds the displaced header.
-                if ((mark & LOCK_MASK) == MONITOR_BIT && !_object_monitor_table) {
+                // A MonitorPointer mark points to the ObjectMonitor holding the displaced header.
+                if (lock == MONITOR_BIT && _inflated_mark == InflatedMark::MonitorPointer) {
                     // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
                     // reading the mark word and dereferencing the monitor pointer. Use
                     // safeFetch64 so a concurrent deflation/free does not crash here.

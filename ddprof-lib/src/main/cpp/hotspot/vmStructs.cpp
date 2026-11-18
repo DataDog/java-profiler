@@ -28,7 +28,7 @@ bool VMStructs::_has_class_loader_data = false;
 bool VMStructs::_has_native_thread_id = false;
 bool VMStructs::_can_dereference_jmethod_id = false;
 bool VMStructs::_compact_object_headers = false;
-bool VMStructs::_object_monitor_table = false;
+VMStructs::InflatedMark VMStructs::_inflated_mark = VMStructs::InflatedMark::Unknown;
 
 char* VMStructs::_code_heap[3] = {};
 const void* VMStructs::_code_heap_low = NO_MIN_ADDRESS;
@@ -361,10 +361,10 @@ void VMStructs::resolveOffsets() {
         _compact_object_headers = true;
     }
 
-    // Read only with compact headers. Without the flag, the inflated mark is assumed to keep
-    // its header, as in current OpenJDK.
-    VMFlag* omt = VMFlag::find("UseObjectMonitorTable");
-    _object_monitor_table = omt == NULL || omt->get();
+    // Read only with compact headers: UseObjectMonitorTable keeps the header in an inflated mark.
+    VMFlag* omt = VMFlag::find("UseObjectMonitorTable", {VMFlag::Type::Bool});
+    bool object_monitor_table = omt != NULL && omt->get();
+    _inflated_mark = inflatedMarkFor(omt != NULL ? &object_monitor_table : nullptr);
 
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)
