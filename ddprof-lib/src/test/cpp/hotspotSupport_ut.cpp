@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include <cstddef>
 #include <functional>
+#include <type_traits>
 #include <vector>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -404,13 +405,52 @@ protected:
 #endif
     }
 
-    // Switches to compressed klass pointers and decodes the receiver's klass word to `klass`.
-    void decodeReceiverKlassTo(const void* klass) {
+    enum class ReceiverLayout { UncompressedHeader, UncompressedKlass, CompressedKlass, CompactHeader };
+    static constexpr ReceiverLayout kReceiverLayouts[] = {
+        ReceiverLayout::UncompressedHeader, ReceiverLayout::UncompressedKlass,
+        ReceiverLayout::CompressedKlass, ReceiverLayout::CompactHeader};
+
+    // Models `kind` in `layout` and makes the memory that `kind` reads first after the oop
+    // header (the header itself, or the klass) either the real one or `unreadable`.
+    void pointReceiverAt(VMStructsTestAccessor& layout, ReceiverLayout kind, const void* unreadable) {
         constexpr uintptr_t narrow_klass = 16;
-        _layout.set(_compact_object_headers, false);
-        _layout.set(_narrow_klass_shift, 0);
-        _layout.set(_narrow_klass_base, const_cast<char*>(static_cast<const char*>(klass)) - narrow_klass);
-        _oop[1] = narrow_klass;
+        char* klass = reinterpret_cast<char*>(&(VtableReceiverCaptureTest::_klass));
+        const char* target = static_cast<const char*>(unreadable);
+        uintptr_t receiver = reinterpret_cast<uintptr_t>(_oop);
+        _oop[0] = 0;
+        _oop[1] = reinterpret_cast<uintptr_t>(klass);
+        switch (kind) {
+        case ReceiverLayout::UncompressedHeader:
+            if (target != nullptr) receiver = reinterpret_cast<uintptr_t>(target);
+            break;
+        case ReceiverLayout::UncompressedKlass:
+            if (target != nullptr) _oop[1] = reinterpret_cast<uintptr_t>(target);
+            break;
+        case ReceiverLayout::CompressedKlass:
+            layout.set(_narrow_klass_shift, 0);
+            layout.set(_narrow_klass_base, const_cast<char*>(target != nullptr ? target : klass) - narrow_klass);
+            _oop[1] = narrow_klass;
+            break;
+        case ReceiverLayout::CompactHeader:
+            layout.set(_compact_object_headers, true);
+            layout.set(_narrow_klass_shift, 0);
+            layout.set(_markWord_klass_shift, static_cast<std::decay_t<decltype(_markWord_klass_shift)>>(32));
+            layout.set(_narrow_klass_base, klass - narrow_klass);
+            _oop[0] = narrow_klass << 32;
+            if (target != nullptr) receiver = reinterpret_cast<uintptr_t>(target);
+            break;
+        }
+        setReceiver(receiver);
+    }
+
+    static const char* layoutName(ReceiverLayout kind) {
+        switch (kind) {
+        case ReceiverLayout::UncompressedHeader: return "uncompressed header";
+        case ReceiverLayout::UncompressedKlass: return "uncompressed klass";
+        case ReceiverLayout::CompressedKlass: return "compressed klass";
+        case ReceiverLayout::CompactHeader: return "compact header";
+        }
+        return "unknown";
     }
 
     void prepareWalk() {
@@ -441,15 +481,16 @@ protected:
 
 AsgctVtableReceiverTest::Block AsgctVtableReceiverTest::_blocks[2]{};
 
-// Installs the production crash handlers and restores the full previous actions. SafeAccess
-// faults resume in place; any other walk fault siglongjmps to the walker's landing pad.
+// Installs the production crash handlers with OS::replaceCrashHandler's flags and empty mask,
+// then restores the full previous actions. SafeAccess faults resume in place; any other walk
+// fault siglongjmps to the walker's landing pad.
 class ProfilerFaultHandlersScope {
     struct sigaction _segv{};
     struct sigaction _bus{};
     static void install(int signo, SigAction handler, struct sigaction* old) {
         struct sigaction action{};
         action.sa_sigaction = handler;
-        action.sa_flags = SA_SIGINFO | SA_NODEFER;
+        action.sa_flags = SA_SIGINFO | SA_RESTART | SA_NODEFER;
         sigemptyset(&action.sa_mask);
         EXPECT_EQ(0, sigaction(signo, &action, old));
     }
@@ -598,30 +639,29 @@ TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheAsgctReceive
         bool truncated = false;
         StackContext java_ctx{};
         AsyncSampleMutex mutex(thread);
-        EXPECT_TRUE(mutex.acquired());
+        if (!mutex.acquired()) {
+            ADD_FAILURE() << "AsyncSampleMutex was not acquired";
+            return -1;
+        }
         int depth = HotspotSupportTestAccessor::getJavaTraceAsyncWithRecovery(
             &_ctx, _frames, 3, &java_ctx, &truncated);
         EXPECT_FALSE(truncated);
         return depth;
     };
-    for (bool via_klass : {false, true}) {
-        SCOPED_TRACE(via_klass ? "compressed klass" : "receiver header");
-        if (via_klass) decodeReceiverKlassTo(&(VtableReceiverCaptureTest::_klass));
+    for (ReceiverLayout kind : kReceiverLayouts) {
+        SCOPED_TRACE(layoutName(kind));
+        VMStructsTestAccessor layout;
         // Readable memory first, so every other capture gate is shown to pass.
+        pointReceiverAt(layout, kind, nullptr);
         ASSERT_EQ(3, walk_with_recovery());
         EXPECT_EQ(BCI_VTABLE_RECEIVER, _frames[0].bci);
-        if (via_klass) {
-            decodeReceiverKlassTo(bad_page.addr());
-        } else {
-            setReceiver(reinterpret_cast<uintptr_t>(bad_page.addr()));
-        }
+        pointReceiverAt(layout, kind, bad_page.addr());
         ASSERT_EQ(2, walk_with_recovery());
         EXPECT_EQ(BCI_NATIVE_FRAME, _frames[0].bci);
         EXPECT_STREQ("vtable chunks test", reinterpret_cast<const char*>(_frames[0].method_id));
         EXPECT_EQ(reinterpret_cast<jmethodID>(0x1230), _frames[1].method_id);
         EXPECT_EQ(std::vector<int>({3, 2}), asgct_budgets);
         expectCanary(2);
-        setReceiver(reinterpret_cast<uintptr_t>(_oop));
     }
 }
 
@@ -631,25 +671,31 @@ TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheVmReceiverFr
     ProfilerFaultHandlersScope handlers;
     // Keep the native-transition anchor empty so the walk stays on the interrupted leaf.
     _thread.anchor = {};
-    for (bool via_klass : {false, true}) {
-        SCOPED_TRACE(via_klass ? "compressed klass" : "receiver header");
-        if (via_klass) decodeReceiverKlassTo(&(VtableReceiverCaptureTest::_klass));
+    for (ReceiverLayout kind : kReceiverLayouts) {
+        SCOPED_TRACE(layoutName(kind));
+        VMStructsTestAccessor layout;
+        pointReceiverAt(layout, kind, nullptr);
         prepareWalk();
         ASSERT_EQ(2, HotspotSupportTestAccessor::walkVM(&_ctx, _frames, 2, _features, false));
         EXPECT_EQ(BCI_VTABLE_RECEIVER, _frames[0].bci);
-        if (via_klass) {
-            decodeReceiverKlassTo(bad_page.addr());
-        } else {
-            setReceiver(reinterpret_cast<uintptr_t>(bad_page.addr()));
-        }
+        pointReceiverAt(layout, kind, bad_page.addr());
         prepareWalk();
         // The leaf stub and its caller stub fill the budget; a recovered fault would end the walk.
         ASSERT_EQ(2, HotspotSupportTestAccessor::walkVM(&_ctx, _frames, 2, _features, false));
         EXPECT_EQ(BCI_NATIVE_FRAME, _frames[0].bci);
         EXPECT_EQ(BCI_NATIVE_FRAME, _frames[1].bci);
         expectCanary(2);
-        setReceiver(reinterpret_cast<uintptr_t>(_oop));
     }
+}
+
+TEST_P(AsgctVtableReceiverTest, ZeroNarrowKlassIsNotDecodedAgainstTheBase) {
+    VMStructsTestAccessor layout;
+    pointReceiverAt(layout, ReceiverLayout::CompressedKlass, nullptr);
+    ASSERT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
+    // A faulting or null klass word reads as 0; the base itself is readable here.
+    layout.set(_narrow_klass_base, reinterpret_cast<char*>(&(VtableReceiverCaptureTest::_klass)));
+    _oop[1] = 0;
+    EXPECT_EQ(nullptr, capture());
 }
 
 TEST_P(AsgctVtableReceiverTest, CapturesReceiverBeforeUnwindingAndReservesRetrySlot) {
