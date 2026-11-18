@@ -123,8 +123,8 @@ public:
 };
 
 // A Dictionary whose failed inserts resolve to UNRESOLVED_ID, an id outside the
-// table, so a caller never stores 0 (no entry) as a reference. The owner emits
-// UNRESOLVED_ID as a pool entry when failed() is set.
+// table, so a caller never stores 0 (no entry) as a reference. collect() emits
+// UNRESOLVED_ID as an entry once a lookup has failed.
 class SymbolDictionary : public Dictionary {
 private:
   bool _failed = false;
