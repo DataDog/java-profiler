@@ -203,7 +203,7 @@ TEST(LineNumberTableCopyRawTest, UnguardedAccessCrashesWhenSourceUnmapped) {
 
 // Documents the fix: the probe rejects a PROT_NONE source, then accepts the
 // same pointer once readable. PROT_NONE, not munmap(): a concurrent mmap may
-// reuse an unmapped address before the probe, while this page stays owned.
+// reuse an unmapped address before the probe; this page stays test-owned.
 TEST_F(LineNumberTableCopyTest, RejectsUnreadableSourceUntilReadable) {
   ScopedPage page;
   ASSERT_NE(page.addr(), MAP_FAILED);
