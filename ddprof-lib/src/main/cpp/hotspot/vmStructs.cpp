@@ -361,10 +361,10 @@ void VMStructs::resolveOffsets() {
         _compact_object_headers = true;
     }
 
-    // Read only with compact headers: UseObjectMonitorTable keeps the header in an inflated mark.
+    // fromOop uses this only with compact headers. A missing or non-bool flag leaves the
+    // inflated mark layout Unknown.
     VMFlag* omt = VMFlag::find("UseObjectMonitorTable", {VMFlag::Type::Bool});
-    bool object_monitor_table = omt != NULL && omt->get();
-    _inflated_mark = inflatedMarkFor(omt != NULL ? &object_monitor_table : nullptr);
+    _inflated_mark = inflatedMarkFor(omt != NULL, omt != NULL && omt->get());
 
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)
@@ -841,7 +841,7 @@ VMFlag *VMFlag::find(const char *name, int type_mask) {
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
             const char* fname = f->name();
-            if (fname != nullptr && strcmp(fname, name) == 0) {
+            if (fname != nullptr && strcmp(fname, name) == 0 && f->addr() != nullptr) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
                     return (VMFlag*)f;

@@ -414,9 +414,9 @@ class VMStructs {
     // What an inflated compact mark holds; Unknown when UseObjectMonitorTable is not a bool flag.
     enum class InflatedMark { Unknown, MonitorPointer, Header };
     static InflatedMark _inflated_mark;
-    static InflatedMark inflatedMarkFor(const bool* object_monitor_table) {
-        if (object_monitor_table == nullptr) return InflatedMark::Unknown;
-        return *object_monitor_table ? InflatedMark::Header : InflatedMark::MonitorPointer;
+    static InflatedMark inflatedMarkFor(bool flag_found, bool object_monitor_table) {
+        if (!flag_found) return InflatedMark::Unknown;
+        return object_monitor_table ? InflatedMark::Header : InflatedMark::MonitorPointer;
     }
     
     static int _narrow_klass_shift;
