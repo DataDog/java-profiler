@@ -54,6 +54,13 @@ marker '{"pr":1001,"branch":"fix","status":"stopped","scope":["ddprof-lib/src/ma
 run_guard fix "$FIX" "$BASE"
 if [ $? -eq 0 ]; then pass; else fail "stopped marker should allow the push"; fi
 
+# 2a. A stopped marker whose scope does NOT cover the pushed file must not gate
+#     either — pins the status != "running" filter (dropping it would let a
+#     stopped marker with an undeclared file block the push).
+marker '{"pr":1001,"branch":"fix","status":"stopped","scope":[]}'
+run_guard fix "$FIX" "$BASE"
+if [ $? -eq 0 ]; then pass; else fail "stopped marker with undeclared file must not gate"; fi
+
 # 3. A running marker for a different branch does not gate this push.
 marker '{"pr":1001,"branch":"other","status":"running","scope":[]}'
 run_guard fix "$FIX" "$BASE"
@@ -118,6 +125,28 @@ if [ $? -eq 0 ]; then pass; else fail "stale marker should be ignored (dead run)
 touch "$R/build/babysit-pr-1001.json"
 run_guard fix "$FIX" "$BASE"
 if [ $? -eq 1 ]; then pass; else fail "fresh running marker with empty scope should still gate"; fi
+
+# 9d. Boundary, pinned deterministically (the guard clock is frozen in-process):
+#     a marker exactly STALE_AFTER_S old still matches (the filter is strictly
+#     greater-than); one second older is stale. Catching the > -> >= mutation
+#     needs age == STALE_AFTER_S exactly, which wall-clock utime cannot hit.
+marker '{"pr":1001,"branch":"fix","status":"running","scope":[]}'
+GUARD_BOUNDARY=$(cd "$R" && python3 - "$GUARD" <<'PY'
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+mtime = os.stat("build/babysit-pr-1001.json").st_mtime
+real_time = time.time
+time.time = lambda: mtime + 26 * 3600  # age exactly at the boundary
+valid = guard.matching_marker("fix") is not None
+time.time = lambda: mtime + 26 * 3600 + 1
+stale = guard.matching_marker("fix") is None
+time.time = real_time
+print("OK" if (valid and stale) else "BAD:%s/%s" % (valid, stale))
+PY
+)
+if [ "$GUARD_BOUNDARY" = "OK" ]; then pass; else fail "boundary: want valid-at-exactly-26h and stale-at-+1s, got '$GUARD_BOUNDARY'"; fi
 
 # 10. A git failure (unknown remote sha) fails closed, not open.
 marker '{"pr":1001,"branch":"fix","status":"running","scope":["ddprof-lib/src/main/cpp/a.cpp"]}'

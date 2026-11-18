@@ -13,6 +13,8 @@ import { join } from "node:path";
 export default function (pi: ExtensionAPI) {
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
+    if (event.isError) return undefined; // a failed command (e.g. "a pull request
+    // for branch ... already exists") is not this run's creation — never a trigger
     const content = Array.isArray(event.content) ? event.content : [];
     const command = String(event.input?.command ?? "");
     if (!content.length && !command) return undefined;
