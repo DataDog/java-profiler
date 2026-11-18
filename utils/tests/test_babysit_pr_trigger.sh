@@ -98,6 +98,19 @@ run_hook "gh pr create --draft -F pr-body.md" "https://github.com/datadog/java-p
 https://github.com/other/repo/pull/7"
 if [ $? -eq 2 ] && grep -q "#1" <<<"$OUT_ERR"; then pass; else fail "last protected bare URL should be named (got: $OUT_ERR)"; fi
 
+# 9a. A duplicate-create error also prints a bare URL, and the shell may mask its
+#     exit status — the URL after the "already exists:" line is not creation proof.
+run_hook "gh pr create --draft -F pr-body.md || true" "a pull request for branch \"fix\" already exists:
+https://github.com/datadog/java-profiler/pull/1001"
+if [ $? -eq 0 ]; then pass; else fail "duplicate-create error URL must not trigger (got: $OUT_ERR)"; fi
+
+# 9b. A real create after an unrelated duplicate error in the same output still
+#     triggers: only the URL directly following the error line is disqualified.
+run_hook "gh pr create --draft -F pr-body.md" "a pull request for branch \"other\" already exists:
+https://github.com/datadog/java-profiler/pull/999
+https://github.com/datadog/java-profiler/pull/1234"
+if [ $? -eq 2 ] && grep -q "#1234" <<<"$OUT_ERR"; then pass; else fail "real create after duplicate error should trigger (got: $OUT_ERR)"; fi
+
 # 10. A compound command where the create failed and only `gh pr view` printed a URL
 #     (embedded in JSON, not a bare line) does not trigger: the URL is never bound to
 #     a create that did not happen.

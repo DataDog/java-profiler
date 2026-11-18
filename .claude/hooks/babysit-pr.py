@@ -81,8 +81,14 @@ def main():
     # A trigger URL must be the sole content of its line: `gh pr create` prints the
     # created PR's URL alone on a line, while any other gh output that mentions a PR
     # URL (e.g. `gh pr view --json url`) embeds it in JSON or prose and must not
-    # hijack the trigger when the create failed in a compound command.
-    urls = [m for line in response.splitlines()
+    # hijack the trigger when the create failed in a compound command. A
+    # duplicate-create error also prints a bare URL ("a pull request for branch X
+    # already exists:"), even when the shell masks its exit status — the URL on the
+    # line right after that error is not creation proof.
+    lines = response.splitlines()
+    _DUPLICATE = re.compile(r"a pull request for branch .+ already exists:")
+    urls = [m for i, line in enumerate(lines)
+            if i == 0 or not _DUPLICATE.fullmatch(lines[i - 1].strip())
             for m in PR_URL.finditer(line) if line.strip() == m.group(0)]
     if not urls:
         return 0  # no bare PR URL in the response: the create failed, or gh printed none
