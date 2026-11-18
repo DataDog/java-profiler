@@ -88,27 +88,34 @@ collapsed live run log, and a quiet italic status footer with current facts
 (never removed: one timeline entry per run):
 
 ```
-🐶 **babysit-pr** is watching this PR — CI breakages and mechanical findings
-are fixed and pushed automatically; design decisions are always brought to you.
+🐶 **babysit-pr** is watching this PR — CI breakages and mechanical findings are fixed and pushed automatically; design decisions are always brought to you.
 
 <details><summary>This run</summary>
 
-- 12:30 UTC — started; CI on head `<sha>` in progress
+- **12:30** · started · CI on head `<sha>` in progress
 
 </details>
 
 👀 *watching · since 12:30 UTC · CI running · 0 findings answered · Bits pending*
 ```
 
+Never break lines inside a paragraph — the renderer wraps; a newline
+separates paragraphs (and list items) only. Run-log entries follow one shape —
+`- **HH:MM** · tag · named fact` — bold time, middot, a short action tag
+(started · answered · CI red · retried · pushed · Bits · asked · stopped),
+middot, then the named fact; the tag makes the column scannable without
+reading every entry.
+
 The content is live, never repeated boilerplate: append one line to the run
 log whenever something happens — a CI state change, a thread answered, a fix
 pushed, a retry used, an operator ask — and keep the footer's facts current
 (CI state, answered-thread count, Bits state). Edit the same comment; a
 comment edit is silent, a new comment is noise. Every log line names its
-facts — the failing check's name (`test-matrix / linux-musl-amd64 (21) red —
-retrying`), the thread being addressed (`answered rkennke's thread on
-SKILL.md:123 — trust gate`), the pushed fix (`pushed fix 4f16387 — census
-semantics`), the Bits head (`Bits auto-review pending on 3c23a6ad7`); a line
+facts — the failing check's name (`**13:00** · CI red · test-matrix /
+linux-musl-amd64 (21) — retrying`), the thread being addressed
+(`**12:45** · answered · rkennke's thread on SKILL.md:123 — trust gate`),
+the pushed fix (`**13:10** · pushed · 4f16387 — census semantics`), the
+Bits head (`**13:30** · Bits · auto-review pending on 3c23a6ad7`); a line
 that does not name what it acted on is not informative and does not belong.
 The static how-it-works prose stays out: the visible line already says what
 the babysitter is.
