@@ -297,6 +297,9 @@ private:
   // we have a second dimension to allow a switch in the active table
   ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2];
   std::atomic<int> _active_index{0};  // 0 or 1 globally
+  std::atomic<u32> _thread_table_overflow{0};
+  // Stop archives full tables before reusing their slots; writeThreads unions the saved IDs.
+  std::vector<int, CountingAllocator<int, NM_JFR_BUFFERS>> _archived_thread_ids;
 
   int _fd;
   off_t _chunk_start;
@@ -493,6 +496,8 @@ public:
                      float machine_total);
 
   bool addThread(int lock_index, int tid);
+  // Normal thread, exclusive recording lock: preserve old event references before clearing capacity.
+  bool recoverThreadTableCapacity();
 
 private:
   void cleanupUnreferencedMethods();
@@ -654,6 +659,7 @@ private:
   Recording* _rec;
 
   Error newRecording(bool reset);
+  bool recoverThreadTableCapacity();
 
 public:
   FlightRecorder() : _rec(NULL) {}

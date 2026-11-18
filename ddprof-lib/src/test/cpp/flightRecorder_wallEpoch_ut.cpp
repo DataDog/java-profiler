@@ -34,6 +34,10 @@ public:
   static Engine*& wall() { return Profiler::instance()->_wall_engine; }
   static Recording*& recording() { return Profiler::instance()->_jfr._rec; }
   static State exchangeState(State state) { return Profiler::instance()->_state.exchange(state); }
+  static u32 stripe(int tid) { return Profiler::instance()->getLockIndex(tid); }
+  static bool recordTaskBlock(u32 stripe, int tid, TaskBlockEvent* event) {
+    return Profiler::instance()->_jfr.recordTaskBlock(stripe, tid, event);
+  }
 };
 
 class RecordingTestAccessor {
@@ -151,6 +155,8 @@ public:
 struct DecodedWallEpochs {
   std::map<u64, std::vector<u64>> epochs;
   std::map<u64, u64> weights;
+  std::unordered_set<u64> sample_threads;
+  std::unordered_set<u64> pool_threads;
 };
 
 // Decode event boundaries and scalar fields independently of Recording's encoders.
@@ -189,13 +195,44 @@ static DecodedWallEpochs decodeWallEpochs(int fd) {
       if (!decoded.epochs.emplace(epoch, fields).second) throw std::runtime_error("Duplicate epoch metadata");
     } else if (type == T_METHOD_SAMPLE) {
       const u64 epoch = var64(offset);
-      var64(offset); // thread
+      decoded.sample_threads.insert(var64(offset));
       var64(offset); // stack
       offset += 2; // state and mode are bytes
       decoded.weights[epoch] += var64(offset);
     }
     if (offset > start + length) throw std::runtime_error("Event fields exceed event size");
     offset = start + length;
+  }
+  size_t offset = cpool;
+  var64(offset); // checkpoint size
+  if (var64(offset) != T_CPOOL) throw std::runtime_error("Missing checkpoint");
+  for (int i = 0; i < 4; ++i) var64(offset); // time, duration, delta, flush
+  if (var64(offset) < 5) throw std::runtime_error("Missing fixed constant pools");
+  auto skip_string = [&] {
+    unsigned char encoding = bytes.at(offset++);
+    if (encoding == 0) return;
+    if (encoding != 3) throw std::runtime_error("Expected UTF-8 constant pool string");
+    const u64 length = var64(offset);
+    if (length > bytes.size() - offset) throw std::runtime_error("Invalid constant pool string");
+    offset += length;
+  };
+  for (u64 type : {T_FRAME_TYPE, T_THREAD_STATE, T_EXECUTION_MODE, T_LOG_LEVEL}) {
+    if (var64(offset) != type) throw std::runtime_error("Missing fixed constant pool");
+    const u64 count = var64(offset);
+    for (u64 i = 0; i < count; ++i) {
+      var64(offset);
+      skip_string();
+    }
+  }
+  if (var64(offset) != T_THREAD) throw std::runtime_error("Missing thread pool");
+  const u64 thread_count = var64(offset);
+  for (u64 i = 0; i < thread_count; ++i) {
+    const u64 tid = var64(offset);
+    if (!decoded.pool_threads.insert(tid).second) throw std::runtime_error("Duplicate thread pool entry");
+    skip_string();
+    if (var64(offset) != tid) throw std::runtime_error("Thread pool OS ID mismatch");
+    skip_string();
+    var64(offset); // Java thread ID
   }
   return decoded;
 }
@@ -467,6 +504,90 @@ TEST_P(WallEpochRecordingTest, TimerExitClosesFinalWindowBeforeFinalSeal) {
   ASSERT_EQ(1U, events.epochs.count(origin));
   EXPECT_EQ(32ULL, events.epochs.at(origin)[1]);
   EXPECT_EQ(16ULL, events.epochs.at(origin)[2]);
+}
+
+TEST_P(WallEpochRecordingTest, StopRecoversFullStripeWithoutExplicitDump) {
+  WallEpochFile continuous;
+  ASSERT_GE(continuous.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  const int recording_fd = dup(continuous.fd);
+  ASSERT_GE(recording_fd, 0);
+  const long long jfr_memory_before = NativeMem::live(NM_JFR_BUFFERS);
+  struct StopRecording {
+    Recording* previous = ProfilerTestAccessor::recording();
+    State state = ProfilerTestAccessor::exchangeState(RUNNING);
+    explicit StopRecording(Recording* recording) {
+      NativeMem::record(NM_JFR_BUFFERS, sizeof(Recording));
+      ProfilerTestAccessor::recording() = recording;
+    }
+    ~StopRecording() {
+      if (ProfilerTestAccessor::recording() != nullptr) {
+        delete ProfilerTestAccessor::recording();
+        NativeMem::record(NM_JFR_BUFFERS, -static_cast<long long>(sizeof(Recording)));
+      }
+      ProfilerTestAccessor::recording() = previous;
+      ProfilerTestAccessor::exchangeState(state);
+    }
+  } recording(new Recording(recording_fd, args));
+  profiler->sampleWriteHookForTest = nullptr;
+  const u32 stripe = ProfilerTestAccessor::stripe(request.tid);
+  TaskBlockEvent event{};
+  event._start = 1;
+  event._end = 2;
+  for (int tid = 1; tid <= 256; ++tid) {
+    ASSERT_TRUE(ProfilerTestAccessor::recordTaskBlock(stripe, tid, &event));
+  }
+  ASSERT_GT(request.tid, 256);
+  const u64 epoch_start = TSC::ticks();
+  ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, epoch_start));
+  struct TailOwners {
+    ThreadFilter* registry;
+    std::vector<std::pair<int, int>> slots;
+    ~TailOwners() { for (auto entry : slots) registry->unregisterThread(entry.first, entry.second); }
+  } tails{profiler->threadFilter(), {}};
+  const int extra_tails = GetParam() ? 300 : 0;
+  for (int tid = 100000; tails.slots.size() < static_cast<size_t>(extra_tails); ++tid) {
+    if (tid == request.tid || ProfilerTestAccessor::stripe(tid) != stripe) continue;
+    const int id = profiler->threadFilter()->registerThread(tid);
+    ASSERT_GE(id, 0);
+    tails.slots.emplace_back(id, tid);
+    Context context{};
+    ASSERT_TRUE(profiler->blockTracker()->publishUnownedTrace(
+        id, CallTraceStorage::DROPPED_TRACE_ID, OSThreadState::SLEEPING, context));
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(id, epoch_start));
+  }
+  WallClockEpochEvent epoch(epoch_start);
+  profiler->recordWallClockEpoch(request.tid, &epoch, epoch_start + 1);
+  ASSERT_FALSE(profiler->threadFilter()->flushUnownedTails());
+  ASSERT_EQ(1ULL, profiler->blockTracker()->slotForId(slot)->unowned_blocked_pending_weight.load());
+  Error error = profiler->stop();
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_FALSE(profiler->isRunning());
+  EXPECT_EQ(nullptr, ProfilerTestAccessor::recording());
+  EXPECT_EQ(jfr_memory_before, NativeMem::live(NM_JFR_BUFFERS));
+  const auto decoded = decodeWallEpochs(continuous.fd);
+  ASSERT_EQ(1U, decoded.weights.size());
+  EXPECT_EQ(static_cast<u64>(1 + extra_tails), decoded.weights.at(epoch_start));
+  EXPECT_EQ(static_cast<size_t>(1 + extra_tails), decoded.sample_threads.size());
+  for (u64 tid : decoded.sample_threads) EXPECT_EQ(1U, decoded.pool_threads.count(tid));
+  for (int tid = 1; tid <= 256; ++tid) EXPECT_EQ(1U, decoded.pool_threads.count(tid));
+  EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(slot)->unowned_blocked_pending_weight.load());
+  for (auto entry : tails.slots) {
+    EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(entry.first)->unowned_blocked_pending_weight.load());
+  }
+  WallEpochFile next_continuous;
+  WallEpochFile next_snapshot;
+  ASSERT_GE(next_continuous.fd, 0);
+  ASSERT_GE(next_snapshot.fd, 0);
+  const int next_fd = dup(next_continuous.fd);
+  ASSERT_GE(next_fd, 0);
+  Recording next_recording(next_fd, args);
+  next_recording.switchChunk(next_snapshot.fd);
+  const auto next = decodeWallEpochs(next_snapshot.fd);
+  EXPECT_TRUE(next.weights.empty());
+  for (int tid = 1; tid <= 256; ++tid) EXPECT_EQ(0U, next.pool_threads.count(tid));
+  for (auto entry : tails.slots) EXPECT_EQ(0U, next.pool_threads.count(entry.second));
 }
 
 INSTANTIATE_TEST_SUITE_P(PopulationChanges, WallEpochRecordingTest, ::testing::Bool());

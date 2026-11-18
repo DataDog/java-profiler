@@ -51,6 +51,9 @@ public:
   static void setRecording(FlightRecorder* recorder, Recording* recording) {
     recorder->_rec = recording;
   }
+  static bool recoverThreadTableCapacity(FlightRecorder& recorder) {
+    return recorder.recoverThreadTableCapacity();
+  }
 };
 
 namespace {
@@ -177,4 +180,25 @@ TEST(FlightRecorderResultTest, LightweightShortBurstsSerializeEveryUnitOfWeight)
   filter->deactivateRecording();
   ProfilerTestAccessor::setOmit(profiler, previous_omit);
   FlightRecorderTestAccessor::setRecording(recorder, nullptr);
+}
+
+TEST(FlightRecorderResultTest, CapacityRecoveryRequiresActiveRecordingAndNonzeroOverflowTid) {
+  FlightRecorder recorder;
+  EXPECT_FALSE(FlightRecorderTestAccessor::recoverThreadTableCapacity(recorder));
+  auto recording = std::make_unique<Recording>();
+  FlightRecorderTestAccessor::setRecording(&recorder, recording.get());
+  EXPECT_FALSE(FlightRecorderTestAccessor::recoverThreadTableCapacity(recorder));
+  ExecutionEvent sample;
+  Context context{};
+  EXPECT_FALSE(recorder.recordWallSample(0, 0, 42, &sample, context));
+  EXPECT_FALSE(FlightRecorderTestAccessor::recoverThreadTableCapacity(recorder));
+  for (int tid = 1; tid <= ThreadIdTable::capacity(); ++tid) {
+    ASSERT_TRUE(recorder.recordWallSample(0, tid, 42, &sample, context));
+  }
+  EXPECT_TRUE(recorder.recordWallSample(0, 1, 42, &sample, context));
+  EXPECT_FALSE(FlightRecorderTestAccessor::recoverThreadTableCapacity(recorder));
+  EXPECT_FALSE(recorder.recordWallSample(0, ThreadIdTable::capacity() + 1, 42, &sample, context));
+  EXPECT_TRUE(FlightRecorderTestAccessor::recoverThreadTableCapacity(recorder));
+  EXPECT_TRUE(recorder.recordWallSample(0, ThreadIdTable::capacity() + 1, 42, &sample, context));
+  EXPECT_FALSE(FlightRecorderTestAccessor::recoverThreadTableCapacity(recorder));
 }
