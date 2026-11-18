@@ -5,7 +5,6 @@
 #include <gtest/gtest.h>
 #include <cstddef>
 #include <functional>
-#include <type_traits>
 #include <vector>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -143,11 +142,28 @@ public:
     VMStructsTestAccessor& operator=(const VMStructsTestAccessor&) = delete;
     void disableClassNames() { VMStructs::_has_class_names = false; }
 
-    template<typename T> void set(T& field, T value) {
+    template<typename T, typename V> void set(T& field, V value) {
         T previous = field;
         _restores.emplace_back([&field, previous] { field = previous; });
-        field = value;
+        field = static_cast<T>(value);
     }
+
+    void useUncompressedKlass() {
+        set(VMStructs::_compact_object_headers, false);
+        set(VMStructs::_narrow_klass_shift, -1);
+    }
+    void useCompressedKlass(char* base) {
+        set(VMStructs::_compact_object_headers, false);
+        set(VMStructs::_narrow_klass_shift, 0);
+        set(VMStructs::_narrow_klass_base, base);
+    }
+    void useCompactHeaders(char* base, int mark_klass_shift) {
+        set(VMStructs::_compact_object_headers, true);
+        set(VMStructs::_narrow_klass_shift, 0);
+        set(VMStructs::_markWord_klass_shift, mark_klass_shift);
+        set(VMStructs::_narrow_klass_base, base);
+    }
+    static uintptr_t monitorBit() { return VMStructs::MONITOR_BIT; }
 };
 
 class VMTestAccessor {
@@ -172,6 +188,7 @@ protected:
     uintptr_t _symbol = 0;
     void* _klass = &_symbol;
     uintptr_t _oop[2] = {0, reinterpret_cast<uintptr_t>(&_klass)};
+    uintptr_t _monitor = 0;
     StackWalkFeatures _features{};
 
     void SetUp() override {
@@ -199,6 +216,61 @@ protected:
     VMSymbol* capture(uintptr_t pc = 0x1000, uintptr_t sp = 0x2000, uintptr_t fp = 0x3000) {
         HotspotStackFrame frame(&_ctx);
         return HotspotSupportTestAccessor::captureVtableReceiver(frame, pc, sp, fp, _features);
+    }
+
+    // One per read fromOop makes: its header word, its klass, or an inflated monitor.
+    enum class ReceiverLayout {
+        UncompressedHeader, UncompressedKlass, CompressedHeader, CompressedKlass,
+        CompactHeader, CompactKlass, CompactMonitor, Count
+    };
+    static constexpr const char* kReceiverLayoutNames[] = {
+        "uncompressed header", "uncompressed klass", "compressed header", "compressed klass",
+        "compact header", "compact klass", "compact monitor"};
+    static_assert(sizeof(kReceiverLayoutNames) / sizeof(kReceiverLayoutNames[0])
+                  == static_cast<size_t>(ReceiverLayout::Count), "one name per receiver layout");
+
+    // Models `kind` in `layout` with every read readable. With `fault_page`, the read that
+    // `kind` names is redirected into that unreadable page instead.
+    void pointReceiverAt(VMStructsTestAccessor& layout, ReceiverLayout kind, void* fault_page) {
+        constexpr uintptr_t narrow_klass = 16;
+        constexpr int mark_klass_shift = 32;
+        char* klass = reinterpret_cast<char*>(&_klass);
+        char* fault = static_cast<char*>(fault_page);
+        char* klass_target = fault != nullptr ? fault : klass;
+        uintptr_t oop = reinterpret_cast<uintptr_t>(_oop);
+        uintptr_t receiver = oop;
+        _oop[0] = 0;
+        _oop[1] = reinterpret_cast<uintptr_t>(klass);
+        _monitor = narrow_klass << mark_klass_shift;
+        switch (kind) {
+        case ReceiverLayout::UncompressedHeader:
+        case ReceiverLayout::UncompressedKlass:
+            layout.useUncompressedKlass();
+            if (kind == ReceiverLayout::UncompressedKlass) _oop[1] = reinterpret_cast<uintptr_t>(klass_target);
+            break;
+        case ReceiverLayout::CompressedHeader:
+        case ReceiverLayout::CompressedKlass:
+            layout.useCompressedKlass((kind == ReceiverLayout::CompressedKlass ? klass_target : klass) - narrow_klass);
+            _oop[1] = narrow_klass;
+            break;
+        case ReceiverLayout::CompactHeader:
+        case ReceiverLayout::CompactKlass:
+        case ReceiverLayout::CompactMonitor:
+            layout.useCompactHeaders((kind == ReceiverLayout::CompactKlass ? klass_target : klass) - narrow_klass,
+                                     mark_klass_shift);
+            _oop[0] = narrow_klass << mark_klass_shift;
+            if (kind == ReceiverLayout::CompactMonitor) {
+                char* monitor = fault != nullptr ? fault : reinterpret_cast<char*>(&_monitor);
+                _oop[0] = reinterpret_cast<uintptr_t>(monitor) | VMStructsTestAccessor::monitorBit();
+            }
+            break;
+        case ReceiverLayout::Count:
+            break;
+        }
+        bool header_fault = kind == ReceiverLayout::UncompressedHeader || kind == ReceiverLayout::CompressedHeader
+                            || kind == ReceiverLayout::CompactHeader;
+        if (fault != nullptr && header_fault) receiver = reinterpret_cast<uintptr_t>(fault);
+        setReceiver(receiver);
     }
 };
 
@@ -236,6 +308,16 @@ TEST_F(VtableReceiverCaptureTest, NullReceiverKlassAndSymbolAreNotCaptured) {
     EXPECT_EQ(nullptr, capture());
     _oop[1] = reinterpret_cast<uintptr_t>(&_klass);
     _klass = nullptr;
+    EXPECT_EQ(nullptr, capture());
+}
+
+TEST_F(VtableReceiverCaptureTest, ZeroNarrowKlassIsNotDecodedAgainstTheBase) {
+    VMStructsTestAccessor layout;
+    pointReceiverAt(layout, ReceiverLayout::CompressedKlass, nullptr);
+    ASSERT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
+    // A faulting or null klass word reads as 0; the base itself is readable here.
+    layout.useCompressedKlass(reinterpret_cast<char*>(&_klass));
+    _oop[1] = 0;
     EXPECT_EQ(nullptr, capture());
 }
 
@@ -405,54 +487,6 @@ protected:
 #endif
     }
 
-    enum class ReceiverLayout { UncompressedHeader, UncompressedKlass, CompressedKlass, CompactHeader };
-    static constexpr ReceiverLayout kReceiverLayouts[] = {
-        ReceiverLayout::UncompressedHeader, ReceiverLayout::UncompressedKlass,
-        ReceiverLayout::CompressedKlass, ReceiverLayout::CompactHeader};
-
-    // Models `kind` in `layout` and makes the memory that `kind` reads first after the oop
-    // header (the header itself, or the klass) either the real one or `unreadable`.
-    void pointReceiverAt(VMStructsTestAccessor& layout, ReceiverLayout kind, const void* unreadable) {
-        constexpr uintptr_t narrow_klass = 16;
-        char* klass = reinterpret_cast<char*>(&(VtableReceiverCaptureTest::_klass));
-        const char* target = static_cast<const char*>(unreadable);
-        uintptr_t receiver = reinterpret_cast<uintptr_t>(_oop);
-        _oop[0] = 0;
-        _oop[1] = reinterpret_cast<uintptr_t>(klass);
-        switch (kind) {
-        case ReceiverLayout::UncompressedHeader:
-            if (target != nullptr) receiver = reinterpret_cast<uintptr_t>(target);
-            break;
-        case ReceiverLayout::UncompressedKlass:
-            if (target != nullptr) _oop[1] = reinterpret_cast<uintptr_t>(target);
-            break;
-        case ReceiverLayout::CompressedKlass:
-            layout.set(_narrow_klass_shift, 0);
-            layout.set(_narrow_klass_base, const_cast<char*>(target != nullptr ? target : klass) - narrow_klass);
-            _oop[1] = narrow_klass;
-            break;
-        case ReceiverLayout::CompactHeader:
-            layout.set(_compact_object_headers, true);
-            layout.set(_narrow_klass_shift, 0);
-            layout.set(_markWord_klass_shift, static_cast<std::decay_t<decltype(_markWord_klass_shift)>>(32));
-            layout.set(_narrow_klass_base, klass - narrow_klass);
-            _oop[0] = narrow_klass << 32;
-            if (target != nullptr) receiver = reinterpret_cast<uintptr_t>(target);
-            break;
-        }
-        setReceiver(receiver);
-    }
-
-    static const char* layoutName(ReceiverLayout kind) {
-        switch (kind) {
-        case ReceiverLayout::UncompressedHeader: return "uncompressed header";
-        case ReceiverLayout::UncompressedKlass: return "uncompressed klass";
-        case ReceiverLayout::CompressedKlass: return "compressed klass";
-        case ReceiverLayout::CompactHeader: return "compact header";
-        }
-        return "unknown";
-    }
-
     void prepareWalk() {
         asgct_budgets.clear();
         asgct_pcs.clear();
@@ -481,9 +515,9 @@ protected:
 
 AsgctVtableReceiverTest::Block AsgctVtableReceiverTest::_blocks[2]{};
 
-// Installs the production crash handlers with OS::replaceCrashHandler's flags and empty mask,
-// then restores the full previous actions. SafeAccess faults resume in place; any other walk
-// fault siglongjmps to the walker's landing pad.
+// Installs Profiler's SIGSEGV/SIGBUS handlers with SA_SIGINFO | SA_RESTART | SA_NODEFER and an
+// empty mask, then restores the full previous actions. SafeAccess faults resume in place; any
+// other walk fault siglongjmps to the walker's landing pad.
 class ProfilerFaultHandlersScope {
     struct sigaction _segv{};
     struct sigaction _bus{};
@@ -648,8 +682,9 @@ TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheAsgctReceive
         EXPECT_FALSE(truncated);
         return depth;
     };
-    for (ReceiverLayout kind : kReceiverLayouts) {
-        SCOPED_TRACE(layoutName(kind));
+    for (size_t i = 0; i < static_cast<size_t>(ReceiverLayout::Count); i++) {
+        ReceiverLayout kind = static_cast<ReceiverLayout>(i);
+        SCOPED_TRACE(kReceiverLayoutNames[i]);
         VMStructsTestAccessor layout;
         // Readable memory first, so every other capture gate is shown to pass.
         pointReceiverAt(layout, kind, nullptr);
@@ -671,8 +706,9 @@ TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheVmReceiverFr
     ProfilerFaultHandlersScope handlers;
     // Keep the native-transition anchor empty so the walk stays on the interrupted leaf.
     _thread.anchor = {};
-    for (ReceiverLayout kind : kReceiverLayouts) {
-        SCOPED_TRACE(layoutName(kind));
+    for (size_t i = 0; i < static_cast<size_t>(ReceiverLayout::Count); i++) {
+        ReceiverLayout kind = static_cast<ReceiverLayout>(i);
+        SCOPED_TRACE(kReceiverLayoutNames[i]);
         VMStructsTestAccessor layout;
         pointReceiverAt(layout, kind, nullptr);
         prepareWalk();
@@ -688,15 +724,6 @@ TEST_P(AsgctVtableReceiverTest, UnreadableReceiverMemoryDropsOnlyTheVmReceiverFr
     }
 }
 
-TEST_P(AsgctVtableReceiverTest, ZeroNarrowKlassIsNotDecodedAgainstTheBase) {
-    VMStructsTestAccessor layout;
-    pointReceiverAt(layout, ReceiverLayout::CompressedKlass, nullptr);
-    ASSERT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
-    // A faulting or null klass word reads as 0; the base itself is readable here.
-    layout.set(_narrow_klass_base, reinterpret_cast<char*>(&(VtableReceiverCaptureTest::_klass)));
-    _oop[1] = 0;
-    EXPECT_EQ(nullptr, capture());
-}
 
 TEST_P(AsgctVtableReceiverTest, CapturesReceiverBeforeUnwindingAndReservesRetrySlot) {
     ASSERT_EQ(3, walk(3));
