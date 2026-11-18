@@ -609,19 +609,19 @@ void ElfParser::calcVirtualLoadAddress() {
     _vaddr_diff = _base;
 }
 
-// Size of one DT_JMPREL entry, from DT_PLTREL (gABI): a library with only PLT
-// relocations has no DT_RELENT/DT_RELAENT. Without DT_PLTREL, fall back to the
-// DT_RELA/DT_REL entry size; 0 means unknown.
-static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
-    if (pltrel == DT_REL) return sizeof(Elf64_Rel);
-    if (pltrel == DT_RELA) return sizeof(Elf64_Rela);
-    return relaent != 0 ? relaent : relent;
-}
-
 // DT_RELAENT, or 0 (skip the table) when smaller than an Elf64_Rela: a shorter
 // stride would read one entry's r_addend and the next r_offset as r_offset/r_info.
 static size_t relaEntrySize(size_t relaent) {
     return relaent >= sizeof(Elf64_Rela) ? relaent : 0;
+}
+
+// Size of one DT_JMPREL entry, from DT_PLTREL (gABI): a library with only PLT
+// relocations has no DT_RELENT/DT_RELAENT. Without DT_PLTREL, fall back to a valid
+// DT_RELAENT, else DT_RELENT; 0 means unknown or invalid.
+static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
+    if (pltrel == DT_REL) return sizeof(Elf64_Rel);
+    if (pltrel == DT_RELA) return sizeof(Elf64_Rela);
+    return relaent != 0 ? relaEntrySize(relaent) : relent;
 }
 
 // Bytes of the DT_RELACOUNT/DT_RELCOUNT leading relative relocations, clamped to
@@ -712,7 +712,6 @@ void ElfParser::parseDynamicSection() {
             }
         }
 
-        relaent = relaEntrySize(relaent);
         if (symtab == NULL || strtab == NULL || syment == 0) {
             return;
         }
@@ -762,7 +761,7 @@ void ElfParser::parseDynamicSection() {
         // Imports can also be in .rela.dyn / .rel.dyn, for example if a shared
         // library is built without PLT (-fno-plt). If both tables exist,
         // addImport saves them both.
-        addImports(rela, relasz, relaent, relativeBytes(relacount, relaent, relasz), true);
+        addImports(rela, relasz, relaEntrySize(relaent), relativeBytes(relacount, relaent, relasz), true);
         addImports(rel, relsz, relent, relativeBytes(relcount, relent, relsz), true);
     }
 }
@@ -1494,7 +1493,6 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
             case DT_RELCOUNT:  relcount = dyn->d_un.d_val; break;
         }
     }
-    relaent = relaEntrySize(relaent);
     // ElfParser::parseDynamicSection() records no imports without these.
     if (symtab == 0 || strtab == 0 || syment == 0) return true;
     if (strsz == 0 || !image.readable(strtab, strsz)) return false;
@@ -1508,7 +1506,7 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
         return hashSymbolRelocations(image, table + skip, size - skip, ent, symtab, syment, strtab, strsz, hash);
     };
     return hashTable(jmprel, pltrelsz, pltEntrySize(pltrel, relent, relaent), 0)
-        && hashTable(rela, relasz, relaent, relativeBytes(relacount, relaent, relasz))
+        && hashTable(rela, relasz, relaEntrySize(relaent), relativeBytes(relacount, relaent, relasz))
         && hashTable(rel, relsz, relent, relativeBytes(relcount, relent, relsz));
 }
 

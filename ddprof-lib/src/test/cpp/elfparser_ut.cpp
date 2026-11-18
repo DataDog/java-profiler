@@ -1250,10 +1250,31 @@ TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
 
 // A DT_RELAENT smaller than an Elf64_Rela on a DT_RELA table is invalid: the table
 // is skipped in the parse and the fingerprint instead of walked at the wrong stride.
+// sizeof(Elf64_Rela) itself is accepted (relativeCountOverflowSkipsWholeTable).
 TEST_F(ElfTest, relaEntrySizeBelowElf64RelaSkipsTable) {
     if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
-    auto mem = buildGotImage(DT_RELA, DT_RELASZ, sizeof(Elf64_Rela), DT_RELAENT, sizeof(Elf64_Rel),
-                             DT_RELACOUNT, 0);
+    for (uint64_t relaent : {sizeof(Elf64_Rel), sizeof(Elf64_Rela) - 1}) {
+        SCOPED_TRACE(relaent);
+        auto mem = buildGotImage(DT_RELA, DT_RELASZ, sizeof(Elf64_Rela), DT_RELAENT, relaent,
+                                 DT_RELACOUNT, 0);
+        ASSERT_THAT(mem.get(), ::testing::NotNull());
+        char* image = static_cast<char*>(mem.get());
+        EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
+        auto fp = fingerprintAroundSlotMove(image);
+        EXPECT_NE(fp.first, 0u);
+        EXPECT_EQ(fp.second, fp.first);
+    }
+}
+
+// Without DT_PLTREL, an invalid DT_RELAENT skips the PLT table rather than falling
+// back to DT_RELENT, which would walk 24-byte RELA entries at a 16-byte stride.
+TEST_F(ElfTest, pltFallbackRejectsInvalidRelaent) {
+    auto dyn = pltDyn();
+    dyn.pop_back();  // drop DT_PLTREL
+    dyn.push_back({DT_RELAENT, {sizeof(Elf64_Rel)}});
+    dyn.push_back({DT_RELENT, {sizeof(Elf64_Rel)}});
+    dyn.push_back({DT_NULL, {0}});
+    auto mem = buildPltImage(dyn);
     ASSERT_THAT(mem.get(), ::testing::NotNull());
     char* image = static_cast<char*>(mem.get());
     EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
@@ -1266,6 +1287,9 @@ TEST_F(ElfTest, relaEntrySizeBelowElf64RelaSkipsTable) {
 TEST_F(ElfTest, dynamicSymbolsWithoutRelocationTags) {
     constexpr uint64_t HASH_OFF = 0xc00;
     constexpr uint64_t SYM_VALUE = 0x100;
+    const uint32_t hash[] = {1, 2, 0, 0, 0};  // nbucket, nchain (= symbol count), bucket, chain
+    static_assert(HASH_OFF >= DYN_JMPREL_OFF + sizeof(Elf64_Rela), "hash table overlaps the image data");
+    static_assert(HASH_OFF + sizeof(hash) <= DYN_IMAGE_SIZE, "hash table outside the image");
     auto mem = buildPltImage({
         {DT_SYMTAB, {DYN_SYM_OFF}},
         {DT_STRTAB, {DYN_STR_OFF}},
@@ -1276,7 +1300,6 @@ TEST_F(ElfTest, dynamicSymbolsWithoutRelocationTags) {
     });
     ASSERT_THAT(mem.get(), ::testing::NotNull());
     char* image = static_cast<char*>(mem.get());
-    const uint32_t hash[] = {1, 2, 0, 0, 0};  // nbucket, nchain (= symbol count), bucket, chain
     memcpy(image + HASH_OFF, hash, sizeof(hash));
     Elf64_Sym sym;
     memcpy(&sym, image + DYN_SYM_OFF + sizeof(Elf64_Sym), sizeof(sym));
