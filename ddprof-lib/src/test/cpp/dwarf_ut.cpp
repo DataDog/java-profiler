@@ -145,7 +145,7 @@ TEST(DwarfEhFrame, NopDoesNotEndInstructionParsing) {
     for (bool indexed : {false, true}) {
         int count;
         auto rows = parseInstructionRows({0x00, 0x0e, 32, 0x41}, count, {}, indexed);
-        ASSERT_GE(count, 2);
+        ASSERT_EQ(2, count);
         EXPECT_EQ(32, static_cast<int>(rows.get()[0].cfa) >> 8);
     }
 }
@@ -157,7 +157,7 @@ TEST(DwarfEhFrame, AdvanceInCieInitialRulesAddsNoRow) {
             // A CIE row would sit at loc 0, before the FDE's first row.
             int count;
             auto rows = parseInstructionRows({0x0e, 32}, count, advance, indexed);
-            ASSERT_GE(count, 1);
+            ASSERT_EQ(2, count);
             EXPECT_EQ(32, static_cast<int>(rows.get()[0].cfa) >> 8);
         }
     }
