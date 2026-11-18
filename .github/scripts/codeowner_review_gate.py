@@ -56,6 +56,15 @@ class CodeownerClient(gate.GitHubClient):
     """GitHubClient plus the two reads this gate adds: changed files and
     team membership. Pagination reuses the base client's helpers."""
 
+    def _collect_member_login(self, entry, url):
+        """The login of one member record, fail-closed: a malformed record
+        shrinks the roster, and a shrunk roster could accept an approval
+        from a non-member, so it is an error, not a skip."""
+        if not isinstance(entry, dict) or not isinstance(entry.get("login"), str) \
+                or not entry.get("login"):
+            raise gate.ApiError("malformed member record from %s" % (url,))
+        return entry["login"]
+
     def team_logins(self, org, team_slug):
         """The login of every member of ``org``'s ``team_slug`` team, all
         pages, cached for the process lifetime. The read goes out with the
@@ -77,7 +86,8 @@ class CodeownerClient(gate.GitHubClient):
                     raise gate.ApiError("malformed JSON from %s" % (url,)) from error
                 if not isinstance(page, list):
                     raise gate.ApiError("expected a JSON array from %s" % (url,))
-                members.extend(page)
+                members.extend(
+                    self._collect_member_login(entry, url) for entry in page)
                 url = gate._next_link(link, self._api_url)
                 if url is None:
                     # The last page is in hand; the cap only bounds a read
@@ -88,9 +98,7 @@ class CodeownerClient(gate.GitHubClient):
                     raise gate.ApiError(
                         "team membership for %s exceeds %d pages"
                         % (team_slug, gate.MAX_FETCH_PAGES))
-            cached = frozenset(
-                member.get("login") for member in members
-                if isinstance(member, dict))
+            cached = frozenset(members)
             self._team_logins = cached
         return cached
 
@@ -181,9 +189,12 @@ def is_sensitive(path, patterns):
     matching only the complete filename would let that file pass
     unchecked. Every prefix runs through ``fnmatch``, so a trailing slash
     on a wildcard entry is harmless: it names the directory, which the
-    ancestor prefixes already reach. ``fnmatch`` lets ``*`` cross ``/``,
-    which can only over-block a path GitHub attributes more narrowly —
-    the fail-safe direction.
+    ancestor prefixes already reach. A leading ``**/`` covers files at
+    the repository root too — ``/**/*.kts`` also matches
+    ``build.gradle.kts``, whose prefixes contain no ``/`` — so such a
+    pattern is also matched without its ``**/`` prefix. ``fnmatch`` lets
+    ``*`` cross ``/``, which can only over-block a path GitHub
+    attributes more narrowly — the fail-safe direction.
     """
     parts = path.split("/")
     prefixes = ["/".join(parts[:end]) for end in range(1, len(parts) + 1)]
@@ -193,7 +204,11 @@ def is_sensitive(path, patterns):
         if pattern.endswith("/"):
             pattern = pattern[:-1]
         if "*" in pattern or "?" in pattern:
-            if any(fnmatch.fnmatchcase(prefix, pattern) for prefix in prefixes):
+            variants = [pattern]
+            if pattern.startswith("**/"):
+                variants.append(pattern[3:])
+            if any(fnmatch.fnmatchcase(prefix, variant)
+                   for variant in variants for prefix in prefixes):
                 return True
         elif path == pattern or path.startswith(pattern + "/"):
             # GitHub treats a ``/dir`` entry as covering the directory's

@@ -191,6 +191,27 @@ class SensitiveMatchTest(unittest.TestCase):
         self.assertFalse(cogate.is_sensitive(
             "src/a/dist/x.py", ["/src/*/build/"]))
 
+    def test_double_star_wildcard_covers_root_level_files(self):
+        # GitHub applies /**/x.gradle.kts to a root-level x.gradle.kts;
+        # fnmatch alone would demand a literal / in the path and let the
+        # root-level file escape the gate.
+        self.assertTrue(cogate.is_sensitive(
+            "build.gradle.kts", ["/**/*.gradle.kts"]))
+        self.assertTrue(cogate.is_sensitive(
+            "ddprof-lib/build.gradle.kts", ["/**/*.gradle.kts"]))
+
+    def test_malformed_member_record_fails_the_roster_read(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, ["not-a-member"]),
+        ])
+        with self.assertRaises(gate.ApiError):
+            make_client(transport).team_logins("DataDog", "profiling-java")
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [{"login": None}]),
+        ])
+        with self.assertRaises(gate.ApiError):
+            make_client(transport).team_logins("DataDog", "profiling-java")
+
     def test_leading_slash_is_dropped_before_matching(self):
         self.assertTrue(cogate.is_sensitive(
             ".github/scripts/deploy.sh", ["/.github/scripts/deploy.sh"]))
