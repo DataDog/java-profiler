@@ -125,7 +125,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
     DictRow *row = &table->rows[h % ROWS];
     for (int c = 0; c < CELLS; c++) {
       if (for_insert && row->keys[c] == NULL) {
-        char *new_key = allocateKey(key, length);
+        char *new_key = failKeyAlloc() ? NULL : allocateKey(key, length);
         if (new_key == NULL) {
           return sentinel;  // OOM: fail the insert instead of dereferencing NULL
         }

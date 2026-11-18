@@ -55,6 +55,15 @@ private:
 #ifdef UNIT_TEST
   bool _fail_table_alloc_for_test = false;
   int _table_alloc_failures_for_test = 0;
+  bool _fail_key_alloc_for_test = false;
+  int _key_alloc_failures_for_test = 0;
+  bool failKeyAlloc() {
+    if (_fail_key_alloc_for_test) {
+      _key_alloc_failures_for_test++;
+      return true;
+    }
+    return false;
+  }
   bool failTableAlloc() {
     if (_fail_table_alloc_for_test) {
       _table_alloc_failures_for_test++;
@@ -64,6 +73,7 @@ private:
   }
 #else
   bool failTableAlloc() const { return false; }
+  bool failKeyAlloc() const { return false; }
 #endif
 
   static void clear(DictTable *table, int id);
@@ -95,6 +105,8 @@ public:
     _fail_table_alloc_for_test = fail;
   }
   int tableAllocFailuresForTest() const { return _table_alloc_failures_for_test; }
+  void failKeyAllocationForTest(bool fail) { _fail_key_alloc_for_test = fail; }
+  int keyAllocFailuresForTest() const { return _key_alloc_failures_for_test; }
 #endif
 
   bool         check(const char* key);
@@ -131,6 +143,15 @@ public:
   unsigned int lookup(const char *key) { return lookup(key, strlen(key)); }
 
   bool failed() const { return _failed; }
+
+  // Hides Dictionary::collect: adds the UNRESOLVED_ID entry once a lookup failed,
+  // so every reference handed out has a pool entry.
+  void collect(std::map<unsigned int, const char *> &map) {
+    Dictionary::collect(map);
+    if (_failed) {
+      map[UNRESOLVED_ID] = "<unresolved>";
+    }
+  }
 };
 
 #endif // _DICTIONARY_H

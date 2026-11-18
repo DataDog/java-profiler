@@ -169,3 +169,56 @@ TEST(DictionaryTest, SymbolDictionaryResolvesFailedInsertsToUnresolvedId) {
     EXPECT_GT(unresolved, 0);
     EXPECT_TRUE(d.failed());
 }
+
+// A failed key malloc must fail the insert (return 0) without touching the
+// accounting; removing the NULL check dereferences the missing key.
+TEST(DictionaryTest, KeyAllocationFailureFailsTheInsert) {
+    Dictionary d(0);
+    ASSERT_NE(0U, mustLookup(d, "present", 7));
+    long long live_before = NativeMem::live(NM_DICTIONARY);
+
+    d.failKeyAllocationForTest(true);
+    EXPECT_EQ(0U, d.lookup("absent", 6));
+    EXPECT_EQ(1, d.keyAllocFailuresForTest());  // the failure path was reached
+    EXPECT_EQ(live_before, NativeMem::live(NM_DICTIONARY));
+    EXPECT_NE(0U, d.lookup("present", 7));  // existing keys need no allocation
+    d.failKeyAllocationForTest(false);
+
+    std::map<unsigned int, const char*> m;
+    d.collect(m);
+    EXPECT_EQ(1U, m.size());  // "absent" was not inserted
+    EXPECT_NE(0U, mustLookup(d, "absent", 6));
+}
+
+// The pool must contain the entry every failed insert resolved to, and only then.
+TEST(DictionaryTest, SymbolDictionaryCollectAddsUnresolvedEntryOnlyAfterFailure) {
+    SymbolDictionary d;
+    ASSERT_NE(0U, d.lookup("ok"));
+    std::map<unsigned int, const char*> before;
+    d.collect(before);
+#ifndef __FAULT_INJECTION__
+    EXPECT_FALSE(d.failed());
+    EXPECT_EQ(0U, before.count(SymbolDictionary::UNRESOLVED_ID));
+#endif
+
+    d.failKeyAllocationForTest(true);
+    EXPECT_EQ(SymbolDictionary::UNRESOLVED_ID, d.lookup("lost"));
+    d.failKeyAllocationForTest(false);
+    EXPECT_TRUE(d.failed());
+
+    std::map<unsigned int, const char*> after;
+    d.collect(after);
+    ASSERT_EQ(1U, after.count(SymbolDictionary::UNRESOLVED_ID));
+    EXPECT_STREQ("<unresolved>", after[SymbolDictionary::UNRESOLVED_ID]);
+    EXPECT_EQ(0U, after.count(0));  // 0 means "no entry" and is never emitted
+}
+
+// The one-argument overload must derive the length itself and share ids with the
+// two-argument form.
+TEST(DictionaryTest, SymbolDictionaryOneArgLookupMatchesTwoArgLookup) {
+    SymbolDictionary d;
+    unsigned int id = d.lookup("abcdef");
+    ASSERT_NE(0U, id);
+    EXPECT_EQ(id, d.lookup("abcdef", 6));
+    EXPECT_NE(id, d.lookup("abcdefg"));  // full length, not a prefix match
+}

@@ -1794,9 +1794,6 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
     // then. The scope frees the map before the next pools collect theirs.
     std::map<u32, const char *> symbols;
     lookup._symbols.collect(symbols);
-    if (lookup._symbols.failed()) {
-      symbols[SymbolDictionary::UNRESOLVED_ID] = "<unresolved>";
-    }
     pool_count += writeConstantPoolSection(buf, T_SYMBOL, symbols);
   }
   pool_count += writeConstantPoolSection(

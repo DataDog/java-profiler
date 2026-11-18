@@ -144,8 +144,8 @@ Fixed allocation (static arrays):
   context attribute values); see [StringDictionary](../architecture/StringDictionary.md)
 - Each is triple-buffered. Each buffer has a 128-row × 3-cell root `SBTable` (~6 KB),
   heap-allocated overflow tables, and a `StringArena` of 512 KB chunks for the key strings
-- Two plain `Dictionary` instances (`_packages`, `_symbols`) live in the per-dump `Lookup`
-  and are freed after each dump
+- A plain `Dictionary` (`_packages`) and a `SymbolDictionary` (`_symbols`, which maps a
+  failed insert to `UNRESOLVED_ID`) live in the per-dump `Lookup` and are freed after each dump
 
 **Memory cost:**
 ```
@@ -690,8 +690,8 @@ Paths are relative to `ddprof-lib/src/main/cpp/`.
 **5. String dictionaries:**
 - `stringDictionary.h` - `StringDictionary`, `SBTable`, `StringArena` (`CHUNK_SIZE = 512 KB`)
 - `profiler.h` - `_class_map`, `_string_label_map`, `_context_value_map`
-- `dictionary.h` - `Dictionary` (`ROWS = 128`, `CELLS = 3`), used for `Lookup::_packages`
-  and `Lookup::_symbols`
+- `dictionary.h` - `Dictionary` (`ROWS = 128`, `CELLS = 3`), used for `Lookup::_packages`;
+  `SymbolDictionary` wraps it for `Lookup::_symbols`
 
 **6. Recording buffers:**
 - `buffers.h` - `RECORDING_BUFFER_SIZE = 65536`, `RECORDING_BUFFER_OVERFLOW = 8192`
