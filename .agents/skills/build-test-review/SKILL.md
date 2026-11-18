@@ -29,14 +29,14 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
      exists without one, run `git worktree add <path> <branch>`, without `-b`. Never
      use `-B`: it resets the branch, and its local commits are lost.
 
-   In Claude Code, enter the worktree with `EnterWorktree` `path:`. Inside `<root>`
-   it is one of the session's working directories: the shell stays in it, the review
-   gate checks it without a `cd`, and the file tools cannot write to the main
-   checkout. Do not use `EnterWorktree` `name:`: it cannot set the branch name or the
-   start. An entered session refuses `git` inside `$(...)` and cannot add a worktree
-   under `<root>`: to create the next PR's worktree, leave with `ExitWorktree`
-   `keep`, create it, then enter it with `path:`. Before working in another existing
-   worktree, enter that one with `path:`.
+   In Claude Code, enter the worktree with `EnterWorktree` `path:`, which keeps the
+   file tools out of the main checkout. Inside `<root>`, the worktree is one of the
+   session's working directories, so the shell stays in it and the review gate checks
+   it without a `cd`. Do not use `EnterWorktree` `name:`: it cannot set the branch
+   name or `<start>`. An entered session refuses `git` inside `$(...)` and cannot add
+   a worktree under `<root>`: to create the next PR's worktree, leave with
+   `ExitWorktree` `keep`, create it, then enter it with `path:`. Before working in
+   another existing worktree, enter that one with `path:`.
 
 2. **Checklist.** Derive a "Sub-sessions" section from the Build plan and add it to the
    ticket description. It needs no separate sign-off; the engineer can edit it. It
