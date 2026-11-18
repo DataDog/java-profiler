@@ -4,6 +4,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -120,7 +121,7 @@ protected:
   void TearDown() override {
     profiler->sampleWriteHookForTest = nullptr;
     profiler->sampleWriteHookArgForTest = nullptr;
-    if (slot >= 0) profiler->threadFilter()->unregisterThread(slot, OS::threadId());
+    if (slot >= 0) profiler->threadFilter()->unregisterThread(slot, request.tid);
     profiler->threadFilter()->deactivateRecording();
     profiler->blockTracker()->setUnownedContextSnapshotsNeeded(false);
     JfrMetadata::reset();
@@ -132,6 +133,7 @@ protected:
   }
 
   void checkOrdinaryAfterEpochRotation(bool fail_deferral);
+  void checkStopRecoversFullStripe(int tid);
 
   WallSampleResult flushTail() {
     ExecutionEvent event;
@@ -506,7 +508,16 @@ TEST_P(WallEpochRecordingTest, TimerExitClosesFinalWindowBeforeFinalSeal) {
   EXPECT_EQ(16ULL, events.epochs.at(origin)[2]);
 }
 
-TEST_P(WallEpochRecordingTest, StopRecoversFullStripeWithoutExplicitDump) {
+void WallEpochRecordingTest::checkStopRecoversFullStripe(int tid) {
+  if (tid != request.tid) {
+    profiler->threadFilter()->unregisterThread(slot, request.tid);
+    request.tid = tid;
+    slot = profiler->threadFilter()->registerThread(tid);
+    ASSERT_GE(slot, 0);
+    Context context{};
+    ASSERT_TRUE(profiler->blockTracker()->publishUnownedTrace(
+        slot, CallTraceStorage::DROPPED_TRACE_ID, OSThreadState::SLEEPING, context));
+  }
   WallEpochFile continuous;
   ASSERT_GE(continuous.fd, 0);
   Arguments args;
@@ -535,10 +546,13 @@ TEST_P(WallEpochRecordingTest, StopRecoversFullStripeWithoutExplicitDump) {
   TaskBlockEvent event{};
   event._start = 1;
   event._end = 2;
-  for (int tid = 1; tid <= 256; ++tid) {
+  std::vector<int> occupied_tids;
+  for (int tid = 1; occupied_tids.size() < ThreadIdTable::capacity(); ++tid) {
+    if (tid == request.tid) continue;
     ASSERT_TRUE(ProfilerTestAccessor::recordTaskBlock(stripe, tid, &event));
+    occupied_tids.push_back(tid);
   }
-  ASSERT_GT(request.tid, 256);
+  ASSERT_EQ(occupied_tids.end(), std::find(occupied_tids.begin(), occupied_tids.end(), request.tid));
   const u64 epoch_start = TSC::ticks();
   ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, epoch_start));
   struct TailOwners {
@@ -571,7 +585,7 @@ TEST_P(WallEpochRecordingTest, StopRecoversFullStripeWithoutExplicitDump) {
   EXPECT_EQ(static_cast<u64>(1 + extra_tails), decoded.weights.at(epoch_start));
   EXPECT_EQ(static_cast<size_t>(1 + extra_tails), decoded.sample_threads.size());
   for (u64 tid : decoded.sample_threads) EXPECT_EQ(1U, decoded.pool_threads.count(tid));
-  for (int tid = 1; tid <= 256; ++tid) EXPECT_EQ(1U, decoded.pool_threads.count(tid));
+  for (int tid : occupied_tids) EXPECT_EQ(1U, decoded.pool_threads.count(tid));
   EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(slot)->unowned_blocked_pending_weight.load());
   for (auto entry : tails.slots) {
     EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(entry.first)->unowned_blocked_pending_weight.load());
@@ -586,8 +600,19 @@ TEST_P(WallEpochRecordingTest, StopRecoversFullStripeWithoutExplicitDump) {
   next_recording.switchChunk(next_snapshot.fd);
   const auto next = decodeWallEpochs(next_snapshot.fd);
   EXPECT_TRUE(next.weights.empty());
-  for (int tid = 1; tid <= 256; ++tid) EXPECT_EQ(0U, next.pool_threads.count(tid));
+  // A new recording still publishes its own native thread.
+  for (int tid : occupied_tids) {
+    if (tid != OS::threadId()) EXPECT_EQ(0U, next.pool_threads.count(tid));
+  }
   for (auto entry : tails.slots) EXPECT_EQ(0U, next.pool_threads.count(entry.second));
+}
+
+TEST_P(WallEpochRecordingTest, StopRecoversFullStripeWithoutExplicitDump) {
+  checkStopRecoversFullStripe(OS::threadId());
+}
+
+TEST_P(WallEpochRecordingTest, StopRecoversFullStripeForLowNativeTid) {
+  checkStopRecoversFullStripe(1);
 }
 
 INSTANTIATE_TEST_SUITE_P(PopulationChanges, WallEpochRecordingTest, ::testing::Bool());
