@@ -56,10 +56,9 @@ RUNDIR="$WORKDIR/runs/$TAG"
 rm -rf "$RUNDIR"
 mkdir -p "$RUNDIR" "$OUTDIR"
 
-# The collector and the CPU count the JVM sizes itself for are fixed rather
-# than left to ergonomics. On the shared CI runners a pod's CPU set changes
-# during a job, and the JVM picked Serial GC instead of G1 whenever it saw a
-# single CPU; GC and compiler thread counts also follow the CPU count.
+# Fixed collector and CPU count: a shared CI pod's CPU set changes during a
+# job, and the JVM picked Serial GC whenever it saw one CPU; GC and compiler
+# thread counts also follow the CPU count.
 JVM_ARGS=(-Xms512m -Xmx512m -XX:+AlwaysPreTouch -XX:+UseG1GC "-XX:ActiveProcessorCount=${CPUS:-4}"
   "-Dmemcheck.dumpAfterMs=$DUMP_AFTER_MS" "-Dmemcheck.dumpPath=$RUNDIR/middump.jfr")
 case "$ARM" in

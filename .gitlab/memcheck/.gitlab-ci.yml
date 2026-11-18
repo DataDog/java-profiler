@@ -32,10 +32,9 @@ memcheck-calibrate:x64:
       - build/memcheck-*/
     expire_in: 30 days
 
-# Never-conditions shared by the per-PR memcheck jobs; mirrors
-# .benchmarks-skip-rules. CANCELLED (no open PR) comes from prepare:start's
-# dotenv, which rules cannot see, so the jobs need prepare:start and the
-# default before_script ends them early in that case.
+# Never-conditions of the per-PR memcheck jobs; mirrors .benchmarks-skip-rules.
+# CANCELLED (no open PR) comes from prepare:start's dotenv, which rules cannot
+# see: the jobs need prepare:start, and the default before_script ends them.
 .memcheck-pr-skip:
   rules:
     - if: '$CANCELLED == "true"'
@@ -60,11 +59,9 @@ memcheck:unit-tests:
   script:
     - bash utils/memcheck/test/evaluate_test.sh
 
-# Memory overhead check for every PR. Each scenario runs with
-# the profiler and NMT (whose records also carry the profiler's own counters)
-# and without the profiler, in the same job, so the NMT overhead is taken as
-# profiled minus no-profiler on the same pod at the same time. The scenarios
-# are split over two jobs to keep the wall time near 15 minutes.
+# Memory overhead check for every PR. Each scenario runs with and without the
+# profiler in the same job, so the NMT overhead is profiled minus no-profiler on
+# one pod. Two jobs keep the wall time near 15 minutes.
 memcheck:x64:
   stage: benchmarks
   rules:
@@ -92,10 +89,9 @@ memcheck:x64:
       - build/memcheck-pr-*/
     expire_in: 30 days
 
-# Checks the memcheck:x64 records against utils/memcheck/budget.txt and writes
-# build/memcheck-report.md. Runs even when a memcheck:x64 job failed, so that
-# the report says which records are missing. Fails on an exceeded limit
-# (exit 1) and on missing records (exit 2).
+# Checks the memcheck:x64 records against utils/memcheck/budget.txt. Runs when
+# a memcheck:x64 job failed too, so build/memcheck-report.md names the missing
+# records. Fails on an exceeded limit (exit 1) or missing records (exit 2).
 memcheck:report:
   stage: post-benchmarks
   rules:

@@ -42,9 +42,8 @@ public class MemCheckMain {
      * through a per-method method handle. {@code MethodHandle.maybeCustomize()}
      * customizes that handle's LambdaForm, spinning one {@code LambdaForm$MH}
      * hidden class, on its 128th call ({@code CUSTOMIZE_THRESHOLD}, default
-     * 127). In classesM that is ~40k
-     * classes arriving together after ~128 passes, which on a slow runner
-     * lands on the NMT sample. Running past that point first keeps the class
+     * 127). In classesM that is ~40k classes arriving together after ~128
+     * passes, which on a slow runner lands on the NMT sample. Running past that point first keeps the class
      * count fixed during the steady state.
      */
     private static final int WARMUP_PASSES = 130;
