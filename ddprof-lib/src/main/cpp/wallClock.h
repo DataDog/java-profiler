@@ -281,7 +281,7 @@ class BaseWallClock : public Engine {
     }
 
 public:
-    // Normal timer/dump threads only. Hold through stripe acquisition and sealing.
+    // Normal threads only. Hold through stripe acquisition and chunk sealing.
     static std::unique_lock<std::mutex> samplingEpochLock();
     // Caller holds the epoch mutex and every recording stripe.
     static void settleSamplingEpoch();
@@ -349,6 +349,35 @@ public:
         bool reset_before_tail);
 #endif
 };
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+// Serializes the synchronous driver with timer epoch writes, but not its dumps:
+// Profiler::dump acquires the same epoch mutex before locking recording stripes.
+class WallClockTestEpochGuard {
+    std::unique_lock<std::mutex> _lock;
+
+    class ScopedUnlock {
+        std::unique_lock<std::mutex>& _lock;
+    public:
+        explicit ScopedUnlock(std::unique_lock<std::mutex>& lock) : _lock(lock) { _lock.unlock(); }
+        ~ScopedUnlock() { _lock.lock(); }
+        ScopedUnlock(const ScopedUnlock&) = delete;
+        ScopedUnlock& operator=(const ScopedUnlock&) = delete;
+    };
+
+  public:
+    explicit WallClockTestEpochGuard(u64 timeout_nanos);
+    WallClockTestEpochGuard(const WallClockTestEpochGuard&) = delete;
+    WallClockTestEpochGuard& operator=(const WallClockTestEpochGuard&) = delete;
+    bool ownsLock() const { return _lock.owns_lock(); }
+
+    template <typename Action>
+    void withoutEpochLock(Action action) {
+        ScopedUnlock unlock(_lock);
+        action();
+    }
+};
+#endif
 
 class WallClockASGCT : public BaseWallClock {
   private:
