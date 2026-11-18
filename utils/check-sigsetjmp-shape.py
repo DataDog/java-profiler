@@ -14,7 +14,7 @@
 # limitations under the License.
 """Check that every crash-protection sigsetjmp() follows the JmpCtxScope pattern (guards.h).
 
-For each sigsetjmp( / __sigsetjmp( call in tracked files under ddprof-lib/src/main/cpp:
+For each sigsetjmp( / __sigsetjmp( call in tracked C/C++ sources under ddprof-lib/src/main/cpp:
   1. a JmpCtxScope is declared before it, in the same or an enclosing block;
   2. savemask is the literal 1;
   3. the landing pad `if (sigsetjmp(...) != 0) {` starts with
@@ -30,6 +30,7 @@ import subprocess
 import sys
 
 SRC = "ddprof-lib/src/main/cpp"
+SOURCES = (".c", ".cc", ".cpp", ".h", ".hpp")
 
 # (file, first argument) of calls that are not crash protection.
 # libraryPatcher_linux.cpp: glibc pthread cancellation buffer. glibc's unwinder
@@ -143,6 +144,7 @@ def main(argv):
         try:
             files = subprocess.run(["git", "-C", root, "ls-files", "--", SRC],
                                    capture_output=True, text=True, check=True).stdout.splitlines()
+            files = [f for f in files if f.endswith(SOURCES)]
         except (OSError, subprocess.CalledProcessError) as e:
             print("error: git ls-files failed: %s" % e, file=sys.stderr)
             return 2

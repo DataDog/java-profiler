@@ -712,7 +712,10 @@ int PerfEvents::registerThread(int tid) {
 }
 
 void PerfEvents::unregisterThread(int tid) {
-  if (tid >= _max_events) {
+  // start()'s table resize runs without a freeze, so a hook unregister can race
+  // the window where a failed allocation has nulled _events but _max_events
+  // still holds the old size.
+  if (_events == NULL || tid < 0 || tid >= _max_events) {
     return;
   }
 
@@ -966,12 +969,18 @@ Error PerfEvents::start(Arguments &args) {
     // (stop() keeps them). Release them while it still exists; otherwise
     // they leak, and stay armed, once it is freed.
     releaseThreads();
-    free(_events);
+    // The table gate (_thread_tables_stable) is open across the swap, so a
+    // hook unregister may hit _events mid-swap: fresh readers see the old or
+    // new table or the early return; a pre-swap pointer still races the free.
+    // registerThread needs no guard: _engines_ready opens only after the swap.
+    PerfEvent *old_events = _events;
+    _events = NULL;
+    free(old_events);
     if (old_bytes > 0) {
       NativeMem::record(NM_PERF, -old_bytes);
     }
-    _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
-    if (_events == NULL) {
+    PerfEvent *new_events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
+    if (new_events == NULL) {
       // Back to the not-started value, so registerThread() and
       // unregisterThread() reject every tid. Return before the signal
       // handler, the hook and the registration gate are set up: start()
@@ -983,6 +992,7 @@ Error PerfEvents::start(Arguments &args) {
       return Error("Failed to allocate perf event table");
     }
     _max_events = max_events;
+    _events = new_events;
     NativeMem::record(NM_PERF,
                       (long long)((size_t)max_events * sizeof(PerfEvent)));
   }
