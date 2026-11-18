@@ -95,8 +95,9 @@ prepare-patched-agent:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
+    # Not applicable: upstream OpenJ9 requires glibc and publishes no musl runtime.
     - if: '$JVM_TYPE == "openj9" && $LIBC_VARIANT == "musl"'
-      allow_failure: false
+      when: never
     - when: on_success
   interruptible: true
   timeout: 10m
