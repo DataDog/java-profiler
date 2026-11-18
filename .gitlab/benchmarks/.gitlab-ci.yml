@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc.
+
 variables:
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
@@ -10,6 +12,9 @@ variables:
 #   - top of stack (or check failed open): real child pipeline that triggers
 #     the BP pipeline (.gitlab/benchmarks/child.gitlab-ci.yml)
 #   - below another PR: noop child pipeline that only logs the skip
+#   - CANCELLED=true from prepare:start (push to a branch with no open PR):
+#     noop child as well — deploy-artifact skipped, so no snapshot exists to
+#     benchmark (see the before_script comment in the generate job below)
 # This mirrors the generate-reliability-child-pipeline / run-reliability-tests
 # pattern in .gitlab-ci.yml.
 
@@ -17,6 +22,10 @@ variables:
 # always coexist (run-benchmarks hard-needs the generate job's artifact), so
 # the never-conditions MUST stay identical for both — keep them only here.
 # This mirrors the .skip-on-release pattern in .gitlab/common.yml.
+#
+# The '$CANCELLED == "true"' condition only fires for pipeline-level
+# CANCELLED: dotenv-report variables are invisible to rules, so the
+# push-pipeline CANCELLED case is decided inside the generate job's script.
 .benchmarks-skip-rules:
   rules:
     - if: '$CANCELLED == "true"'
@@ -28,6 +37,11 @@ variables:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
+    # Merge-queue branches have no open PR, so prepare.sh cancels the pipeline
+    # and deploy-artifact publishes nothing to benchmark; the BP run would
+    # only delay the queue (run-benchmarks uses strategy: depend).
+    - if: '$CI_COMMIT_BRANCH =~ /^mq-working-branch-/'
+      when: never
 
 # Decide whether benchmarks run for this branch and generate the child
 # pipeline YAML accordingly.
@@ -38,7 +52,16 @@ generate-benchmarks-child-pipeline:
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts
-  needs: []
+  needs:
+    # Brings CANCELLED (dotenv from prepare:start) into the script below;
+    # dotenv variables cannot reach rules:if.
+    - job: prepare:start
+      artifacts: true
+  # The default before_script carries the CANCELLED guard: with CANCELLED=true
+  # from prepare:start it would exit 0 before the script writes
+  # generated-benchmarks.yml, and run-benchmarks hard-needs that artifact —
+  # the guard must stay disabled here, as in generate-reliability-child-pipeline.
+  before_script: []
   rules:
     - !reference [.benchmarks-skip-rules, rules]
     # Runs automatically in web pipelines too: run-benchmarks (manual on web)
@@ -46,13 +69,20 @@ generate-benchmarks-child-pipeline:
     # break the manual trigger path with an unmet-needs artifact error.
     - when: on_success
   script:
+    # CANCELLED=true means no open PR: no snapshot was published to benchmark —
+    # emit the noop child instead.
     # Single canonical parse of the script's contract output: stdout is
     # exactly one line "RUN_BENCHMARKS=<value>"; stderr (diagnostics) passes
     # through to the job log. Fail open unless the value is unambiguously
     # "false" — an empty, missing, or corrupted parse must never skip
     # benchmarks.
     - |
-      RUN_BENCHMARKS=$(bash .gitlab/benchmarks/check-stack-top.sh | tail -n 1 | sed -n 's/^RUN_BENCHMARKS=//p' | tr -d '[:space:]')
+      if [ "${CANCELLED:-}" = "true" ]; then
+        echo "CANCELLED=true (no open PR for this branch) — deploy-artifact skipped, no snapshot published; skipping benchmarks" >&2
+        RUN_BENCHMARKS=false
+      else
+        RUN_BENCHMARKS=$(bash .gitlab/benchmarks/check-stack-top.sh | tail -n 1 | sed -n 's/^RUN_BENCHMARKS=//p' | tr -d '[:space:]')
+      fi
       case "$RUN_BENCHMARKS" in
         false) RUN_BENCHMARKS=false ;;
         *) RUN_BENCHMARKS=true ;;
@@ -62,7 +92,7 @@ generate-benchmarks-child-pipeline:
         echo "Branch is the top of its PR stack — benchmarks enabled"
         cp .gitlab/benchmarks/child.gitlab-ci.yml generated-benchmarks.yml
       else
-        echo "Branch is below another PR in its stack — benchmarks skipped"
+        echo "Benchmarks skipped (branch below another PR in its stack, or CANCELLED=true)"
         cat > generated-benchmarks.yml << 'NOOP'
       skip-benchmarks:
         image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest

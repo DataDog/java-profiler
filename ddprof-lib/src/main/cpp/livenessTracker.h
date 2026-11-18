@@ -14,6 +14,7 @@
 #include "event.h"
 #include "spinLock.h"
 #include "xorshift.h"
+#include <assert.h>
 #include <atomic>
 #include <jvmti.h>
 #include <pthread.h>
@@ -30,10 +31,14 @@ typedef struct TrackingEntry {
   jint tid;
   jlong time;
   jlong age;
+  // _gc_epoch at admission. An entry admitted after an account_epoch=false
+  // sweep can be in the table before the owner claims that epoch; aging
+  // starts from here so it is not credited with a GC it never survived.
+  u64 admission_epoch;
   jlong leak_tag;  // 0 = untagged; otherwise a tag from the leak tag pool
   Context ctx;
   // Set by cleanup_table()'s survivor loop via resolveKlassId() when
-  // _gc_generations is enabled (0 otherwise, or if resolution failed - 0 is
+  // leak-signal tracking is enabled (0 otherwise, or if resolution failed - 0 is
   // StringDictionary's own "no entry" sentinel, so a real id is never 0).
   // flush_table() reuses this instead of re-resolving the same object's
   // class via a second resolveKlassId() JNI round-trip - an object's class
@@ -103,7 +108,7 @@ typedef struct KlassPopulationEntry {
   // often as a real leak does.
   u8 consecutive_positive;
   // Slope (regression value at the ring's newest sample minus the value at
-  // its oldest sample - see ringThirdsStats, livenessTracker.cpp) as of the
+  // its oldest sample - see ringWindowStats, livenessTracker.cpp) as of the
   // last push, computed and cached by hasQualifyingGrowth() alongside
   // consecutive_positive above - selectLeakCandidates() reads this directly
   // for ranking instead of re-scanning the ring: the ring only changes on
@@ -316,17 +321,34 @@ private:
   constexpr static double HEAP_FLOOR_FLOOR_REL_MIN = 0.01;
   constexpr static u64 HEAP_FLOOR_FLOOR_ABS_MIN = 1ULL << 19;    // 512KiB
 
-  bool _initialized;
-  bool _enabled;
+  // Atomic: onGC() reads it on a GC thread while release() and initialize()
+  // write it. It only gates scalar updates there, so that read is relaxed.
+  std::atomic<bool> _initialized;
+  // Atomic: allocation callbacks (track() and its admission and growth paths)
+  // read _enabled and _table_max_cap outside the table lock, while start() and
+  // release() change them.
+  std::atomic<bool> _enabled;
   Error _stored_error;
 
   SpinLock _table_lock;
+  // See tableGeneration(). Changed only under the exclusive _table_lock, so
+  // track() compares it under the shared lock against a stable value.
+  std::atomic<u64> _table_generation{0};
+  // Token of the checker start() registered with the call-trace storage; 0 if none.
+  u64 _liveness_checker_token{0};
   volatile int _table_size;
   int _table_cap;
-  int _table_max_cap;
+  std::atomic<int> _table_max_cap;
   TrackingEntry *_table;
 
-  SubsampleRate _subsample;
+  // start() rewrites both while an allocation callback of the previous
+  // recording may still read them in admitForTracking(). A threshold of
+  // UINT64_MAX admits every allocation without a draw.
+  std::atomic<u64> _subsample_threshold;
+  std::atomic<double> _subsample_ratio;  // reported in the recording settings
+  static_assert(std::atomic<u64>::is_always_lock_free &&
+                    std::atomic<double>::is_always_lock_free,
+                "admitForTracking() runs in JVMTI allocation callbacks");
 
   // Chase-phase admission-boost state (admitForTracking()'s declaration
   // comment below). _watched_tids is two-phase-published: slots first, then
@@ -366,11 +388,16 @@ private:
   // resolveKlassId()) under the exclusive _table_lock on another thread, and
   // such a call can wait for that stop to end - spinning on _table_lock here
   // would then never return. GC completions are never
-  // concurrent with each other (HotSpot never runs two GCs at once), so
+  // concurrent with each other (HotSpot never runs two GCs at once - a
+  // HotSpot behaviour, not a documented JVMTI contract; other VMs such as
+  // J9/Zing behind the abstraction layer may differ), so
   // onGC() is always a single writer at a time, matching the existing
-  // lock-free _gc_epoch/_used_after_last_gc fields' own assumption - see
-  // recordHeapFloorSample()/heapFloorRising() (livenessTracker.cpp) for the
-  // load/store ordering this relies on.
+  // lock-free _gc_epoch/_used_after_last_gc fields' own assumption.
+  // recordHeapFloorSampleUnchecked() still claims each slot index through
+  // an atomic head CAS and bumps fill with a CAS, so overlapping writers
+  // never share a slot or lose a fill increment. The window readers still
+  // rely on the contract: they skip only the newest in-flight slot - see
+  // that method's comment for the order and what each guard covers.
   u64 _heap_floor_ring[KLASS_POPULATION_RING_SIZE];
   // OS::nanotime() paired index-for-index with _heap_floor_ring above (same
   // head/fill, always pushed together by recordHeapFloorSample() - see that
@@ -387,8 +414,19 @@ private:
   // libraries) - see secondsToOOM()'s own comment for how this ring and
   // _heap_floor_ring are used as two independent OOM boundaries.
   u64 _container_mem_ring[KLASS_POPULATION_RING_SIZE];
+  // Per-slot seqlock word and sample identity: HEAP_FLOOR_SEQ_UNSTABLE
+  // marks a write in progress; any other value names the one recorded sample
+  // in that slot (from _heap_floor_sample_seq below) for the process
+  // lifetime. The static singleton's zero-initialization guarantees no slot
+  // starts at the sentinel - a slot stuck there would drop every sample
+  // that claims it.
+  u64 _heap_floor_seq_ring[KLASS_POPULATION_RING_SIZE];
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;
+  // Monotonic sample counter (first sample = 1, 0 = "no sample"): the
+  // atomic fetch-add keeps a seq unique per sample even under overlapping
+  // writers; never reset by any seam or stop()/start(), so seqs never alias.
+  u64 _heap_floor_sample_seq;
 
   // Debug-only test seam: when true, onGC() skips recordHeapFloorSample()
   // so a test can seed the ring exclusively via heapFloorRecordForTest()
@@ -403,6 +441,10 @@ private:
   // at the actual write point, not just in onGC(), so a GC already past the
   // onGC() gate when the test sets this flag still cannot corrupt the ring.
   std::atomic<bool> _heap_floor_recording_disabled_for_test{false};
+
+  // Plain pointers, not atomic: tests set them only while no reader runs.
+  static inline void (*_heap_floor_read_hook_for_test)(void *) = nullptr;
+  static inline void *_heap_floor_read_hook_arg_for_test = nullptr;
 #endif
 
   // Runtime.maxMemory(), resolved once by initialize_table() (the same call
@@ -458,6 +500,21 @@ private:
   // (maybeForceCleanup()) and the GC-callback thread (cleanup_table()) can
   // still be reading it from a session that persists across a restart.
   std::atomic<bool> _gc_generations;
+
+  // True when a leak-signal source is active: generations, or liveheap with referencechains
+  // enabled - the collector is the signal's only consumer, so a plain liveheap session keeps the
+  // flag (and its klass folding, heap-floor ring and forced sweeps) off. Derived in initialize();
+  // written release, read acquire. Cleared again by disableChainOnlyLeakSignal() when the
+  // (liveness && reference_chains) leg was armed but ReferenceChainTracker::start() failed.
+  std::atomic<bool> _leak_signal_enabled;
+
+  // OS::nanotime() of the first initialize() that enabled the leak signal; 0 means never
+  // activated. Set once by a CAS from 0; the only production reset is disableChainOnlyLeakSignal()'s
+  // chains-start-failure path (with the flag), so a later chains-enabled start re-stamps and gets
+  // its own burn-in. stop()/resetSession() and the ring resets never touch it: per process, not per
+  // recording. Drives secondsToOOM()'s age-based burn-in (see OOM_PROJECTION_BURN_IN_NS). Release
+  // write, acquire read.
+  std::atomic<u64> _leak_signal_activated_ns;
 
   // Per-klass population history table (see KlassPopulationEntry above).
   // Populated only from cleanup_table()'s GC-epoch-advance pass, never from
@@ -532,8 +589,9 @@ private:
   // (profiler.cpp) whenever `reset || _start_time == 0`, restarting that
   // StringDictionary's id namespace at 1 - but TrackingEntry::cached_klass_id
   // and _klass_population's klass_id keys are ids resolved from that
-  // dictionary, and both survive stop()/start() cycles (this class's table is
-  // designed to persist across recordings). Left unguarded, an id cached
+  // dictionary. release() drops both at every stop(), but a generation bump
+  // while the tracker holds them (classMapGenerationSetForTest(), or any
+  // future reset path) still has to be caught. Left unguarded, an id cached
   // before a reset would silently collide with whatever unrelated class the
   // new generation reassigns that same id to. cleanup_table() compares this
   // against Profiler::instance()->classMap()->generation() and, on a
@@ -567,24 +625,78 @@ private:
   // holder excludes the exclusive one, but only this dedicated lock makes the
   // pool safe for any future second shared-lock mutator. Lock order: _table_lock
   // (any mode) is always acquired BEFORE _leak_tag_pool_lock, never the
-  // reverse; no path acquires _table_lock while holding the pool lock.
+  // reverse; no path acquires _table_lock while holding the pool lock. It also
+  // serializes every write of _leak_tag_incarnation (reads of the stamp take no
+  // lock - see leakTagIncarnation()).
   mutable SpinLock _leak_tag_pool_lock;
   int _leak_tag_free_list[LEAK_TAG_POOL_SIZE];
   int _leak_tag_free_count;
   // Per-tag ownership: set by acquireLeakTag(), cleared by releaseLeakTag(),
   // so a repeated release of a tag that was not re-acquired is ignored.
   bool _leak_tag_in_use[LEAK_TAG_POOL_SIZE];
+  // Per-slot ownership-period stamp. A leak tag is recycled once its object
+  // dies, so the tag alone does not identify one object: (tag, stamp) does.
+  // The stamp changes on every ownership transition of the slot - acquire
+  // (free -> in use), a real release (in use -> free), and every slot whose
+  // in-use bit flips in start()'s rebuild or in leakTagPoolResetForTest() -
+  // and never on a no-op (rejected or out-of-range release, unchanged slot).
+  // Written only under _leak_tag_pool_lock (atomic release stores), read
+  // lock-free with acquire semantics so heap callbacks and reference-chain
+  // code never take the pool lock. The u32 wraps after 2^32 transitions of one
+  // slot; a false "same owner" needs exactly that many transitions between a
+  // stamp's capture and its check, which is accepted as negligible.
+  u32 _leak_tag_incarnation[LEAK_TAG_POOL_SIZE];
+
+  // Advances slot `idx`'s ownership-period stamp. Caller holds
+  // _leak_tag_pool_lock. The read is atomic as well: heap callbacks and
+  // reference-chain code read the same slot lock-free (leakTagIncarnation()),
+  // and a plain read racing those loads is UB under the C++ memory model even
+  // though the store itself is a release store.
+  void bumpLeakTagIncarnationLocked(int idx) {
+    __atomic_store_n(&_leak_tag_incarnation[idx],
+                     __atomic_load_n(&_leak_tag_incarnation[idx], __ATOMIC_RELAXED) + 1,
+                     __ATOMIC_RELEASE);
+  }
 
   jlong acquireLeakTag();
   void releaseLeakTag(jlong tag);
+  // Frees every pool slot. Caller holds _leak_tag_pool_lock.
+  void resetLeakTagPoolLocked() {
+    for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
+      _leak_tag_free_list[i] = i;
+      if (_leak_tag_in_use[i]) {
+        // Freeing an owned slot is an ownership transition.
+        bumpLeakTagIncarnationLocked(i);
+      }
+      _leak_tag_in_use[i] = false;
+    }
+    _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
+  }
+  // Clears the JVMTI tag of every object still carrying a pool tag. Returns
+  // false if the objects could not be enumerated (some may keep their tag).
+  bool clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env);
+  // Marks the slots table entries own as in use and frees the rest; frees none
+  // when stale_tags_may_remain (leak tagging off until a later rebuild).
+  void rebuildLeakTagPool(bool stale_tags_may_remain);
+  // start()'s pool setup: retries a failed clear, then rebuilds the pool.
+  void prepareLeakTagPool(jvmtiEnv *jvmti, JNIEnv *jni);
+  // A clearLeakTagsOnObjects() failed: the next release() retries even when
+  // the pool shows no tag out, and start() retries before rebuilding the pool.
+  // Both run on the start/stop control thread, under Profiler::_state_lock.
+  bool _leak_tag_clear_pending = false;
+  // Deletes the population representatives' weak refs and empties the
+  // population and its scratch. Caller holds the exclusive _table_lock.
+  void resetKlassPopulationLocked(JNIEnv *env);
 
   Error initialize(Arguments &args);
-  Error initialize_table(JNIEnv *jni, int sampling_interval);
+  // Resolves the heap limits and returns the table's maximum capacity in
+  // *max_cap; publishing the table itself is left to initialize().
+  Error initialize_table(JNIEnv *jni, int sampling_interval, int *max_cap);
 
   // force=true is used by track()'s table-overflow branch to run a cleanup
   // synchronously from the allocation-sampling call stack, bypassing the
   // GC-epoch-changed check below. The per-klass population tracking below
-  // (_gc_generations) runs on both paths, once per genuinely new GC epoch
+  // (leak-signal gated) runs on both paths, once per genuinely new GC epoch
   // (see "is_epoch_owner" in livenessTracker.cpp).
   //
   // allow_resolve gates resolveKlassId() - GetClassSignature plus a class-map
@@ -601,8 +713,10 @@ private:
   // thread (referenceChains.cpp), not the allocation hot path, so the same
   // upcalls flush_table() already makes safely are just as safe there - see
   // that method's own comment for why a third caller needs both bypassing
-  // the early-exit *and* resolution.
-  void cleanup_table(bool force = false, bool allow_resolve = true);
+  // the early-exit *and* resolution. account_epoch=false only reaps: no epoch
+  // claim, no survivor aging, no population fold.
+  void cleanup_table(bool force = false, bool allow_resolve = true,
+                     bool account_epoch = true);
 
   void flush_table(std::set<int> *tracked_thread_ids);
 
@@ -625,10 +739,8 @@ private:
   // --- Per-klass population tracking (cleanup_table()'s epoch-advance pass only) ---
 
   // Resolves the StringDictionary id for `ref`'s class (GetObjectClass +
-  // GetClassSignature + Profiler::lookupClass(), also used by flush_table())
-  // - this is the "genuinely new
-  // cost on an existing pass" the design doc flags, previously paid only at
-  // JFR-flush time. Returns 0 (StringDictionary's own "no entry" sentinel)
+  // GetClassSignature + Profiler::lookupClass(), also used by flush_table()).
+  // Returns 0 (StringDictionary's own "no entry" sentinel)
   // if the name could not be resolved or interned.
   u32 resolveKlassId(JNIEnv *env, jobject ref);
 
@@ -754,19 +866,17 @@ private:
 
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
-  // tests, design doc's original "mean of thirds" choice since replaced by
-  // full-window least-squares regression (see ringThirdsStats,
+  // tests, computed by full-window least-squares regression (see ringWindowStats,
   // livenessTracker.cpp - cheap, allocation-free, one pass over the
   // ring, no sorting or extra storage). A single scan
-  // (ringThirdsStats(), livenessTracker.cpp) both derives the pass/fail
+  // (ringWindowStats(), livenessTracker.cpp) both derives the pass/fail
   // result below AND updates entry.cached_slope (regression end value minus
   // start value) for selectLeakCandidates()'s ranking, rather than
   // that method re-scanning the same unchanged ring a moment later. Returns
   // false (leaving entry.cached_slope untouched) if entry.ring_fill is below
   // KLASS_POPULATION_MIN_FILL_FOR_TREND - not enough history yet to trust a
   // trend; callers must check ring_fill themselves before trusting
-  // cached_slope, exactly as they checked this method's own return value
-  // before cached_slope existed.
+  // cached_slope.
   //
   // Called from recordKlassPopulationSampleLocked() every time a new sample
   // is pushed (both the production path,
@@ -786,11 +896,22 @@ private:
   // itself deterministic for the heapFloorRecordForTest() test seam below.
   void recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used);
 
+  // The heap-floor window's exclusive end for ringWindowStats(): head, stepped
+  // back one slot when the newest slot is still in-flight (seq sentinel), with
+  // *fill clamped so the window excludes that slot - see the definition in
+  // livenessTracker.cpp.
+  u8 heapFloorWindowHead(u8 head, u8 *fill) const;
+
   // Internal: pushes to the rings without checking
   // _heap_floor_recording_disabled_for_test. Called by
   // recordHeapFloorSample() (after the debug-only flag check) and by
   // heapFloorRecordForTest() (which bypasses the check so a test can
-  // seed the rings even while real GC recording is disabled).
+  // seed the rings even while real GC recording is disabled). Claims the
+  // target slot via its seqlock word; an overlapping writer's claim drops
+  // this sample instead of tearing the slot. The seqlock covers each
+  // slot's payload+seq word only; head/fill index writes still assume one
+  // writer at a time - HotSpot never posts GarbageCollectionFinish
+  // concurrently, but JVMTI does not document that.
   void recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns, u64 container_used);
 
   // Reads whether the aggregate post-GC live heap has itself shown a
@@ -810,7 +931,22 @@ public:
   // and secondsToOOM(). See _max_heap_bytes's own comment above.
   jlong maxHeapBytes() const { return _max_heap_bytes; }
 
+  // Coherent (used, seq) snapshot of the newest heap-floor sample, validated
+  // by the slot's seqlock word (see the definition); 0/0 for an empty ring.
+  // No consistent pair within HEAP_FLOOR_READ_ATTEMPTS: returns 0 and writes
+  // HEAP_FLOOR_SEQ_UNSTABLE to seq_out (and increments the
+  // HEAP_FLOOR_READ_UNSTABLE counter once). The reader's initial acquire seq
+  // load pairs with the writer's release seq store, making that sample's
+  // payload visible before the payload load.
+  u64 newestHeapFloorSample(u64 *seq_out = nullptr) const;
+
   constexpr static int MAX_LEAK_CANDIDATES = 5;
+
+  // Heap-floor seqlock sentinel + reader retry bound (see
+  // newestHeapFloorSample()). In a slot: write in progress; in seq_out: no
+  // consistent pair within the bound. _heap_floor_sample_seq never reaches it.
+  static constexpr u64 HEAP_FLOOR_SEQ_UNSTABLE = ~0ULL;
+  static constexpr int HEAP_FLOOR_READ_ATTEMPTS = 4;
   // Delete copy constructor and assignment operator to prevent copies
   LivenessTracker(const LivenessTracker&) = delete;
   LivenessTracker& operator=(const LivenessTracker&) = delete;
@@ -818,24 +954,57 @@ public:
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
         _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
-        _subsample(0.1), _watched_tid_count(0), _urgent_tracking(false),
+        _subsample_threshold(SubsampleRate(0.1).threshold),
+        _subsample_ratio(0.1), _watched_tid_count(0), _urgent_tracking(false),
         _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _last_cleanup_ns(0), _used_after_last_gc(0),
-        _heap_floor_ring_head(0), _heap_floor_ring_fill(0),
+        _heap_floor_ring_head(0), _heap_floor_ring_fill(0), _heap_floor_sample_seq(0),
         _max_heap_bytes(-1), _container_memory_limit(-1),
         _container_limit_resolved(false),
         _gc_generations(false),
+        _leak_signal_enabled(false),
+        _leak_signal_activated_ns(0),
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0),
-        _leak_tag_free_count(LEAK_TAG_POOL_SIZE) {}
+        _leak_tag_free_count(LEAK_TAG_POOL_SIZE),
+        // Value-initialized alongside the stamps: start() rebuilds the pool by
+        // comparing every _leak_tag_in_use[i] against the table's owners, so a
+        // non-statically constructed tracker must read all-false there. (The
+        // singleton is static-storage and zero-initialized regardless.)
+        _leak_tag_in_use(), // value-initialized: every slot starts free
+        _leak_tag_incarnation() {} // value-initialized: every stamp starts at 0
 
+  // Ownership-period stamp of leak tag `tag` (see _leak_tag_incarnation), or 0
+  // when `tag` is outside the pool range. Lock-free (one acquire load): safe
+  // from heap callbacks and while holding reference-chain locks. A cached
+  // reference chain whose captured stamp equals this value was built for the
+  // tag's current owner.
+  u32 leakTagIncarnation(jlong tag) const {
+    if (tag < LEAK_TAG_BASE || tag >= LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
+      return 0;
+    }
+    return __atomic_load_n(&_leak_tag_incarnation[tag - LEAK_TAG_BASE],
+                           __ATOMIC_ACQUIRE);
+  }
+
+  // Reset recording-scoped gates at every accepted profiler start.
+  void resetSession();
   Error start(Arguments &args);
   void stop();
-  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
+  // Frees what a recording built: the table and its weak refs, leak tags, the
+  // per-klass population. Called by Profiler::stop() after the final chunk and
+  // the BFS join: only an in-flight allocation callback can race, and drops.
+  void release(JNIEnv *env);
+  // Bumped by stop() before its final flush, by release() and when initialize()
+  // publishes a table. Read before the stack capture and passed to track(),
+  // which drops the sample if it moved: its call_trace_id belongs to a stopped recording.
+  u64 tableGeneration() const { return _table_generation.load(std::memory_order_acquire); }
+  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id,
+             u64 table_generation);
 
   // track()'s admission gate: a chase-phase raise of the live-samples
-  // tracking probability over the configured _subsample ratio (default 10% -
+  // tracking probability over the configured subsample ratio (default 10% -
   // a 90% probabilistic drop whose thinning of small per-(klass, tid)
   // populations was observed live as the intermittent zero-tag runs in
   // LeakTagCorrelationReferenceChainTest - see that test's own comment for
@@ -856,6 +1025,16 @@ public:
   // the configured ratio - a stale or missed boost cannot drop an allocation
   // that the ratio would have admitted.
   bool admitForTracking(jint tid);
+  // Release stores pair with admitForTracking()'s and subsampleRatio()'s
+  // acquire loads; a reader may see one half of a concurrent update.
+  void setSubsampleRate(const SubsampleRate &rate) {
+    _subsample_ratio.store(rate.ratio, std::memory_order_release);
+    _subsample_threshold.store(rate.threshold, std::memory_order_release);
+  }
+  // The configured ratio, for the recording settings.
+  double subsampleRatio() const {
+    return _subsample_ratio.load(std::memory_order_acquire);
+  }
 
   // Publishes the current candidate poll's qualifying tids as the watched
   // set above. Called from ReferenceChainTracker's full poll
@@ -867,8 +1046,11 @@ public:
   void noteSelectedCandidates(const KlassCandidate *candidates, int count);
 
   // Urgency raise toggle - see admitForTracking()'s comment above. Set every
-  // threadLoop() iteration with that iteration's urgency computation, so the
-  // boost tracks the ramp exactly (both engaging and releasing).
+  // threadLoop() iteration with that iteration's urgency computation, except
+  // that outside the emergency band (< OOM_URGENT_THRESHOLD_S) the boost
+  // additionally requires fresh heap growth evidence - see
+  // ReferenceChainTracker::updateUrgentAdmission() for why the raw ramp
+  // comparison alone is not safe to admit on.
   void setUrgentTracking(bool urgent);
 
   void flush(std::set<int> &tracked_thread_ids);
@@ -885,7 +1067,7 @@ public:
   // population trend is positive (growing), ranked by trend magnitude
   // descending, capped at MAX_LEAK_CANDIDATES regardless of `max` (design
   // doc's Open Question 3 "top 3-5" cutoff). Returns the number of
-  // candidates written (0 if _gc_generations was never enabled -
+  // candidates written (0 if leak-signal tracking was never enabled -
   // _klass_population stays empty in that case, since population tracking
   // is gated on it, so no separate guard is needed here). Called on demand
   // by the BFS-pass poll, not on any timer of its own; does no JNI work, so it is safe
@@ -963,15 +1145,39 @@ public:
   // pattern selectLeakCandidates()/getLiveTraceIds() already use.
   jobject resolveCandidateRepresentative(JNIEnv *env, u32 klass_id);
 
-  // Exposes the _gc_generations gate (see that member's own comment) so a
-  // caller outside this class - ReferenceChainTracker::pollWatchedTargets()
-  // (referenceChains.cpp), the LivenessTracker-to-ReferenceChainTracker
-  // bridging step - can skip calling selectLeakCandidates() entirely when
-  // the feature isn't in use,
-  // rather than relying on that method's own "returns 0" fallback to make
-  // the no-op cheap. Read-only; this accessor never toggles the flag.
+  // Test-only observation point for the explicit generations option: no
+  // production code keys on it (the gate is leakSignalEnabled()), so it is
+  // compiled out of the shipped release library.
+#if defined(DEBUG) || defined(UNIT_TEST)
   bool gcGenerationsEnabled() const {
     return _gc_generations.load(std::memory_order_relaxed);
+  }
+#endif
+
+  // The effective gate ReferenceChainTracker::hasLeakSignal() keys on (see
+  // _leak_signal_enabled's own comment).
+  bool leakSignalEnabled() const {
+    return _leak_signal_enabled.load(std::memory_order_acquire);
+  }
+
+  // Profiler::start() calls this when reference chains were requested but did not activate
+  // (alloc engine not activated, or ReferenceChainTracker::start() failed): the flag's
+  // (liveness && reference_chains) leg then has no consumer, so a plain-liveheap session must not
+  // pay for it; generations keeps its own consumer. Also unstamps the burn-in clock so a later
+  // chains-enabled start re-stamps and gets its own burn-in. Concurrent readers are tolerated:
+  // see the ordering note on the stores below.
+  void disableChainOnlyLeakSignal() {
+    if (_gc_generations.load(std::memory_order_acquire)) {
+      return;
+    }
+    // Ordering: flag first, stamp second (both release) - a reader that sees the flag already
+    // false never reaches the stamp read. A reader that acquired the flag as true just before
+    // this can still observe the zeroed stamp; that transient is safe only because
+    // secondsToOOM() returns -1 on activated_ns == 0. Keep that guard if secondsToOOM() is
+    // refactored, or this unstamping can yield a spurious projection and a spurious urgent
+    // latch.
+    _leak_signal_enabled.store(false, std::memory_order_release);
+    _leak_signal_activated_ns.store(0, std::memory_order_release);
   }
 
   // Time-to-OOM projection against whichever of two independent boundaries
@@ -989,16 +1195,13 @@ public:
   // under-warn right up until an OOM-kill from container memory pressure
   // that had nothing to do with heap occupancy.
   //
-  // Exists because selectLeakCandidates()'s per-klass gate
-  // (KLASS_POPULATION_MIN_FILL_FOR_TREND ring samples plus
-  // LEAK_TREND_HYSTERESIS_BASE/CORROBORATED consecutive qualifying epochs)
-  // can take longer to trust a candidate than a fast leak has left before
-  // OOM - this gives ReferenceChainTracker::hasLeakSignal() an independent,
-  // rate-based signal to start a search immediately instead of waiting on
-  // that gate. Not a claim that growth stays linear, only that a
-  // short-horizon linear extrapolation is a reasonable urgency signal.
+  // The projection feeds the urgency latch (ReferenceChainTracker::isUrgent()),
+  // the urgent admission ramp (ReferenceChainTracker::updateUrgentAdmission())
+  // and threadLoop()'s OOM cadence/budget ramp; it never starts a search (see
+  // OOM_URGENT_THRESHOLD_S). It is a short-horizon linear extrapolation, not a
+  // claim that growth stays linear.
   // Returns a negative value if the chosen ring is not filled enough yet
-  // (gcGenerationsEnabled() is off, or too few GC epochs have happened), not
+  // (leakSignalEnabled() is off, or too few GC epochs have happened), not
   // rising, or neither _max_heap_bytes nor _container_memory_limit was ever
   // resolved - callers must treat any non-positive return as "no projection
   // available", not "zero seconds". Returns 0 if the chosen ring's recent
@@ -1013,7 +1216,20 @@ public:
   // this method additionally divides by elapsed time, so the same gap
   // understates the growth rate (overstates the projected time-to-OOM)
   // rather than the reverse - not solved here.
+  // Returns -1 while the leak signal is in its burn-in (see
+  // OOM_PROJECTION_BURN_IN_NS); otherwise see the comment above.
   double secondsToOOM() const;
+
+  // secondsToOOM() withholds its projection (returns -1) for this long after
+  // the leak signal first activated (_leak_signal_activated_ns): a fresh
+  // process's warmup heap growth projects an imminent OOM exactly like a leak
+  // does. The burn-in is age-based rather than based on the heap-floor ring's
+  // time span on purpose - the ring holds one sample per GC, so near OOM
+  // back-to-back GCs compress its span to seconds and a span-based guard
+  // would suppress urgency in exactly the imminent-OOM case. Must be >=
+  // ReferenceChainTracker::OOM_URGENT_THRESHOLD_S (static_assert in
+  // referenceChains.cpp).
+  static constexpr u64 OOM_PROJECTION_BURN_IN_NS = 300ULL * 1000000000ULL;
 
   // Third trigger for cleanup_table(), alongside track()'s table-overflow
   // branch (forced) and flush_table()'s JFR-flush cadence (organic): those
@@ -1066,11 +1282,9 @@ public:
   // tagLeakInstances() itself needs a live JVM (SetTag/NewLocalRef) and stays
   // out of gtest's reach.
   void leakTagPoolResetForTest() {
-    for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
-      _leak_tag_free_list[i] = i;
-      _leak_tag_in_use[i] = false;
-    }
-    _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
+    ExclusiveLockGuard guard(&_leak_tag_pool_lock);
+    resetLeakTagPoolLocked();
+    _leak_tag_clear_pending = false;
   }
 
   jlong acquireLeakTagForTest() { return acquireLeakTag(); }
@@ -1089,6 +1303,12 @@ public:
 
   int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
 
+  void prepareLeakTagPoolForTest(jvmtiEnv *jvmti, bool clear_pending) {
+    _leak_tag_clear_pending = clear_pending;
+    prepareLeakTagPool(jvmti, nullptr);
+  }
+  bool leakTagClearPendingForTest() const { return _leak_tag_clear_pending; }
+
   u32 tableSizeForTest() const { return _table_size; }
 
   // Reads slot `idx`'s publication flag, leak tag and cached class id,
@@ -1105,6 +1325,11 @@ public:
     return true;
   }
 
+  // Slot `idx`'s skipped-bytes weight; 0 if idx is outside the allocated table.
+  double trackingSkippedForTest(u32 idx) const {
+    return (_table == nullptr || idx >= (u32)_table_cap) ? 0 : _table[idx].skipped;
+  }
+
   // Admission-boost test seams - same "for testing only" rationale as the
   // leak-tag pool seams above: admitForTracking()/noteSelectedCandidates()
   // are JNI-free pure logic (atomic reads + the per-thread RNG draw), so they
@@ -1112,7 +1337,7 @@ public:
   // (NewWeakGlobalRef) and stays out of gtest's reach.
   bool admitForTrackingForTest(jint tid) { return admitForTracking(tid); }
 
-  void setSubsampleRatioForTest(double ratio) { _subsample = SubsampleRate(ratio); }
+  void setSubsampleRatioForTest(double ratio) { setSubsampleRate(SubsampleRate(ratio)); }
 
   // Reset for tests: clears both boost paths, forces ratio=0 (deterministic
   // reject for unboosted tids - xorshift::threshold(0) is 0, which no draw
@@ -1238,7 +1463,10 @@ public:
   // above. Out of gtest's reach in one respect: gtest call sites have no
   // live tracked instances to tag anyway (they exercise the qualification
   // gate only), so a distinct gtest-chosen tid is fine there.
-  void tidTrendRecordForTest(u32 klass_id, jint tid, u32 count, u64 epoch) {
+  void tidTrendRecordForTest(u32 klass_id, jint tid, u32 count, u64 epoch,
+                             jweak *out_evicted = nullptr,
+                             int *out_evicted_count = nullptr,
+                             int max_evicted = 0) {
     _table_lock.lock();
     klass_id = resolveTestKlassAliasLocked(klass_id);
     int slot = -1;
@@ -1251,7 +1479,9 @@ public:
     if (slot < 0) {
       int out_slot;
       bool created;
-      recordKlassPopulationSampleLocked(klass_id, 0, 0, &out_slot, &created);
+      recordKlassPopulationSampleLocked(klass_id, 0, 0, &out_slot, &created,
+                                        out_evicted, out_evicted_count,
+                                        max_evicted);
       slot = out_slot;
     }
     KlassPopulationEntry &entry = _klass_population[slot];
@@ -1357,9 +1587,8 @@ public:
         removeKlassPopulationEntryLocked(syn_slot);
       }
     }
-    // Find-or-create the entry under real_id (previously a silent no-op
-    // when absent - but with aliasing, set-representative-first is the
-    // load-bearing order: scenarios must establish the alias BEFORE any
+    // Find-or-create the entry under real_id: with aliasing,
+    // set-representative-first is the load-bearing order: scenarios must establish the alias BEFORE any
     // seeding, and with no entry yet there is nothing to store the
     // representative into. Creating via a count-0, epoch-0 ring sample
     // reuses recordKlassPopulationSampleLocked()'s own creation branch
@@ -1443,8 +1672,18 @@ public:
   }
   // Lets a test that seeds _klass_population directly (no cleanup_table()
   // sweep) mark it as belonging to the given class-map generation.
+  // Adopting a new generation here bypasses cleanup_table()'s class-map-reset
+  // branch, so it must do that branch's tracking-table half itself: every
+  // cached_klass_id was resolved against the old StringDictionary namespace
+  // and could alias an unrelated class in the new one. (_klass_population is
+  // the caller's job - see klassPopulationResetForTest().)
   void classMapGenerationSetForTest(u64 generation) {
     _table_lock.lock();
+    if (generation != _last_class_map_generation && _table != NULL) {
+      for (u32 i = 0; i < (u32)_table_size; i++) {
+        _table[i].cached_klass_id = 0;
+      }
+    }
     _last_class_map_generation = generation;
     _table_lock.unlock();
   }
@@ -1476,13 +1715,14 @@ public:
     _test_klass_alias_count = 0;
     _table_lock.unlock();
     // Also reset the heap-floor ring: it is a sibling piece of the same
-    // _gc_generations-gated feature, read by every selectLeakCandidates()
+    // leak-signal-gated feature, read by every selectLeakCandidates()
     // scan (heapFloorRising()), so leaving it populated across tests in the
     // same gtest binary would leak one test's heap-usage history into the
     // next test's hysteresis threshold. storeRelease() (not plain store())
     // so the reset is published to the BFS/GC thread on arm64's weak memory
     // model - a relaxed store may never be visible to a reader doing
-    // loadAcquire() on these same indices.
+    // loadAcquire() on these same indices. _heap_floor_sample_seq is
+    // deliberately not reset (see its comment).
     storeRelease(_heap_floor_ring_head, (u8)0);
     storeRelease(_heap_floor_ring_fill, (u8)0);
   }
@@ -1502,6 +1742,35 @@ public:
     recordHeapFloorSampleUnchecked(used, timestamp_ns, container_used);
   }
   bool heapFloorRisingForTest() const { return heapFloorRising(); }
+  // Ring-only companion to the heapFloorRecordForTest() seam: clears
+  // _heap_floor_ring/_heap_floor_time_ring/_container_mem_ring via their
+  // shared head/fill - all three become empty once fill is 0 (see
+  // ringWindowStats()'s min-fill gate in heapFloorRising()). Seeding via
+  // heapFloorRecordForTest() leaves "used" values behind that the next
+  // test in the same JVM would otherwise inherit into its secondsToOOM()
+  // projection. storeRelease() matches recordHeapFloorSampleUnchecked()'s
+  // own publication of these indices. The two index stores are not atomic
+  // as a pair - a concurrent reader could observe a torn old-fill/new-head
+  // window, and no store ordering closes that (seeing the first store's new
+  // value while the second is still old is possible either way) - so the
+  // documented precondition, heap-floor recording disabled, is what
+  // excludes every reader (onGC() skips recordHeapFloorSample() and no
+  // selectLeakCandidates() scan runs mid-test). Enforce it in DEBUG builds
+  // (where the flag exists): a caller that resets while recording is
+  // enabled fails the assert instead of racing a live reader. Non-DEBUG
+  // builds compile the reset bare - the flag does not exist there and the
+  // JNI entry that reaches this seam is compiled out.
+  // _heap_floor_sample_seq is deliberately not reset (see its comment).
+  void heapFloorResetForTest() {
+#ifdef DEBUG
+    if (!_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire)) {
+      assert(!"heapFloorResetForTest() called while heap-floor recording is enabled");
+      return;
+    }
+#endif
+    storeRelease(_heap_floor_ring_head, (u8)0);
+    storeRelease(_heap_floor_ring_fill, (u8)0);
+  }
   // Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call
   // (out of gtest's reach, same reason setGcGenerationsForTest() exists) so
   // secondsToOOM() can be exercised directly against a fake max heap size.
@@ -1543,19 +1812,55 @@ public:
   void setHeapFloorRecordingForTest(bool enabled) {
     _heap_floor_recording_disabled_for_test.store(!enabled, std::memory_order_release);
   }
+
+  // Reader-interleaving hook: fires inside newestHeapFloorSample() between
+  // its payload load and its seq validation; nullptr clears it.
+  static void setHeapFloorReadHookForTest(void (*hook)(void *), void *arg) {
+    _heap_floor_read_hook_for_test = hook;
+    _heap_floor_read_hook_arg_for_test = arg;
+  }
+  // The private ring size, for tests that must record a full ring wrap
+  // (KLASS_POPULATION_RING_SIZE itself is private).
+  static constexpr int heapFloorRingSizeForTest() {
+    return KLASS_POPULATION_RING_SIZE;
+  }
 #endif
 
-  // Sets _gc_generations directly, bypassing initialize() (which requires a
-  // live JVM - VM::hotspot_version()/VM::jni(), see that method's own code -
-  // out of gtest's reach the same way foldKlassCountsLocked()'s
-  // representative-minting step is, per this seam block's own comment
-  // above). Callers outside this class that only need to exercise
-  // gcGenerationsEnabled()'s gate (e.g. referenceChains_ut.cpp's
-  // pollWatchedTargets() tests) use this instead of standing up a full
-  // initialize()/start() call.
-  void setGcGenerationsForTest(bool v) {
-    _gc_generations.store(v, std::memory_order_relaxed);
+#if defined(DEBUG) || defined(UNIT_TEST)
+  // Test-only mutators of the leak-signal gates and the burn-in stamp.
+  // DEBUG backs the JNI seams javaApi.cpp exposes to ddprof-test (debug
+  // library build); UNIT_TEST covers the gtest binaries, whose release
+  // configuration compiles with -DNDEBUG and no -DDEBUG. The shipped
+  // release library defines neither.
+
+  // Sets the two leak-signal gates directly, bypassing initialize() (which
+  // requires a live JVM, out of gtest's reach - see this seam block's own
+  // comment above), with the same derivation initialize() applies.
+  // (generations=false, liveness=true) represents liveheap + referencechains
+  // - the only production-reachable state where liveness alone arms the signal.
+  void setLeakSignalSourcesForTest(bool generations, bool liveness) {
+    _gc_generations.store(generations, std::memory_order_relaxed);
+    _leak_signal_enabled.store(generations || liveness, std::memory_order_release);
   }
+
+  // Convenience for callers that only need the generations-only configuration:
+  // sets BOTH flags to v (the generations option alone arms the signal).
+  void setGcGenerationsForTest(bool v) { setLeakSignalSourcesForTest(v, /*liveness=*/false); }
+
+  // Overrides the burn-in stamp (see _leak_signal_activated_ns). initialize()
+  // needs a live JVM, so gtest never stamps it; 0 restores "never activated".
+  // Tests backdate it with modular u64 arithmetic, e.g.
+  // OS::nanotime() - OOM_PROJECTION_BURN_IN_NS - margin.
+  void setLeakSignalActivatedNsForTest(u64 ns) {
+    _leak_signal_activated_ns.store(ns, std::memory_order_release);
+  }
+
+  // Read side of setLeakSignalActivatedNsForTest(): lets a DEBUG seam save the
+  // current stamp before backdating it and restore it afterwards.
+  u64 leakSignalActivatedNsForTest() const {
+    return _leak_signal_activated_ns.load(std::memory_order_acquire);
+  }
+#endif // DEBUG || UNIT_TEST
 
 private:
   void getLiveTraceIds(CallTraceIdSet& out_buffer);

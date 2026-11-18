@@ -203,3 +203,54 @@ TEST(FrameTypeIsRawPointerTest, FalseForRawAsgctBciWithBit30SetButNoEncodedMarke
         << "isRawPointer() must require ENCODED_MASK (bit 20) before trusting bit 30, "
         << "otherwise raw ASGCT BCIs that never went through encode() can false-positive";
 }
+
+// ---------------------------------------------------------------------------
+// Raw Method* frame tags (fjmethodid=lazy): the tag is split across spare BCI
+// bits and the top bits of the Method*, and must come back intact without
+// disturbing anything the rest of the pipeline reads from the frame.
+// ---------------------------------------------------------------------------
+
+TEST(FrameTypeRawTagTest, TagRoundTripsAndLeavesTypeBciAndPointerIntact) {
+    VMHotspotGuard hotspot(true);
+    const void* method = reinterpret_cast<const void*>(0x00007f12345678a8ULL);
+    const uint32_t tags[] = {0u, 1u, 0xfu, 0x10u, 0x3ffu, 0x400u, 0x2aaaaaau, FrameType::RAW_TAG_MASK};
+    for (uint32_t tag : tags) {
+        for (int type : {FRAME_INTERPRETED, FRAME_JIT_COMPILED, FRAME_INLINED, FRAME_C1_COMPILED}) {
+            int bci = FrameType::encodeRaw(type, 4321, tag);
+            const void* tagged = FrameType::tagPointer(method, tag);
+            EXPECT_EQ(tag, FrameType::rawTag(bci, tagged)) << std::hex << tag;
+            EXPECT_EQ(method, FrameType::untagPointer(tagged));
+            EXPECT_EQ(4321, FrameType::bci(bci));
+            EXPECT_EQ(type, FrameType::decode(bci));
+            EXPECT_TRUE(FrameType::isRawPointer(bci));
+            EXPECT_GT(bci, 0) << "bit 31 must stay clear";
+        }
+    }
+}
+
+TEST(FrameTypeRawTagTest, TagBitsAboveWidthAreDropped) {
+    VMHotspotGuard hotspot(true);
+    const void* method = reinterpret_cast<const void*>(0x1000);
+    uint32_t tag = FrameType::RAW_TAG_MASK + 1 + 7;  // wraps to 7
+    int bci = FrameType::encodeRaw(FRAME_JIT_COMPILED, 0, tag);
+    EXPECT_EQ(7u, FrameType::rawTag(bci, FrameType::tagPointer(method, tag)));
+}
+
+TEST(FrameTypeRawTagTest, DifferentTagsGiveDifferentFrames) {
+    // Two loads of a class at the same Method* address must not produce
+    // identical frames, or the call trace storage would merge their traces.
+    VMHotspotGuard hotspot(true);
+    const void* method = reinterpret_cast<const void*>(0x7f0000001000ULL);
+    for (uint32_t delta : {1u, 0x10u, 0x400u}) {
+        int bci_a = FrameType::encodeRaw(FRAME_JIT_COMPILED, 3, 5);
+        int bci_b = FrameType::encodeRaw(FRAME_JIT_COMPILED, 3, 5 + delta);
+        bool same = bci_a == bci_b &&
+                    FrameType::tagPointer(method, 5) == FrameType::tagPointer(method, 5 + delta);
+        EXPECT_FALSE(same) << delta;
+    }
+}
+
+TEST(FrameTypeRawTagTest, CanTagPointerRejectsHighAddresses) {
+    EXPECT_TRUE(FrameType::canTagPointer(reinterpret_cast<const void*>(0x00007fffffffffffULL)));
+    EXPECT_FALSE(FrameType::canTagPointer(reinterpret_cast<const void*>(0x0001000000000000ULL)));
+}

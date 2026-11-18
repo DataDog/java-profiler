@@ -73,6 +73,7 @@
 #include "engine.h"
 #include "flightRecorder.h"
 #include "jfrMetadata.h"
+#include "referenceChainFrontier.h"
 #include "profiler.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -234,12 +235,17 @@ protected:
 };
 
 // Path agreed with the companion Java parser test in ddprof-test, which
-// reads the same file back via JMC's
-// JfrLoaderToolkit. Both sides resolve it via the OS temp dir so the
-// producer (this gtest) and the consumer (the Java test, run afterwards by
-// the same operator/CI job on the same machine) agree without either side
-// needing to know the other module's build directory layout.
+// reads the same file back via JMC's JfrLoaderToolkit. The build passes the
+// same DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR to both sides (ddprof-lib and
+// ddprof-test build.gradle.kts) and deletes the file before this gtest runs;
+// the OS temp dir is only a fallback for running the binary by hand.
+// The file is consume-once: ProducesValidStandaloneJfrWithChainEvent unlinks it before
+// writing and the Java test deletes it after reading.
 static std::string chainRoundtripJfrPath() {
+    const char *configured = getenv("DDPROF_REFERENCE_CHAIN_ROUNDTRIP_JFR");
+    if (configured != nullptr && *configured != 0) {
+        return configured;
+    }
     const char *tmp = getenv("TMPDIR");
     std::string dir = (tmp != nullptr && *tmp != 0) ? tmp : "/tmp";
     if (dir.back() != '/') {
@@ -277,6 +283,10 @@ static u32 decodeVar32(const char *data, int *off) {
 }
 
 TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent) {
+    // Drop any fixture left by an earlier (possibly different-revision) run before any ASSERT
+    // below can bail out, so a failed run never leaves a stale file for the Java parser test
+    // (ReferenceChainJfrParserTest) to validate. ENOENT is expected and ignored.
+    unlink(chainRoundtripJfrPath().c_str());
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     // Skip OS/CPU info, JVM info, system properties and native library
@@ -318,12 +328,18 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // serializes into the T_CLASS checkpoint - this is the exact API
     // Profiler::lookupClass() already-existing tests use (e.g.
     // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph).
+    // The constants feed the lookup below; the companion Java parser test
+    // (ReferenceChainJfrParserTest) hardcodes the same values, so a change to
+    // the seeding must update both sides - a deliberate two-module diff.
+    static constexpr const char *kLeafClass = "com/test/ChainLeaf";
+    static constexpr const char *kMiddleClass = "com/test/ChainMiddle";
+    static constexpr const char *kRootClass = "com/test/ChainRoot";
     int leafKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainLeaf", strlen("com/test/ChainLeaf"));
+        kLeafClass, strlen(kLeafClass));
     int middleKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainMiddle", strlen("com/test/ChainMiddle"));
+        kMiddleClass, strlen(kMiddleClass));
     int rootKlass = Profiler::instance()->lookupClass(
-        "com/test/ChainRoot", strlen("com/test/ChainRoot"));
+        kRootClass, strlen(kRootClass));
     ASSERT_NE(-1, leafKlass);
     ASSERT_NE(-1, middleKlass);
     ASSERT_NE(-1, rootKlass);
@@ -345,6 +361,8 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // pins the JFR encoding, so the event is built directly).
     ReferenceChainEvent event;
     event._target_tag = 3;
+    // Non-zero so the Java parser test can pin the serialized field.
+    event._leak_tag_incarnation = 5;
     event._depth = 2;
     event._root_kind = 21; // JVMTI_HEAP_REFERENCE_JNI_GLOBAL - exercises the
                            // rootKind field end to end (the engine's admission
@@ -382,6 +400,10 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
         // the chunk header's size/cpool-offset fields, and closes fd - the
         // same finalization every real recording chunk goes through.
     }
+
+    // No .expected sidecar: the Java parser test hardcodes the seeded values
+    // (chain names, edges labels, targetTag=3, depth=2), so writing a sidecar
+    // nothing reads would only leave a stale file in the temp/build dir.
 
     FILE *f = fopen(path.c_str(), "rb");
     ASSERT_NE(nullptr, f) << "expected " << path << " to have been written";
@@ -481,6 +503,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
     off += sizeOfVar64((u64)T_REFERENCE_CHAIN); // type id
     off += sizeOfVar64(event._start_time);
     off += sizeOfVar64(event._target_tag);
+    off += sizeOfVar64((u64)event._leak_tag_incarnation);
     off += sizeOfVar64(event._depth); // depth, small by construction
     // rootKind putUtf8: 1 encoding-tag byte + var32 length + payload.
     const char *root_kind_name = "jni_global"; // rootKindName(21)
@@ -511,4 +534,69 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
 TEST_F(ReferenceChainJfrRoundtripTest, DefaultLivenessEventHasZeroLeakTag) {
     ObjectLivenessEvent event;
     EXPECT_EQ(0, event.leak_tag);
+    EXPECT_EQ(0u, event.leak_tag_incarnation);
+}
+
+// Exercise the real writer: ROOT_ENUM_ERROR must remain distinguishable from
+// the unknown-value fallback even though RECORDING_END occupies the preceding enum slot.
+TEST_F(ReferenceChainJfrRoundtripTest,
+       AbandonedEventSerializesRootEnumErrorReason) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    args._jfr_options = JFR_SYNC_OPTS;
+
+    // Java parser tests consume the chain fixture at chainRoundtripJfrPath().
+    // Use a separate file so these events cannot replace that fixture.
+    const std::string path = chainRoundtripJfrPath() + ".abandoned";
+    // ASSERT_* below returns early on failure; this guard keeps the file from leaking.
+    struct UnlinkOnExit {
+        const std::string &path;
+        ~UnlinkOnExit() { unlink(path.c_str()); }
+    } unlink_guard{path};
+    int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
+    ASSERT_GE(fd, 0) << "could not open " << path << " for writing";
+
+    Recording rec(fd, args);
+    Buffer *buf = rec.buffer(/*lock_index=*/0);
+    rec.flushIfNeeded(buf, /*limit=*/0);
+
+    // A zero timestamp occupies one byte, keeping the reason offset fixed.
+    // Keep the timestamp zero when changing the cases below.
+    struct ReasonCase {
+        u8 reason;
+        const char *expected;
+    };
+    const ReasonCase cases[] = {
+        {SearchAbandonReason::ROOT_ENUM_ERROR, "root_enum_error"},
+        {250, "unknown"}, // out of table range - bounds check
+    };
+    for (const ReasonCase &c : cases) {
+        ReferenceChainAbandonedEvent event;
+        event._reason = c.reason;
+        event._start_time = 0;
+
+        int offset_before = buf->offset();
+        rec.recordReferenceChainAbandoned(buf, &event);
+        int offset_after = buf->offset();
+        EXPECT_LE(offset_after, RECORDING_BUFFER_LIMIT);
+        EXPECT_GT(offset_after, offset_before);
+
+        // This writer reserves one size byte, unlike the chain writer's five-byte prefix.
+        // Skip the type id and zero timestamp before reading the UTF-8 tag and length.
+        const char *data = buf->data() + offset_before;
+        int off = 1; // size prefix
+        off += sizeOfVar64(static_cast<u64>(T_REFERENCE_CHAIN_ABANDONED));
+        off += sizeOfVar64(0);
+        EXPECT_EQ(3, data[off])
+            << "reason putUtf8's encoding-tag byte must precede its length";
+        off += 1;
+        u32 len = decodeVar32(data, &off);
+        u32 expected_len = static_cast<u32>(strlen(c.expected));
+        ASSERT_EQ(expected_len, len)
+            << "reason " << (int)c.reason << " must serialize as "
+            << c.expected;
+        EXPECT_EQ(0, memcmp(data + off, c.expected, expected_len))
+            << "reason " << (int)c.reason << " must serialize as "
+            << c.expected;
+    }
 }

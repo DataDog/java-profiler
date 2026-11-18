@@ -68,6 +68,22 @@ namespace StackWalkValidation {
         return depth;
     }
 
+    // Allocation samples can retry with JVMTI when unwinding or method
+    // resolution fails. Synthetic native roots do not carry jmethodIDs.
+    static inline bool isCompleteWalk(const ASGCT_CallFrame* frames, int depth) {
+        if (depth <= 0) {
+            return false;
+        }
+        for (int i = 0; i < depth; i++) {
+            if (frames[i].bci == BCI_ERROR ||
+                    (frames[i].bci >= 0 && (frames[i].method_id == nullptr ||
+                                           frames[i].method_id == JMETHODID_NOT_WALKABLE))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static inline bool isPlausibleInterpreterFrame(uintptr_t fp, uintptr_t sp, int bcp_offset){
         return fp != 0 && aligned(fp) && !inDeadZone((const void*)fp)
                 && sp != 0 && sp > fp - MAX_INTERPRETER_FRAME_SIZE

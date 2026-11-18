@@ -20,6 +20,7 @@
 #include "nativeSocketSampler.h"
 #include "os.h"
 #include "symbols.h"
+#include "testTempFile.h"
 
 #include <atomic>
 #include <dlfcn.h>
@@ -58,6 +59,7 @@ enum ChildExit {
   CHILD_SAME_FINGERPRINT = 17,  // two different builds got the same fingerprint
   CHILD_DEADLOCK = 18,          // patching threads still blocked when the alarm fired
   CHILD_THREAD_FAILED = 19,
+  CHILD_UNHOOKED_BY_STOP = 21,  // a persistent hook was undone by the recording unpatch
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -70,21 +72,27 @@ struct PatchKind {
   ImportId import;  // the test DSO's import that gets patched
   void (*patch)();
   void (*unpatch)();
+  // The hook outlives the recording unpatch: the slot must stay hooked after it.
+  bool persistent;
 };
 
 const PatchKind SOCKET = {
   "socket", im_write,
   []() { LibraryPatcher::patch_socket_functions(); },
   []() { LibraryPatcher::unpatch_socket_functions(); },
+  false,
 };
 
 const PatchKind PTHREAD_CREATE = {
   "pthread_create", im_pthread_create,
   []() {
-    LibraryPatcher::initialize();
+    LibraryPatcher::initialize_persistent();
     LibraryPatcher::patch_libraries();
   },
-  []() { LibraryPatcher::unpatch_libraries(); },
+  // The pthread_create hook is persistent: unpatch_recording_hooks() only undoes
+  // the socket hooks, and the tests check that the slot stays hooked.
+  []() { LibraryPatcher::unpatch_recording_hooks(); },
+  true,
 };
 
 struct LoadedLib {
@@ -141,9 +149,14 @@ bool unload(void* handle, void** slot, const char* path = g_lib_path) {
   return true;
 }
 
-// For a DSO that stayed loaded: unpatching must restore the original binding.
+// For a DSO that stayed loaded: unpatching must restore the original binding,
+// except for a persistent hook, which must stay in place.
 void unpatchAndVerifyRestored(const PatchKind& kind, const LoadedLib& lib) {
   kind.unpatch();
+  if (kind.persistent) {
+    if (*lib.slot == lib.orig) _exit(CHILD_UNHOOKED_BY_STOP);
+    return;
+  }
   if (*lib.slot != lib.orig) _exit(CHILD_NOT_RESTORED);
 }
 
@@ -212,6 +225,7 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_CORRUPTED) << "stale GOT write corrupted the mapping that reused the address";
   ASSERT_NE(code, CHILD_NOT_RESTORED) << "DSO is still mapped but its slot was not restored";
   ASSERT_NE(code, CHILD_SLOT_NOT_HOOKED) << "patching did not hook the loaded DSO";
+  ASSERT_NE(code, CHILD_UNHOOKED_BY_STOP) << "a persistent hook was undone by the recording unpatch";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
   ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "two different builds have the same fingerprint";
   ASSERT_NE(code, CHILD_DEADLOCK) << "patching deadlocked against the loader's dl_load_write_lock";
@@ -298,6 +312,8 @@ TEST_P(LibraryPatcherUnloadTest, RepatchDoesNotWriteIntoReusedMapping) {
 // saved slots are valid for the identical layout, but the test DSO has full
 // RELRO, so the new mapping's GOT is read-only again. Re-installing the hooks
 // on the next start must make it writable rather than trust the old state.
+// For the persistent pthread_create patch the unpatch is a no-op, so this also
+// checks that its stale entry does not stop the reloaded GOT being re-hooked.
 TEST_P(LibraryPatcherUnloadTest, RepatchAfterReloadAtSameBase) {
   const PatchKind& kind = *GetParam();
   runInChild([&]() {
@@ -326,6 +342,12 @@ TEST_P(LibraryPatcherUnloadTest, UnpatchAfterReloadAtSameBase) {
     // With -z now the reload resolves the slot to the same function, which is
     // also the value saved when patching.
     if (*lib.slot != lib.orig) _exit(CHILD_SKIP);
+    // A persistent hook is not re-applied to a reloaded image before the next
+    // patch pass, so its fresh slot is unhooked here: nothing to check.
+    if (kind.persistent) {
+      kind.unpatch();
+      return;
+    }
     unpatchAndVerifyRestored(kind, lib);
   });
 }
@@ -352,21 +374,15 @@ INSTANTIATE_TEST_SUITE_P(PatchKinds, LibraryPatcherUnloadTest,
   _exit(code);
 }
 
-// Copies the test DSO to a fresh temporary file and returns its path in
-// path_out. Exits the child on failure.
+// Copies the test DSO to a fresh file in /tmp and returns its path in path_out.
+// /tmp, not TMPDIR: the copy is dlopen()ed, and a noexec TMPDIR would make that
+// fail. Exits the child on failure.
 static void copyLibToTemp(char* path_out, size_t size) {
-  snprintf(path_out, size, "/tmp/libpatchtarget-XXXXXX.so");
-  int out = mkstemps(path_out, 3);
-  if (out < 0) _exit(CHILD_DLOPEN_FAILED);
-  int in = open(g_lib_path, O_RDONLY);
-  if (in < 0) exitRemoving(path_out, CHILD_DLOPEN_FAILED);
-  char buf[8192];
-  ssize_t n;
-  while ((n = read(in, buf, sizeof(buf))) > 0) {
-    if (write(out, buf, n) != n) exitRemoving(path_out, CHILD_DLOPEN_FAILED);
+  int err = copyToTempFile(g_lib_path, "/tmp", "libpatchtarget", path_out, size);
+  if (err != 0) {
+    fprintf(stderr, "copying %s to /tmp: %s\n", g_lib_path, strerror(err));
+    _exit(CHILD_DLOPEN_FAILED);
   }
-  close(in);
-  close(out);
 }
 
 // The name a library is loaded by.
@@ -377,9 +393,9 @@ enum LoadName { BY_PATH, BY_RELATIVE_PATH, BY_SYMLINK };
 // file. The loader keeps the name it was given, while /proc/self/maps has
 // the resolved absolute path.
 static LoadedLib loadUnlinkedLib(bool unlink_before_parse, LoadName load_name) {
-  char path[64];
+  char path[PATH_MAX];
   copyLibToTemp(path, sizeof(path));
-  char name[96];
+  char name[PATH_MAX + 16];
   if (load_name == BY_RELATIVE_PATH) {
     snprintf(name, sizeof(name), "./%s", strrchr(path, '/') + 1);
     if (chdir("/tmp") != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);

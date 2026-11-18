@@ -3,25 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Test accessors for the reference-chain tracker, gtest-free by design:
-// extracted verbatim from referenceChainsCoreTests.inc so the libFuzzer
-// heap-graph target (src/test/fuzz/fuzz_referenceChainHeap.cpp) resets and
-// observes the process-wide ReferenceChainTracker singleton through the exact
-// same friend-class surface as the gtest suite instead of a diverging copy.
+// Test accessors for the reference-chain tracker, gtest-free so the libFuzzer
+// heap-graph target (src/test/fuzz/fuzz_referenceChainHeap.cpp) shares the
+// gtest suite's friend-class surface instead of a diverging copy.
 // friend declarations: vmEntry.h (VMTestAccessor), referenceChains.h
 // (ReferenceChainsTestAccessor).
 
 #ifndef REFERENCE_CHAINS_TEST_ACCESSORS_H
 #define REFERENCE_CHAINS_TEST_ACCESSORS_H
 
+#include <deque>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "classTagAllocator.h"
 #include "referenceChains.h"
 #include "vmEntry.h"
 
-// VMTestAccessor - friend of VM (vmEntry.h), lets tests swap VM::_jvmti for a
 class VMTestAccessor {
 public:
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
@@ -36,7 +35,6 @@ public:
     static void setHotspotVersion(int v) { VM::_hotspot_version = v; }
 };
 
-// ReferenceChainsTestAccessor - same pattern as VMTestAccessor above, for the
 class ReferenceChainsTestAccessor {
 public:
     static void reset() {
@@ -45,21 +43,19 @@ public:
         t->_frontier = nullptr;
         t->_class_tags = ClassTagTable();
         t->_last_resolved_class_count = 0;
-        // Without these two, a prior test's fully-swept (or partially-swept)
-        // admitStaticFieldRoots() state survives in this process-wide singleton and can wrongly
-        // skip the sweep entirely on this test's first pass if its resolved class count happens to
-        // match whatever an earlier test last left behind - see resetForRestart()'s identical reset
-        // of these same fields for the production-restart equivalent of this same contract.
+        // Otherwise a prior test's admitStaticFieldRoots() sweep state survives in the singleton
+        // and can skip this test's first sweep if the resolved class count happens to match
+        // (resetForRestart() resets the same fields in production).
         t->_last_static_field_class_count = -1;
         t->_static_field_sweep_cursor = 0;
         t->_static_field_sweep_cycle_truncated = false;
         t->_next_tag = 1;
-        // Shared with LivenessTracker (classTagAllocator.h) - process-wide, not
-        // per-ReferenceChainTracker-instance, so it needs its own reset seam rather than being a
-        // plain member write.
+        // Process-wide and shared with LivenessTracker (classTagAllocator.h), not a member.
         ClassTagAllocator::resetForTest();
         t->_search_started = false;
         t->_tags_released = true;
+        t->_root_enum_incomplete = false;
+        t->_consecutive_enum_errors = 0;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
         t->_search_start_ns = 0;
@@ -69,16 +65,13 @@ public:
         t->_pending_expand.clear();
         t->_priority_expand.clear();
         t->_priority_expand_set.clear();
-        // B' at-risk FIFO + its indexes/counters, and the round-15 fresh lane: production clears
-        // all of these on every restartSearch()/ resetSearchStateForTest(), but this seam predates
-        // the FIFO and was never given the clears - until round 16 a test left at-risk entries
-        // behind and only survived because LATER tests' own runPass()s drained the residue with the
-        // full Bfs mock.
+        // At-risk FIFO + its indexes/counters and the fresh lane: production clears these on
+        // every restartSearch()/resetSearchStateForTest(); left behind, at-risk entries leak
+        // into later tests.
         t->_static_anchor_fifo.clear();
         t->_static_anchor_fifo_set.clear();
         t->_static_anchor_fifo_klass_counts.clear();
         t->_static_anchor_fresh_queue.clear();
-        t->_last_pass_gc_finish_epoch = 0;
         t->_last_pass_ns = 0;
         t->_passes_run = 0;
         t->_passes_since_last_progress = 0;
@@ -93,6 +86,7 @@ public:
         t->_passes_since_last_candidate_progress = 0;
         t->_last_candidate_progress_mark = 0;
         t->_canary_stuck_restart_count = 0;
+        t->clearPendingChainInvalidations();
         t->_resolved_chains.clear();
         t->_safepoint_pain_budget = PainBudget();
         t->_cpu_pain_budget = PainBudget();
@@ -115,25 +109,31 @@ public:
         t->_leak_parent_fanout.clear();
         t->_borrowed_budget = 0;
         t->_consecutive_under_target_passes = 0;
-        // Adaptive batch + lane state: NOT covered by anything above, and a prior test that drove
-        // expansion leaves a non-zero EMA, a live batch size, a stale pass deadline, and/or a
-        // mid-alternation lane toggle behind - all of which silently change the next test's
-        // expandFrontier() arithmetic (exact-value asserts on batch sizing only pass standalone
-        // otherwise).
+        // Adaptive batch + lane state: a prior test that drove expansion leaves a non-zero EMA,
+        // batch size, pass deadline, or lane toggle behind, silently changing the next test's
+        // expandFrontier() arithmetic.
         t->_gotw_ema_call_ns = 0;
         t->_gotw_batch_size = 0;
         t->_pass_deadline_ns = 0;
         t->_expand_lane_prefer_priority = true;
     }
 
-    // Search restart + pain budget (SearchRestartTest below) - same rationale as the pacing
-    // accessors above: private state a test needs to drive/observe directly.
     static bool canAffordNewSearch(u64 now_ns) {
         return ReferenceChainTracker::instance()->canAffordNewSearch(now_ns);
     }
 
     static bool shouldRunPass(u64 now_ns) {
         return ReferenceChainTracker::instance()->shouldRunPass(now_ns);
+    }
+
+    // Projection-taking overloads: threadLoop()'s single per-iteration secondsToOOM() read is
+    // passed through instead of re-read.
+    static bool canAffordNewSearch(u64 now_ns, double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->canAffordNewSearch(now_ns, seconds_to_oom);
+    }
+
+    static bool shouldRunPass(u64 now_ns, double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->shouldRunPass(now_ns, seconds_to_oom);
     }
 
     static void setSearchPainMs(u64 ms) {
@@ -172,9 +172,7 @@ public:
         return ReferenceChainTracker::instance()->canaryStuckRestartCountForTest();
     }
 
-    // OOM-urgency hysteresis (C5): drive isUrgent()'s latch/release machine
-    // and read its raw state - same friend-accessor rationale as the canary
-    // wrappers above.
+    // OOM-urgency hysteresis: isUrgent()'s latch/release machine and raw state.
     static bool isUrgentForTest() {
         return ReferenceChainTracker::instance()->isUrgentForTest();
     }
@@ -184,11 +182,53 @@ public:
     static int urgentReleaseTicksForTest() {
         return ReferenceChainTracker::instance()->urgentReleaseTicksForTest();
     }
-    static bool urgentSearchSpentForTest() {
-        return ReferenceChainTracker::instance()->urgentSearchSpentForTest();
-    }
     static void resetUrgencyForTest() {
         ReferenceChainTracker::instance()->resetUrgencyForTest();
+    }
+    // Urgent-admission growth gate: updateUrgentAdmission()'s urgent admission
+    // decision (referenceChains.cpp; re-evaluated only when a new heap-floor
+    // sample arrives, retained between samples) - the admission half of threadLoop()'s
+    // ramp handling, testable without the BFS thread.
+    static bool updateUrgentAdmissionForTest(double seconds_to_oom, bool urgent) {
+        return ReferenceChainTracker::instance()->updateUrgentAdmission(seconds_to_oom,
+                                                                        urgent);
+    }
+    // updateUrgentAdmission()'s freshness pair (referenceChains.h): the
+    // heap-floor seq the ramp-band gate last evaluated, and that evaluation's
+    // retained result.
+    static u64 admissionSampleSeqForTest() {
+        return ReferenceChainTracker::instance()->_admission_sample_seq;
+    }
+    static bool admissionDecisionForTest() {
+        return ReferenceChainTracker::instance()->_admission_decision;
+    }
+    // updateUrgentAdmission()'s emergency-band seed anchor: the newest heap-floor
+    // sample captured at emergency-band entry (referenceChains.cpp), or 0 (the
+    // unseeded sentinel) while no seed has been taken.
+    static u64 admissionGrowthBaselineForTest() {
+        return ReferenceChainTracker::instance()->_admission_growth_baseline;
+    }
+    // True while the BFS thread (startThread()/threadLoop()) is live. start() never spawns it
+    // (only startThread() does - profiler.cpp and the JNI-only resetSearchStateForTest()), so
+    // gtests may drive BFS-thread-only seams after start(); tests that rely on that assert this
+    // is false.
+    static bool bfsThreadRunning() {
+        return ReferenceChainTracker::instance()->_running.load(std::memory_order_acquire);
+    }
+    // threadLoop()'s publish step: ramp flag + the latch machine (once per
+    // iteration on the caller's projection) + growth-gated tracking boost.
+    static void publishUrgencyStateForTest(double seconds_to_oom, bool urgent) {
+        ReferenceChainTracker::instance()->publishUrgencyState(seconds_to_oom, urgent);
+    }
+    static bool oomRampActiveForTest() {
+        return ReferenceChainTracker::instance()->_oom_ramp_active;
+    }
+    // Projection-taking urgency decisions (consume the passed value, never re-read).
+    static bool isUrgentWithProjectionForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->isUrgent(seconds_to_oom);
+    }
+    static bool hasLeakSignalForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->hasLeakSignal(seconds_to_oom);
     }
     // Applied vs configured CPU pain-budget refill rate (shouldRunPass()'s
     // canary-refill raise).
@@ -205,15 +245,28 @@ public:
         ReferenceChainTracker::instance()->setSearchStartedForTest(v);
     }
 
+    // Backdates the previous pass's end so the minimum-spacing gate stays open while a test
+    // exercises one authorization lane (canary backoff, GC epoch) in isolation. Goes through the
+    // tracker seam (engine lock + store(), ordered with any pass); a real pass can still overwrite
+    // the seed between seed and assert - tests retry, same as forceRunningSearchForTest().
+    static void setLastPassNsForTest(u64 ns) {
+        ReferenceChainTracker::instance()->setLastPassNsForTest(ns);
+    }
+
     static u64 searchPainMs() {
         return ReferenceChainTracker::instance()->_search_pain_ms;
     }
 
-    // Resolved-chain cache: read-only size peek and a pass-through to the private snapshot
-    // (drainPendingChainEvents()) and insert (cacheResolvedChain()), for ResolvedChainCacheTest
-    // below - same rationale as hasResolvedChainForTag()/resolvedChainCount() below.
     static size_t resolvedChainCount() {
         return ReferenceChainTracker::instance()->_resolved_chains.size();
+    }
+    // Holds/releases the private _resolved_chains_lock, so a test can prove a seam takes
+    // _engine_lock BEFORE _resolved_chains_lock (and never the reverse).
+    static void lockResolvedChainsForTest() {
+        ReferenceChainTracker::instance()->_resolved_chains_lock.lock();
+    }
+    static void unlockResolvedChainsForTest() {
+        ReferenceChainTracker::instance()->_resolved_chains_lock.unlock();
     }
     // Source tags of every resolved chain - the fuzz target iterates these to
     // check for phantom/negative-tag chains (I2's sign discrimination).
@@ -230,9 +283,11 @@ public:
         ReferenceChainTracker::instance()->drainPendingChainEvents(out);
     }
 
-    static void cacheChain(jlong source_tag, ReferenceChainEvent event,
+    // Returns cacheResolvedChain()'s own verdict so tests can assert a
+    // dead-owner chain is refused, not merely absent from the snapshot.
+    static bool cacheChain(jlong source_tag, ReferenceChainEvent event,
                            jlong source_tag_val, u64 source_search_ns) {
-        ReferenceChainTracker::instance()->cacheResolvedChain(
+        return ReferenceChainTracker::instance()->cacheResolvedChain(
             source_tag, std::move(event), source_tag_val, source_search_ns);
     }
 
@@ -240,9 +295,43 @@ public:
         return ReferenceChainTracker::MAX_RESOLVED_CHAINS;
     }
 
-    // Target-selection bridging step: read-only peeks into the resolved-chain cache, for asserting
-    // exactly which klass a chain was resolved for and the tag it was reconstructed from - see
-    // PollWatchedTargetsTest below.
+    static std::vector<jlong> snapshotResolvedChainTags() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        jlong tags[ReferenceChainTracker::MAX_RESOLVED_CHAINS];
+        int count = t->snapshotResolvedChainTags(tags);
+        return std::vector<jlong>(tags, tags + count);
+    }
+
+    static void deferResolvedChainInvalidation(
+        jlong tag, const std::vector<jlong> &snapshot) {
+        ReferenceChainTracker::instance()->deferResolvedChainInvalidation(
+            tag, snapshot.data(), (int)snapshot.size());
+    }
+
+    static size_t pendingChainInvalidationCount() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_pending_chain_invalidations_lock.lock();
+        size_t count = t->_pending_chain_invalidations.size();
+        t->_pending_chain_invalidations_lock.unlock();
+        return count;
+    }
+
+    static size_t drainingChainInvalidationCount() {
+        return ReferenceChainTracker::instance()->_draining_chain_invalidations.size();
+    }
+
+    static size_t pendingChainInvalidationCapacity() {
+        return ReferenceChainTracker::instance()->_pending_chain_invalidations.capacity();
+    }
+
+    static size_t drainingChainInvalidationCapacity() {
+        return ReferenceChainTracker::instance()->_draining_chain_invalidations.capacity();
+    }
+
+    static void drainPendingChainInvalidations() {
+        ReferenceChainTracker::instance()->drainPendingChainInvalidations();
+    }
+
     static bool hasResolvedChainForTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return t->_resolved_chains.find(tag) != t->_resolved_chains.end();
@@ -254,9 +343,7 @@ public:
         return it == t->_resolved_chains.end() ? 0 : it->second.source_tag;
     }
 
-    // Leak-tag correlation (design C): read a frontier entry's stored leak tag, and a pass-through
-    // to the private buildChainEvent(), for LeakTagInterceptionTest below - same friend-accessor
-    // rationale as hasResolvedChainForTag() above.
+    // Frontier entry's stored leak tag, or -1 when the entry does not exist.
     static jlong frontierLeakTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         FrontierEntry entry{};
@@ -266,13 +353,22 @@ public:
         return entry.leak_tag;
     }
 
+    // Ownership-period stamp captured with the entry's leak tag (FrontierEntry::
+    // leak_tag_incarnation), or 0 when the entry does not exist.
+    static u32 frontierLeakTagIncarnation(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        FrontierEntry entry{};
+        if (t->_frontier == nullptr || !t->_frontier->lookup(tag, &entry)) {
+            return 0;
+        }
+        return entry.leak_tag_incarnation;
+    }
+
     static void setCandidateKlassIdForTest(int idx, u32 klass_id) {
         ReferenceChainTracker::instance()->setCandidateKlassIdForTest(idx, klass_id);
     }
 
-    // Round-19: the leak-tag canary found criterion (pod 289f8 — the chase was structurally
-    // unresolvable after the marker->leak-tag migration; see buildDiscoveredInstanceChains' own
-    // comment).
+    // Leak-tag canary found criterion - see buildDiscoveredInstanceChains().
     static u64 candidateFoundBitsForTest() {
         return ReferenceChainTracker::instance()->_candidate_found_bits;
     }
@@ -289,7 +385,7 @@ public:
             nullptr, nullptr, klass_id, current_search_ns);
     }
 
-    // ---- pod-in-a-jar system harness (design-pod-in-a-jar-harness) ----
+    // ---- system harness ----
     static u8 searchStateForTest() {
         return ReferenceChainTracker::instance()->_search_state;
     }
@@ -327,15 +423,18 @@ public:
 
     // Recording-boundary tests: seed a latched urgency episode (the state the OOM-projection
     // machine leaves behind) without driving LivenessTracker's heap-floor history.
-    static void setUrgencyEpisodeForTest(bool latched, int ticks, bool spent) {
+    static void setUrgencyEpisodeForTest(bool latched, int ticks) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_urgent_latched = latched;
         t->_urgent_release_ticks = ticks;
-        t->_urgent_search_spent = spent;
     }
 
     static u64 searchStartNsForTest() {
         return ReferenceChainTracker::instance()->_search_start_ns;
+    }
+
+    static void setConsecutiveEnumErrorsForTest(u32 n) {
+        ReferenceChainTracker::instance()->_consecutive_enum_errors = n;
     }
 
     static size_t pendingAbandonedEventCountForTest() {
@@ -403,12 +502,21 @@ public:
         return ReferenceChainTracker::instance()->candidateDiscoveredCountForTest(slot);
     }
 
-    // recordDiscoveredInstance()/correlateAdmittedLeakTag() are the production paths for the
-    // leak-correlation tests below.
     static void recordDiscoveredInstanceForTest(u32 klass_id, jlong tag,
                                                  bool leak_correlated) {
-        ReferenceChainTracker::instance()->recordDiscoveredInstance(klass_id, tag,
-                                                                   leak_correlated);
+        ReferenceChainTracker::instance()->recordDiscoveredInstance(
+            klass_id, tag, leak_correlated,
+            ReferenceChainTracker::CacheInvalidationMode::SYNCHRONOUS,
+            nullptr, 0);
+    }
+
+    static void recordDiscoveredInstanceDeferredForTest(
+        u32 klass_id, jlong tag, bool leak_correlated,
+        const std::vector<jlong> &snapshot) {
+        ReferenceChainTracker::instance()->recordDiscoveredInstance(
+            klass_id, tag, leak_correlated,
+            ReferenceChainTracker::CacheInvalidationMode::DEFERRED,
+            snapshot.data(), (int)snapshot.size());
     }
 
     // Drive restartSearch() directly (the accessor base already set _tags_released, so its assert
@@ -424,7 +532,6 @@ public:
                t->_static_anchor_index_tags.empty();
     }
 
-    // Read back discovered-instance slots (frontier tags recorded by recordDiscoveredInstance).
     static jlong discoveredTagForTest(int slot, int idx) {
         return ReferenceChainTracker::instance()
             ->_candidate_discovered_tags[slot][idx];
@@ -485,12 +592,7 @@ public:
         ReferenceChainTracker::instance()->_search_start_ns = ns;
     }
 
-    // Pause-time pacing controller: read-only peeks at the controller's derived values, and a
-    // pass-through to the private updatePacing() itself, for ReferenceChainsPacingTest below - same
-    // rationale as hasResolvedChainForTag()/resolvedChainCount() above (the target-selection
-    // bridging step): private state a test needs to drive/ observe directly, exposed via this
-    // existing friend accessor rather than adding public getters/setters to ReferenceChainTracker
-    // itself.
+    // Pause-time pacing controller.
     static int effectiveBudget() {
         return ReferenceChainTracker::instance()->_effective_budget;
     }
@@ -505,11 +607,104 @@ public:
 
     static u64 baselineCadenceNs() { return ReferenceChainTracker::PASS_CADENCE_NS; }
 
-    // Test-only seams for PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeiling below, which needs
-    // to start from a controlled below-ceiling/above- baseline point with a freshly reset
-    // controller (see that test's own comment for why chaining directly off a prior constant-input
-    // sequence would leave _pause_pid's integral state mid-recovery from that sequence's windup,
-    // muddying this method's per-step direction assertions with a transient the test is not about).
+    static u64 urgentCadenceNsForTest() {
+        return ReferenceChainTracker::URGENT_CADENCE_NS;
+    }
+
+    // threadLoop()'s OOM ramp (applyOomRamp()), drivable without the BFS thread.
+    static bool applyOomRampForTest(double seconds_to_oom) {
+        return ReferenceChainTracker::instance()->applyOomRamp(seconds_to_oom);
+    }
+
+    // Every scheduling field an urgency episode (applyOomRamp()) mutates or a test seeds to drive
+    // it - cadence, budget + boost flag, configured budget, configured/effective pause target, the
+    // pause PidController and the search-running state the cadence ramp keys on - so a test can
+    // restore the singleton exactly as it found it. Field order is fixed for aggregate init.
+    struct OomRampState {
+        u64 cadence_ns;
+        int budget;
+        bool budget_boosted;
+        int configured_budget;
+        long pause_target_ms;
+        long effective_pause_target_ms;
+        PidController pause_pid;
+        bool search_started;
+        u8 search_state;
+    };
+    static OomRampState saveOomRampStateForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return {t->_effective_cadence_ns, t->_budget, t->_urgency_budget_boosted,
+                t->_configured_budget, t->_pause_target_ms, t->_effective_pause_target_ms,
+                t->_pause_pid, t->_search_started, t->_search_state};
+    }
+    static void restoreOomRampStateForTest(const OomRampState &state) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_effective_cadence_ns = state.cadence_ns;
+        t->_budget = state.budget;
+        t->_urgency_budget_boosted = state.budget_boosted;
+        t->_configured_budget = state.configured_budget;
+        t->_pause_target_ms = state.pause_target_ms;
+        t->_effective_pause_target_ms = state.effective_pause_target_ms;
+        t->_pause_pid = state.pause_pid;
+        t->_search_started = state.search_started;
+        t->_search_state = state.search_state;
+    }
+    // applyOomRamp() ramps the cadence only while a search is running: seeds a started RUNNING
+    // search (running) or a started COMPLETED one awaiting a restart (!running).
+    static void setSearchRunningForTest(bool running) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_started = true;
+        t->_search_state = running ? SearchState::RUNNING : SearchState::COMPLETED;
+    }
+    // The state restartSearch() and a fresh tracker leave: not started, RUNNING.
+    static void setSearchNotStartedForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_search_started = false;
+        t->_search_state = SearchState::RUNNING;
+    }
+
+    // Urgency-episode budget state (applyOomRamp()'s boost/restore, stop()'s closer).
+    static int budgetForTest() { return ReferenceChainTracker::instance()->_budget; }
+    static int configuredBudgetForTest() {
+        return ReferenceChainTracker::instance()->_configured_budget;
+    }
+    static bool urgencyBudgetBoostedForTest() {
+        return ReferenceChainTracker::instance()->_urgency_budget_boosted;
+    }
+    // Seeds a closed episode with a known budget ceiling (the singleton may never have been
+    // start()ed); callers wanting equal values pass the same value twice.
+    static void setBudgetsForTest(int budget, int configured) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_budget = budget;
+        t->_configured_budget = configured;
+        t->_urgency_budget_boosted = false;
+    }
+
+    // applyOomRamp()'s pause-target ramp.
+    static long effectivePauseTargetMsForTest() {
+        return ReferenceChainTracker::instance()->_effective_pause_target_ms;
+    }
+    static long urgentPauseTargetMsForTest() {
+        return ReferenceChainTracker::URGENT_PAUSE_TARGET_MS;
+    }
+    static void setPauseTargetsForTest(long configured_ms) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_pause_target_ms = configured_ms;
+        t->_effective_pause_target_ms = configured_ms;
+    }
+
+    static u64 minEffectiveCadenceNs() {
+        return ReferenceChainTracker::MIN_EFFECTIVE_CADENCE_NS;
+    }
+
+    // shouldRunPass()'s fixed minimum pass-spacing floor (referenceChains.h) - see the
+    // shouldRunPass pacing law comment there.
+    static u64 minPassSpacingNs() {
+        return ReferenceChainTracker::MIN_PASS_SPACING_NS;
+    }
+
+    // Start the controller from a chosen below-ceiling/above-baseline point with a fresh
+    // _pause_pid, so a prior sequence's integral windup cannot leak into per-step assertions.
     static void setEffectiveBudget(int v) {
         ReferenceChainTracker::instance()->_effective_budget = v;
     }
@@ -522,9 +717,38 @@ public:
         ReferenceChainTracker::instance()->_pause_pid.reset();
     }
 
-    // Budget-borrowing (referenceChains.h's _borrowed_budget comment): the configured multiplier
-    // PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeiling below asserts convergence against,
-    // instead of hardcoding it a second time in the test itself.
+    // Root-enumeration raw state (shouldRunRootEnum()'s inputs) at exact values - unlike the
+    // tracker's setRootEnumStateForTest(), which derives the timestamp from OS::nanotime() and
+    // so cannot pin a boundary. Engine lock held (static accessor: take it explicitly). Returns
+    // the previous pair so the caller can restore it - the fixture reset does not zero these.
+    static std::pair<u64, u64> setRootEnumRawStateForTest(u64 last_enum_ns, u64 cost_ms) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker engine_guard(t->_engine_lock);
+        std::pair<u64, u64> prev(t->_last_root_enum_ns, t->_last_root_enum_safepoint_ms);
+        t->_last_root_enum_ns = last_enum_ns;
+        t->_last_root_enum_safepoint_ms = cost_ms;
+        return prev;
+    }
+
+    static std::pair<u64, u64> rootEnumRawStateForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        MutexLocker engine_guard(t->_engine_lock);
+        return std::pair<u64, u64>(t->_last_root_enum_ns, t->_last_root_enum_safepoint_ms);
+    }
+
+    static u64 rootEnumMinIntervalNs() { return ReferenceChainTracker::ROOT_ENUM_MIN_INTERVAL_NS; }
+    static u64 rootEnumNsPerCostMs() {
+        return ReferenceChainTracker::ROOT_ENUM_INTERVAL_NS_PER_COST_MS;
+    }
+    static u64 rootEnumMaxIntervalNs() { return ReferenceChainTracker::ROOT_ENUM_MAX_INTERVAL_NS; }
+
+    // Live GC-finish epoch (relaxed atomic) - save/restore it; the fixture reset does not touch
+    // _gc_finish_epoch (only GC callbacks advance it).
+    static void setGcFinishEpochForTest(u64 v) {
+        store(ReferenceChainTracker::instance()->_gc_finish_epoch, v);
+    }
+
+    // Budget-borrowing (see _borrowed_budget in referenceChains.h).
     static int borrowCeilingMultiplier() {
         return ReferenceChainTracker::BORROW_CEILING_MULTIPLIER;
     }
@@ -533,9 +757,6 @@ public:
         return ReferenceChainTracker::instance()->_borrowed_budget;
     }
 
-    // MaybeRevokeBorrowForRootEnumPass* tests below: drive the borrow state directly into "already
-    // granted" before exercising the revocation-only seam, and a pass-through to that seam itself -
-    // same rationale as updatePacing()'s own accessor above.
     static void setBorrowedBudget(int64_t v) {
         ReferenceChainTracker::instance()->_borrowed_budget = v;
     }
@@ -553,8 +774,6 @@ public:
             pass_wall_ns);
     }
 
-    // ReleaseSearchTagsFailureTest below: read-only peek at whether the tracker still owes a tag
-    // release before it can allow a restart - see _tags_released's own comment.
     static bool tagsReleased() {
         return ReferenceChainTracker::instance()->_tags_released;
     }
@@ -568,11 +787,9 @@ public:
             v, std::memory_order_relaxed);
     }
 
-    // LifecycleChurn test: read side of the flag above - lets the pass thread
-    // record that a runPass() overlapped a stopThread-style abort request
-    // (the request is held until the pass boundary, so a post-pass read is
-    // conservative: it can only over-count by never, under-count by a pulse
-    // whose set raced the pass's very last callback batch).
+    // LifecycleChurn test: read side of the flag above. The request is held
+    // until the pass boundary, so a post-pass read can only miss a pulse whose
+    // set raced the pass's last callback batch.
     static bool abortPassRequested() {
         return ReferenceChainTracker::instance()->_abort_pass_requested.load(
             std::memory_order_relaxed);
@@ -587,11 +804,6 @@ public:
         return ReferenceChainTracker::instance()->_leak_tags_resolved;
     }
 
-    // ResolveLoadedClassesRescansAfterClassCountShrinksAndPartiallyRegrows below: direct
-    // pass-through to the private resolveLoadedClasses(), plus a read-only peek at the count it
-    // stashes - the same rationale as tagsReleased() above (private state/behavior a test needs to
-    // drive/observe directly, without going through a full runPass()/search lifecycle that
-    // resolveLoadedClasses() alone does not need).
     static void resolveLoadedClasses(jvmtiEnv *jvmti, JNIEnv *jni) {
         ReferenceChainTracker::instance()->resolveLoadedClasses(jvmti, jni);
     }
@@ -600,12 +812,9 @@ public:
         return ReferenceChainTracker::instance()->_last_resolved_class_count;
     }
 
-    // Durability re-verification test seams: direct pass-throughs to the private tie-break/rotation
-    // methods, plus FrontierTable::insert() itself (also private-by-convention here in the sense
-    // that production code only ever calls it via admitObject()) so tests can set up a frontier
-    // entry's exact starting root_kind/state/parent_tag without needing a live JVMTI mock for
-    // IterateOverReachableObjects/FollowReferences (neither is mocked in this file - see the file
-    // header's FollowReferences- only mock rationale).
+    // Durability re-verification seams: insertFrontierEntry() sets up an entry's exact
+    // root_kind/state/parent_tag without a JVMTI heap-walk mock (production only inserts via
+    // admitObject()).
 
     static bool insertFrontierEntry(FrontierTable *frontier, jlong tag,
                                      jlong parent_tag, u32 depth, u8 state,
@@ -683,8 +892,7 @@ public:
                 : (u8)ReferenceChainTracker::AnchorClassShape::NON_CONTAINER;
     }
 
-    // B' at-risk static-anchor FIFO (see _static_anchor_fifo's declaration comment in
-    // referenceChains.h).
+    // At-risk static-anchor FIFO (see _static_anchor_fifo in referenceChains.h).
     using AtRiskAnchor = ReferenceChainTracker::AtRiskAnchor;
     static constexpr u32 kAtRiskPerKlassCap =
         ReferenceChainTracker::STATIC_ANCHOR_ATRISK_PER_KLASS_CAP;
@@ -783,21 +991,16 @@ public:
                                    t->_priority_expand.end());
     }
 
-    // StaleExpandedRotationSkipsPreexistingQueueEntries below: simulates a tag left in
-    // _priority_expand by a prior pass's truncated expandFrontier() batch (expandFrontier()'s own
-    // "leave the batch at the front of the source queue for a later pass to retry" comment) without
-    // driving a full expandFrontier()/JVMTI round-trip to produce one.
+    // Simulates a tag left in _priority_expand by a prior pass's truncated expandFrontier()
+    // batch without a full expandFrontier()/JVMTI round-trip.
     static void pushPriorityExpand(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_priority_expand.push_back(tag);
         t->_priority_expand_set.insert(tag);
     }
 
-    // Simulates expandFrontier() having fully drained _priority_expand at the end of a pass (the
-    // common case: rotation's whole selection fit within that pass's rotation_budget slice) - see
-    // StaleExpandedRotationStarvesHighTagEntryBehindLowTagPopulation below, which needs this to
-    // model collectStaleExpandedEntriesForRotation() being called fresh on each of several
-    // simulated passes, the way runPassManualWalk() actually does it once per real pass.
+    // Simulates expandFrontier() having fully drained _priority_expand at the end of a pass, so
+    // collectStaleExpandedEntriesForRotation() can be called fresh per simulated pass.
     static void clearPriorityExpand() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         t->_priority_expand.clear();
@@ -897,8 +1100,6 @@ public:
         return ReferenceChainTracker::instance()->_expand_lane_prefer_priority;
     }
 
-    // Leak-tag pool range base (private static) - same friend-access rationale as the AIMD
-    // constants above.
     static jlong leakTagBase() {
         return ReferenceChainTracker::LEAK_TAG_BASE;
     }
@@ -943,6 +1144,46 @@ public:
         return it != t->_leak_parent_fanout.end() ? it->second.fanout : 0;
     }
 
+    // Full fanout entry copy; outputs stay untouched on a miss so callers can
+    // distinguish "absent" from "present with zeroed fields".
+    static bool leakParentFanoutEntry(jlong parent_tag, u64 *signature_key,
+                                       u32 *fanout,
+                                       bool *ancestors_recorded) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        auto it = t->_leak_parent_fanout.find(parent_tag);
+        if (it == t->_leak_parent_fanout.end()) {
+            return false;
+        }
+        *signature_key = it->second.signature_key;
+        *fanout = it->second.fanout;
+        *ancestors_recorded = it->second.ancestors_recorded;
+        return true;
+    }
+
+    // Exposes the production signature-key packing for tests that must
+    // precompute exact keys without duplicating the bit layout.
+    static u64 leakSignatureKeyForTest(u32 leaf_klass_id, u32 parent_class_id) {
+        return ReferenceChainTracker::instance()->leakSignatureKey(
+            leaf_klass_id, parent_class_id);
+    }
+
+    // Direct admitStaticFieldRoots() drive with a caller-chosen admission budget, like
+    // expandFrontierWithBudgetForTest(). *truncated is reset to false before the drive, and
+    // admitStaticFieldRoots() resets it again at its own entry, so a caller preset never survives.
+    static void admitStaticFieldRootsForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                              int budget,
+                                              int *edges_admitted,
+                                              bool *truncated) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        bool cap_hit = false;
+        bool cycle_complete = false;
+        u64 safepoint_ns = 0;
+        *truncated = false;
+        t->admitStaticFieldRoots(jvmti, jni, t->_hop_cap, budget,
+                                  edges_admitted, truncated, &cap_hit,
+                                  &cycle_complete, &safepoint_ns);
+    }
+
     static void eraseLeakParentFanout(jlong parent_tag) {
         ReferenceChainTracker::instance()->_leak_parent_fanout.erase(parent_tag);
     }
@@ -954,6 +1195,22 @@ public:
     static void seedLeakAccumulationForNewlyWatchedKlass(u32 klass_id) {
         ReferenceChainTracker::instance()
             ->seedLeakAccumulationForNewlyWatchedKlass(klass_id);
+    }
+
+    static void pesClear() {
+        ReferenceChainTracker::instance()->_priority_expand_set.clear();
+    }
+
+    static bool pesContains(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.contains(tag);
+    }
+
+    static bool pesInsert(jlong tag) {
+        return ReferenceChainTracker::instance()->_priority_expand_set.insert(tag);
+    }
+
+    static void pesRebuildFrom(const std::deque<jlong> &queue) {
+        ReferenceChainTracker::instance()->_priority_expand_set.rebuildFrom(queue);
     }
 };
 

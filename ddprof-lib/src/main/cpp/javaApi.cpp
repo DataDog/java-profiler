@@ -28,6 +28,7 @@
 #include "incbin.h"
 #include "jvmSupport.h"
 #include "jvmThread.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
@@ -55,14 +56,20 @@ private:
   int _length;
 
 public:
+  // A null java_string, or a failed copy, gives c_str() == nullptr and
+  // length() == 0; the length is only queried after a successful copy.
   JniString(JNIEnv *env, jstring java_string) {
     _env = env;
-    _c_string = _env->GetStringUTFChars(java_string, NULL);
-    _length = _env->GetStringUTFLength(java_string);
     _java_string = java_string;
+    _c_string = java_string != NULL ? _env->GetStringUTFChars(java_string, NULL) : nullptr;
+    _length = _c_string != nullptr ? _env->GetStringUTFLength(java_string) : 0;
   }
   JniString(JniString &jniString) = delete;
-  ~JniString() { _env->ReleaseStringUTFChars(_java_string, _c_string); }
+  ~JniString() {
+    if (_c_string != nullptr) {
+      _env->ReleaseStringUTFChars(_java_string, _c_string);
+    }
+  }
   const char *c_str() const { return _c_string; }
   int length() const { return _length; }
 };
@@ -242,25 +249,52 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
+  Profiler *profiler = Profiler::instance();
+  // Idle: nothing records the event, and interning would re-allocate the
+  // dictionary stop() released. Answer as an empty dictionary would.
+  const jboolean idle_answer = sizeLimit > 0 ? JNI_TRUE : JNI_FALSE;
+  // A null endpoint would intern "": rejected in every state. The copy is JNI
+  // work, outside the locked region (it can block for a safepoint), and is
+  // skipped while idle.
+  if (endpoint == NULL) {
+    return JNI_FALSE;
+  }
+  // Read the session before the JNI copies below: a stop()/start() that
+  // completes during them leaves this call belonging to the old recording,
+  // and it is dropped under the lock rather than recorded into the new one.
+  const u32 session = profiler->recordingSession();
+  if (!profiler->internOpen()) {
+    return idle_answer;
+  }
   JniString endpoint_str(env, endpoint);
-
-  // Initialize thread TLS if it has not yet done
+  if (endpoint_str.c_str() == nullptr) {
+    return JNI_FALSE; // GetStringUTFChars failed; the exception is pending
+  }
+  JniString operation_str(env, operation);
+  if (operation != NULL && operation_str.c_str() == nullptr) {
+    return JNI_FALSE; // GetStringUTFChars failed; the exception is pending
+  }
   ProfiledThread::initCurrentThreadSignalSafe();
+  int tid = ProfiledThread::currentTid();
 
-  u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
+  // See Profiler::_intern_lock: re-checked under the lock.
+  OptionalSharedLockGuard api(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
+  if (!api.ownsLock() || !profiler->internOpen() ||
+      profiler->recordingSession() != session) {
+    return idle_answer;
+  }
+  u32 endpointLabel = profiler->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
   // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
   bool acceptValue = endpointLabel != 0;
   if (acceptValue) {
     u32 operationLabel = 0;
-    if (operation != NULL) {
-      JniString operation_str(env, operation);
-      operationLabel = Profiler::instance()->contextValueMap()->bounded_lookup(
+    if (operation_str.c_str() != nullptr) {
+      operationLabel = profiler->contextValueMap()->bounded_lookup(
           operation_str.c_str(), operation_str.length(), 1 << 16);
     }
     TraceRootEvent event(rootSpanId, endpointLabel, operationLabel);
-    int tid = ProfiledThread::currentTid();
-    Profiler::instance()->recordTraceRoot(tid, &event);
+    profiler->recordTraceRoot(tid, &event);
   }
   return acceptValue;
 }
@@ -284,6 +318,46 @@ Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv *env,
 #else
   return env->NewDirectByteBuffer(nullptr, 0);
 #endif // COUNTERS
+}
+
+// Test seams: the profiler's live native memory per NativeMem category, read
+// directly from the always-on gauges (independent of COUNTERS and of whether a
+// recording is running), and the category names in the same order.
+extern "C" DLLEXPORT jobjectArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_describeNativeMemCategories0(
+    JNIEnv *env, jclass unused) {
+  // Each failure returns with its exception pending, for the Java caller.
+  jclass string_class = env->FindClass("java/lang/String");
+  if (string_class == nullptr) {
+    return nullptr;
+  }
+  jobjectArray array = env->NewObjectArray(NM_NUM_CATEGORIES, string_class, nullptr);
+  if (array == nullptr) {
+    return nullptr;
+  }
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    jstring name = env->NewStringUTF(NativeMem::categoryName(static_cast<NativeMemCategory>(c)));
+    if (name == nullptr) {
+      return nullptr;
+    }
+    env->SetObjectArrayElement(array, c, name);
+    env->DeleteLocalRef(name);
+  }
+  return array;
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getNativeMemLive0(JNIEnv *env,
+                                                           jclass unused) {
+  jlong values[NM_NUM_CATEGORIES];
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    values[c] = static_cast<jlong>(NativeMem::live(static_cast<NativeMemCategory>(c)));
+  }
+  jlongArray array = env->NewLongArray(NM_NUM_CATEGORIES);
+  if (array != nullptr) {
+    env->SetLongArrayRegion(array, 0, NM_NUM_CATEGORIES, values);
+  }
+  return array;
 }
 
 extern "C" DLLEXPORT jobjectArray JNICALL
@@ -328,15 +402,19 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
       tid, length, name_str.c_str(), value_str.c_str(), unit_str.c_str());
 }
 
-static int dictionarizeClassName(JNIEnv* env, jstring className) {
-    JniString str(env, className);
-    return Profiler::instance()->lookupClass(str.c_str(), str.length());
-}
-
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
+  Profiler *profiler = Profiler::instance();
+  // Read before the JNI work below; compared under _intern_lock (see
+  // recordTrace0) so a call straddling stop()/start() is dropped.
+  const u32 session = profiler->recordingSession();
+  // Nothing records the event while idle; interning the names would allocate
+  // the class-name dictionary stop() released. Null names would intern "".
+  if (!profiler->internOpen() || task == NULL || scheduler == NULL || queueType == NULL) {
+    return;
+  }
 
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -350,16 +428,39 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   if (origin_tid < 0) {
     return;
   }
+  // JNI work stays outside the locked region (it can block for a safepoint).
+  // A failed copy leaves an exception pending, which forbids further JNI
+  // calls: check each before the next. Names are non-null here.
+  JniString task_str(env, task);
+  if (task_str.c_str() == nullptr) {
+    return;
+  }
+  JniString scheduler_str(env, scheduler);
+  if (scheduler_str.c_str() == nullptr) {
+    return;
+  }
   JniString queue_type_str(env, queueType);
-  int task_offset = dictionarizeClassName(env, task);
+  if (queue_type_str.c_str() == nullptr) {
+    return;
+  }
+
+  // See Profiler::_intern_lock: re-checked under the lock.
+  OptionalSharedLockGuard api(profiler->internLock(), SpinLock::NO_SPIN_BUDGET);
+  if (!api.ownsLock() || !profiler->internOpen() ||
+      profiler->recordingSession() != session) {
+    return;
+  }
+  int task_offset = profiler->lookupClass(task_str.c_str(), task_str.length());
   if (task_offset < 0) {
     return;
   }
-  int scheduler_offset = dictionarizeClassName(env, scheduler);
+  int scheduler_offset =
+      profiler->lookupClass(scheduler_str.c_str(), scheduler_str.length());
   if (scheduler_offset < 0) {
     return;
   }
-  int queue_type_offset = dictionarizeClassName(env, queueType);
+  int queue_type_offset =
+      profiler->lookupClass(queue_type_str.c_str(), queue_type_str.length());
   if (queue_type_offset < 0) {
     return;
   }
@@ -371,7 +472,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._origin = origin_tid;
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
-  Profiler::instance()->recordQueueTime(tid, &event);
+  profiler->recordQueueTime(tid, &event);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -1103,6 +1204,636 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   ContextApi::get(spanId, rootSpanId);
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
+
+// LivenessTracker/ReferenceChainTracker test seams. They mutate real tracker
+// state, so they are only implemented in DEBUG builds; release builds get the
+// no-op stubs below.
+#ifdef DEBUG
+#include "livenessTracker.h"
+#include "objectSampler.h"
+#include "referenceChains.h"
+#include <vector>
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->setGcGenerationsForTest(enabled);
+  return JNI_TRUE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint count, jlong epoch) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  int slot;
+  bool created;
+  jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+  int evicted_count = 0;
+  LivenessTracker::instance()->klassPopulationRecordForTest(
+      (u32)klassId, (u32)count, (u64)epoch, &slot, &created, evicted,
+      &evicted_count, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+  for (int i = 0; i < evicted_count; i++) {
+    if (evicted[i] != nullptr) {
+      env->DeleteWeakGlobalRef(evicted[i]);
+    }
+  }
+}
+
+// See tidTrendRecordForTest() (livenessTracker.h) for the tid requirements.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint tid, jint count,
+    jlong epoch) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+  int evicted_count = 0;
+  LivenessTracker::instance()->tidTrendRecordForTest(
+      (u32)klassId, (jint)tid, (u32)count, (u64)epoch, evicted,
+      &evicted_count, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+  for (int i = 0; i < evicted_count; i++) {
+    if (evicted[i] != nullptr) {
+      env->DeleteWeakGlobalRef(evicted[i]);
+    }
+  }
+}
+
+// Makes `representative` klassId's leak-candidate representative, so a seeded
+// population sample and a tagged root can drive pollWatchedTargets() without
+// the real sampler or walk. The tracker owns the weak global ref created here.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setKlassPopulationRepresentativeForTest0(
+    JNIEnv *env, jclass unused, jint klassId, jobject representative) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jweak rep = env->NewWeakGlobalRef(representative);
+  LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+      env, (u32)klassId, rep);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->klassPopulationResetForTest();
+  // Re-baseline the class-map generation: selectLeakCandidates() returns
+  // nothing while classMap()->generation() differs from the tracker's
+  // baseline, and that baseline is only re-synced by cleanup_table()'s
+  // GC-driven sweep - but this JVM has typically already run several
+  // recordings (each Profiler::start() clearAll() bumps the generation)
+  // before this test's seeding, and no GC may land between start() and
+  // the seeded selectLeakCandidates() call. After the wipe above there is
+  // no stale-namespace population data left to protect, so adopting the
+  // current generation is safe.
+  LivenessTracker::instance()->classMapGenerationSetForTest(
+      Profiler::instance()->classMap()->generation());
+}
+
+extern "C" DLLEXPORT jintArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_selectLeakCandidateKlassIds0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  KlassCandidate candidates[5];
+  int n = LivenessTracker::instance()->selectLeakCandidates(candidates, 5);
+  jintArray result = env->NewIntArray(n);
+  if (result == nullptr || n == 0) {
+    return result;
+  }
+  jint ids[5];
+  for (int i = 0; i < n; i++) {
+    ids[i] = (jint)candidates[i].klass_id;
+  }
+  env->SetIntArrayRegion(result, 0, n, ids);
+  return result;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_tagAsReferenceChainRoot0(
+    JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return 0;
+  }
+  return ReferenceChainTracker::instance()->tagAsRootForTest(jvmti, env,
+                                                               target);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return JNI_FALSE;
+  }
+  return ReferenceChainTracker::instance()->runPassSerialized(jvmti, env);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setRootEnumErrorInjection0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  ReferenceChainTracker::instance()->setRootEnumErrorInjectionForTest(
+      enabled == JNI_TRUE);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return;
+  }
+  ReferenceChainTracker::instance()->finishLoopIterationSerialized(jvmti, env);
+}
+
+// Drains and returns the number of reference-chain events queued by
+// pollReferenceChainTargets0() so far (the same queue Profiler::dump() drains in production
+// to write datadog.ReferenceChain JFR events) - lets a test assert a chain was actually
+// reconstructed without needing a real JFR dump.
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return 0;
+  }
+  std::vector<ReferenceChainEvent> events;
+  ReferenceChainTracker::instance()->drainPendingChainEvents(&events);
+  return (jint)events.size();
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return;
+  }
+  ReferenceChainTracker::instance()->resetSearchStateForTest(jvmti, env);
+}
+
+// Reads target's existing tag without tagging it. Return values are described
+// at pendingExpandPositionForTest().
+//
+// The tag read and the lookup both run under _engine_lock: the BFS thread
+// releases and reissues frontier tags (releaseSearchTags()/restartSearch())
+// only while holding it, so the tag cannot be reassigned to another object
+// between GetTag() and the lookup. The lock is recursive (mutex.cpp), so the
+// tracker seam's own nested acquisition is fine. The same applies to the two
+// seams below.
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr || target == nullptr) {
+    return -2;
+  }
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  jlong tag = 0;
+  jvmtiError err = jvmti->GetTag(target, &tag);
+  if (err != JVMTI_ERROR_NONE) {
+    return -2;
+  }
+  return (jlong)tracker->pendingExpandPositionForTest(tag);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return (jlong)ReferenceChainTracker::instance()->pendingExpandSizeForTest();
+}
+
+// Reads target's existing tag without tagging it, under _engine_lock (see
+// getReferenceChainPendingPositionForTest0()); see frontierStateForTest().
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainFrontierStateForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr || target == nullptr) {
+    return -1;
+  }
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  jlong tag = 0;
+  if (jvmti->GetTag(target, &tag) != JVMTI_ERROR_NONE) {
+    return -1;
+  }
+  return (jint)tracker->frontierStateForTest(tag);
+}
+
+// Reads target's existing tag without tagging it, under _engine_lock (see
+// getReferenceChainPendingPositionForTest0()); see
+// resolvedChainTargetTagForTest().
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainResolvedTargetTagForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr || target == nullptr) {
+    return 0;
+  }
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  jlong tag = 0;
+  if (jvmti->GetTag(target, &tag) != JVMTI_ERROR_NONE) {
+    return 0;
+  }
+  return tracker->resolvedChainTargetTagForTest(tag);
+}
+
+// Seeds one heap-floor sample for secondsToOOM() without waiting for a GC.
+// Timestamps are only compared with each other, so any increasing sequence works.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
+    JNIEnv *env, jclass unused, jlong usedBytes, jlong timestampNs) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->heapFloorRecordForTest((u64)usedBytes,
+                                                        (u64)timestampNs);
+}
+
+// Overrides the max heap size secondsToOOM() projects against.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
+    JNIEnv *env, jclass unused, jlong maxHeapBytes) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)maxHeapBytes);
+}
+
+// Stops real GCs from recording heap-floor samples while a test seeds them.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->setHeapFloorRecordingForTest(enabled == JNI_TRUE);
+}
+
+// Clears the heap-floor rings seeded by heapFloorRecordForTest0() so the
+// next test in the same JVM starts from an empty ring.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorResetForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->heapFloorResetForTest();
+}
+
+// Reports whether the seeded heap-floor ring currently shows a sustained rise
+// (heapFloorRising()) - the direct read over the ring the reset seam clears.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRisingForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return LivenessTracker::instance()->heapFloorRisingForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Evaluates the real scheduling gate without executing a BFS pass. This is not read-only: under
+// the engine lock it may account completed-search pain and restart/reset terminal search state.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return ReferenceChainTracker::instance()->shouldRunPassForTest(
+             OS::nanotime())
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
+// Lets a test wait for a pass that started after it created an object.
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return (jint)ReferenceChainTracker::instance()->passesRun();
+}
+
+// Moves the leak-signal burn-in stamp one second past OOM_PROJECTION_BURN_IN_NS so secondsToOOM()
+// projects from seeded samples however long this JVM has been profiling. Returns the previous stamp
+// (0 = never activated) so setLeakSignalActivatedNsForTest0() can restore it.
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_backdateLeakSignalActivationForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker *lt = LivenessTracker::instance();
+  u64 previous = lt->leakSignalActivatedNsForTest();
+  // One second past the burn-in (modular u64), mirroring the gtest fixtures' backdated stamp.
+  // Clamped to 1: on a freshly booted CI VM the clock can be under the burn-in horizon, and the
+  // u64 underflow would read back as a negative jlong that setLeakSignalActivatedNsForTest0()
+  // rejects, throwing out of a test's finally block.
+  u64 now = OS::nanotime();
+  u64 stamp = now > (u64)LivenessTracker::OOM_PROJECTION_BURN_IN_NS + 1000000000ULL
+                  ? now - LivenessTracker::OOM_PROJECTION_BURN_IN_NS - 1000000000ULL
+                  : 1;
+  lt->setLeakSignalActivatedNsForTest(stamp);
+  return (jlong)previous;
+}
+
+// Restores a burn-in stamp saved by backdateLeakSignalActivationForTest0().
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setLeakSignalActivatedNsForTest0(
+    JNIEnv *env, jclass unused, jlong activatedNs) {
+  if (activatedNs < 0) {
+    // A raw jlong->u64 cast would turn a negative argument into a stamp near UINT64_MAX,
+    // which secondsToOOM() reads as burn-in-never-passed - a mis-wired test would then look
+    // like a dormant projection instead of an invalid input.
+    throwNew(env, "java/lang/IllegalArgumentException",
+             "activatedNs must be >= 0 (0 = never activated)");
+    return;
+  }
+  ProfiledThread::initCurrentThreadSignalSafe();
+  LivenessTracker::instance()->setLeakSignalActivatedNsForTest((u64)activatedNs);
+}
+
+// The current LivenessTracker::secondsToOOM() projection; negative means no projection.
+extern "C" DLLEXPORT jdouble JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_secondsToOOMForTest0(JNIEnv *env,
+                                                               jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return (jdouble)LivenessTracker::instance()->secondsToOOM();
+}
+
+// isUrgent()'s latch. It is mutated under _engine_lock (threadLoop()/shouldRunPassForTest()), so
+// read it under the same lock.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_urgentLatchedForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  return tracker->urgentLatchedForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Drives the latch machine once on the live projection - what threadLoop()'s
+// publishUrgencyState() does per iteration. The gate (hasLeakSignal()) no
+// longer advances the machine, so tests that need a latched episode drive it
+// here. Mutated under _engine_lock, same as the read above.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isUrgentForTest0(JNIEnv *env,
+                                                           jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+  MutexLocker engine_guard(tracker->_engine_lock);
+  return tracker->isUrgentForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Places the previous pass a controlled distance in the past and sets the effective cadence
+// shouldRunPass()'s minimum-spacing gate enforces - see setPassSpacingForTest().
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainPassSpacingForTest0(
+    JNIEnv *env, jclass unused, jlong ms_since_last_pass, jlong cadence_ms) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker::instance()->setPassSpacingForTest(
+      (u64)ms_since_last_pass, (u64)cadence_ms);
+}
+
+// Sets the root-enumeration scheduling state (last attempt's time and measured in-safepoint
+// cost) - see setRootEnumStateForTest().
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainRootEnumStateForTest0(
+    JNIEnv *env, jclass unused, jlong ms_since_last_enum,
+    jlong last_enum_cost_ms) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker::instance()->setRootEnumStateForTest(
+      (long)ms_since_last_enum, (u64)last_enum_cost_ms);
+}
+
+// Evaluates shouldRunRootEnum() with a synthetic clock so a test can place the last attempt a
+// controlled distance in the past.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_shouldRunRootEnumForTest0(
+    JNIEnv *env, jclass unused, jboolean manual_first_pass) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return ReferenceChainTracker::instance()->shouldRunRootEnumForTest(
+             OS::nanotime(), manual_first_pass == JNI_TRUE)
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
+// Forces a started, RUNNING search with fresh pain budgets so shouldRunPassForTest0() evaluates
+// the running-search gates deterministically - see forceRunningSearchForTest().
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_forceRunningReferenceChainSearchForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker::instance()->forceRunningSearchForTest();
+}
+
+// Sets the canary chase's candidate count and found-bits mask so shouldRunPassForTest0()
+// evaluates the canary lane - see setCanaryChaseStateForTest().
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainCanaryStateForTest0(
+    JNIEnv *env, jclass unused, jint candidate_count, jlong found_bits) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  ReferenceChainTracker::instance()->setCanaryChaseStateForTest(
+      (int)candidate_count, (u64)found_bits);
+}
+
+// Current adaptive root-enumeration interval floor - see rootEnumIntervalFloorNs().
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_rootEnumIntervalFloorNsForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return (jlong)ReferenceChainTracker::instance()
+      ->rootEnumIntervalFloorNsForTest();
+}
+
+// Live GC-finish epoch - see gcFinishEpoch() (relaxed atomic load, no lock needed).
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_referenceChainGcFinishEpochForTest0(
+    JNIEnv *env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return (jlong)ReferenceChainTracker::instance()->gcFinishEpoch();
+}
+
+#else // !DEBUG
+
+// Release builds: no-op stubs so the Java natives still link.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint count, jlong epoch) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint tid, jint count,
+    jlong epoch) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setKlassPopulationRepresentativeForTest0(
+    JNIEnv *env, jclass unused, jint klassId, jobject representative) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jintArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_selectLeakCandidateKlassIds0(
+    JNIEnv *env, jclass unused) {
+  return env->NewIntArray(0);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_tagAsReferenceChainRoot0(
+    JNIEnv *env, jclass unused, jobject target) {
+  return 0;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
+    JNIEnv *env, jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setRootEnumErrorInjection0(
+    JNIEnv *env, jclass unused, jboolean enabled) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingPositionForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  return -2;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainFrontierStateForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  return -1;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainResolvedTargetTagForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  return 0;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
+    JNIEnv *env, jclass unused, jlong usedBytes, jlong timestampNs) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
+    JNIEnv *env, jclass unused, jlong maxHeapBytes) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
+    JNIEnv *env, jclass unused, jboolean enabled) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorResetForTest0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRisingForTest0(
+    JNIEnv *env, jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_backdateLeakSignalActivationForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainPassSpacingForTest0(
+    JNIEnv *env, jclass unused, jlong ms_since_last_pass, jlong cadence_ms) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainRootEnumStateForTest0(
+    JNIEnv *env, jclass unused, jlong ms_since_last_enum,
+    jlong last_enum_cost_ms) {}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_shouldRunRootEnumForTest0(
+    JNIEnv *env, jclass unused, jboolean manual_first_pass) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_forceRunningReferenceChainSearchForTest0(
+    JNIEnv *env, jclass unused) {}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setReferenceChainCanaryStateForTest0(
+    JNIEnv *env, jclass unused, jint candidate_count, jlong found_bits) {}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_rootEnumIntervalFloorNsForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_referenceChainGcFinishEpochForTest0(
+    JNIEnv *env, jclass unused) {
+  return 0;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setLeakSignalActivatedNsForTest0(
+    JNIEnv *env, jclass unused, jlong activatedNs) {}
+
+extern "C" DLLEXPORT jdouble JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_secondsToOOMForTest0(JNIEnv *env,
+                                                               jclass unused) {
+  return -1.0;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_urgentLatchedForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  return JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isUrgentForTest0(JNIEnv *env,
+                                                           jclass unused) {
+  return JNI_FALSE;
+}
+
+#endif // DEBUG
 
 // ---- Test-only reads of the current thread's OTEP record -----------------------------------
 // Each reads the current carrier's record directly via ProfiledThread::current(), with no

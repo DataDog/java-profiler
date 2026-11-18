@@ -5,15 +5,17 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static com.datadoghq.profiler.AbstractProfilerTest.*;
+import static com.datadoghq.profiler.MoreAssertions.assertInRange;
+import static org.junit.jupiter.api.Assertions.*;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.context.Tracing;
-import org.junit.jupiter.api.Assumptions;
-import com.datadoghq.profiler.JfrEvent;
-import com.datadoghq.profiler.JfrEvents;
-
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -24,263 +26,282 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
-
-import static com.datadoghq.profiler.AbstractProfilerTest.*;
-import static com.datadoghq.profiler.MoreAssertions.assertInRange;
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Assumptions;
 
 final class BaseContextWallClockTest {
-    private final Supplier<JavaProfiler> profilerRef;
-    private volatile JavaProfiler profiler;
+  private final Supplier<JavaProfiler> profilerRef;
+  private volatile JavaProfiler profiler;
 
-    private ContextExecutor executor;
+  private ContextExecutor executor;
 
-    private Map<String, List<Long>> methodsToSpanIds;
+  private Map<String, List<Long>> methodsToSpanIds;
 
-    BaseContextWallClockTest(Supplier<JavaProfiler> profilerRef) {
-        this.profilerRef = profilerRef;
+  BaseContextWallClockTest(Supplier<JavaProfiler> profilerRef) {
+    this.profilerRef = profilerRef;
+  }
+
+  void before() {
+    profiler = profilerRef.get();
+    executor = new ContextExecutor(1, profiler);
+    methodsToSpanIds = new ConcurrentHashMap<>();
+  }
+
+  void after() throws InterruptedException {
+    if (executor == null) {
+      return;
     }
-
-    void before() {
-        profiler = profilerRef.get();
-        executor = new ContextExecutor(1, profiler);
-        methodsToSpanIds = new ConcurrentHashMap<>();
+    executor.shutdownNow();
+    boolean terminated = executor.awaitTermination(30, TimeUnit.SECONDS);
+    if (!terminated) {
+      throw new IllegalStateException("Executor failed to terminate within 30 seconds");
     }
+    profiler = null;
+  }
 
-    void after() throws InterruptedException {
-        if (executor == null) {
-            return;
+  void test(AbstractProfilerTest test) throws ExecutionException, InterruptedException {
+    test(test, true);
+  }
+
+  void test(AbstractProfilerTest test, String cstack)
+      throws ExecutionException, InterruptedException {
+    test(test, true, cstack);
+  }
+
+  void test(AbstractProfilerTest test, boolean assertContext)
+      throws ExecutionException, InterruptedException {
+    test(test, assertContext, null);
+  }
+
+  void test(AbstractProfilerTest test, boolean assertContext, String cstack)
+      throws ExecutionException, InterruptedException {
+    String config = System.getProperty("ddprof_test.config");
+
+    Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
+
+    test.registerCurrentThreadForWallClockProfiling();
+    for (int i = 0, id = 1; i < 100; i++, id += 3) {
+      method1(id);
+    }
+    test.stopProfiler();
+    Set<Long> method1SpanIds = new HashSet<>(methodsToSpanIds.get("method1Impl"));
+    Set<Long> method2SpanIds = new HashSet<>(methodsToSpanIds.get("method2Impl"));
+    Set<Long> method3SpanIds = new HashSet<>(methodsToSpanIds.get("method3Impl"));
+    JfrEvents events = test.verifyEvents("datadog.MethodSample");
+    Set<String> states = new HashSet<>();
+    Set<String> modes = new HashSet<>();
+    // we have 100 method1, method2, and method3 calls, but can't guarantee we sampled them all
+    long method1Weight = 0;
+    long method2Weight = 0;
+    long method3Weight = 0;
+    long unattributedWeight = 0;
+    for (JfrEvent sample : events) {
+      String stackTrace = sample.getStackTraceString();
+      long spanId = sample.getLong(SPAN_ID, 0);
+      long rootSpanId = sample.getLong(LOCAL_ROOT_SPAN_ID, 0);
+      long weight = sample.getLong(WEIGHT, 0);
+      modes.add(sample.getEnumName(THREAD_EXECUTION_MODE));
+      String state = sample.getEnumName(THREAD_STATE);
+      assertNotNull(state);
+      states.add(state);
+
+      // a lot fo care needs to be taken here with samples that fall between a context activation
+      // and
+      // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample
+      // wasn't
+      // taken in the part of method2 between activation and invoking method2Impl, which complicates
+      // assertions when we only find method1Impl
+      boolean attributed = false;
+      if (stackTrace.contains("method3Impl")) {
+        if (assertContext) {
+          // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId +
+          // 2
+          assertEquals(rootSpanId + 2, spanId, stackTrace);
+          assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
         }
-        executor.shutdownNow();
-        boolean terminated = executor.awaitTermination(30, TimeUnit.SECONDS);
-        if (!terminated) {
-            throw new IllegalStateException("Executor failed to terminate within 30 seconds");
+        method3Weight += weight;
+        attributed = true;
+      } else if (stackTrace.contains("method2Impl")) {
+        if (assertContext) {
+          // method2 is called next, so spanId == rootSpanId + 1
+          assertEquals(rootSpanId + 1, spanId, stackTrace);
+          assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
         }
-        profiler = null;
-    }
-
-    void test(AbstractProfilerTest test) throws ExecutionException, InterruptedException {
-        test(test, true);
-    }
-
-    void test(AbstractProfilerTest test, String cstack) throws ExecutionException, InterruptedException {
-        test(test, true, cstack);
-    }
-
-    void test(AbstractProfilerTest test, boolean assertContext) throws ExecutionException, InterruptedException {
-        test(test, assertContext, null);
-    }
-
-    void test(AbstractProfilerTest test, boolean assertContext, String cstack) throws ExecutionException, InterruptedException {
-        String config = System.getProperty("ddprof_test.config");
-
-        Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
-
-        test.registerCurrentThreadForWallClockProfiling();
-        for (int i = 0, id = 1; i < 100; i++, id += 3) {
-            method1(id);
+        method2Weight += weight;
+        attributed = true;
+      } else if (stackTrace.contains("method1Impl")
+          && !stackTrace.contains("method2")
+          && !stackTrace.contains("method3")
+          && !stackTrace.contains("Object.wait")) {
+        // Exclude Object.wait frames: while method1Impl is blocked in monitor.wait(),
+        // method3 runs concurrently on the executor thread. The wall-clock profiler
+        // samples all threads, so that same window produces method3Weight samples on
+        // the executor AND method1Weight samples on the main thread. Counting the
+        // main-thread double-dip inflates method1's share to ~40-55% instead of ~33%.
+        if (assertContext) {
+          // need to check this after method2 because method1 calls method2
+          // it's the root so spanId == rootSpanId
+          assertEquals(rootSpanId, spanId, stackTrace);
+          assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
         }
-        test.stopProfiler();
-        Set<Long> method1SpanIds = new HashSet<>(methodsToSpanIds.get("method1Impl"));
-        Set<Long> method2SpanIds = new HashSet<>(methodsToSpanIds.get("method2Impl"));
-        Set<Long> method3SpanIds = new HashSet<>(methodsToSpanIds.get("method3Impl"));
-        JfrEvents events = test.verifyEvents("datadog.MethodSample");
-        Set<String> states = new HashSet<>();
-        Set<String> modes = new HashSet<>();
-        // we have 100 method1, method2, and method3 calls, but can't guarantee we sampled them all
-        long method1Weight = 0;
-        long method2Weight = 0;
-        long method3Weight = 0;
-        long unattributedWeight = 0;
-        for (JfrEvent sample : events) {
-            String stackTrace = sample.getStackTraceString();
-            long spanId = sample.getLong(SPAN_ID, 0);
-            long rootSpanId = sample.getLong(LOCAL_ROOT_SPAN_ID, 0);
-            long weight = sample.getLong(WEIGHT, 0);
-            modes.add(sample.getEnumName(THREAD_EXECUTION_MODE));
-            String state = sample.getEnumName(THREAD_STATE);
-            assertNotNull(state);
-            states.add(state);
-
-            // a lot fo care needs to be taken here with samples that fall between a context activation and
-            // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
-            // taken in the part of method2 between activation and invoking method2Impl, which complicates
-            // assertions when we only find method1Impl
-            boolean attributed = false;
-            if (stackTrace.contains("method3Impl")) {
-                if (assertContext) {
-                    // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
-                    assertEquals(rootSpanId + 2, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
-                }
-                method3Weight += weight;
-                attributed = true;
-            } else if (stackTrace.contains("method2Impl")) {
-                if (assertContext) {
-                    // method2 is called next, so spanId == rootSpanId + 1
-                    assertEquals(rootSpanId + 1, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
-                }
-                method2Weight += weight;
-                attributed = true;
-            } else if (stackTrace.contains("method1Impl")
-                    && !stackTrace.contains("method2") && !stackTrace.contains("method3")
-                    && !stackTrace.contains("Object.wait")) {
-                // Exclude Object.wait frames: while method1Impl is blocked in monitor.wait(),
-                // method3 runs concurrently on the executor thread. The wall-clock profiler
-                // samples all threads, so that same window produces method3Weight samples on
-                // the executor AND method1Weight samples on the main thread. Counting the
-                // main-thread double-dip inflates method1's share to ~40-55% instead of ~33%.
-                if (assertContext) {
-                    // need to check this after method2 because method1 calls method2
-                    // it's the root so spanId == rootSpanId
-                    assertEquals(rootSpanId, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
-                }
-                method1Weight += weight;
-                attributed = true;
-            }
-            assertTrue(weight <= 10 && weight > 0);
-            // Only count as unattributed if spanId is 0 AND we couldn't attribute by stack trace
-            // This prevents double-counting samples that have valid stack traces but no context
-            // (e.g., JVMTI samples when using TLS context which can't be read cross-thread)
-            if (spanId == 0 && !attributed) {
-                unattributedWeight += weight;
-            }
-        }
-
-        if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
-            assertTrue(states.contains("WAITING"), "no WAITING samples");
-            assertTrue(states.contains("PARKED"), "no PARKED samples");
-            assertTrue(states.contains("CONTENDED"), "no CONTENDED samples");
-        } else {
-            assertTrue(states.contains("SYSCALL"), "no SYSCALL samples");
-        }
-
-        if (!Platform.isZing() && !Platform.isJ9()) {
-            assertTrue(modes.contains("JAVA") || modes.contains("JVM") || modes.contains("NATIVE") || modes.contains("SAFEPOINT"), 
-              "no JAVA|JVM|NATIVE|SAFEPOINT samples");
-            assertFalse(modes.contains("UNKNOWN"), "UNKNOWN wallclock samples on HotSpot");
-        } else {
-            assertTrue(modes.contains("UNKNOWN"), "no UNKNOWN samples");
-        }
-
-        // TODO: vmstructs unwinding on Liberica and aarch64 creates a higher number of broken frames
-        //       it is under investigation but until it gets resolved we will just relax the error margin
-        double allowedError = Platform.isAarch64() && "BellSoft".equals(System.getProperty("java.vendor")) ? 0.4d : 0.2d;
-
-        // DWARF collects 10-20 native frames per sample (vs 2-5 for FP/VM). Those native PCs vary
-        // slightly between samples, fragmenting trace IDs and causing some method2/method3 samples
-        // to be lost or misattributed. The 0.3 tolerance accommodates that fragmentation without
-        // masking genuine context-attribution bugs.
-        if (cstack != null && (cstack.equals("vm") || cstack.equals("dwarf") || cstack.equals("fp") || cstack.equals("vmx"))) {
-            allowedError = 0.3d;
-        }
-
-        // context filtering should prevent these
-        assertFalse(states.contains("NEW"));
-        assertFalse(states.contains("TERMINATED"));
-        // the sanitizer configurations are not playing that well with the sample distribution
-        // still useful to run the profiler, though - so just skipping the assertions here
-        if (config.equals("release") || config.equals("debug")) {
-            double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
-            // Each method sleeps for the same duration (10ms), so each should contribute ~33%.
-            // method1Impl's monitor.wait time is excluded from method1Weight (see attribution above)
-            // to measure self-time only, not elapsed time waiting for method3.
-            assertWeight("method1Impl", totalWeight, method1Weight, 0.33, allowedError);
-            assertWeight("method2Impl", totalWeight, method2Weight, 0.33, allowedError);
-            assertWeight("method3Impl", totalWeight, method3Weight, 0.33, allowedError);
-            // The recording captures counter values before the final cleanup (before processTraces
-            // runs and frees all traces). Verify the recording contains meaningful data.
-            assertInRange(test.getRecordedCounterValue("calltrace_storage_traces"), 1, 100);
-            assertInRange(test.getRecordedCounterValue("calltrace_storage_bytes"), 1024, 8 * 1024 * 1024);
-            // live counters are 0 after stop (all traces freed - correct, non-leaking behaviour)
-            Map<String, Long> debugCounters = profiler.getDebugCounters();
-            assertEquals(0, debugCounters.get("calltrace_storage_traces"));
-            assertEquals(0, debugCounters.get("calltrace_storage_bytes"));
-            assertEquals(0, debugCounters.get("linear_allocator_bytes"));
-            assertEquals(0, debugCounters.get("linear_allocator_chunks"));
-            assertInRange(debugCounters.get("thread_ids_count"), 1, 100);
-            assertInRange(debugCounters.get("thread_names_count"), 1, 100);
-        }
+        method1Weight += weight;
+        attributed = true;
+      }
+      assertTrue(weight <= 10 && weight > 0);
+      // Only count as unattributed if spanId is 0 AND we couldn't attribute by stack trace
+      // This prevents double-counting samples that have valid stack traces but no context
+      // (e.g., JVMTI samples when using TLS context which can't be read cross-thread)
+      if (spanId == 0 && !attributed) {
+        unattributedWeight += weight;
+      }
     }
 
-    private void assertWeight(String name, double total, long weight, double expected, double allowedError) {
-        assertTrue(Math.abs(weight / total - expected)  < allowedError, String.format("expect %f weight for %s but have %f", expected, name, weight / total));
+    if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
+      assertTrue(states.contains("WAITING"), "no WAITING samples");
+      assertTrue(states.contains("PARKED"), "no PARKED samples");
+      assertTrue(states.contains("CONTENDED"), "no CONTENDED samples");
+    } else {
+      assertTrue(states.contains("SYSCALL"), "no SYSCALL samples");
     }
 
-    public void method1(int id) throws ExecutionException, InterruptedException {
-        try (Tracing.Context context = Tracing.newContext(() -> id, profiler)) {
-            method1Impl(id, context);
+    if (!Platform.isZing() && !Platform.isJ9()) {
+      assertTrue(
+          modes.contains("JAVA")
+              || modes.contains("JVM")
+              || modes.contains("NATIVE")
+              || modes.contains("SAFEPOINT"),
+          "no JAVA|JVM|NATIVE|SAFEPOINT samples");
+      assertFalse(modes.contains("UNKNOWN"), "UNKNOWN wallclock samples on HotSpot");
+    } else {
+      assertTrue(modes.contains("UNKNOWN"), "no UNKNOWN samples");
+    }
+
+    // TODO: vmstructs unwinding on Liberica and aarch64 creates a higher number of broken frames
+    //       it is under investigation but until it gets resolved we will just relax the error
+    // margin
+    double allowedError =
+        Platform.isAarch64() && "BellSoft".equals(System.getProperty("java.vendor")) ? 0.4d : 0.2d;
+
+    // DWARF collects 10-20 native frames per sample (vs 2-5 for FP/VM). Those native PCs vary
+    // slightly between samples, fragmenting trace IDs and causing some method2/method3 samples
+    // to be lost or misattributed. The 0.3 tolerance accommodates that fragmentation without
+    // masking genuine context-attribution bugs.
+    if (cstack != null
+        && (cstack.equals("vm")
+            || cstack.equals("dwarf")
+            || cstack.equals("fp")
+            || cstack.equals("vmx"))) {
+      allowedError = 0.3d;
+    }
+
+    // context filtering should prevent these
+    assertFalse(states.contains("NEW"));
+    assertFalse(states.contains("TERMINATED"));
+    // the sanitizer configurations are not playing that well with the sample distribution
+    // still useful to run the profiler, though - so just skipping the assertions here.
+    // The same goes for coverage: atomic gcov counter updates on every edge of the signal
+    // handlers perturb timing like the sanitizers do, and a failure here would keep
+    // coverageReport red, so the check is keyed on "debug" itself, not isDebug().
+    if (config.equals("release") || config.equals("debug")) {
+      double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
+      // Each method sleeps for the same duration (10ms), so each should contribute ~33%.
+      // method1Impl's monitor.wait time is excluded from method1Weight (see attribution above)
+      // to measure self-time only, not elapsed time waiting for method3.
+      assertWeight("method1Impl", totalWeight, method1Weight, 0.33, allowedError);
+      assertWeight("method2Impl", totalWeight, method2Weight, 0.33, allowedError);
+      assertWeight("method3Impl", totalWeight, method3Weight, 0.33, allowedError);
+      // The recording captures counter values before the final cleanup (before processTraces
+      // runs and frees all traces). Verify the recording contains meaningful data.
+      assertInRange(test.getRecordedCounterValue("calltrace_storage_traces"), 1, 100);
+      assertInRange(test.getRecordedCounterValue("calltrace_storage_bytes"), 1024, 8 * 1024 * 1024);
+      // live counters are 0 after stop (all traces freed - correct, non-leaking behaviour)
+      Map<String, Long> debugCounters = profiler.getDebugCounters();
+      assertEquals(0, debugCounters.get("calltrace_storage_traces"));
+      assertEquals(0, debugCounters.get("calltrace_storage_bytes"));
+      assertEquals(0, debugCounters.get("linear_allocator_bytes"));
+      assertEquals(0, debugCounters.get("linear_allocator_chunks"));
+      assertInRange(debugCounters.get("thread_ids_count"), 1, 100);
+      assertInRange(debugCounters.get("thread_names_count"), 1, 100);
+    }
+  }
+
+  private void assertWeight(
+      String name, double total, long weight, double expected, double allowedError) {
+    assertTrue(
+        Math.abs(weight / total - expected) < allowedError,
+        String.format("expect %f weight for %s but have %f", expected, name, weight / total));
+  }
+
+  public void method1(int id) throws ExecutionException, InterruptedException {
+    try (Tracing.Context context = Tracing.newContext(() -> id, profiler)) {
+      method1Impl(id, context);
+    }
+  }
+
+  public void method1Impl(int id, Tracing.Context context)
+      throws ExecutionException, InterruptedException {
+    sleep(10);
+    Object monitor = new Object();
+    Future<?> wait = executor.submit(() -> method3(id, monitor));
+    method2(id, monitor);
+    synchronized (monitor) {
+      // Increased timeout from 10ms to 150ms to accommodate:
+      // - method2Impl sleep: 10ms
+      // - method3Impl sleep: 10ms
+      // - Thread scheduling/lock contention buffer: 130ms
+      monitor.wait(150);
+    }
+    wait.get();
+    record("method1Impl", context);
+  }
+
+  public void method2(long id, Object monitor) {
+    synchronized (monitor) {
+      try (Tracing.Context context = Tracing.newContext(() -> id + 1, profiler)) {
+        method2Impl(context);
+        monitor.notify();
+      }
+    }
+  }
+
+  public void method2Impl(Tracing.Context context) {
+    sleep(10);
+    record("method2Impl", context);
+  }
+
+  public void method3(long id, Object monitor) {
+    synchronized (monitor) {
+      try (Tracing.Context context = Tracing.newContext(() -> id + 2, profiler)) {
+        method3Impl(context);
+        monitor.notify();
+      }
+    }
+  }
+
+  public void method3Impl(Tracing.Context context) {
+    sleep(10);
+    record("method3Impl", context);
+  }
+
+  private void record(String methodName, com.datadoghq.profiler.context.Tracing.Context context) {
+    methodsToSpanIds
+        .computeIfAbsent(methodName, k -> new CopyOnWriteArrayList<>())
+        .add(context.getSpanId());
+  }
+
+  private void sleep(long millis) {
+    long target = System.nanoTime() + millis * 1_000_000L;
+    while (System.nanoTime() < target) {
+      try {
+        long remaining = (target - System.nanoTime()) / 1_000_000L;
+        if (remaining <= 0) {
+          break;
         }
+        Thread.sleep(remaining);
+        // Continue loop to handle spurious wakeups - ensures full sleep duration
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break; // Exit immediately on interrupt
+      }
     }
-
-    public void method1Impl(int id, Tracing.Context context) throws ExecutionException, InterruptedException {
-        sleep(10);
-        Object monitor = new Object();
-        Future<?> wait = executor.submit(() -> method3(id, monitor));
-        method2(id, monitor);
-        synchronized (monitor) {
-            // Increased timeout from 10ms to 150ms to accommodate:
-            // - method2Impl sleep: 10ms
-            // - method3Impl sleep: 10ms
-            // - Thread scheduling/lock contention buffer: 130ms
-            monitor.wait(150);
-        }
-        wait.get();
-        record("method1Impl", context);
-    }
-
-    public void method2(long id, Object monitor) {
-        synchronized (monitor) {
-            try (Tracing.Context context = Tracing.newContext(() -> id + 1, profiler)) {
-                method2Impl(context);
-                monitor.notify();
-            }
-        }
-    }
-
-    
-    public void method2Impl(Tracing.Context context) {
-        sleep(10);
-        record("method2Impl", context);
-    }
-
-    public void method3(long id, Object monitor) {
-        synchronized (monitor) {
-            try (Tracing.Context context = Tracing.newContext(() -> id + 2, profiler)) {
-                method3Impl(context);
-                monitor.notify();
-            }
-        }
-    }
-
-    public void method3Impl(Tracing.Context context) {
-        sleep(10);
-        record("method3Impl", context);
-    }
-
-
-    private void record(String methodName, com.datadoghq.profiler.context.Tracing.Context context) {
-        methodsToSpanIds.computeIfAbsent(methodName, k -> new CopyOnWriteArrayList<>())
-                .add(context.getSpanId());
-    }
-
-
-    private void sleep(long millis) {
-        long target = System.nanoTime() + millis * 1_000_000L;
-        while (System.nanoTime() < target) {
-            try {
-                long remaining = (target - System.nanoTime()) / 1_000_000L;
-                if (remaining <= 0) {
-                    break;
-                }
-                Thread.sleep(remaining);
-                // Continue loop to handle spurious wakeups - ensures full sleep duration
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;  // Exit immediately on interrupt
-            }
-        }
-    }
+  }
 }

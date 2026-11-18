@@ -448,7 +448,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                     shadow[idx].leak_tag = leak;
                 }
             }
-            table.setLeakTag(tag, leak);
+            table.setLeakTag(tag, leak, /*leak_tag_incarnation=*/0);
             break;
         }
         case 9: { // LOOKUP - I2 checked by the sweep below

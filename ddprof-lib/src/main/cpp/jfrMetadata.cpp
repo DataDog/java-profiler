@@ -202,6 +202,8 @@ void JfrMetadata::initialize(
                   << field("size", T_LONG, "Original Size", F_BYTES)
                   << field("weight", T_FLOAT, "Sample weight")
                   << field("leakTag", T_LONG, "Leak Tag", F_UNSIGNED)
+                  << field("leakTagIncarnation", T_LONG,
+                           "Leak Tag Incarnation", F_UNSIGNED)
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
@@ -211,6 +213,8 @@ void JfrMetadata::initialize(
               << category("Datadog", "Profiling")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
               << field("targetTag", T_LONG, "Frontier Tag", F_UNSIGNED)
+              << field("leakTagIncarnation", T_LONG, "Leak Tag Incarnation",
+                       F_UNSIGNED)
               << field("depth", T_INT, "Depth")
               << field("rootKind", T_STRING, "GC Root Kind")
               << field("totalHops", T_INT,

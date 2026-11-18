@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,19 @@
 package com.datadoghq.profiler.nativethread;
 
 public class NativeThreadCreator implements ThreadCreator {
-    static {
-        System.loadLibrary("ddproftest");
-    }
+  static {
+    System.loadLibrary("ddproftest");
+  }
 
-    public long createThread() {
-        return createNativeThread();
-    }
+  public long createThread() {
+    return createNativeThread();
+  }
 
-    public void waitThread(long threadId) {
-        waitNativeThread(threadId);
-    }
+  public void waitThread(long threadId) {
+    waitNativeThread(threadId);
+  }
 
-    public static native long createNativeThread();
-    public static native void waitNativeThread(long threadId);
+  public static native long createNativeThread();
+
+  public static native void waitNativeThread(long threadId);
 }
-

@@ -48,8 +48,8 @@ and `JavaProfiler.getDebugCounters()`. The average is derived, not stored.
 
 | Slot | Engines sharing it | Probe site |
 |---|---|---|
-| `cpu` | `PerfEvents`, `CTimer`, `CTimerJvmti`, `ITimer`, `ITimerJvmti` | each engine's `signalHandler` |
-| `wallclock` | `WallClockASGCT`, `WallClockJvmti`, `J9WallClock` | `sharedSignalHandler`; for J9, the per-thread body of `timerLoop` |
+| `cpu` | `PerfEvents`, `CTimer`, `CTimerJvmti`, `ITimer`, `ITimerJvmti`, `J9WallClock` | each engine's `signalHandler`; for J9, the `BCI_CPU` `recordExternalSample` call in `timerLoop` (RUNNABLE threads) |
+| `wallclock` | `WallClockASGCT`, `WallClockJvmti`, `J9WallClock` | `sharedSignalHandler`; for J9, the `BCI_WALL` `recordExternalSample` call in `timerLoop` |
 | `alloc` | `ObjectSampler` | `recordAllocation` |
 | `liveness` | `LivenessTracker` | `track` |
 | `nativemem` | `MallocTracer` | `recordMalloc` |
@@ -65,7 +65,7 @@ there are no slots for them.
 
 ## Reading the numbers
 
-Five things are easy to get wrong:
+Six things are easy to get wrong:
 
 1. **`sampler_ticks.*` is elapsed wall time, not CPU time.** It includes time the
    sampled thread spent descheduled, page-faulting, or waiting on the
@@ -95,8 +95,9 @@ Five things are easy to get wrong:
    are excluded by construction: each probe is declared after its handler's
    signal-origin check, so a stray `SIGPROF` — and the foreign handler that
    `OS::forwardForeignSignal()` runs for it — is never timed as our work.
-   `ITimer` is the exception, having no origin check to sit behind (see its own
-   NOTE in `itimer.cpp`). Use the `SAMPLES_DROPPED_*` / `WC_SIGNAL_*` counters to
+   `ITimer` and `ITimerJvmti` are the exception, having no origin check to sit
+   behind (see the NOTE in `itimer.cpp`): every `SIGPROF` they receive, foreign
+   ones included, is timed. Use the `SAMPLES_DROPPED_*` / `WC_SIGNAL_*` counters to
    quantify the bail-outs.
 
 6. **`report()` can undercount the very last sample of a run.** The probe is
@@ -112,7 +113,7 @@ Five things are easy to get wrong:
 ## Implementation notes
 
 `SAMPLER_PERF_PROBE(SP_CPU)` declares a `SamplerPerfProbe`: the constructor takes
-a `os::nanotime()` timestamp, the destructor adds the elapsed ticks to
+an `OS::nanotime()` (`CLOCK_MONOTONIC`) timestamp, the destructor adds the elapsed nanoseconds to
 `sampler_ticks.<name>` and bumps `sampler_count.<name>`.
 
 - **Why RAII rather than a manual start/stop pair.** Every instrumented handler
@@ -130,7 +131,8 @@ a `os::nanotime()` timestamp, the destructor adds the elapsed ticks to
   `ErrnoPreserver` and `PerfFdRearmGuard` on purpose, so the guard's rearm
   `ioctl`s are inside the measured window.
 - **Crash recovery does not lose samples.** The `sigsetjmp` landing pad is inside
-  `HotspotSupport::walkJavaStack`, which the handler calls via `recordSample`, so
+  `HotspotSupport::walkVM` (reached from the handler via `recordSample` →
+  `HotspotSupport::walkJavaStack`), so
   a `checkFault` → `siglongjmp` unwinds only to that frame — above the probe. The
   destructor is not bypassed.
 - **Layout coupling.** The probe addresses its two slots as
@@ -141,11 +143,14 @@ a `os::nanotime()` timestamp, the destructor adds the elapsed ticks to
   counter between its entries — is a compile error rather than silent
   misattribution.
 
-Converting ticks to nanoseconds uses `SamplerPerf::ticksToNanos()`, which splits
-into whole seconds plus remainder. The naive `ticks * 1e9 / frequency()`
-overflows `u64` well inside a normal recording: at 3 GHz, one hour is ~1.08e13
-ticks and `ticks * 1e9` is ~1.08e22, so it silently reports 2.88 seconds instead
-of 3600.
+The probe times with `OS::nanotime()` (`CLOCK_MONOTONIC`), not the TSC: the raw
+TSC is not guaranteed to be synchronized across cores, so a handler migrating
+between cores could record a huge bogus delta. The accumulated "ticks" are
+therefore already nanoseconds, and `SamplerPerf::ticksToNanos()` is an identity
+passthrough kept only so `report()` reads the same regardless of the clock.
+`SamplerPerf::primeClock()` is called from `Profiler::start()` before any
+signal-based engine is armed, so `OS::nanotime()`'s lazy first-call setup (macOS
+`mach_timebase_info`) never runs inside a signal handler.
 
 ## Adding a sampler
 
@@ -163,7 +168,10 @@ of 3600.
 `faultInjection_ut.cpp`. Without the flag it asserts the probe is inert and that
 no `sampler_*` counter exists in the table — the guard that protects production.
 With the flag it covers the offset addressing, accumulation, counting on early
-return, cross-sampler nesting, and the `ticksToNanos` overflow case.
+return, cross-sampler nesting, and report output. The mode-independent
+`TicksToNanosDoesNotOverflow` case predates the switch to `OS::nanotime()`; it
+scales by `TSC::frequency()`, which is the 1 GHz `NANOTIME_FREQ` default when the
+TSC is not enabled (as in gtest), so it now just checks the identity mapping.
 
 ```bash
 ./gradlew :ddprof-lib:gtestDebug                       # inert-build assertions

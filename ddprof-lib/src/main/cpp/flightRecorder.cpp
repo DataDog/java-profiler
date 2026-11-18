@@ -8,15 +8,6 @@
 #include <inttypes.h>
 #include <dlfcn.h>
 
-// mallinfo2() replaced the int-based mallinfo() in glibc 2.33; the older struct
-// silently truncates past 2 GiB, so it is not a usable fallback for byte
-// accounting. Absent on musl and macOS, where the arena counters stay zero.
-#if defined(__linux__) && defined(__GLIBC__) &&                                \
-    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
-  #include <malloc.h>
-  #define DD_HAVE_MALLINFO2 1
-#endif
-
 #include "buffers.h"
 #include "callTraceHashTable.h"
 #include "context.h"
@@ -29,8 +20,10 @@
 #include "jfrMetadata.h"
 #include "jniHelper.h"
 #include "jvmSupport.inline.h"
+#include "mallocInfo.h"
 #include "os.h"
 #include "profiler.h"
+#include "referenceChainFrontier.h"
 #include "signalSafety.h"
 #include "rustDemangler.h"
 #include "safeAccess.h"
@@ -78,15 +71,20 @@ static inline u64 safeDuration(u64 start_time, u64 end_time) {
 }
 
 SharedLineNumberTable::~SharedLineNumberTable() {
-  // _ptr is the buffer jvmti->GetLineNumberTable() itself returned (see
-  // Lookup::fillJavaMethodInfo), not a copy -- freed here via
+  // A JVMTI table is the buffer jvmti->GetLineNumberTable() itself returned
+  // (see Lookup::fillJavaMethodInfo), not a copy -- freed here via
   // jvmti->Deallocate(), not plain free(). On HotSpot, JvmtiEnv
   // Allocate()/Deallocate() are os::malloc()/os::free(), which route through
   // native memory tracking; freeing with plain free() can result in crash
   // whenever -XX:NativeMemoryTracking is enabled, because native memory tracking
-  // adds a header to malloc'd block.
+  // adds a header to malloc'd block. A table decoded from VM metadata
+  // (ResolvedMethod) is our own malloc() and goes back to free().
   if (_table != nullptr) {
-    VM::jvmti()->Deallocate((unsigned char *)_table);
+    if (_jvmti_allocated) {
+      VM::jvmti()->Deallocate((unsigned char *)_table);
+    } else {
+      free(_table);
+    }
     Counters::decrement(LINE_NUMBER_TABLES);
     // _size is the JVMTI entry count passed at construction (see
     // fillJavaMethodInfo), so the byte size matches the allocation.
@@ -266,9 +264,6 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   char* volatile &class_name = state._class_name;
   char* volatile &method_name = state._method_name;
   char* volatile &method_sig = state._method_signature;
-  u32 class_name_id = 0;
-  u32 method_name_id = 0;
-  u32 method_sig_id = 0;
 
   jint line_number_table_size = 0;
   jvmtiLineNumberEntry *line_number_table = NULL;
@@ -385,95 +380,15 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         entry = true;
       }
 
-      // maybe we should store the lookups below in initialisation-time
-      // constants...
-      if (has_prefix(class_name,
-                     "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "jdk/internal/reflect/GeneratedConstructorAccessor",
-            strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedConstructorAccessor."
-                            "newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "sun/reflect/GeneratedConstructorAccessor",
-            strlen("sun/reflect/GeneratedConstructorAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(
-            "Object "
-            "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "jdk/internal/reflect/GeneratedMethodAccessor",
-            strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedMethodAccessor."
-                            "invoke(Object, Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookupDuringDump(
-            "sun/reflect/GeneratedMethodAccessor",
-            strlen("sun/reflect/GeneratedMethodAccessor"),
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(
-            "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
-            "Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name, "Ljava/lang/invoke/LambdaForm$")) {
-        const int lambdaFormPrefixLength =
-            strlen("Ljava/lang/invoke/LambdaForm$");
-        // we want to normalise to java/lang/invoke/LambdaForm$MH,
-        // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
-        if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$MH",
-              strlen("java/lang/invoke/LambdaForm$MH"),
-              Profiler::maxClassMapSize());
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$BMH",
-              strlen("java/lang/invoke/LambdaForm$BMH"),
-              Profiler::maxClassMapSize());
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
-          class_name_id = _classes->lookupDuringDump(
-              "java/lang/invoke/LambdaForm$DMH",
-              strlen("java/lang/invoke/LambdaForm$DMH"),
-              Profiler::maxClassMapSize());
-        } else {
-          // don't recognise the suffix, so don't normalise
-          class_name_id = _classes->lookupDuringDump(
-              normalized_class_name, normalized_class_name_len,
-              Profiler::maxClassMapSize());
-        }
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
-      } else {
-        class_name_id = _classes->lookupDuringDump(
-            normalized_class_name, normalized_class_name_len,
-            Profiler::maxClassMapSize());
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
-      }
+      fillJavaMethodNames(mi, normalized_class_name, normalized_class_name_len,
+                          method_name, method_sig);
     } else {
       Counters::increment(JMETHODID_SKIPPED);
-      class_name_id = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
-      method_name_id = _symbols.lookup("<unloaded>");
-      method_sig_id = _symbols.lookup("()L;");
+      mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
+      mi->_name = _symbols.lookup("<unloaded>");
+      mi->_sig = _symbols.lookup("()L;");
     }
 
-    mi->_class = class_name_id;
-    mi->_name = method_name_id;
-    mi->_sig = method_sig_id;
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
     // Only touch mi->_line_number_table when a table was actually fetched
@@ -499,6 +414,123 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   // still fills mi with the deliberate "<unloaded>" sentinel and returns true
   // via the return above).
   return false;
+}
+
+void Lookup::fillJavaMethodNames(MethodInfo *mi, const char *class_name,
+                                 size_t class_name_len, const char *method_name,
+                                 const char *method_sig) {
+  u32 class_name_id;
+  u32 method_name_id;
+  // maybe we should store the lookups below in initialisation-time
+  // constants...
+  if (has_prefix_n(class_name, class_name_len,
+                   "jdk/internal/reflect/GeneratedConstructorAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "jdk/internal/reflect/GeneratedConstructorAccessor",
+        strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id =
+        _symbols.lookup("Object "
+                        "jdk.internal.reflect.GeneratedConstructorAccessor."
+                        "newInstance(Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "sun/reflect/GeneratedConstructorAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "sun/reflect/GeneratedConstructorAccessor",
+        strlen("sun/reflect/GeneratedConstructorAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(
+        "Object "
+        "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "jdk/internal/reflect/GeneratedMethodAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "jdk/internal/reflect/GeneratedMethodAccessor",
+        strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id =
+        _symbols.lookup("Object "
+                        "jdk.internal.reflect.GeneratedMethodAccessor."
+                        "invoke(Object, Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "sun/reflect/GeneratedMethodAccessor")) {
+    class_name_id = _classes->lookupDuringDump(
+        "sun/reflect/GeneratedMethodAccessor",
+        strlen("sun/reflect/GeneratedMethodAccessor"),
+        Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(
+        "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
+        "Object[])");
+  } else if (has_prefix_n(class_name, class_name_len,
+                          "java/lang/invoke/LambdaForm$")) {
+    const size_t lambdaFormPrefixLength =
+        strlen("java/lang/invoke/LambdaForm$");
+    const char *suffix = class_name + lambdaFormPrefixLength;
+    const size_t suffix_len = class_name_len - lambdaFormPrefixLength;
+    // we want to normalise to java/lang/invoke/LambdaForm$MH,
+    // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
+    if (has_prefix_n(suffix, suffix_len, "MH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$MH",
+          strlen("java/lang/invoke/LambdaForm$MH"),
+          Profiler::maxClassMapSize());
+    } else if (has_prefix_n(suffix, suffix_len, "BMH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$BMH",
+          strlen("java/lang/invoke/LambdaForm$BMH"),
+          Profiler::maxClassMapSize());
+    } else if (has_prefix_n(suffix, suffix_len, "DMH")) {
+      class_name_id = _classes->lookupDuringDump(
+          "java/lang/invoke/LambdaForm$DMH",
+          strlen("java/lang/invoke/LambdaForm$DMH"),
+          Profiler::maxClassMapSize());
+    } else {
+      // don't recognise the suffix, so don't normalise
+      class_name_id = _classes->lookupDuringDump(
+          class_name, class_name_len, Profiler::maxClassMapSize());
+    }
+    method_name_id = _symbols.lookup(method_name);
+  } else {
+    class_name_id = _classes->lookupDuringDump(
+        class_name, class_name_len, Profiler::maxClassMapSize());
+    method_name_id = _symbols.lookup(method_name);
+  }
+
+  mi->_class = class_name_id;
+  mi->_name = method_name_id;
+  mi->_sig = _symbols.lookup(method_sig);
+}
+
+void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
+  const char *class_name = resolved.klassName();
+  const char *method_name = resolved.methodName();
+  const char *method_sig = resolved.methodSignature();
+
+  fillJavaMethodNames(mi, class_name, strlen(class_name), method_name, method_sig);
+  mi->_type = FRAME_INTERPRETED;
+  // Same entry-frame rules as the jmethodID path: Thread.run (or an override
+  // in a Thread subclass), or public static void main(String[]).
+  mi->_is_entry = resolved.isThreadRun() ||
+                  (strcmp(method_name, "main") == 0 &&
+                   strcmp(method_sig, "([Ljava/lang/String;)V") == 0);
+
+  // Raw rows are refilled at their first use in every chunk (see
+  // fillRawMethod()), so the table is replaced each time rather than kept
+  // from the first fill as on the jmethodID path.
+  if (resolved.lineNumberTable() != nullptr) {
+    int size = resolved.lineNumberTableSize();
+    // Built before ownership moves, so a std::bad_alloc here leaves the table
+    // with `resolved`, which frees it.
+    auto table = std::make_shared<SharedLineNumberTable>(
+        size, const_cast<jvmtiLineNumberEntry *>(resolved.lineNumberTable()),
+        false /* malloc'd */);
+    resolved.takeLineNumberTable(&size);
+    mi->_line_number_table = std::move(table);
+    Counters::increment(LINE_NUMBER_TABLES);
+    NativeMem::record(NM_LINE_TABLES, (long long)((size_t)size * sizeof(jvmtiLineNumberEntry)));
+  } else {
+    mi->_line_number_table = nullptr;
+  }
 }
 
 bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
@@ -672,7 +704,15 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     return unknown_method;
   }
 
-  // Fast path, deliberately unprotected. For anything but a raw-pointer or
+  // Raw Method* frames take their own path: resolution makes JNI calls (it
+  // collects the dump's pinned classes on first use and takes the registry
+  // mutex), so it must not run under fillMethod()'s landing pad, and it
+  // installs its own around the metadata reads.
+  if (FrameType::isRawPointer(bci)) {
+    return fillRawMethod(frame);
+  }
+
+  // Fast path, deliberately unprotected. For anything but a
   // BCI_VTABLE_RECEIVER frame, methodKey() reads no VM metadata (see its
   // comment) and an already-marked row needs no symbolication -- there is
   // nothing here that can fault, hence nothing to recover from. Worth
@@ -680,7 +720,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // arming the protection below is not free: initCurrentThreadSignalSafe()
   // blocks and unblocks signals and sigsetjmp(..., 1) reads the signal mask,
   // three syscalls on a loop that runs once per frame per trace.
-  if (!FrameType::isRawPointer(bci) && bci != BCI_VTABLE_RECEIVER) {
+  if (bci != BCI_VTABLE_RECEIVER) {
     MethodMap::iterator it = _method_map->find(methodKey(frame, method_id, bci, 0));
     if (it != _method_map->end() && it->second._mark) {
       return &it->second;
@@ -702,18 +742,40 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   return fillMethod(frame, method_id, bci, prof_thread);
 }
 
+MethodInfo *Lookup::fillRawMethod(const ASGCT_CallFrame &frame) {
+  RawMethodKey key{FrameType::untagPointer(frame.method), FrameType::rawTag(frame.bci, frame.method)};
+  auto cached = _raw_method_cache.find(key);
+  if (cached != _raw_method_cache.end()) {
+    Counters::increment(RAW_FRAME_RESOLVE_CACHE_HITS);
+    if (cached->second == nullptr) {
+      return unknownMethod();
+    }
+    return cached->second;
+  }
+
+  ResolvedMethod resolved;
+  if (!JVMSupport::resolve(frame.method, frame.bci, resolved)) {
+    _raw_method_cache.emplace(key, nullptr);
+    return unknownMethod();
+  }
+  // Refilled even if the row was filled in an earlier chunk: that only proves
+  // the frame's (Method*, tag) named this method then, while resolve() just
+  // checked it again. The fill reads only `resolved`, never VM metadata, so
+  // unlike fillMethod() it needs no landing pad.
+  MethodInfo *mi = &(*_method_map)[MethodMap::makeRawKey(key.method, key.tag)];
+  fillJavaMethodInfo(mi, resolved);
+  if (mi->_key == 0) {
+    mi->_key = _method_map->allocId();  // see fillMethod() on why not size()+1
+  }
+  mi->_mark = true;
+  _raw_method_cache.emplace(key, mi);
+  return mi;
+}
+
 MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
                                jint bci, ProfiledThread* const prof_thread) {
 
   assert(prof_thread != nullptr);
-                                  // Resolve native method
-  if (FrameType::isRawPointer(bci)) {
-    method_id = JVMSupport::resolve(frame.method);
-    if (method_id == nullptr) {
-      return unknownMethod();
-    }
-  }
-
   assert(method_id != nullptr && "Already filtered by caller");
   // Reinstates the thread's previous landing pad on every exit from this frame,
   // including a std::bad_alloc thrown by one of the map or dictionary inserts
@@ -959,6 +1021,14 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // call.  Classes already unloaded before finishChunk() was entered are not
   // present in the list and receive no protection here.
   jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
+  // fjmethodid=lazy resolves raw frames only of these classes: they stay
+  // pinned until the local references are deleted below. Always called, so a
+  // failed GetLoadedClasses() leaves no list at all rather than a stale one,
+  // and ended on every exit from this function, including a std::bad_alloc.
+  JVMSupport::beginDump(env, err ? nullptr : classes, err ? 0 : count);
+  struct DumpScope {
+    ~DumpScope() { JVMSupport::endDump(); }
+  } dump_scope;
 
   flush(&_cpu_monitor_buf);
 
@@ -982,7 +1052,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
       oSampler->_record_allocations ? oSampler->_interval : 0L,
       oSampler->_record_liveness ? oSampler->_interval : 0L,
       oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
-      oSampler->_record_liveness ? LivenessTracker::instance()->_subsample.ratio
+      oSampler->_record_liveness ? LivenessTracker::instance()->subsampleRatio()
                                  : 0.0,
       oSampler->_gc_generations, Profiler::instance()->eventMask(),
       Profiler::instance()->cpuEngine()->name());
@@ -1077,6 +1147,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // values rather than pre-.
   capturePostFlushNativeMem();
 
+  JVMSupport::endDump();
   if (!err) {
     // delete all local references
     for (int i = 0; i < count; i++) {
@@ -1701,6 +1772,8 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   // classes are inserted into the new-active by fillJavaMethodInfo during
   // writeStackTraces/writeMethods, and those would not appear in the snapshot —
   // standby() captures the pre-rotation state which writeClasses extends.
+  // One Lookup per dump: its raw frame cache holds this dump's answers (see
+  // Lookup::_raw_method_cache), which the next dump's pinned classes can change.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   // CONSTANT pools: always non-empty, always emitted -> 5 sections.
   // writeThreads always emits: it inserts _tid unconditionally before checking.
@@ -1842,6 +1915,17 @@ void Recording::writeThreads(Buffer *buf) {
   }
 }
 
+void Recording::writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
+                                     const MethodInfo *root) {
+  buf->putVar64(trace->trace_id);
+  if (root != nullptr) {
+    bool truncated = trace->truncated ||
+                     (root->_type < FRAME_NATIVE && !root->_is_entry);
+    buf->put8(truncated);
+  }
+  buf->putVar64(trace->num_frames);
+}
+
 int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // Reset all referenced flags before processing
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
@@ -1862,18 +1946,12 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
     buf->putVar64(traces.size());
     for (auto it = traces.begin(); it != traces.end(); ++it) {
       CallTrace *trace = *it;
-      buf->putVar64(trace->trace_id);
+      MethodInfo *root = nullptr;
       if (trace->num_frames > 0) {
-        MethodInfo *mi =
-            lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
-        mi->_referenced = true;  // Mark method as referenced
-        if (mi->_type < FRAME_NATIVE) {
-          buf->put8(mi->_is_entry ? 0 : 1);
-        } else {
-          buf->put8(trace->truncated);
-        }
+        root = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+        root->_referenced = true;
       }
-      buf->putVar64(trace->num_frames);
+      writeStackTraceHeader(buf, trace, root);
       for (int i = 0; i < trace->num_frames; i++) {
         MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
         mi->_referenced = true;  // Mark method as referenced
@@ -2056,14 +2134,24 @@ void Recording::writeLogLevels(Buffer *buf) {
 // mallinfo2(), which then reports all zeros. Neither runtime exports
 // mallctl/tc_malloc_size, so the dlsym probe alone would miss them.
 //
-// Not cached: called once per JFR chunk flush, so two dlsym() lookups are
-// negligible.
+// Resolved once: the lookup result cannot change after process start, and the
+// loader lock is not worth taking on every chunk flush. The sentinel is zero-
+// initialized (no dynamic-init guard) and read/written with acquire/release,
+// so a racing first caller can only repeat the same lookup. Flush path only,
+// never signal context.
 bool Recording::glibcMallocActive() {
 #if defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
   return false;
 #else
-  return dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
-         dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+  static int cached = 0; // 0 = unresolved, 1 = active, 2 = inactive
+  int state = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
+  if (state == 0) {
+    bool active = dlsym(RTLD_DEFAULT, "mallctl") == nullptr &&
+                  dlsym(RTLD_DEFAULT, "tc_malloc_size") == nullptr;
+    state = active ? 1 : 2;
+    __atomic_store_n(&cached, state, __ATOMIC_RELEASE);
+  }
+  return state == 1;
 #endif
 }
 
@@ -2081,17 +2169,26 @@ bool Recording::glibcMallocActive() {
 // from the sampling signal handler. Once per JFR chunk is negligible.
 //
 // Left unset (rather than published as zero) when a replacement allocator is
-// active: see glibcMallocActive() above.
+// active: see glibcMallocActive() above. Also left unset when the runtime
+// allocator does not provide mallinfo2() (glibc < 2.33, musl, macOS) -- the
+// symbol is resolved at runtime, so a build made against old headers still
+// picks it up from a newer runtime glibc (see mallocInfo.cpp).
 void Recording::updateMallocArenaStats() {
-#ifdef DD_HAVE_MALLINFO2
   if (!glibcMallocActive()) {
     return;
   }
-  struct mallinfo2 mi = mallinfo2();
-  // arena:    bytes obtained from the OS via brk, excluding mmap'd chunks
+  MallocArenaInfo mi;
+  if (!mallocArenaSnapshot(&mi)) {
+    return;
+  }
+  // arena:    system memory held by glibc's arenas, summed per arena
+  //           (glibc int_mallinfo: m->arena += av->system_mem) -- NOT just
+  //           the main sbrk heap; non-main arenas live on their own mmap'd
+  //           heaps, so arena growth tracks per-thread arenas too
   // uordblks: bytes currently handed out to callers
   // fordblks: bytes free but retained in the arenas -- the waste term
-  // keepcost: the trimmable top block, i.e. what malloc_trim could return;
+  // keepcost: the main arena's top chunk only (glibc sets it under
+  //           `if (av == &main_arena)`), i.e. what malloc_trim could return;
   //           separating it distinguishes trim-threshold policy from genuine
   //           fragmentation, which trimming cannot reclaim
   // hblkhd:   bytes in mmap'd chunks, which are returned to the OS on free
@@ -2100,7 +2197,6 @@ void Recording::updateMallocArenaStats() {
   Counters::set(MALLOC_FREE_HELD_BYTES, (long long)mi.fordblks);
   Counters::set(MALLOC_TRIMMABLE_BYTES, (long long)mi.keepcost);
   Counters::set(MALLOC_MMAP_BYTES, (long long)mi.hblkhd);
-#endif
 }
 
 void Recording::capturePostFlushNativeMem() {
@@ -2229,19 +2325,29 @@ void Recording::writeCounters(Buffer *buf) {
   }
 }
 
+#ifdef DEBUG
+void Recording::writeUnwindFailureEvent(Buffer *buf, u64 ticks, const char *kind,
+                                       const char *name, u64 count) {
+  // A 255-byte name plus the other fields needs a multi-byte event size.
+  int start = buf->skip(MAX_VAR32_LENGTH);
+  buf->putVar64(T_UNWIND_FAILURE);
+  buf->putVar64(ticks);
+  buf->putUtf8(kind);
+  buf->putUtf8(name);
+  buf->putVar64(count);
+  buf->putVar32(start, buf->offset() - start);
+}
+#endif
+
 void Recording::writeUnwindFailures(Buffer *buf) {
 #ifdef DEBUG
   static UnwindFailures failures;
   UnwindStats::collectAndReset(failures);
 
   failures.forEach([&](UnwindFailureKind kind, const char *name, u64 count) {
-    int start = buf->skip(1);
-    buf->putVar64(T_UNWIND_FAILURE);
-    buf->putVar64(_start_ticks);
-    buf->putUtf8((kind & UNWIND_FAILURE_STUB) ? "stub" : "other");
-    buf->putUtf8(name);
-    buf->putVar64(count);
-    writeEventSizePrefix(buf, start);
+    writeUnwindFailureEvent(buf, _start_ticks,
+                            (kind & UNWIND_FAILURE_STUB) ? "stub" : "other",
+                            name, count);
     flushIfNeeded(buf);
   });
 #endif // DEBUG
@@ -2423,12 +2529,14 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
           ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) /
                 event->_alloc._size
           : 0);
-  // leak_tag precedes the context snapshot to match the metadata field
-  // order (jfrMetadata.cpp: leakTag is declared between weight and spanId,
-  // before || contextAttributes) - a field written on the opposite side of
-  // writeContextSnapshot() than where the metadata declares it makes every
-  // parser read it from the first context-attribute byte.
+  // leak_tag and leak_tag_incarnation precede the context snapshot to match
+  // the metadata field order (jfrMetadata.cpp: leakTag, leakTagIncarnation
+  // are declared between weight and spanId, before || contextAttributes) - a
+  // field written on the opposite side of writeContextSnapshot() than where
+  // the metadata declares it makes every parser read it from the first
+  // context-attribute byte.
   buf->putVar64(event->leak_tag);
+  buf->putVar64((u64)event->leak_tag_incarnation);
   writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -2524,6 +2632,7 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   buf->putVar64(T_REFERENCE_CHAIN);
   buf->putVar64(event->_start_time);
   buf->putVar64(event->_target_tag);
+  buf->putVar64((u64)event->_leak_tag_incarnation);
   buf->putVar32(event->_depth);
   buf->putUtf8(root_kind_name);
   // Original (pre-truncation) chain length, so a consumer can tell a full
@@ -2556,11 +2665,19 @@ void Recording::recordReferenceChainAbandoned(
   int start = buf->skip(1);
   buf->putVar64(T_REFERENCE_CHAIN_ABANDONED);
   buf->putVar64(event->_start_time);
-  // SearchAbandonReason (the engine's reason enum) - kept as a small fixed table
-  // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
-  // _operation -> kOpNames string mapping above.
-  static const char *const kReasons[] = {"none", "frontier_cap", "ttl", "canary_stuck"};
-  buf->putUtf8(event->_reason < 4 ? kReasons[event->_reason] : "unknown");
+  // Indexed by SearchAbandonReason, including its internal RECORDING_END value.
+  // Keep that slot so ROOT_ENUM_ERROR stays at its enum index; recording stop
+  // does not enqueue an event for RECORDING_END.
+  static const char *const kReasons[] = {"none", "frontier_cap", "ttl",
+                                         "canary_stuck", "unknown",
+                                         "root_enum_error"};
+  static_assert(SearchAbandonReason::RECORDING_END == 4 &&
+                        SearchAbandonReason::ROOT_ENUM_ERROR ==
+                            sizeof(kReasons) / sizeof(kReasons[0]) - 1,
+                "kReasons is positionally indexed by SearchAbandonReason");
+  buf->putUtf8(event->_reason < sizeof(kReasons) / sizeof(kReasons[0])
+                   ? kReasons[event->_reason]
+                   : "unknown");
   buf->putVar32(event->_passes_run);
   buf->putVar32(event->_frontier_size);
   buf->putVar32(event->_hop_cap);

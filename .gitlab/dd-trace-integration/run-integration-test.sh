@@ -35,6 +35,9 @@ TEST_DURATION="${TEST_DURATION:-60}"
 TEST_THREADS=4
 CPU_ITERATIONS=10000
 ALLOC_RATE=1000
+VALIDATION_FAILURES=0
+SCENARIO1_FAILED=0
+SCENARIO2_FAILED=0
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -425,6 +428,9 @@ log_info "Locating JFR recording in ${SCENARIO1_JFR_DIR}..."
 SCENARIO1_JFR=$(find "${SCENARIO1_JFR_DIR}" -name "*.jfr" -print -quit)
 
 if [ -z "${SCENARIO1_JFR}" ] || [ ! -f "${SCENARIO1_JFR}" ]; then
+  # Early aborts before validation (no JFR, recording too small) still skip
+  # scenario 2; the cell then has no log and gates fail-closed as "without a
+  # result". Only validation failures continue to scenario 2.
   log_error "JFR recording not found in: ${SCENARIO1_JFR_DIR}"
   ls -la "${SCENARIO1_JFR_DIR}" || true
   exit 1
@@ -478,10 +484,12 @@ if [ ${VALIDATION_EXIT} -ne 0 ]; then
     log_error "Validation log file not found: ${VALIDATION_LOG}"
   fi
 
-  exit 1
+  VALIDATION_FAILURES=$((VALIDATION_FAILURES + 1))
+  SCENARIO1_FAILED=1
+  log_warn "Continuing with the tracer+profiler scenario despite the validation failure"
+else
+  log_info "✓ Profiler-only validation PASSED"
 fi
-
-log_info "✓ Profiler-only validation PASSED"
 
 # Copy validation log to results directory for artifact collection
 CONFIG_NAME="${LIBC_VARIANT}-${ARCH}-${JVM_TYPE}-jdk${JAVA_VERSION}"
@@ -588,10 +596,12 @@ if [ ${VALIDATION_EXIT} -ne 0 ]; then
     log_error "Validation log file not found: ${VALIDATION_LOG}"
   fi
 
-  exit 1
+  VALIDATION_FAILURES=$((VALIDATION_FAILURES + 1))
+  SCENARIO2_FAILED=1
+  log_warn "Validation failure recorded - reported at the end of the run"
+else
+  log_info "✓ Tracer+profiler validation PASSED"
 fi
-
-log_info "✓ Tracer+profiler validation PASSED"
 
 # Copy validation log to results directory for artifact collection
 if [ -f "${VALIDATION_LOG}" ]; then
@@ -620,9 +630,26 @@ echo "========================================"
 echo ""
 log_info "Platform: ${LIBC_VARIANT}-${ARCH}"
 log_info "JVM: ${JVM_TYPE} JDK${JAVA_VERSION}"
-log_info "✓ Scenario 1: Profiler-Only - PASSED"
-log_info "✓ Scenario 2: Tracer+Profiler - PASSED"
+if [ "${SCENARIO1_FAILED}" -eq 0 ]; then
+  log_info "✓ Scenario 1: Profiler-Only - PASSED"
+else
+  log_error "✗ Scenario 1: Profiler-Only - FAILED"
+fi
+if [ "${SCENARIO2_FAILED}" -eq 0 ]; then
+  log_info "✓ Scenario 2: Tracer+Profiler - PASSED"
+else
+  log_error "✗ Scenario 2: Tracer+Profiler - FAILED"
+fi
 log_info ""
-log_info "All integration tests PASSED"
+if [ "${VALIDATION_FAILURES}" -eq 0 ]; then
+  log_info "All integration tests PASSED"
+else
+  log_error "${VALIDATION_FAILURES} validation(s) FAILED"
+fi
 log_info "Results saved to: ${RESULTS_DIR}"
 echo ""
+
+if [ "${VALIDATION_FAILURES}" -gt 0 ]; then
+  exit 1
+fi
+exit 0

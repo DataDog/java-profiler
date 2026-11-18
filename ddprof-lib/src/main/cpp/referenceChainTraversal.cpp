@@ -23,7 +23,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <unordered_set>
 
 // Manual walk driver - IterateOverReachableObjects root/stack-ref enumeration
 
@@ -91,7 +90,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
       if (ctx->frontier->insert(frontier_tag, /*parent_tag=*/0, referrer_klass,
                                 /*depth=*/0, FrontierEntryState::FRONTIER,
                                 translated_root_kind, class_tag)) {
-        ctx->frontier->setLeakTag(frontier_tag, leak_tag);
+        // Capture the current ownership period, as in heapReferenceCallback()'s interception.
+        ctx->frontier->setLeakTag(frontier_tag, leak_tag,
+                                  LivenessTracker::instance()->leakTagIncarnation(leak_tag));
         *tag_ptr = frontier_tag;
         ctx->edges_admitted++;
         ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag, 0,
@@ -105,7 +106,10 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         }
         if (ctx->tracker->_candidate_count > 0) {
           u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
-          ctx->tracker->recordDiscoveredInstance(klass_id, frontier_tag, true);
+          ctx->tracker->recordDiscoveredInstance(
+              klass_id, frontier_tag, true,
+              CacheInvalidationMode::DEFERRED, ctx->resolved_chain_tags,
+              ctx->resolved_chain_tag_count);
         }
         // Queue for expandFrontier() - the plain backlog lane, mirroring admitObject()'s
         // non-priority push tail.
@@ -118,9 +122,14 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
       }
       break;
     }
-    // Prefer the more durable root when an object is rediscovered.
-    ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier, *tag_ptr,
-                                                   translated_root_kind);
+    // Prefer the more durable root when an object is rediscovered and invalidate a cached chain so
+    // its root attribution is rebuilt.
+    if (ctx->tracker->maybeUpgradeRootAttachedRootKind(
+            ctx->frontier, *tag_ptr, translated_root_kind)) {
+      ctx->tracker->deferResolvedChainInvalidation(
+          *tag_ptr, ctx->resolved_chain_tags,
+          ctx->resolved_chain_tag_count);
+    }
     break;
   default:
     break;
@@ -161,8 +170,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
 
   // Shared wall-clock ceiling for this whole call's static-field sweep, expandFrontier(), and
   // rotation sub-calls below (see _pass_deadline_ns's own comment) - deliberately NOT applied to
-  // root/stack-ref enumeration itself, which is instead cadence-gated by run_root_enum/
-  // ROOT_ENUM_MIN_INTERVAL_NS.
+  // root/stack-ref enumeration itself, which is instead interval-gated by shouldRunRootEnum()
+  // (ROOT_ENUM_MIN_INTERVAL_NS and the adaptive extension).
   _pass_deadline_ns = _effective_pause_target_ms > 0
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
@@ -187,8 +196,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // comment) - so even when it runs this pass, the expandFrontier() call below is still needed to
   // make any further progress.
   if (run_root_enum) {
+    jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
     ReferenceChainPassContext ctx;
     ctx.tracker = this;
+    ctx.resolved_chain_tags = resolved_chain_tags;
+    ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
     ctx.frontier = _frontier;
     ctx.hop_cap = _hop_cap;
     ctx.budget = root_enum_budget;
@@ -197,10 +209,19 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     ctx.frontier_cap_hit = false;
 
     u64 root_enum_start_ns = OS::nanotime();
-    jvmtiError root_err = jvmti->IterateOverReachableObjects(
+    jvmtiError root_err;
+#ifdef DEBUG
+    // Error injection must not admit objects through the heap callbacks.
+    // Bypass JVMTI so the test reaches the error path without mutating tags.
+    if (_root_enum_error_injection.load(std::memory_order_acquire)) {
+      root_err = JVMTI_ERROR_OUT_OF_MEMORY;
+    } else
+#endif
+    root_err = jvmti->IterateOverReachableObjects(
         heapRootCallback, stackRefCallback, /*object_ref_callback=*/nullptr,
         &ctx);
-    *safepoint_ns += OS::nanotime() - root_enum_start_ns;
+    u64 root_enum_safepoint_ns = OS::nanotime() - root_enum_start_ns;
+    *safepoint_ns += root_enum_safepoint_ns;
 
     // expand_budget is spent independently of root_enum_budget below (see
     // ROOT_ENUM_MIN_INTERVAL_NS's own comment) - ctx.edges_admitted is written straight into
@@ -208,23 +229,40 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     // whatever root enumeration admitted.
     *edges_admitted = ctx.edges_admitted;
     _last_root_enum_ns = OS::nanotime();
+    // Every attempt - completed, truncated, or errored - re-pays the JVM's unconditional
+    // all-thread EA deoptimization (see ROOT_ENUM_MIN_INTERVAL_NS's comment), so the measured
+    // in-safepoint cost extends the next attempt's interval floor regardless of the outcome.
+    _last_root_enum_safepoint_ms = root_enum_safepoint_ns / 1000000;
 
     if (root_err != JVMTI_ERROR_NONE) {
+      // The enumeration attempt errored out - the root picture is incomplete, so record it:
+      // runPass()'s termination ladder must not treat the search as settled. The consecutive-error
+      // count feeds the ladder's ROOT_ENUM_ERROR abandon; any successful attempt resets it.
+      _root_enum_incomplete = true;
+      _consecutive_enum_errors++;
+      Counters::increment(REFERENCE_CHAIN_ROOT_ENUM_ERRORS);
       *truncated = true;
       *frontier_cap_hit = false;
-      _root_enum_truncated_last_time = false;
       return;
     }
     if (ctx.truncated) {
+      // A truncated attempt ends this pass - an incomplete enumeration leaves the frontier's root
+      // picture inconsistent with the expansion phases below, so the next pass expands on the
+      // roots already admitted. Retry timing is shouldRunRootEnum()'s (ROOT_ENUM_MIN_INTERVAL_NS).
+      // Record the incompleteness so the ladder neither completes nor no-progress-
+      // abandons while unenumerated roots may remain. The FRONTIER_CAP_HIT sub-case also lands
+      // here; that is deliberately harmless - runPass()'s frontier-cap abandon precedes any read
+      // of the flag and restartSearch() clears it.
+      _root_enum_incomplete = true;
+      _consecutive_enum_errors = 0;
       *truncated = true;
       *frontier_cap_hit = ctx.frontier_cap_hit;
-      // Only a budget-exhausted truncation (not a frontier-cap-hit, which abandons the search
-      // outright) is grounds to retry root enumeration on the very next pass - see
-      // _root_enum_truncated_last_time's own comment.
-      _root_enum_truncated_last_time = !ctx.frontier_cap_hit;
       return;
     }
-    _root_enum_truncated_last_time = false;
+    // Completed attempt (no error, no truncation): the root picture is now consistent, so the
+    // ladder may treat the frontier as the only pending work.
+    _root_enum_incomplete = false;
+    _consecutive_enum_errors = 0;
   }
 
   int expand_phase_edges_admitted = 0;
@@ -369,7 +407,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
   bool rotation_frontier_cap_hit = false;
-  // Prong 2 static-anchor descend walks run FIRST inside rotation's slice: they are the
+  // Static-anchor descend walks run FIRST inside rotation's slice: they are the
   // highest-value rotation work (bounded, targeted, and the only rotation tier that can reach a
   // collection-shaped static holder's internals in one pass), and their edges draw down the same
   // rotation budget the queue-tier batch below uses - a pass whose anchor walks admit the holder's
@@ -387,7 +425,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     rotation_edges_admitted += static_anchor_edges_admitted;
     rotation_budget -= static_anchor_edges_admitted;
     *truncated = *truncated || static_anchor_truncated;
-    // B' requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
+    // Requeue: resolved-but-unwalked anchors that came from this pass's FIFO drain go back to
     // the FIFO front, order-preserving, so a pass whose budget died mid-batch walks them first next
     // pass instead of waiting for the next sweep lap's re-push.
     if (!static_anchor_unwalked.empty() &&
@@ -429,6 +467,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // last one that ran.
   *truncated = *truncated || rotation_truncated;
   *frontier_cap_hit = *frontier_cap_hit || rotation_frontier_cap_hit;
+
+  // Deferred chain invalidations are applied by the cache readers,
+  // pollWatchedTargets() and drainPendingChainEvents().
 }
 
 // Incremental resumption across passes.
@@ -455,6 +496,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
          "GetObjectsWithTags/FollowReferences are JVMTI Heap-category calls "
          "and must not be made from GarbageCollectionStart/Finish");
 
+  jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
   ReferenceChainPassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
@@ -463,17 +505,14 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   ctx.edges_admitted = 0;
   ctx.truncated = false;
   ctx.frontier_cap_hit = false;
+  ctx.resolved_chain_tags = resolved_chain_tags;
+  ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
 
   // ARRAY-HOLDER BATCHING: expand a whole batch of boundary objects with ONE
   // FollowReferences(initial_object=holder_array) call per BFS level, instead of one
-  // FollowReferences PER frontier entry.
-  std::unordered_set<jlong> batch_tags;
-  ctx.batch_tags = &batch_tags;
-  // Completed-batch-entry tracking for the order-independent truncated-batch resume (see
-  // ReferenceChainPassContext::_completed_batch_tags) - reset per batch along with the rolling
-  // cursor.
-  std::unordered_set<jlong> completed_batch_tags;
-  ctx._completed_batch_tags = &completed_batch_tags;
+  // FollowReferences PER frontier entry. The per-batch descriptor is the tracker's _batch_set;
+  // each batch resets it below, before that batch's JNI holder setup.
+  ctx.batch = &_batch_set;
 
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
@@ -574,16 +613,24 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       break;
     }
 
-    std::unordered_map<jlong, jobject> live;
+    // PER-BATCH RESET, before this batch's JNI holder setup: clears the preceding batch's
+    // completion marks so a failure below cannot consume them, and first-initializes _batch_set
+    // (it deliberately has no constructor).
+    _batch_set.reset();
     for (jint i = 0; i < resolved_count; i++) {
-      live[resolved_tags[i]] = resolved_objects[i];
+      if (!_batch_set.addResolved(resolved_tags[i])) {
+        // Unreachable in production: distinct tags <= batch size <= GOTW_MAX_BATCH, which is
+        // static_assert'd equal to this set's CAPACITY; only the test-only setGotwBatchSize
+        // override can exceed it. Truncate and retain the batch like any other failure.
+        ctx.truncated = true;
+        break;
+      }
     }
 
     // Build the frontier-holder array from the live boundary objects and record their tags so
     // heapReferenceCallback() descends into exactly these (one hop).
-    batch_tags.clear();
     jobjectArray holder = nullptr;
-    if (resolved_count > 0) {
+    if (resolved_count > 0 && !ctx.truncated) {
       jint capacity_err = jni->EnsureLocalCapacity(resolved_count + 16);
       if (capacity_err < 0 || jniExceptionCheck(jni)) {
         // Could not guarantee local-ref headroom for this batch - treat like any other batch-level
@@ -610,7 +657,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
               ctx.truncated = true;
               break;
             }
-            batch_tags.insert(resolved_tags[i]);
+            _batch_set.markMember(resolved_tags[i]);
           }
         }
         if (holder == nullptr) {
@@ -620,8 +667,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         } else if (!ctx.truncated) {
           // A single FollowReferences over the holder array expands this whole BFS level in one
           // stop-the-world HeapWalkOperation (instead of one per frontier entry).
-          ctx._last_visited_batch_tag = 0; // reset rolling cursor
-          completed_batch_tags.clear();
+          ctx._last_visited_batch_tag = 0; // reset rolling cursor; the reset above cleared completion
           u64 follow_start_ns = OS::nanotime();
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
@@ -637,7 +683,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       // The whole batch had all its direct children admitted this level: dead entries are pruned,
       // live ones are marked EXPANDED, and all are popped off the front.
       for (jlong tag : candidate_tags) {
-        if (live.find(tag) == live.end()) {
+        if (!_batch_set.isResolved(tag)) {
           _frontier->clear(tag);
         } else {
           _frontier->markExpanded(tag);
@@ -645,19 +691,18 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         source.pop_front();
       }
       progress = true;
-    } else if (!completed_batch_tags.empty()) {
+    } else if (_batch_set.anyCompleted()) {
       // ROLLING RESUME (order-independent): FollowReferences truncated mid-batch, but the callback
       // recorded exactly which batch entries it finished visiting (see
-      // ReferenceChainPassContext::_completed_batch_tags).
+      // ReferenceChainPassContext::batch).
       std::vector<jlong> keep;
       keep.reserve(candidate_tags.size());
       for (jlong tag : candidate_tags) {
-        if (completed_batch_tags.count(tag) != 0) {
-          if (live.find(tag) == live.end()) {
-            _frontier->clear(tag);
-          } else {
-            _frontier->markExpanded(tag);
-          }
+        if (_batch_set.isCompleted(tag)) {
+          // A completed entry was a batch member, hence addResolved'd first (markMember follows
+          // addResolved), so it is live-by-resolution and gets expanded, never pruned here.
+          assert(_batch_set.isResolved(tag));
+          _frontier->markExpanded(tag);
         } else {
           keep.push_back(tag);
         }
@@ -855,6 +900,7 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     return;
   }
 
+  jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
   ReferenceChainPassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
@@ -863,11 +909,13 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   ctx.edges_admitted = 0;
   ctx.truncated = false;
   ctx.frontier_cap_hit = false;
-  // Empty (not null) batch_tags forces heapReferenceCallback() to stop at exactly one hop past each
+  ctx.resolved_chain_tags = resolved_chain_tags;
+  ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
+  // Empty (not null) batch set forces heapReferenceCallback() to stop at exactly one hop past each
   // class - see this method's own header comment for why a deeper descent here would reintroduce
   // the whole-graph FollowReferences cost the array-holder batching design otherwise avoids.
-  std::unordered_set<jlong> empty_batch_tags;
-  ctx.batch_tags = &empty_batch_tags;
+  _batch_set.reset();
+  ctx.batch = &_batch_set;
   // Lets heapReferenceCallback() walk past the holder->class seed edge (see
   // ReferenceChainPassContext::static_field_seed's own comment) so this sweep actually reaches each
   // class's static fields instead of stopping at the negative-tagged class object itself.
@@ -1028,8 +1076,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // (runPassManualWalk()'s own comment) - there is no "first pass walks the whole graph inline"
   // shortcut here, so every pass (first or resumed) takes the same expand-frontier shape.
   u64 now_ns = OS::nanotime();
-  bool run_root_enum = manual_first_pass || _root_enum_truncated_last_time ||
-                       (now_ns - _last_root_enum_ns >= ROOT_ENUM_MIN_INTERVAL_NS);
+  bool run_root_enum = shouldRunRootEnum(now_ns, manual_first_pass);
 
   int frontier_size_before_pass = _frontier != nullptr ? _frontier->size() : 0;
 
@@ -1048,20 +1095,16 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   err = JVMTI_ERROR_NONE;
 
   store(_passes_run, load(_passes_run) + 1);
-  _last_pass_gc_finish_epoch = gcFinishEpoch();
   store(_last_pass_ns, OS::nanotime());
   if (!run_root_enum) {
-    // A pass that ran root/stack-ref enumeration spends _first_pass_budget, not _effective_budget -
-    // its duration is not a signal about the per-pass cost updatePacing() is trying to regulate
-    // (expandFrontier()'s cheap, per-node expansion calls), so feeding it in here would throttle
-    // _effective_budget down for every one of those unrelated later passes based on a single,
-    // deliberately oversized outlier.
+    // Only non-root-enum passes feed the budget/cadence controller - root-enum passes are
+    // excluded (see the else branch for why).
     updatePacing(safepoint_ns);
   } else {
-    // Excluded from the budget/cadence controller above, but not from the borrow ceiling's
-    // revocation check (see maybeRevokeBorrowForRootEnumPass()'s own comment) - a root-enum pass's
-    // in-safepoint cost is real pause time and must still be able to revoke a borrowed-budget grant
-    // the pacing controller would otherwise keep believing is safe.
+    // A root-enum pass's duration is not a per-pass cost signal for updatePacing(): it spends
+    // _first_pass_budget, not _effective_budget, and feeding the outlier in would throttle every
+    // later expansion pass. The cost is still real pause time, so it can still revoke a
+    // borrowed-budget grant (maybeRevokeBorrowForRootEnumPass()).
     maybeRevokeBorrowForRootEnumPass(safepoint_ns);
   }
   // accumulate this pass's own in-safepoint cost toward the running total restartSearch() will
@@ -1075,7 +1118,10 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   _cpu_pain_budget.spend(non_safepoint_ns / 1000000);
 
   // Apply terminal conditions in priority order.
-  bool has_pending_frontier = truncated;
+  // _root_enum_incomplete counts as pending frontier: while roots remain unenumerated (truncated
+  // or errored attempt, or a floor-wait with a previous attempt incomplete) the search must
+  // neither terminate nor no-progress-abandon.
+  bool has_pending_frontier = truncated || _root_enum_incomplete;
   int frontier_size_after = _frontier->size();
   if (frontier_cap_hit) {
     // Frontier table is full -- no new entries can ever be admitted, so frontier_size_after can
@@ -1088,15 +1134,14 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              frontier_size_after);
   } else if (!has_pending_frontier && _watched_leak_klass_count == 0) {
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
-  } else if (_ttl_ms > 0 &&
+  } else if (_ttl_ms > 0 && !_root_enum_incomplete &&
              (OS::nanotime() - load(_search_start_ns)) / 1000000 >=
                  (u64)_ttl_ms) {
-    // TTL bounds stop-the-world work independently of frontier progress.
-    // _search_start_ns is a plain OS::nanotime() timestamp (see its assignment
-    // above), not a TSC tick count, so the elapsed time must be converted with
-    // a straight ns-to-ms division rather than TSC::ticks_to_millis() (which
-    // divides by TSC::frequency() and would misconvert whenever that
-    // frequency differs from 1 GHz).
+    // Deferred while _root_enum_incomplete: abandoning mid-enumeration loses the unenumerated
+    // roots - the clock keeps running, so the abandon fires on the first pass after the
+    // enumeration completes. _search_start_ns is a plain OS::nanotime() timestamp, not a TSC tick
+    // count: elapsed time is converted with a straight ns-to-ms division, never TSC::ticks_to_
+    // millis() (which divides by TSC::frequency()).
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
@@ -1105,17 +1150,31 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              _ttl_ms,
              (unsigned long long)((OS::nanotime() -
                                    load(_search_start_ns)) / 1000000));
+  } else if (_consecutive_enum_errors >= MAX_CONSECUTIVE_ENUM_ERRORS) {
+    // The enumerator has errored on MAX_CONSECUTIVE_ENUM_ERRORS consecutive attempts (any
+    // successful attempt resets the counter) - bound the retries even with ttl=0.
+    store(_abandon_reason, (u8)SearchAbandonReason::ROOT_ENUM_ERROR);
+    storeRelease(_search_state, (u8)SearchState::ABANDONED);
+    enqueuePendingAbandonedEvent();
+    TEST_LOG_SUMMARY("ReferenceChainTracker::runPass root-enum errors -- abandoning search "
+             "(consecutive_errors=%u)",
+             _consecutive_enum_errors);
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
-             !isUrgent()) {
+             !urgencyLatched() && !_root_enum_incomplete) {
     // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive passes — the search is
-    // genuinely stuck (not just slow), so abandon.
+    // genuinely stuck (not just slow), so abandon. Reads the published latch; calling isUrgent()
+    // here would advance the machine from a second, freshly-read projection.
+    // Belt-and-braces: the progress block below already holds the counter during floor-wait
+    // passes; this guard also covers a pass that both runs an enum chunk and stays frontier-flat.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
-  } else if (_candidate_count > 0 &&
+  } else if (_candidate_count > 0 && !_root_enum_incomplete &&
              __builtin_popcountll(_candidate_found_bits) ==
                  (u64)_candidate_count) {
     // Canary early termination: all leaked candidates have been found -- the search is complete.
+    // Gated on !_root_enum_incomplete: an unenumerated root region may still admit
+    // further candidates, so "all found" is only honest once an enumeration completed.
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
     Counters::increment(REFERENCE_CHAIN_CANDIDATES_FOUND,
                              __builtin_popcountll(_candidate_found_bits));
@@ -1123,8 +1182,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
              _passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
              _passes_since_last_candidate_progress >=
                  canaryStuckPassLimit()) {
-    // Canary-specific stuck detector - deliberately NOT suppressed by isUrgent() (contrast the
-    // ordinary TTL check above).
+    // Canary-specific stuck detector - deliberately NOT suppressed by the urgency latch
+    // urgencyLatched() (contrast the ordinary TTL check above).
     store(_abandon_reason, (u8)SearchAbandonReason::CANARY_STUCK);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
@@ -1133,9 +1192,13 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     }
   }
 
-  // Track progress: if the frontier grew this pass, reset the no-progress counter.
+  // Track progress: frontier growth resets the no-progress counter; a pass that only waited out
+  // the enumeration interval while _root_enum_incomplete holds it - no stuck signal (it also
+  // feeds the canary-stuck abandon). The canary-specific progress counter is never held.
   if (frontier_size_after > frontier_size_before_pass) {
     _passes_since_last_progress = 0;
+  } else if (_root_enum_incomplete && !run_root_enum) {
+    // Held: enumeration still owes chunks; this pass only waited out the interval floor.
   } else {
     _passes_since_last_progress++;
   }
@@ -1200,22 +1263,21 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   TEST_LOG_SUMMARY("ReferenceChainTracker::runPass done: err=%d edges_admitted=%d truncated=%d "
            "frontier_cap_hit=%d searchState=%d abandonReason=%d frontierSize=%d "
            "effectiveBudget=%d effectiveCadenceNs=%llu pendingExpand=%zu priorityExpand=%zu "
-           "candidateFound=%d/%d discoveredCounts=[%d,%d,%d,%d,%d]",
+           "candidateFound=%d/%d discoveredCounts=[%d,%d,%d,%d,%d] rootEnumIncomplete=%d",
            (int)err, edges_admitted, truncated, frontier_cap_hit, (int)load(_search_state),
            (int)_abandon_reason, _frontier->size(), _effective_budget,
-           (unsigned long long)_effective_cadence_ns,
+           (unsigned long long)load(_effective_cadence_ns),
            _pending_expand.size(), _priority_expand.size(),
            (int)__builtin_popcountll(_candidate_found_bits), _candidate_count,
            _candidate_count > 0 ? _candidate_discovered_count[0] : 0,
            _candidate_count > 1 ? _candidate_discovered_count[1] : 0,
            _candidate_count > 2 ? _candidate_discovered_count[2] : 0,
            _candidate_count > 3 ? _candidate_discovered_count[3] : 0,
-           _candidate_count > 4 ? _candidate_discovered_count[4] : 0);
+           _candidate_count > 4 ? _candidate_discovered_count[4] : 0,
+           (int)_root_enum_incomplete);
 
   return err == JVMTI_ERROR_NONE;
 }
-
-// Pause-time-SLO feedback loop (see this method's declaration in
 
 void ReferenceChainTracker::updatePacing(u64 pass_wall_ns) {
   // Truncating to whole milliseconds matches every other PidController usage in this codebase
@@ -1264,20 +1326,24 @@ void ReferenceChainTracker::updatePacing(u64 pass_wall_ns) {
   int64_t overflow = desired - clamped;
   _effective_budget = (int)clamped;
 
+  // One load() and one store() of _effective_cadence_ns: threadLoop()'s urgency ramp writes it
+  // outside _engine_lock, so the access must be atomic. The read-modify-write as a whole is not
+  // atomic - it races the urgency ramp by design (while urgent the ramp owns the field) - the
+  // load()/store() only removes the mixed plain/atomic data race.
   if (overflow < 0) {
     // Still over the pause-time ceiling even at the minimum budget - widen the fallback interval
     // instead of shrinking the budget further.
     u64 step = (u64)(-overflow) * CADENCE_NS_PER_EDGE_OVERFLOW;
-    _effective_cadence_ns =
-        std::min(_effective_cadence_ns + step, MAX_EFFECTIVE_CADENCE_NS);
+    u64 cur = load(_effective_cadence_ns);
+    store(_effective_cadence_ns, std::min(cur + step, MAX_EFFECTIVE_CADENCE_NS));
   } else if (overflow > 0) {
     // Comfortably under the ceiling even at the maximum (config) budget - relax the fallback
     // interval.
     u64 step = (u64)overflow * CADENCE_NS_PER_EDGE_OVERFLOW;
-    _effective_cadence_ns =
-        step >= _effective_cadence_ns
-            ? MIN_EFFECTIVE_CADENCE_NS
-            : std::max(_effective_cadence_ns - step, MIN_EFFECTIVE_CADENCE_NS);
+    u64 cur = load(_effective_cadence_ns);
+    store(_effective_cadence_ns,
+          step >= cur ? MIN_EFFECTIVE_CADENCE_NS
+                      : std::max(cur - step, MIN_EFFECTIVE_CADENCE_NS));
   }
   // overflow == 0: the budget clamp alone fully absorbed this pass's correction - leave the cadence
   // at its current value.

@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -551,4 +551,49 @@ TEST_F(ThreadFilterTest, TokenRoundTripPreservesHighGenerationBit) {
     EXPECT_LT(java_token, 0);
     EXPECT_EQ(slot_id, ThreadFilter::tokenSlotId(static_cast<u64>(java_token)));
     EXPECT_EQ(generation, ThreadFilter::tokenGeneration(static_cast<u64>(java_token)));
+}
+
+namespace {
+// Leaves a flushable tail on the slot: a recorded stack plus pending weight.
+void buildUnownedBlockedTail(ThreadFilter::Slot* slot) {
+    ASSERT_TRUE(slot->shouldRecordUnownedBlockedSample());
+    slot->consumeUnownedBlockedWeight();
+    slot->recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
+    ASSERT_FALSE(slot->shouldRecordUnownedBlockedSample());
+}
+
+// Slots span more than one chunk, so the reset must walk every chunk.
+void expectResetDropsTailsOnAllChunks(ThreadFilter* filter, bool disable_first) {
+    std::vector<ThreadFilter::SlotID> ids;
+    for (int i = 0; i < ThreadFilter::kChunkSize + 2; i++) {
+        ThreadFilter::SlotID id = filter->registerThread();
+        ASSERT_GE(id, 0);
+        ids.push_back(id);
+        buildUnownedBlockedTail(filter->slotForId(id));
+    }
+    ASSERT_GT(ids.back() >> ThreadFilter::kChunkShift, ids.front() >> ThreadFilter::kChunkShift);
+    if (disable_first) {
+        filter->init("");
+        ASSERT_FALSE(filter->enabled());
+    }
+
+    filter->resetUnownedBlockedTails();
+
+    for (ThreadFilter::SlotID id : ids) {
+        u64 trace_id, weight;
+        OSThreadState state;
+        EXPECT_FALSE(filter->slotForId(id)->flushUnownedBlockedTail(trace_id, weight, state))
+            << "slot " << id;
+        EXPECT_EQ(0u, trace_id) << "slot " << id;
+    }
+}
+} // namespace
+
+TEST_F(ThreadFilterTest, ResetUnownedBlockedTailsDropsTailsInEveryChunk) {
+    expectResetDropsTailsOnAllChunks(filter.get(), false);
+}
+
+// The reset runs at stop() even when the thread filter is disabled.
+TEST_F(ThreadFilterTest, ResetUnownedBlockedTailsDropsTailsWhenFilterDisabled) {
+    expectResetDropsTailsOnAllChunks(filter.get(), true);
 }

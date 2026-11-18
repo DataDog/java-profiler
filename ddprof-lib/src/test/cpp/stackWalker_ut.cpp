@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 #include "stackWalker.h"
+#include "frame.h"
 #include "gtest_crash_handler.h"
 
 #ifdef __linux__
@@ -18,6 +19,16 @@
 
 [[maybe_unused]] static long long* _stackwalker_ut_counters_init = Counters::getCounters();
 #endif
+
+class VMTestAccessor {
+public:
+    VMTestAccessor() : saved(VM::_hotspot) { VM::_hotspot = true; }
+    ~VMTestAccessor() { VM::_hotspot = saved; }
+    VMTestAccessor(const VMTestAccessor&) = delete;
+    VMTestAccessor& operator=(const VMTestAccessor&) = delete;
+private:
+    bool saved;
+};
 
 static constexpr char STACKWALKER_TEST_NAME[] = "StackWalkerTest";
 
@@ -94,6 +105,64 @@ TEST_F(StackWalkerTest, dropUnknownLeaf_unknown_non_leaf_not_dropped) {
     EXPECT_NE(nullptr, frames[0].method_id);
     EXPECT_EQ(nullptr, frames[1].method_id);
     EXPECT_NE(nullptr, frames[2].method_id);
+}
+
+static ASGCT_CallFrame errorFrame(const char* reason) {
+    ASGCT_CallFrame f = {};
+    f.bci = BCI_ERROR;
+    f.method_id = (jmethodID)reason;
+    return f;
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_empty_walk_is_incomplete) {
+    ASGCT_CallFrame frames[1];
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 0));
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, -1));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_java_frames_are_complete) {
+    ASGCT_CallFrame frames[3] = { knownFrame(1), knownFrame(2), knownFrame(3) };
+    EXPECT_TRUE(StackWalkValidation::isCompleteWalk(frames, 3));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_error_only_walk_is_incomplete) {
+    // What walkVM() returns when it faults before reaching the first Java frame.
+    ASGCT_CallFrame frames[1] = { errorFrame("break_not_walkable") };
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 1));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_error_root_is_incomplete) {
+    ASGCT_CallFrame frames[3] = { knownFrame(1), knownFrame(2), errorFrame("break_compiled") };
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 3));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_skipped_frames_is_incomplete) {
+    ASGCT_CallFrame frames[3] = { knownFrame(1), errorFrame("[skipped frames]"), knownFrame(2) };
+    EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 3));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_only_checks_up_to_depth) {
+    ASGCT_CallFrame frames[2] = { knownFrame(1), errorFrame("stale") };
+    EXPECT_TRUE(StackWalkValidation::isCompleteWalk(frames, 1));
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_unresolved_java_frames_are_incomplete) {
+    jmethodID methods[] = {nullptr, JMETHODID_NOT_WALKABLE};
+    for (jmethodID method : methods) {
+        ASGCT_CallFrame frames[2] = { knownFrame(1), knownFrame(2) };
+        frames[1].bci = FrameType::encode(FRAME_JIT_COMPILED, 12);
+        frames[1].method_id = method;
+        EXPECT_FALSE(StackWalkValidation::isCompleteWalk(frames, 2));
+    }
+}
+
+TEST_F(StackWalkerTest, isCompleteWalk_raw_methods_and_synthetic_roots_are_complete) {
+    VMTestAccessor hotspot;
+    ASGCT_CallFrame frames[2] = { knownFrame(1), knownFrame(2) };
+    frames[0].bci = FrameType::encode(FRAME_JIT_COMPILED, 12, true);
+    frames[1].bci = BCI_NATIVE_FRAME;
+    frames[1].method_id = reinterpret_cast<jmethodID>(const_cast<char *>("JVM Continuation"));
+    EXPECT_TRUE(StackWalkValidation::isCompleteWalk(frames, 2));
 }
 
 // ---- isValidFP ----

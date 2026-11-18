@@ -3,6 +3,7 @@
 **/build-*/
 !build-logic/
 !.gitlab/build-deploy/
+!.agents/skills/build-test-review/
 /nbproject/
 /out/
 /.idea/
@@ -32,6 +33,7 @@ datadog/maven/resources
 **/launcher*
 /gradle.properties
 **/hs_err*
+*.core
 
 # cursor AI history
 .history
@@ -48,7 +50,18 @@ doc/temp/
 # Bytecode from the CI scripts, left by running them or their tests locally
 __pycache__/
 
-# CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
-CLAUDE.md
+# OS/editor cruft
+.DS_Store
 
-.sphinx
+# AI review/agent tooling scratch state
+.sphinx/
+/.scratch/
+.skill-builder-temp/
+.claude/scheduled_tasks.lock
+
+# Python bytecode cache
+*.pyc
+
+# AI investigation scratch state (never committed)
+.investigations/
+/notes/

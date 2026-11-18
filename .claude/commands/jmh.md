@@ -1,7 +1,7 @@
 ---
 description: Run and analyze JMH benchmarks via the jmh-benchmarks subagent.
 argument-hint: "[filter or 'all'] [mode: quick|full] [baseline-path(optional)]"
-allowed-tools: Bash(./gradlew:*), Bash(gradlew:*), Bash(./mvnw:*), Bash(mvn:*), Bash(java:*), Read, Glob, Grep, Write
+allowed-tools: Bash(./.claude/commands/build-and-summarize:*), Bash(./mvnw:*), Bash(mvn:*), Bash(java:*), Read, Glob, Grep, Write
 ---
 
 You MUST route this request through the `jmh-benchmarks` subagent for all heavy lifting,

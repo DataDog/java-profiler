@@ -32,7 +32,7 @@ public:
             // anchor. Per the setjmp/longjmp rules (C11 7.13.2.1p3, inherited
             // by C++), a non-volatile automatic local modified in that window
             // has an indeterminate value after longjmp -- the same hazard
-            // ResolvedNames::_long_method_name (hotspotSupport.cpp) guards
+            // ResolvedMethod::_long_method_name (hotspotSupport.h) guards
             // against for an analogous fault-recovery readback.
             VMJavaFrameAnchor* volatile _anchor;
             const void* volatile        _anchor_pc;

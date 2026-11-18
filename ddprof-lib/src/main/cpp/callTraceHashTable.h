@@ -85,6 +85,15 @@ class CallTraceHashTable {
 public:
   static CallTrace _overflow_trace;
 
+  // False if the constructor could not allocate the first table (an mmap failure
+  // does not throw): every put() would then be dropped.
+  bool usable() const { return _table != nullptr; }
+
+#ifdef UNIT_TEST
+  // Leaves the table as the constructor does when its first allocation fails.
+  void dropTableForTest() { _table = nullptr; }
+#endif
+
 private:
   // Pure, allocation-free helpers backing the expansion-overflow guard in
   // expandTableIfNeeded(); kept private and reached in tests only via
@@ -128,6 +137,13 @@ public:
 
   void clear();
 
+private:
+  // Resets the table structure. With drained, returns the detached chunks for
+  // the caller to free; otherwise leaks them and returns an empty ChunkList.
+  ChunkList resetTable(bool drained);
+
+public:
+
   /**
    * Resets the hash table structure but defers memory deallocation.
    * Returns a ChunkList containing the detached memory chunks.
@@ -137,13 +153,31 @@ public:
    * This is used to fix use-after-free in processTraces(): the table
    * structure is reset immediately (allowing rotation), but trace memory
    * remains valid until the processor finishes accessing it.
+   *
+   * No new put() may enter this table for the duration: it must already be
+   * swapped out of the active slot, or put() excluded by the caller.  If a
+   * put() still holds a RefCountGuard on it after the drain timeout, debug
+   * builds abort; otherwise the chunks are leaked rather than freed and the
+   * returned ChunkList is empty.
    */
   ChunkList clearTableOnly();
+
+  /**
+   * Resets the table like clear(), for a caller whose own drain of this table
+   * already timed out: skips the drain and leaks the chunks, since a put() may
+   * still be writing into them.
+   */
+  void clearAfterFailedDrain();
 
   void collect(CallTraceSet &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
-  void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention
+  /**
+   * Copies a trace into a scratch/standby table, deduplicating by exact trace ID.
+   * Must not mix with put(): clear the table before reusing it for active sampling.
+   * The caller must exclude concurrent writers.
+   */
+  void putWithExistingId(CallTrace* trace, u64 weight);
   void setInstanceId(u64 instance_id) {
     // Use atomic store with RELEASE ordering to ensure visibility across threads
     _instance_id.store(instance_id, std::memory_order_release);

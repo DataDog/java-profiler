@@ -19,6 +19,9 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#ifdef UNIT_TEST
+#include <stdexcept>
+#endif
 
 // Forward declarations
 class CallTraceHashTable;
@@ -28,6 +31,28 @@ class CallTraceHashTable;
 // Using reference parameter avoids malloc() for vector creation and copying
 typedef std::function<void(CallTraceIdSet&)> LivenessChecker;
 
+/**
+ * Triple-buffered store of call traces, written by put() from signal handlers
+ * and JNI paths and drained by processTraces().
+ *
+ * Reclamation and put():
+ * - processTraces() tolerates concurrent put(): it only reclaims a table after
+ *   swapping it out of _active_storage (put() re-checks that pointer after
+ *   taking its RefCountGuard) and draining the guards on it.
+ * - clear() resets the active table in place, so it requires put() to be
+ *   excluded; a put() that starts after its drain would write into chunks
+ *   being freed.
+ * - The destructor requires put() to be stopped: put() loads _active_storage
+ *   before it takes its guard, so a put() still in flight could find this
+ *   object freed.  Its drains only protect against a straggler that already
+ *   holds a guard on a table.
+ * In Profiler every put() runs under one of the stripe locks and every
+ * processTraces()/clear() caller holds lockAll(), so today no put() runs
+ * concurrently with either and the drains return immediately; the Profiler
+ * singleton, and so this destructor, is never destroyed.  If a
+ * drain does time out, debug builds abort and release builds leak the table
+ * memory rather than free it under a put() that may still be writing.
+ */
 class CallTraceStorage {
 public:
     // Reserved trace ID for dropped samples due to contention
@@ -53,7 +78,8 @@ private:
     
     // Liveness checkers - protected by simple spinlock during registration/clear
     // Using vector instead of unordered_set since std::function cannot be hashed
-    std::vector<LivenessChecker> _liveness_checkers;
+    std::vector<std::pair<u64, LivenessChecker>> _liveness_checkers;
+    u64 _next_liveness_token = 1;
     SpinLock _liveness_lock;  // Simple atomic lock for rare liveness operations
     
     // Static atomic for instance ID generation - avoids function-local static initialization issues
@@ -62,6 +88,15 @@ private:
     
     // Lazy initialization helper to avoid global constructor
     static u64 getNextInstanceId();
+
+    bool allocateTables();
+#ifdef UNIT_TEST
+    bool _fail_allocation_for_test = false;
+    int _unusable_table_for_test = NO_UNUSABLE_TABLE;
+#endif
+    // Swaps the three table pointers to nullptr and deletes the tables once
+    // drained (a table still guarded after the timeout is leaked).
+    void freeTables();
     
     // Pre-allocated collections for processTraces (single-threaded operation)
     // These collections are reused to eliminate malloc/free cycles
@@ -72,23 +107,66 @@ public:
     CallTraceStorage();
     ~CallTraceStorage();
 
-    // Register a liveness checker (rare operation - uses simple lock)
-    void registerLivenessChecker(LivenessChecker checker);
+    // Register a liveness checker (rare operation - uses simple lock).
+    // Returns a token for unregisterLivenessChecker().
+    u64 registerLivenessChecker(LivenessChecker checker);
 
-    // Clear liveness checkers (rare operation - uses simple lock)
-    void clearLivenessCheckers();
+    // Remove the checker registered under token (no-op if already gone)
+    void unregisterLivenessChecker(u64 token);
+
+#ifdef UNIT_TEST
+    size_t livenessCheckerCountForTest() {
+        ExclusiveLockGuard lock(&_liveness_lock);
+        return _liveness_checkers.size();
+    }
+#endif
 
     // Lock-free put operation for signal handler safety
     // Uses RefCountGuard and generation counter for ABA protection
     u64 put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 weight);
     
-    // Lock-free trace processing with RefCountGuard protection
-    // The callback receives traces that are guaranteed to be valid during execution
-    // Uses atomic table swapping with grace period for safe memory reclamation
+    // Rotates the tables and hands all collected traces to processor.
+    // The callback receives traces that are guaranteed to be valid during execution.
+    // Tolerates concurrent put() (see the class comment).
     void processTraces(std::function<void(const CallTraceSet&)> processor);
 
-    // Enhanced clear with liveness preservation (rarely called - uses atomic operations)
+#ifdef UNIT_TEST
+    // The table put() currently targets.  Compiled only into gtest binaries.
+    CallTraceHashTable* activeTableForTest() {
+        return const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
+    }
+#endif
+
+#if defined(UNIT_TEST) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
+    // Test-only: production resets with release()/acquire().
+    // Clears the active and standby tables.
+    // Requires put() to be excluded for the duration (see the class comment).
     void clear();
+#endif
+
+    // Frees all three tables and the processTraces() collections. A concurrent
+    // put() drops its trace (each table is unpublished, drained, deleted); not
+    // concurrent with processTraces() or acquire().
+    void release();
+
+    // Allocates the tables again after release(); no-op if allocated.
+    // Requires put() to be excluded. Returns false, with no table published,
+    // if memory ran out.
+    bool acquire();
+
+#ifdef UNIT_TEST
+    // Makes allocateTables() fail as if memory ran out.
+    void failAllocationForTest(bool fail) { _fail_allocation_for_test = fail; }
+    static constexpr int NO_UNUSABLE_TABLE = -1;
+    // Makes allocateTables() build table `index` (0 active, 1 standby, 2 scratch)
+    // as if its first allocation failed.
+    void unusableTableForTest(int index) {
+        if (index < NO_UNUSABLE_TABLE || index > 2) {
+            throw std::out_of_range("unusableTableForTest: index must be -1..2");
+        }
+        _unusable_table_for_test = index;
+    }
+#endif
 };
 
 #endif // _CALLTRACESTORAGE_H

@@ -181,7 +181,7 @@ private:
   CodeBlob *_blobs;
 
   // Running total of memoryUsage()'s formula, updated incrementally by the
-  // same pre-publication mutators (constructor, add(), expand(),
+  // same pre-publication mutators (constructor, add()/commitAdd(),
   // setDwarfTable()) instead of recomputed by iterating _blobs. Safe because
   // every contributing field is fixed before publication (see _published
   // below) -- there is no point after construction-and-population where this
@@ -204,17 +204,17 @@ private:
 
   // Set once the cache is registered into a CodeCacheArray (see markPublished()).
   // After that, memoryUsage() may be read lock-free from another thread (dump),
-  // so the mutators that touch the fields it reads (add()/expand()/
-  // setDwarfTable()) must not run — asserted in debug. Standalone caches that
+  // so the mutators that touch the fields it reads (add()/prepareAdd()/
+  // commitAdd()/setDwarfTable()) must not run — asserted in debug. Standalone caches that
   // are never registered (e.g. JitCodeCache::_runtime_stubs, which is instead
-  // guarded by its own JitCodeCache::_stubs_lock) stay unpublished, so the
+  // guarded by its own JitCodeCache::_stubs_lock, with writers serialized by
+  // JitCodeCache::_stubs_write_lock) stay unpublished, so the
   // asserts never fire for them. Atomic with release/acquire so the flag is
   // observably true on any thread that reaches a published cache — the store is
   // sequenced before CodeCacheArray::add()'s RELEASE publish of the pointer, and
   // the assert loads it with acquire — without a formal data race.
   std::atomic<bool> _published;
 
-  void expand();
   void makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
   void copyFrom(const CodeCache& other);
@@ -227,8 +227,9 @@ public:
                      bool imports_patchable = false);
   // Copy constructor
   CodeCache(const CodeCache &other);
-  // Copy assignment operator
-  CodeCache &operator=(const CodeCache &other);
+  // Not copy-assignable: nothing assigns a CodeCache, and a correct
+  // operator= would have to release every blob name the target owns.
+  CodeCache &operator=(const CodeCache &other) = delete;
 
   ~CodeCache();
 
@@ -282,12 +283,47 @@ public:
   void setImageFingerprint(u64 fingerprint) { _image_fingerprint = fingerprint; }
 
   // Mark this cache as published into a CodeCacheArray. Call before the array
-  // makes the pointer visible to readers; afterwards add()/expand()/
-  // setDwarfTable() must not be called (see _published).
+  // makes the pointer visible to readers; afterwards add()/prepareAdd()/
+  // commitAdd()/setDwarfTable() must not be called (see _published).
   void markPublished() { _published.store(true, std::memory_order_release); }
 
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);
+
+  // Heap allocations that prepareAdd() makes for one later commitAdd().
+  // commitAdd() takes ownership of name and grown and sets them to nullptr.
+  // If no commitAdd() happens, the destructor frees them.
+  struct PreparedAdd {
+    char *name = nullptr;          // NativeFunc name copy, non-printables replaced
+    long long name_size = 0;       // NativeFunc::allocSize() of the name
+    long long name_overhead = 0;   // NativeFunc::nameOverhead() of the copy
+    CodeBlob *grown = nullptr;     // filled copy of _blobs at twice the capacity, or
+                                   // nullptr when the current array has a free slot
+    int capacity = 0;              // _capacity that this preparation is valid for
+
+    PreparedAdd() = default;
+    ~PreparedAdd() {
+      if (name != nullptr) {
+        NativeFunc::destroy(name);
+      }
+      delete[] grown;
+    }
+    // Non-copyable: a copy would free the same allocations twice.
+    PreparedAdd(const PreparedAdd &) = delete;
+    PreparedAdd &operator=(const PreparedAdd &) = delete;
+  };
+
+  // Two-phase add() for a cache whose readers run in signal handlers under a
+  // SpinLock (JitCodeCache::_runtime_stubs): prepareAdd() makes every heap
+  // allocation and can run outside the lock; commitAdd() only stores and
+  // copies pointers, so it is safe under the exclusive lock. commitAdd()
+  // returns the replaced blob array (or nullptr), which the caller must
+  // delete[] after it releases the lock. Between prepareAdd() and commitAdd()
+  // nothing else may mutate this cache; the caller serializes the pair
+  // against other writers. Pass a freshly constructed PreparedAdd.
+  void prepareAdd(const char *name, PreparedAdd &prepared) const;
+  CodeBlob *commitAdd(const void *start, int length, PreparedAdd &prepared,
+                      bool update_bounds = false);
   void updateBounds(const void *start, const void *end);
   void sort();
 
@@ -314,6 +350,9 @@ public:
 
   void addImport(void **entry, const char *name);
   void **findImport(ImportId id);
+  // A symbol can have a second relocation slot (e.g. both a JUMP_SLOT and a
+  // GLOB_DAT); patching must cover both, as patchImport() does.
+  void **findImport(ImportId id, ImportType type);
   // Like findImport(), but never makes the GOT writable, so it does not touch
   // the library's memory. For bookkeeping only; patch through findImport().
   void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
@@ -407,7 +446,7 @@ public:
     // so it stays consistent with the logical bytes above.
     NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, lib->nameOverhead());
     // Mark published before the RELEASE store makes the pointer visible, so any
-    // later add()/expand()/setDwarfTable() on this cache trips the assert (its
+    // later add()/prepareAdd()/commitAdd()/setDwarfTable() on this cache trips the assert (its
     // _blobs would then be read lock-free by memoryUsage() at dump time).
     lib->markPublished();
     // Store pointer before publishing count. The RELEASE here pairs with
@@ -446,6 +485,26 @@ public:
     }
     return total;
   }
+
+#ifdef UNIT_TEST
+  // Test teardown only: deletes every CodeCache and empties the array.
+  // Must not race add(): a publisher would spin on _count after the reset
+  // or store its pointer past the memset.
+  void freeForTest() {
+    for (int i = 0; i < count(); i++) {
+      CodeCache *lib = at(i);
+      if (lib != nullptr) {
+        NativeMem::record(NM_NATIVE_SYMBOLS, -lib->memoryUsage());
+        NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, -lib->nameOverhead());
+        delete lib;
+      }
+    }
+    memset(_libs, 0, sizeof(_libs));
+    _reserved = 0;
+    _count = 0;
+    _overflow_reported = false;
+  }
+#endif
 };
 
 #endif // _CODECACHE_H

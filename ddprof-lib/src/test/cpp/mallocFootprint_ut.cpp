@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <map>
+#include "common.h"
 #include "mallocFootprint.h"
 #include "nativeMem.h"
 #include "countingAllocator.h"
@@ -46,16 +47,14 @@ protected:
   }
 };
 
-// The header must be discovered, not hardcoded: an LD_PRELOAD'd tcmalloc or
-// jemalloc adds none while __GLIBC__ stays defined. On glibc the probe is
-// expected to find 8; anywhere else it must at least be sane.
+// An LD_PRELOAD'd tcmalloc or jemalloc adds no header while __GLIBC__ stays
+// defined, so the header must fit the allocator in force; anywhere it must at
+// least be sane. FragmentedHeapStillYieldsGlibcHeader pins the glibc value.
 TEST_F(MallocFootprintTest, HeaderProbeReturnsSaneValue) {
   size_t h = MallocFootprint::headerBytes();
   EXPECT_LE(h, 64u) << "probe returned an implausible header size";
   printf("[FOOTPRINT] probed per-chunk header = %zu bytes\n", h);
 
-  // Cross-check against an independently measured case: a 96-byte request
-  // occupies 112 bytes on glibc (104 usable + 8 header).
   void *p = malloc(96);
   ASSERT_NE(nullptr, p);
   size_t fp = MallocFootprint::of(p, 96);
@@ -68,6 +67,65 @@ TEST_F(MallocFootprintTest, HeaderProbeReturnsSaneValue) {
   free(p);
 }
 
+// The glibc layout rule on 64-bit sizes: glibc chunks match, exact or handed out
+// whole; size-class and sanitizer sizes (multiples of 16 here) do not.
+TEST_F(MallocFootprintTest, GlibcUsableSizeRule) {
+  if (sizeof(size_t) != 8) {
+    GTEST_SKIP() << "values below assume a 64-bit size_t";
+  }
+  EXPECT_TRUE(MallocFootprint::glibcUsable(48, 56));    // 64-byte chunk
+  EXPECT_TRUE(MallocFootprint::glibcUsable(56, 56));    // 64-byte chunk, filled
+  EXPECT_TRUE(MallocFootprint::glibcUsable(100, 104));  // 112-byte chunk
+  EXPECT_TRUE(MallocFootprint::glibcUsable(112, 136));  // 144-byte chunk, not split
+  EXPECT_FALSE(MallocFootprint::glibcUsable(48, 48));   // size class / sanitizer
+  EXPECT_FALSE(MallocFootprint::glibcUsable(112, 112));
+  EXPECT_FALSE(MallocFootprint::glibcUsable(48, 60));   // large enough, misaligned
+  EXPECT_FALSE(MallocFootprint::glibcUsable(48, 40));   // smaller than the request
+}
+
+// The glibc tests below skip when glibc is not recognised; this keeps a broken
+// recognition from turning them into silent skips on a plain glibc build.
+TEST_F(MallocFootprintTest, PlainGlibcIsRecognised) {
+#if !defined(__GLIBC__) || defined(ASAN_ENABLED) || defined(TSAN_ENABLED)
+  GTEST_SKIP() << "not a plain glibc build";
+#else
+  // A preloaded allocator, or glibc's malloc checking, changes the layout.
+  if (getenv("LD_PRELOAD") != NULL || getenv("MALLOC_CHECK_") != NULL) {
+    GTEST_SKIP() << "allocator replaced or in a glibc debug mode";
+  }
+  EXPECT_TRUE(MallocFootprint::glibcChunks());
+#endif
+}
+
+// With freed same-size chunks scattered between live ones, the stride probe
+// finds no adjacent pair; glibc must still be recognised and get its header.
+TEST_F(MallocFootprintTest, FragmentedHeapStillYieldsGlibcHeader) {
+  if (!MallocFootprint::glibcChunks()) {
+    GTEST_SKIP() << "allocator in force is not glibc";
+  }
+  const int N = 512;
+  void *blocks[N];
+  bool allocated = true;
+  for (int i = 0; i < N; i++) {
+    blocks[i] = malloc(48);
+    allocated = allocated && blocks[i] != NULL;
+  }
+  for (int i = 1; i < N; i += 2) {
+    free(blocks[i]);
+    blocks[i] = NULL;
+  }
+  size_t stride = MallocFootprint::strideHeaderBytes();
+  size_t probed = MallocFootprint::probeHeaderBytes();
+  for (int i = 0; i < N; i += 2) {
+    free(blocks[i]);
+  }
+  ASSERT_TRUE(allocated);
+  if (stride == sizeof(size_t)) {  // the stride probe still found two adjacent blocks
+    GTEST_SKIP() << "the heap did not fragment as intended";
+  }
+  EXPECT_EQ(sizeof(size_t), probed);
+}
+
 // The central claim: overhead as a FRACTION collapses as allocation size grows.
 // A blanket multiplier calibrated on small allocations therefore over-charges
 // large ones badly -- which is precisely the case for the 512 KB string-arena
@@ -75,6 +133,12 @@ TEST_F(MallocFootprintTest, HeaderProbeReturnsSaneValue) {
 TEST_F(MallocFootprintTest, OverheadFractionCollapsesWithAllocationSize) {
   if (!allocatorExposesOverhead()) {
     GTEST_SKIP() << "allocator exposes no overhead (sanitizer build)";
+  }
+  // The probe reports 0 when it cannot find a contiguous block layout (its own
+  // sanity bound), in which case the overhead fractions below would measure
+  // rounding alone and the magnitude assertions have nothing to stand on.
+  if (MallocFootprint::headerBytes() == 0) {
+    GTEST_SKIP() << "header probe found no contiguous layout; overhead not measurable";
   }
   struct { size_t size; const char *what; } cases[] = {
       {96,               "MethodMap node"},

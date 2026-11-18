@@ -1,0 +1,12 @@
+issuer: https://token.actions.githubusercontent.com
+
+subject_pattern: repo:DataDog/java-profiler:(pull_request|ref:refs/heads/main)
+
+claim_pattern:
+  event_name: (pull_request_target|workflow_run|schedule|workflow_dispatch)
+  ref: refs/heads/main
+  ref_protected: "true"
+  job_workflow_ref: DataDog/java-profiler/\.github/workflows/bits-review-gate\.yml@refs/heads/main
+
+permissions:
+  statuses: write

@@ -81,9 +81,12 @@ void ReferenceChainTracker::descendFromAnchor(
     u32 anchor_depth, jlong anchor_descend_class_tag, int budget,
     int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
     u64 *safepoint_ns) {
+  jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
   ReferenceChainPassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
+  ctx.resolved_chain_tags = resolved_chain_tags;
+  ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
   // Bound admission to DESCENT_HOPS below the anchor, still subject to the global hop cap.
   int descent_cap = (int)anchor_depth + DESCENT_HOPS;
   ctx.hop_cap = descent_cap < _hop_cap ? descent_cap : _hop_cap;
@@ -392,8 +395,11 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
 bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
                                                           JNIEnv *jni,
                                                           jclass klass) {
-  // BFS over the superclass chain + every visited class's interfaces, comparing GetTag() against
-  // the two cached interface class tags.
+  // LIFO (depth-first) walk over the superclass chain + every visited class's interfaces, not BFS:
+  // interfaces are pushed after the superclass, so under LIFO every interface subtree is explored
+  // before the superclass chain - the only path to an inherited Collection/Map. The 64-pop budget
+  // counts duplicate pops too (already-visited classes burn hops). GetTag() is compared against the
+  // two cached interface class tags.
   std::vector<jclass> work;
   std::unordered_set<jlong> visited;
   work.push_back(klass);

@@ -495,6 +495,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
+  TEST_LOG("NativeMethodBind interception %s", _can_intercept_binding ? "enabled" : "disabled");
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -535,24 +536,21 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
+  // VM_DEATH: Always needed for cleanup
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE,
-                                   NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
-                                   JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
-  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
-                                   NULL);
 
-  if (hotspot_version() == 0 || !CodeHeap::available()) {
-    TEST_LOG("CompiledMethodLoad workaround: hotspot_version=%d CodeHeap::available=%d",
-             hotspot_version(), CodeHeap::available());
-    // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
-    _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
-                                     JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
-  } else {
-    // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
-    // otherwise we set the flag manually
+  // NATIVE_METHOD_BIND from agent load: a native binds once and bindings
+  // cannot be replayed, so one made before the first start() (getMemoryUsage0)
+  // would never reach VMStructs::NativeMethodBind.
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, NULL);
+
+  // The other persistent events are enabled, and replayed, by start()
+  // (Profiler::enablePersistentJvmtiEvents()).
+
+  // DebugNonSafepoints at agent load, so code compiled before the first start()
+  // has the debug info too: COMPILED_METHOD_LOAD's replay cannot add it later.
+  // VMFlag::find() returns NULL when the flag table was not resolved.
+  if (isHotspot()) {
     VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
     TEST_LOG("DebugNonSafepoints flag %s", f != NULL ? "found" : "not found");
     if (f != NULL && f->isDefault()) {
@@ -575,11 +573,10 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RedefineClasses = RedefineClassesHook;
   functions->RetransformClasses = RetransformClassesHook;
 
-
-  if (attach) {
-    _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
-    _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
-  } else {
+  // Code generated before the persistent events are enabled is replayed by
+  // Profiler::enablePersistentJvmtiEvents() in start(); a failed step is retried
+  // by the next start().
+  if (!attach) {
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL);
   }
 
@@ -656,9 +653,6 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
 
     ProfiledThread::initCurrentThreadSignalSafe();
 
-  // initialize the heap usage tracking only after the VM is ready
-    HeapUsage::initJMXUsage(VM::jni());
-
     // Delayed start of profiler if agent has been loaded at VM bootstrap
     Error error = Profiler::instance()->run(_agent_args);
     if (error) {
@@ -678,35 +672,57 @@ void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
 jvmtiError
 VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
                         const jvmtiClassDefinition *class_definitions) {
+  // Arguments the original rejects (JVMTI_ERROR_NULL_POINTER) go straight to
+  // it; the loops below must never dereference them first.
+  if (class_count > 0 && class_definitions == NULL) {
+    return _orig_RedefineClasses(jvmti, class_count, class_definitions);
+  }
+  JNIEnv *env = jni();
+  bool call_token = JVMSupport::enterRedefinitionCall();
+  for (int i = 0; i < class_count; i++) {
+    if (class_definitions[i].klass != NULL) {
+      JVMSupport::beforeClassRedefinition(jvmti, env, class_definitions[i].klass);
+    }
+  }
+
   jvmtiError result =
       _orig_RedefineClasses(jvmti, class_count, class_definitions);
 
-  if (result == 0) {
-    // jmethodIDs are invalidated after RedefineClasses
-    JNIEnv *env = jni();
-    for (int i = 0; i < class_count; i++) {
-      if (class_definitions[i].klass != NULL) {
-        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass);
-      }
+  // jmethodIDs are invalidated after RedefineClasses
+  for (int i = 0; i < class_count; i++) {
+    if (class_definitions[i].klass != NULL) {
+      JVMSupport::afterClassRedefinition(jvmti, env, class_definitions[i].klass, result == 0);
     }
   }
+  JVMSupport::exitRedefinitionCall(call_token);
 
   return result;
 }
 
 jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
                                       const jclass *classes) {
-  jvmtiError result = _orig_RetransformClasses(jvmti, class_count, classes);
-
-  if (result == 0) {
-    // jmethodIDs are invalidated after RetransformClasses
-    JNIEnv *env = jni();
-    for (int i = 0; i < class_count; i++) {
-      if (classes[i] != NULL) {
-        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i]);
-      }
+  // Arguments the original rejects (JVMTI_ERROR_NULL_POINTER) go straight to
+  // it; the loops below must never dereference them first.
+  if (class_count > 0 && classes == NULL) {
+    return _orig_RetransformClasses(jvmti, class_count, classes);
+  }
+  JNIEnv *env = jni();
+  bool call_token = JVMSupport::enterRedefinitionCall();
+  for (int i = 0; i < class_count; i++) {
+    if (classes[i] != NULL) {
+      JVMSupport::beforeClassRedefinition(jvmti, env, classes[i]);
     }
   }
+
+  jvmtiError result = _orig_RetransformClasses(jvmti, class_count, classes);
+
+  // jmethodIDs are invalidated after RetransformClasses
+  for (int i = 0; i < class_count; i++) {
+    if (classes[i] != NULL) {
+      JVMSupport::afterClassRedefinition(jvmti, env, classes[i], result == 0);
+    }
+  }
+  JVMSupport::exitRedefinitionCall(call_token);
 
   return result;
 }

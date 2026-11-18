@@ -1,4 +1,8 @@
-#include <cstddef>
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <dlfcn.h>
 
 #include "debug.h"
@@ -6,21 +10,21 @@
 
 Shims Shims::_instance;
 
-Shims::Shims() : _tid_setter_ref(NULL) {
+Shims::Shims() : _tid_setter_ref(nullptr) {
 #ifdef DEBUG
-  if (_tid_setter_ref == NULL) {
-    void *sym_handle = dlsym(RTLD_DEFAULT, "set_sighandler_tid");
-    __atomic_compare_exchange_n(&_tid_setter_ref,
-                                (SetSigHandlerTidRef *)(&sym_handle), NULL,
-                                false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-  }
+  // Library init precedes any sampling thread and dlsym is illegal in signal
+  // context, so the lookup must happen here; unresolved (shim not preloaded)
+  // leaves the no-op nullptr. RELEASE pairs the ACQUIRE load in setSighandlerTid.
+  __atomic_store_n(&_tid_setter_ref,
+                   reinterpret_cast<SetSigHandlerTidRef>(dlsym(RTLD_DEFAULT, "set_sighandler_tid")),
+                   __ATOMIC_RELEASE);
 #endif
 }
 
 void Shims::setSighandlerTid(int tid) {
 #ifdef DEBUG
   SetSigHandlerTidRef ref = __atomic_load_n(&_tid_setter_ref, __ATOMIC_ACQUIRE);
-  if (ref != NULL) {
+  if (ref != nullptr) {
     ref(tid);
   }
 #endif

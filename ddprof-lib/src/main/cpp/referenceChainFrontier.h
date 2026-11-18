@@ -21,7 +21,9 @@
 namespace FrontierEntryState {
 constexpr u8 FRONTIER = 0;  // discovered, not yet expanded by FollowReferences
 constexpr u8 EXPANDED = 1;  // expanded; children (if any) are in the table
-constexpr u8 EDGE = 2;      // on a path toward a target sample (EdgeStore)
+// EDGE is retired: never set by the production walk (see reconstructChain()'s comment in
+// referenceChainFrontier.cpp); only markEdge() and unit/fuzz fixtures set it.
+constexpr u8 EDGE = 2;
 constexpr u8 ABANDONED = 3; // tag released; entry kept only to avoid reuse
 } // namespace FrontierEntryState
 
@@ -45,6 +47,9 @@ constexpr u8 CANARY_STUCK = 3;
 // starts from a brand-new-search shape (release-then-restart, fresh TTL clock, no urgency
 // carry-over).
 constexpr u8 RECORDING_END = 4;
+// The root enumerator returned a JVMTI error on MAX_CONSECUTIVE_ENUM_ERRORS consecutive attempts -
+// the root picture is unusable and retrying is not making progress.
+constexpr u8 ROOT_ENUM_ERROR = 5;
 } // namespace SearchAbandonReason
 
 // Metadata for one tagged frontier object.
@@ -53,6 +58,12 @@ typedef struct FrontierEntry {
   u32 referrer_klass;  // StringDictionary id, 0 = unresolved/none
   u32 depth;           // hop count from the frontier's seed, for the hop cap
   u8 state;            // one of FrontierEntryState's constants
+  // LivenessTracker::leakTagIncarnation(leak_tag) captured when leak_tag was bound to this entry
+  // (setLeakTag()): the ownership period of the tag this entry's object held. A leak tag is
+  // recycled after its object dies, so (leak_tag, leak_tag_incarnation) - not leak_tag alone -
+  // identifies the object. 0 while leak_tag == 0. Sits in the padding after `state`, so
+  // sizeof(FrontierEntry) is unchanged (static_assert below).
+  u32 leak_tag_incarnation;
   // The leak tag assigned by LivenessTracker to this specific tracked object, copied from the JVMTI
   // tag at admission time.
   jlong leak_tag;
@@ -85,6 +96,9 @@ typedef struct FrontierEntry {
   // there is no parent entry to read a class from).
   jlong referrer_class_tag;
 } FrontierEntry;
+
+static_assert(sizeof(FrontierEntry) == 64,
+              "FrontierEntry::leak_tag_incarnation must stay in the padding after `state`");
 
 // Per-hop retention-edge identity collected by reconstructChain() alongside the class chain:
 // everything needed at emission to label HOW chain[i] is retained (the field of chain[i+1] pointing
@@ -177,13 +191,14 @@ public:
   }
 
   // Same as lookup() above, but assumes the caller already holds the shared lock via
-  // withSharedLock() below.
+  // withSharedLock().
   bool lookupLocked(jlong tag, FrontierEntry *out) const;
 
   // Marks metadata abandoned; the caller must clear the JVMTI tag.
   void clear(jlong tag);
 
-  // Marks the slot as part of a resolved path.
+  // Marks the slot EDGE. Retired: no production caller (only the fuzz harness's shadow model and
+  // unit-test fixtures use EDGE).
   void markEdge(jlong tag);
 
   // Marks the slot after all outgoing edges have been visited.
@@ -193,8 +208,15 @@ public:
   void updateRootKind(jlong tag, u8 root_kind);
 
   // Set the leak tag on a frontier entry (the JVMTI tag assigned by LivenessTracker to this
-  // specific tracked leaking object).
-  void setLeakTag(jlong tag, jlong leak_tag) {
+  // specific tracked leaking object) together with that tag's ownership-period stamp
+  // (LivenessTracker::leakTagIncarnation(leak_tag)) read at the binding site. The stamp is required
+  // (no default): a forgotten 0 would make drainPendingChainEvents() drop the live object's chain.
+  // The stamp read at each binding site is the current owner's: heapReferenceCallback() and
+  // heapRootCallback() intercept the object live inside FollowReferences, so cleanup_table()
+  // cannot release its tag concurrently; correlateAdmittedLeakTag() runs under
+  // LivenessTracker::tagLeakInstances()' shared _table_lock, which excludes cleanup_table()'s
+  // release.
+  void setLeakTag(jlong tag, jlong leak_tag, u32 leak_tag_incarnation) {
     if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
       return;
     }
@@ -202,6 +224,7 @@ public:
     ExclusiveLockGuard guard(&_table_lock);
     if (idx < _table_size) {
       _table[idx].leak_tag = leak_tag;
+      _table[idx].leak_tag_incarnation = leak_tag_incarnation;
     }
   }
 
@@ -226,7 +249,7 @@ public:
                         std::vector<ChainHopEdge> *out_edges = nullptr,
                         FrontierEntry *out_terminal = nullptr);
 
-  // Search restart (ReferenceChainTracker::restartSearch(), this class's own header comment): marks
+  // Search restart (ReferenceChainTracker::restartSearch()): marks
   // every slot unoccupied again without releasing _table's allocation - a new search's nextTag()
   // sequence restarts at 1, reusing these same slot indices, so lookup()/insert() must not read
   // back the previous search's now-irrelevant entries for them.

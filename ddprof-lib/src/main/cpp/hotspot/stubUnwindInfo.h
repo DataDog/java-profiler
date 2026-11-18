@@ -30,9 +30,12 @@
 // executed and instruction k has not. The table is built by a linear scan
 // tracking sp, fp and the return address location; undecodable instructions
 // are assumed to preserve sp/fp/x30, and known clobber classes (writes to
-// x29/x30, calls from frameless code, mid-stub br) degrade the affected range
-// to SU_UNSUPPORTED instead of guessing. Branch targets are validated so no
-// PC is reachable with two different states; on any inconsistency the range
+// x29/x30, calls from frameless code, unmodeled sp writeback) degrade the
+// affected range to SU_UNSUPPORTED instead of guessing. Code after a mid-stub
+// br degrades as well, except in blobs known to pack several entry points back
+// to back (see analyzeStubUnwind()'s multi_entry). Branch targets are
+// validated so no PC is reachable with two different states; on any
+// inconsistency the range
 // degenerates to SU_UNSUPPORTED and unwindStub() falls back to the legacy
 // name-based heuristics. The failure mode is always "fall back", never
 // "guess".
@@ -94,7 +97,16 @@ public:
 // state cannot be classified yields an info with _classified == false and a
 // single SU_UNSUPPORTED phase, so that the "unclassifiable" outcome is
 // observable through the counters.
-StubUnwindInfo* analyzeStubUnwind(const void* start, int length);
+//
+// multi_entry: the blob packs several entry points back to back, each entered
+// like the blob start (return address in lr, the caller's sp), so the
+// instruction after a mid-stub br is a further entry and the scan restarts
+// from the entry state there instead of degrading. Only the HotSpot
+// "I2C/C2I adapters" blob is known to have this shape (the i2c entry ends in
+// br, followed by the c2i entries); for any other blob the code after a br may
+// be a jump-table entry or a return point reached through a register, whose
+// state the scan cannot know.
+StubUnwindInfo* analyzeStubUnwind(const void* start, int length, bool multi_entry = false);
 
 #endif // __aarch64__
 

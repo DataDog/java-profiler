@@ -76,7 +76,7 @@ class GtestPlugin : Plugin<Project> {
             }
 
             // Check if gtest is available
-            val hasGtest = checkGtestAvailable()
+            val hasGtest = PlatformUtils.isGtestAvailable()
             if (!hasGtest) {
                 project.logger.warn("WARNING: Google Test not found - skipping native tests")
             }
@@ -94,21 +94,6 @@ class GtestPlugin : Plugin<Project> {
                 createConfigTasks(project, extension, config, hasGtest, gtestAll)
             }
         }
-    }
-
-    private fun checkGtestAvailable(): Boolean {
-        // Check common gtest locations
-        val locations = when (PlatformUtils.currentPlatform) {
-            Platform.MACOS -> listOf(
-                "/opt/homebrew/opt/googletest",
-                "/usr/local/opt/googletest"
-            )
-            Platform.LINUX -> listOf(
-                "/usr/include/gtest",
-                "/usr/local/include/gtest"
-            )
-        }
-        return locations.any { File(it).exists() }
     }
 
     private fun createBuildNativeLibsTask(project: Project, extension: GtestExtension, hasGtest: Boolean) {

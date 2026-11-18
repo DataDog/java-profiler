@@ -31,6 +31,10 @@
 static thread_local PoissonSampler _send_sampler;
 static thread_local PoissonSampler _recv_sampler;
 
+#ifdef UNIT_TEST
+void (*NativeSocketSampler::_record_observer_for_test)(int, u64, u64, ssize_t, u8) = nullptr;
+#endif
+
 // Marks the hook wrapper's own symbol as MARK_JAVA_PROFILER so native call-stack
 // unwinding (Profiler::convertNativeTrace) can recognize the boundary between
 // profiler-internal frames and the real caller, mirroring MallocHooker::initialize().
@@ -303,8 +307,12 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
         }
     }
 #endif
+    // Separate full expressions ensure the end timestamp follows I/O regardless
+    // of the compiler's function-argument evaluation order.
     u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len, flags), t0, TSC::ticks(), 0);
+    ssize_t ret = fn(fd, buf, len, flags);
+    u64 t1 = TSC::ticks();
+    return record_if_positive(fd, ret, t0, t1, 0);
 }
 
 ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags) {
@@ -323,7 +331,9 @@ ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags)
     }
 #endif
     u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len, flags), t0, TSC::ticks(), 1);
+    ssize_t ret = fn(fd, buf, len, flags);
+    u64 t1 = TSC::ticks();
+    return record_if_positive(fd, ret, t0, t1, 1);
 }
 
 ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
@@ -343,7 +353,9 @@ ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
 #endif
     if (!is_socket) return fn(fd, buf, len);
     u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len), t0, TSC::ticks(), 2);
+    ssize_t ret = fn(fd, buf, len);
+    u64 t1 = TSC::ticks();
+    return record_if_positive(fd, ret, t0, t1, 2);
 }
 
 ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
@@ -363,7 +375,9 @@ ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
 #endif
     if (!is_socket) return fn(fd, buf, len);
     u64 t0 = TSC::ticks();
-    return record_if_positive(fd, fn(fd, buf, len), t0, TSC::ticks(), 3);
+    ssize_t ret = fn(fd, buf, len);
+    u64 t1 = TSC::ticks();
+    return record_if_positive(fd, ret, t0, t1, 3);
 }
 
 Error NativeSocketSampler::check(Arguments &args) {
