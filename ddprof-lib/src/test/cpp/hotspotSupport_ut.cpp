@@ -157,13 +157,17 @@ public:
         set(VMStructs::_narrow_klass_shift, shift);
         set(VMStructs::_narrow_klass_base, base);
     }
+    // Models inflated marks as ObjectMonitor pointers; useObjectMonitorTable() switches that.
     void useCompactHeaders(char* base, int shift, long mark_klass_shift) {
         set(VMStructs::_compact_object_headers, true);
+        set(VMStructs::_object_monitor_table, false);
         set(VMStructs::_narrow_klass_shift, shift);
         set(VMStructs::_markWord_klass_shift, mark_klass_shift);
         set(VMStructs::_narrow_klass_base, base);
     }
+    void useObjectMonitorTable() { set(VMStructs::_object_monitor_table, true); }
     static uintptr_t monitorBit() { return VMStructs::MONITOR_BIT; }
+    static uintptr_t lockMask() { return VMStructs::LOCK_MASK; }
 };
 
 class VMTestAccessor {
@@ -232,7 +236,7 @@ protected:
     // headers the header read is the klass word; with them it is the mark word.
     enum class ReceiverLayout {
         UncompressedKlassWord, UncompressedKlass, CompressedKlassWord, CompressedKlass,
-        CompactMarkWord, CompactKlass, CompactMonitor, CompactMonitorSentinel
+        CompactMarkWord, CompactKlass, CompactMonitor, CompactMonitorSentinel, CompactMonitorTable
     };
     struct ReceiverCase {
         ReceiverLayout kind;
@@ -246,9 +250,10 @@ protected:
         {ReceiverLayout::CompactMarkWord, "compact mark word"},
         {ReceiverLayout::CompactKlass, "compact klass"},
         {ReceiverLayout::CompactMonitor, "compact monitor"},
-        {ReceiverLayout::CompactMonitorSentinel, "compact monitor with sentinel mark"}};
+        {ReceiverLayout::CompactMonitorSentinel, "compact monitor with sentinel mark"},
+        {ReceiverLayout::CompactMonitorTable, "compact monitor table"}};
     static_assert(sizeof(kReceiverCases) / sizeof(kReceiverCases[0])
-                  == static_cast<size_t>(ReceiverLayout::CompactMonitorSentinel) + 1, "one case per layout");
+                  == static_cast<size_t>(ReceiverLayout::CompactMonitorTable) + 1, "one case per layout");
 
     // Models `kind` in `layout` with every read readable. A non-null `fault_page` replaces
     // the read that `kind` names; the decoded klass lands 16 bytes into that page.
@@ -296,6 +301,13 @@ protected:
             _monitor = 1;
             _oop[0] = monitor;
             break;
+        case ReceiverLayout::CompactMonitorTable:
+            // The inflated mark keeps its klass bits; only the lock bits change.
+            layout.useCompactHeaders(base, kNarrowKlassShift, kMarkKlassShift);
+            layout.useObjectMonitorTable();
+            _oop[0] |= VMStructsTestAccessor::monitorBit();
+            if (fault != nullptr) receiver = reinterpret_cast<uintptr_t>(fault);
+            break;
         }
         setReceiver(receiver);
     }
@@ -335,6 +347,15 @@ TEST_F(VtableReceiverCaptureTest, NullReceiverKlassAndSymbolAreNotCaptured) {
     EXPECT_EQ(nullptr, capture());
     _oop[1] = reinterpret_cast<uintptr_t>(&_klass);
     _klass = nullptr;
+    EXPECT_EQ(nullptr, capture());
+}
+
+TEST_F(VtableReceiverCaptureTest, MarkedCompactHeaderIsNotDecoded) {
+    VMStructsTestAccessor layout;
+    // The monitor table mode would otherwise decode a marked header's upper bits as klass bits.
+    pointReceiverAt(layout, ReceiverLayout::CompactMonitorTable, nullptr);
+    ASSERT_EQ(reinterpret_cast<VMSymbol*>(&_symbol), capture());
+    _oop[0] |= VMStructsTestAccessor::lockMask();
     EXPECT_EQ(nullptr, capture());
 }
 

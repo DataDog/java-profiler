@@ -399,7 +399,7 @@ class VMStructs {
     typedef bool (*IsValidMethodFunc)(void *);
 
   protected:
-    enum { MONITOR_BIT = 2 };
+    enum { MONITOR_BIT = 2, LOCK_MASK = 3 };
 
     static CodeCache* _libjvm;
 
@@ -411,6 +411,7 @@ class VMStructs {
     static bool _has_native_thread_id;
     static bool _can_dereference_jmethod_id;
     static bool _compact_object_headers;
+    static bool _object_monitor_table;
     
     static int _narrow_klass_shift;
     static char* _code_heap[3];
@@ -738,7 +739,13 @@ DECLARE(VMKlass)
             uintptr_t narrow_klass;
             if (_compact_object_headers) {
                 uintptr_t mark = reinterpret_cast<uintptr_t>(SafeAccess::load(reinterpret_cast<void**>(oop)));
-                if (mark & MONITOR_BIT) {
+                if ((mark & LOCK_MASK) == LOCK_MASK) {
+                    // Marked: the upper bits are a GC pointer, not the header.
+                    return nullptr;
+                }
+                // With UseObjectMonitorTable an inflated mark keeps its header; otherwise it
+                // points to the ObjectMonitor that holds the displaced header.
+                if ((mark & LOCK_MASK) == MONITOR_BIT && !_object_monitor_table) {
                     // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
                     // reading the mark word and dereferencing the monitor pointer. Use
                     // safeFetch64 so a concurrent deflation/free does not crash here.
