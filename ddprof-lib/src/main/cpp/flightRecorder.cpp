@@ -2241,11 +2241,9 @@ void Recording::writeMallocArenaEvents(Buffer *buf) {
   res.status = gateStatus(VM::isHotspot() || VM::isOpenJ9(),
                           glibcMallocActive(), _arena_inputs.hugetlbHeaps);
   if (res.status == ARENA_WALK_OK) {
-    long limit = _arena_inputs.arenaLimit < 64 ? 64 : _arena_inputs.arenaLimit;
-    if (limit > 65536) {
-      limit = 65536;
-    }
-    MallocArenaWalker::walk(&res, (int)limit + 64);
+    // mallopt() and glibc tunables can make the live arena limit differ from
+    // the environment estimate, so only an absolute cap bounds the walk.
+    MallocArenaWalker::walk(&res, 65536 + 64);
   }
 
   const long long max_heap = JVMSupport::maxHeapBytes();

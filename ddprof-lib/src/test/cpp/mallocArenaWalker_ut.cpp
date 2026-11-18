@@ -140,6 +140,11 @@ static bool arenasCapped() {
   return strcmp(MallocArenaInputs::capture().arenaLimitSource, "default") != 0;
 }
 
+// With a one-arena cap every thread uses main_arena, so no walk finds a seed.
+static bool singleArena() {
+  return MallocArenaInputs::capture().arenaLimit == 1;
+}
+
 // Chunks allocated on the main thread (main_arena) and freed by a worker sit in
 // the worker's tcache, so a small malloc there returns a main_arena chunk
 // although the worker's own arena is not main_arena.
@@ -191,6 +196,9 @@ TEST_F(MallocArenaWalkerTest, SeedFromLaterHeapOfMultiHeapArena) {
 }
 
 TEST_F(MallocArenaWalkerTest, WalkWithLiveThreadsFindsArenas) {
+  if (singleArena()) {
+    GTEST_SKIP() << "a one-arena cap leaves only main_arena";
+  }
   std::mutex mu;
   std::vector<ArenaWalkResult> results;
   runOnLiveThreads(16, [&](int) {
@@ -227,6 +235,9 @@ TEST_F(MallocArenaWalkerTest, WalkWithLiveThreadsFindsArenas) {
 }
 
 TEST_F(MallocArenaWalkerTest, WrongLayoutFailsClosed) {
+  if (singleArena()) {
+    GTEST_SKIP() << "a one-arena cap leaves only main_arena";
+  }
   std::mutex mu;
   ArenaWalkResult calibrated;
   bool haveCalibrated = false;
@@ -258,6 +269,9 @@ TEST_F(MallocArenaWalkerTest, WrongLayoutFailsClosed) {
 }
 
 TEST_F(MallocArenaWalkerTest, CapBoundsTheWalk) {
+  if (singleArena()) {
+    GTEST_SKIP() << "a one-arena cap leaves only main_arena";
+  }
   std::mutex mu;
   ArenaWalkStatus tooMany = ARENA_WALK_OK;
   bool seen = false;

@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Assumptions;
@@ -155,6 +156,16 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
             + recommended
             + " arenas; its arena cap is too low: "
             + lastStats);
+    if ("ok".equals(lastStats.getString("walkStatus"))) {
+      long limit = lastStats.getLong("memoryLimit", -1);
+      long heap = lastStats.getLong("maxHeap", -1);
+      long headroom = heap > 0 && heap < limit ? limit - heap : limit;
+      long free = lastStats.getLong("freeHeldBytes", -1);
+      long measure = free >= 0 ? free : lastStats.getLong("nonMainArenaBytes", 0);
+      Assumptions.assumeTrue(
+          limit > 0 && measure > headroom / 100,
+          "the workload held under 1% of the native headroom: " + lastStats);
+    }
     JfrEvents warnings = verifyEvents(WARNING);
     boolean raised = false;
     for (JfrEvent item : warnings) {
@@ -201,24 +212,55 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
   }
 
   /**
-   * CPU quota in milli-CPUs from cgroup v2 cpu.max or cgroup v1 CFS files, or -1 when there is
-   * none.
+   * CPU quota in milli-CPUs: the smallest quota on this process's cgroup and its ancestors, from
+   * cgroup v2 cpu.max or the cgroup v1 CFS files, or -1 when there is none.
    */
   private static long cpuQuotaMilli() {
-    String v2 = read(Paths.get("/sys/fs/cgroup/cpu.max"));
-    if (v2 != null) {
-      String[] parts = v2.trim().split("\\s+");
-      if (parts.length == 2 && !"max".equals(parts[0])) {
-        return toMilli(parts[0], parts[1]);
-      }
+    String self = read(Paths.get("/proc/self/cgroup"));
+    if (self == null) {
       return -1;
     }
-    String quota = read(Paths.get("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"));
-    String period = read(Paths.get("/sys/fs/cgroup/cpu/cpu.cfs_period_us"));
-    if (quota != null && period != null) {
-      return toMilli(quota.trim(), period.trim());
+    long min = -1;
+    for (String line : self.split("\n")) {
+      String[] parts = line.split(":", 3);
+      if (parts.length != 3) {
+        continue;
+      }
+      boolean v2 = parts[0].equals("0") && parts[1].isEmpty();
+      boolean v1 = Arrays.asList(parts[1].split(",")).contains("cpu");
+      if (!v2 && !v1) {
+        continue;
+      }
+      Path root = Paths.get(v2 ? "/sys/fs/cgroup" : "/sys/fs/cgroup/cpu");
+      Path dir = root.resolve(parts[2].replaceFirst("^/", "")).normalize();
+      // The detector ignores a hierarchy whose own cgroup has no quota file.
+      if (!Files.exists(dir.resolve(v2 ? "cpu.max" : "cpu.cfs_quota_us"))) {
+        continue;
+      }
+      while (dir != null && dir.startsWith(root)) {
+        long milli = v2 ? quotaV2(dir) : quotaV1(dir);
+        if (milli > 0 && (min < 0 || milli < min)) {
+          min = milli;
+        }
+        dir = dir.getParent();
+      }
     }
-    return -1;
+    return min;
+  }
+
+  private static long quotaV2(Path dir) {
+    String v = read(dir.resolve("cpu.max"));
+    if (v == null) {
+      return -1;
+    }
+    String[] parts = v.trim().split("\\s+");
+    return parts.length == 2 && !"max".equals(parts[0]) ? toMilli(parts[0], parts[1]) : -1;
+  }
+
+  private static long quotaV1(Path dir) {
+    String quota = read(dir.resolve("cpu.cfs_quota_us"));
+    String period = read(dir.resolve("cpu.cfs_period_us"));
+    return quota != null && period != null ? toMilli(quota.trim(), period.trim()) : -1;
   }
 
   private static long toMilli(String quota, String period) {
