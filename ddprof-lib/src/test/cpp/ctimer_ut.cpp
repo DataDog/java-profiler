@@ -52,6 +52,10 @@
 class ProfilerTestAccessor {
 public:
   static void clearSkipped() { Profiler::clearSkippedUnregistrations(); }
+  static void setState(Profiler *p, State s) {
+    p->_state.store(s, std::memory_order_release);
+  }
+  static State getState(Profiler *p) { return p->state(); }
   static void recordSkipped(int tid) { Profiler::recordSkippedUnregistration(tid); }
   static int droppedSkipped() { return Profiler::droppedSkippedUnregistrations(); }
   static int skippedCount() { return Profiler::skippedUnregistrationCount(); }
@@ -444,6 +448,68 @@ TEST_F(CTimerNativeMemTest, StartRejectsNonCpuEvent) {
   EXPECT_EQ(handler_before, sigprofHandler());
   EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+}
+
+// The check preflight mirrors start()'s interval rejection for the configs
+// that run a real CPU engine, so the `check` action reports what start()
+// would reject. The rejection fires before JVM capability probing, so it is
+// deterministic here; the two accepted shapes reach the capability probe
+// instead (the "no Thread ID field" error, without a live JVM).
+class CheckStateGuard {
+public:
+  explicit CheckStateGuard(Profiler *p)
+      : _p(p), _saved(ProfilerTestAccessor::getState(p)) {
+    // IDLE: checkState() passes without the NEW-state JVMSupport::initialize(),
+    // which needs a live JVM.
+    ProfilerTestAccessor::setState(p, IDLE);
+  }
+  ~CheckStateGuard() { ProfilerTestAccessor::setState(_p, _saved); }
+  CheckStateGuard(const CheckStateGuard &) = delete;
+  CheckStateGuard &operator=(const CheckStateGuard &) = delete;
+
+private:
+  Profiler *_p;
+  State _saved;
+};
+
+TEST_F(CTimerNativeMemTest, CheckPreflightRejectsNonCpuEventWithCpu) {
+  CheckStateGuard guard(Profiler::instance());
+  Arguments args;
+  args._event = EVENT_WALL;
+  args._cpu = 1000000;
+
+  Error error = Profiler::instance()->check(args);
+
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("interval must be positive", error.message());
+}
+
+TEST_F(CTimerNativeMemTest, CheckPreflightAcceptsValidCpuConfig) {
+  CheckStateGuard guard(Profiler::instance());
+  Arguments args;
+  args._event = EVENT_CPU;
+
+  Error error = Profiler::instance()->check(args);
+
+  // The interval gate must not fire; without a JVM the preflight stops at
+  // the capability probe instead of running the engine checks.
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("Could not find Thread ID field. Unsupported JVM?",
+               error.message());
+}
+
+TEST_F(CTimerNativeMemTest, CheckPreflightAcceptsWallWithoutCpu) {
+  CheckStateGuard guard(Profiler::instance());
+  Arguments args;
+  args._event = EVENT_WALL;
+
+  Error error = Profiler::instance()->check(args);
+
+  // No CPU engine runs for event=wall without cpu, so the interval gate is
+  // not armed; the preflight reaches the capability probe as before.
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("Could not find Thread ID field. Unsupported JVM?",
+               error.message());
 }
 
 // A table survives to start() only when stop() could not drain hook calls, so

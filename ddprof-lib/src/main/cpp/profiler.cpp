@@ -2397,6 +2397,14 @@ Error Profiler::check(Arguments &args) {
     return error;
   }
 
+  // Mirror start()'s interval rejection for the configurations that run a
+  // real CPU engine (cpu set, or a CPU event); args validation precedes
+  // capability probing, and event=wall/alloc/noop without cpu still pass.
+  if ((args._cpu >= 0 || Arguments::isCpuEvent(args._event)) &&
+      args.cpuSamplerInterval() <= 0) {
+    return Error("interval must be positive");
+  }
+
   error = checkJvmCapabilities();
 
   // check() runs while the profiler is IDLE, after stop(): unregistration is
