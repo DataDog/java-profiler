@@ -427,7 +427,7 @@ TEST_F(CTimerNativeMemTest, StartValidatesCpuSamplerInterval) {
 
 // cpuSamplerInterval() returns 0 for a non-CPU event; the engine must reject
 // it instead of arming zero (disarmed) per-thread timers. _interval stays at
-// its default 0: the rejection must come from the validated value, not the field.
+// its default 0 so the rejection cannot come from a negative-field shortcut.
 TEST_F(CTimerNativeMemTest, StartRejectsNonCpuEvent) {
   CTimer engine;
   Arguments args;

@@ -21,8 +21,7 @@
 
 // This binary links itimer.o statically, so defining sigaction here binds every
 // main-library sigaction call to the interposer below; the flag makes only
-// SIGPROF installs (act != nullptr) fail. Relaxed is enough: the flag carries
-// no data and is only ever read by the thread that set it.
+// SIGPROF installs fail. Relaxed suffices: it is same-thread-only, no data.
 static std::atomic<bool> g_fail_sigprof_install{false};
 
 typedef int (*sigaction_fn_t)(int, const struct sigaction *, struct sigaction *);
@@ -192,7 +191,7 @@ TEST_F(ITimerTest, JvmtiStartDefaultsInterval) {
 
 // cpuSamplerInterval() returns 0 for a non-CPU event; the engine must reject
 // it instead of arming a zero (disarmed) timer. _interval stays at its
-// default 0: the rejection must come from the validated value, not the field.
+// default 0 so the rejection cannot come from a negative-field shortcut.
 TEST_F(ITimerTest, JvmtiStartRejectsNonCpuEvent) {
   ITimerJvmti engine;
   Arguments args;
