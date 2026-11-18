@@ -190,10 +190,21 @@ TEST(DictionaryTest, KeyAllocationFailureFailsTheInsert) {
     EXPECT_NE(0U, mustLookup(d, "absent", 6));
 }
 
+// Fault-injection builds fail a key allocation at random, which a SymbolDictionary
+// reports as UNRESOLVED_ID; retry until the insert yields a real id.
+static unsigned int mustLookupSymbol(SymbolDictionary &d, const char *key) {
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        unsigned int id = d.lookup(key);
+        if (id != SymbolDictionary::UNRESOLVED_ID) return id;
+    }
+    ADD_FAILURE() << "insert of '" << key << "' kept failing";
+    return SymbolDictionary::UNRESOLVED_ID;
+}
+
 // The pool must contain the entry every failed insert resolved to, and only then.
 TEST(DictionaryTest, SymbolDictionaryCollectAddsUnresolvedEntryOnlyAfterFailure) {
     SymbolDictionary d;
-    ASSERT_NE(0U, d.lookup("ok"));
+    ASSERT_NE(SymbolDictionary::UNRESOLVED_ID, mustLookupSymbol(d, "ok"));
     std::map<unsigned int, const char*> before;
     d.collect(before);
 #ifndef __FAULT_INJECTION__
@@ -217,8 +228,10 @@ TEST(DictionaryTest, SymbolDictionaryCollectAddsUnresolvedEntryOnlyAfterFailure)
 // two-argument form.
 TEST(DictionaryTest, SymbolDictionaryOneArgLookupMatchesTwoArgLookup) {
     SymbolDictionary d;
-    unsigned int id = d.lookup("abcdef");
-    ASSERT_NE(0U, id);
+    unsigned int id = mustLookupSymbol(d, "abcdef");
+    ASSERT_NE(SymbolDictionary::UNRESOLVED_ID, id);
     EXPECT_EQ(id, d.lookup("abcdef", 6));
-    EXPECT_NE(id, d.lookup("abcdefg"));  // full length, not a prefix match
+    unsigned int longer = mustLookupSymbol(d, "abcdefg");
+    EXPECT_NE(SymbolDictionary::UNRESOLVED_ID, longer);
+    EXPECT_NE(id, longer);  // full length, not a prefix match
 }
