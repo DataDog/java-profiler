@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,92 +15,96 @@
  */
 package com.datadoghq.profiler.metadata;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
-import org.junit.jupiter.api.Test;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
 
 /**
- * Verifies that the dictionary rotate+clearStandby cycle correctly:
- * - Exposes only pre-dump entries in the dump snapshot.
- * - Recalibrates the live counter to reflect the active buffer after clearStandby().
- * - Accumulates post-dump entries in the new active buffer.
+ * Verifies that the dictionary rotate+clearStandby cycle correctly: - Exposes only pre-dump entries
+ * in the dump snapshot. - Recalibrates the live counter to reflect the active buffer after
+ * clearStandby(). - Accumulates post-dump entries in the new active buffer.
  */
 public class DictionaryRotationTest extends AbstractProfilerTest {
 
-    @Test
-    public void dumpCycleSeparatesPreAndPostDumpEntries() throws Exception {
-        String[] preDump  = { "ep_pre_0", "ep_pre_1", "ep_pre_2" };
-        String[] postDump = { "ep_post_0", "ep_post_1" };
-        int sizeLimit = 100;
+  @Test
+  public void dumpCycleSeparatesPreAndPostDumpEntries() throws Exception {
+    String[] preDump = {"ep_pre_0", "ep_pre_1", "ep_pre_2"};
+    String[] postDump = {"ep_post_0", "ep_post_1"};
+    int sizeLimit = 100;
 
-        for (int i = 0; i < preDump.length; i++) {
-            profiler.recordTraceRoot(i, preDump[i], null, sizeLimit);
-        }
-
-        // dump() triggers: lockAll() → rotate() → jfr.dump(snapshot) → unlockAll()
-        //                            → clearStandby() (resets per-dump counters to 0, frees scratch buffer)
-        Path snapshot = Files.createTempFile("DictionaryRotation_snapshot_", ".jfr");
-        try {
-            dump(snapshot);
-
-            // Counter reset to 0 by clearStandby() — tracks only post-clearStandby inserts
-            Map<String, Long> afterDump = profiler.getDebugCounters();
-            assertEquals(0L, afterDump.getOrDefault("dictionary_endpoints_keys", -1L),
-                    "dictionary_endpoints_keys must be 0 after clearStandby");
-
-            for (int i = 0; i < postDump.length; i++) {
-                profiler.recordTraceRoot(preDump.length + i, postDump[i], null, sizeLimit);
-            }
-
-            // Live counter reflects only post-dump insertions
-            Map<String, Long> live = profiler.getDebugCounters();
-            assertEquals((long) postDump.length, live.get("dictionary_endpoints_keys"),
-                    "Live counter must equal number of post-dump endpoints");
-
-            stopProfiler();
-
-            // Snapshot contains pre-dump endpoints only
-            Set<String> inSnapshot = endpointNames(verifyEvents(snapshot, "datadog.Endpoint", true));
-            for (String ep : preDump) {
-                assertTrue(inSnapshot.contains(ep), "Snapshot must contain pre-dump endpoint: " + ep);
-            }
-            for (String ep : postDump) {
-                assertFalse(inSnapshot.contains(ep), "Snapshot must NOT contain post-dump endpoint: " + ep);
-            }
-
-            // Main recording contains post-dump endpoints only
-            Set<String> inRecording = endpointNames(verifyEvents("datadog.Endpoint"));
-            for (String ep : postDump) {
-                assertTrue(inRecording.contains(ep), "Recording must contain post-dump endpoint: " + ep);
-            }
-            for (String ep : preDump) {
-                assertFalse(inRecording.contains(ep), "Recording must NOT contain pre-dump endpoint: " + ep);
-            }
-        } finally {
-            Files.deleteIfExists(snapshot);
-        }
+    for (int i = 0; i < preDump.length; i++) {
+      profiler.recordTraceRoot(i, preDump[i], null, sizeLimit);
     }
 
-    @Override
-    protected String getProfilerCommand() {
-        return "wall=~1ms";
-    }
+    // dump() triggers: lockAll() → rotate() → jfr.dump(snapshot) → unlockAll()
+    //                            → clearStandby() (resets per-dump counters to 0, frees scratch
+    // buffer)
+    Path snapshot = Files.createTempFile("DictionaryRotation_snapshot_", ".jfr");
+    try {
+      dump(snapshot);
 
-    private static Set<String> endpointNames(JfrEvents events) {
-        Set<String> names = new HashSet<>();
-        for (JfrEvent item : events) {
-            String v = item.getString("endpoint");
-            if (v != null) names.add(v);
-        }
-        return names;
+      // Counter reset to 0 by clearStandby() — tracks only post-clearStandby inserts
+      Map<String, Long> afterDump = profiler.getDebugCounters();
+      assertEquals(
+          0L,
+          afterDump.getOrDefault("dictionary_endpoints_keys", -1L),
+          "dictionary_endpoints_keys must be 0 after clearStandby");
+
+      for (int i = 0; i < postDump.length; i++) {
+        profiler.recordTraceRoot(preDump.length + i, postDump[i], null, sizeLimit);
+      }
+
+      // Live counter reflects only post-dump insertions
+      Map<String, Long> live = profiler.getDebugCounters();
+      assertEquals(
+          (long) postDump.length,
+          live.get("dictionary_endpoints_keys"),
+          "Live counter must equal number of post-dump endpoints");
+
+      stopProfiler();
+
+      // Snapshot contains pre-dump endpoints only
+      Set<String> inSnapshot = endpointNames(verifyEvents(snapshot, "datadog.Endpoint", true));
+      for (String ep : preDump) {
+        assertTrue(inSnapshot.contains(ep), "Snapshot must contain pre-dump endpoint: " + ep);
+      }
+      for (String ep : postDump) {
+        assertFalse(inSnapshot.contains(ep), "Snapshot must NOT contain post-dump endpoint: " + ep);
+      }
+
+      // Main recording contains post-dump endpoints only
+      Set<String> inRecording = endpointNames(verifyEvents("datadog.Endpoint"));
+      for (String ep : postDump) {
+        assertTrue(inRecording.contains(ep), "Recording must contain post-dump endpoint: " + ep);
+      }
+      for (String ep : preDump) {
+        assertFalse(
+            inRecording.contains(ep), "Recording must NOT contain pre-dump endpoint: " + ep);
+      }
+    } finally {
+      Files.deleteIfExists(snapshot);
     }
+  }
+
+  @Override
+  protected String getProfilerCommand() {
+    return "wall=~1ms";
+  }
+
+  private static Set<String> endpointNames(JfrEvents events) {
+    Set<String> names = new HashSet<>();
+    for (JfrEvent item : events) {
+      String v = item.getString("endpoint");
+      if (v != null) names.add(v);
+    }
+    return names;
+  }
 }

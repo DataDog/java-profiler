@@ -5,11 +5,11 @@
 
 package com.datadoghq.profiler.metadata;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
-import org.junit.jupiter.api.Test;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -18,54 +18,52 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import org.junit.jupiter.api.Test;
 
 public class MetadataNormalisationTest extends AbstractProfilerTest {
 
-    @Test
-    public void test() throws Exception {
-        Constructor<?> arrayListConstructor = ArrayList.class.getConstructor();
-        Method arrayListAdd = ArrayList.class.getDeclaredMethod("add", Object.class);
-        Constructor<?> linkedListConstructor = LinkedList.class.getConstructor();
-        Method linkedListAdd = LinkedList.class.getDeclaredMethod("add", Object.class);
-        // need to invoke enough times to result in generation of accessors and to record some cpu time.
-        // Under ASAN, cpu=100us sampling combined with this fixed iteration count produces a much
-        // larger sample set (stack-trace signal handling is slower under ASAN), and every sample's
-        // stack trace is materialized below, so reduce the iteration count to bound the sample count.
-        int iterations = isAsan() ? 10_000 : 100_000;
-        int count = 0;
-        for (int i = 0; i < iterations; i++) {
-            Object list = arrayListConstructor.newInstance();
-            arrayListAdd.invoke(list, "element");
-            count += ((List<?>) list).size();
-        }
-        for (int i = 0; i < iterations; i++) {
-            Object list = linkedListConstructor.newInstance();
-            linkedListAdd.invoke(list, "element");
-            count += ((List<?>) list).size();
-        }
-        System.out.println(count);
-        stopProfiler();
-        JfrEvents executionSamples = verifyEvents("datadog.ExecutionSample");
-        Matcher[] forbiddenPatternMatchers = Stream.of(
+  @Test
+  public void test() throws Exception {
+    Constructor<?> arrayListConstructor = ArrayList.class.getConstructor();
+    Method arrayListAdd = ArrayList.class.getDeclaredMethod("add", Object.class);
+    Constructor<?> linkedListConstructor = LinkedList.class.getConstructor();
+    Method linkedListAdd = LinkedList.class.getDeclaredMethod("add", Object.class);
+    // need to invoke enough times to result in generation of accessors and to record some cpu time.
+    // Under ASAN, cpu=100us sampling combined with this fixed iteration count produces a much
+    // larger sample set (stack-trace signal handling is slower under ASAN), and every sample's
+    // stack trace is materialized below, so reduce the iteration count to bound the sample count.
+    int iterations = isAsan() ? 10_000 : 100_000;
+    int count = 0;
+    for (int i = 0; i < iterations; i++) {
+      Object list = arrayListConstructor.newInstance();
+      arrayListAdd.invoke(list, "element");
+      count += ((List<?>) list).size();
+    }
+    for (int i = 0; i < iterations; i++) {
+      Object list = linkedListConstructor.newInstance();
+      linkedListAdd.invoke(list, "element");
+      count += ((List<?>) list).size();
+    }
+    System.out.println(count);
+    stopProfiler();
+    JfrEvents executionSamples = verifyEvents("datadog.ExecutionSample");
+    Matcher[] forbiddenPatternMatchers =
+        Stream.of(
                 "MH.*0x[A-Fa-f0-9]{3}", // method handles
-                        "GeneratedConstructorAccessor\\d+",
-                        "GeneratedMethodAccessor\\d+"
-                )
-                .map(regex -> Pattern.compile(regex).matcher(""))
-                .toArray(Matcher[]::new);
-        for (JfrEvent item : executionSamples) {
-            String stacktrace = item.getStackTraceString();
-            for (Matcher matcher : forbiddenPatternMatchers) {
-                matcher.reset(stacktrace);
-                assertFalse(matcher.find(), () -> matcher.pattern() + "\n" + stacktrace);
-            }
-        }
+                "GeneratedConstructorAccessor\\d+", "GeneratedMethodAccessor\\d+")
+            .map(regex -> Pattern.compile(regex).matcher(""))
+            .toArray(Matcher[]::new);
+    for (JfrEvent item : executionSamples) {
+      String stacktrace = item.getStackTraceString();
+      for (Matcher matcher : forbiddenPatternMatchers) {
+        matcher.reset(stacktrace);
+        assertFalse(matcher.find(), () -> matcher.pattern() + "\n" + stacktrace);
+      }
     }
+  }
 
-    @Override
-    protected String getProfilerCommand() {
-        return isAsan() ? "cpu=1ms" : "cpu=100us";
-    }
+  @Override
+  protected String getProfilerCommand() {
+    return isAsan() ? "cpu=1ms" : "cpu=100us";
+  }
 }

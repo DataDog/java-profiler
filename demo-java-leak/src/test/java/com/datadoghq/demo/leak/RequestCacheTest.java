@@ -13,14 +13,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests the leak mechanism itself: an unbounded, strongly-referencing {@link
- * RequestCache}.
+ * Tests the leak mechanism itself: an unbounded, strongly-referencing {@link RequestCache}.
  *
- * <p>Every count assertion is exact equality, not {@code >=}: the invariant under test is
- * that retention is only removed by {@link RequestCache#flush()}, so a silent eviction
- * path, a size cap, or a weak/soft-reference map swap each fails some assertion here -
- * a weak map loses entries between the {@code System.gc()} and the observation, an
- * eviction path drops entries before the flush.
+ * <p>Every count assertion is exact equality, not {@code >=}: the invariant under test is that
+ * retention is only removed by {@link RequestCache#flush()}, so a silent eviction path, a size cap,
+ * or a weak/soft-reference map swap each fails some assertion here - a weak map loses entries
+ * between the {@code System.gc()} and the observation, an eviction path drops entries before the
+ * flush.
  */
 final class RequestCacheTest {
 
@@ -86,8 +85,7 @@ final class RequestCacheTest {
   void duplicateIdRejected() {
     RequestCache cache = new RequestCache();
     cache.record("dup");
-    IllegalStateException e =
-        assertThrows(IllegalStateException.class, () -> cache.record("dup"));
+    IllegalStateException e = assertThrows(IllegalStateException.class, () -> cache.record("dup"));
     assertTrue(e.getMessage().contains("dup"), "message must name the colliding id");
     assertEquals(1, cache.retainedCount(), "a rejected record must not corrupt the cache");
   }
@@ -110,8 +108,7 @@ final class RequestCacheTest {
         cache.removalListener("listener-entry"),
         "every recorded entry must have a registered listener");
     assertNull(
-        cache.removalListener("never-recorded"),
-        "an id that was never recorded has no listener");
+        cache.removalListener("never-recorded"), "an id that was never recorded has no listener");
   }
 
   @Test

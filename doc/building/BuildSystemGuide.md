@@ -19,6 +19,27 @@ All custom build logic lives in `build-logic/conventions/`. The plugins are:
 | `com.datadoghq.scanbuild` | `ScanBuildPlugin` | Clang static analysis |
 | `com.datadoghq.spotless-convention` | `SpotlessConventionPlugin` | Code formatting |
 
+## Java Formatting
+
+`com.datadoghq.spotless-convention` configures Java formatting when the `java` plugin
+is applied, regardless of plugin order. Spotless runs Google Java Format 1.30.0
+on the build JVM; this does not change the Java 8 `--release` compilation target.
+
+Java formatting targets `src/**/*.java`, excludes `src/test/resources/**`, and
+honors `spotless:off` / `spotless:on` markers. `spotlessJavaCheck` feeds
+`spotlessCheck`, which is a dependency of `check`.
+
+Run the convention's TestKit regressions with
+`./.claude/commands/build-and-summarize -p build-logic :conventions:test --max-workers=2`.
+Set `JAVA_HOME` to the build JDK to qualify; use `--rerun-tasks` when switching JDKs.
+
+The fixtures verify the test worker and nested build JVMs and compile formatted Java
+to class-file version 52 using `com.datadoghq.java-conventions`.
+
+CI's `build-logic-tests` job in `.github/workflows/ci.yml` runs `:conventions:test` on
+Ubuntu 22.04 with JDK 21, independently of `check-formatting`. It retains the duplicate-push
+guard and uploads root build logs and included-build test XML only on failure.
+
 ## Key Files and Their Purposes
 
 ```

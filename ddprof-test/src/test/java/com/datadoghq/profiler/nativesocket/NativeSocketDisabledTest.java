@@ -5,39 +5,40 @@
 
 package com.datadoghq.profiler.nativesocket;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-
 /**
- * Verifies that NativeSocketEvent events are absent when the 'nativesocket'
- * profiler argument is not specified.
+ * Verifies that NativeSocketEvent events are absent when the 'nativesocket' profiler argument is
+ * not specified.
  */
 public class NativeSocketDisabledTest extends NativeSocketTestBase {
 
-    @Override
-    protected boolean isPlatformSupported() {
-        return Platform.isLinux();
-    }
+  @Override
+  protected boolean isPlatformSupported() {
+    return Platform.isLinux();
+  }
 
-    @Override
-    protected String getProfilerCommand() {
-        return "cpu=10ms";
-    }
+  @Override
+  protected String getProfilerCommand() {
+    return "cpu=10ms";
+  }
 
-    @RetryingTest(3)
-    public void noSocketEventsWithoutFeatureEnabled() throws Exception {
-        Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
+  @RetryingTest(3)
+  public void noSocketEventsWithoutFeatureEnabled() throws Exception {
+    Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
 
-        doTcpTransfer(64 * 1024, 8);
+    doTcpTransfer(64 * 1024, 8);
 
-        stopProfiler();
+    stopProfiler();
 
-        JfrEvents events = verifyEvents("datadog.NativeSocketEvent", false);
-        assertFalse(events.hasItems(),
-                "NativeSocketEvent events must not appear when nativesocket argument is absent");
-    }
+    JfrEvents events = verifyEvents("datadog.NativeSocketEvent", false);
+    assertFalse(
+        events.hasItems(),
+        "NativeSocketEvent events must not appear when nativesocket argument is absent");
+  }
 }

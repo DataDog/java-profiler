@@ -267,7 +267,7 @@ ddprof-stresstest/
 
 - **CallTraceStorage Architecture**: `doc/architecture/CallTraceStorage.md` - Detailed triple-buffer architecture, benchmark results, and optimization guide
 - **Main README**: `README.md` (project root) - General project overview
-- **Build Configuration**: `CLAUDE.md` - Build system and development guidelines
+- **Build Configuration**: `AGENTS.md` - Build system and development guidelines
 
 ## Contributing
 

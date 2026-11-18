@@ -9,65 +9,66 @@
  */
 package com.datadoghq.profiler.memleak;
 
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
- * Regression test for a SIGSEGV in {@code Profiler::processCallTraces} during
- * {@code Recording::writeStackTraces} triggered by class unload.
+ * Regression test for a SIGSEGV in {@code Profiler::processCallTraces} during {@code
+ * Recording::writeStackTraces} triggered by class unload.
  *
- * <p><b>Bug:</b> {@code MethodInfo::_line_number_table->_table} held a raw pointer to JVMTI-allocated
- * memory returned by {@code GetLineNumberTable}, with no validation of that pointer at capture
- * time. When the underlying class was unloaded, the JVM freed that memory, leaving the pointer
- * dangling. The crash manifested when {@code MethodInfo::getLineNumber(bci)} dereferenced the
- * freed memory while {@code writeStackTraces} iterated traces that still referenced the
+ * <p><b>Bug:</b> {@code MethodInfo::_line_number_table->_table} held a raw pointer to
+ * JVMTI-allocated memory returned by {@code GetLineNumberTable}, with no validation of that pointer
+ * at capture time. When the underlying class was unloaded, the JVM freed that memory, leaving the
+ * pointer dangling. The crash manifested when {@code MethodInfo::getLineNumber(bci)} dereferenced
+ * the freed memory while {@code writeStackTraces} iterated traces that still referenced the
  * now-unloaded method.
  *
  * <p><b>Test scenario (timing-sensitive — catches the bug aggressively under ASan):</b>
+ *
  * <ol>
  *   <li>Aggressively profile a dynamically-loaded class so its methods land in many CPU samples.
  *       Each sample creates an entry in {@code call_trace_storage} and a {@code MethodInfo} entry
- *       in {@code _method_map} that holds a {@code shared_ptr<SharedLineNumberTable>}.</li>
- *   <li>Drop all strong references to the class and its loader; encourage unloading via
- *       {@code System.gc()} until the {@code WeakReference} is cleared.</li>
+ *       in {@code _method_map} that holds a {@code shared_ptr<SharedLineNumberTable>}.
+ *   <li>Drop all strong references to the class and its loader; encourage unloading via {@code
+ *       System.gc()} until the {@code WeakReference} is cleared.
  *   <li>Immediately dump — within the same chunk if possible — so the freshly-unloaded method's
- *       traces are still in {@code call_trace_storage} when {@code writeStackTraces} runs.</li>
- *   <li>The lambda inside {@code processCallTraces} resolves the unloaded method via
- *       {@code Lookup::resolveMethod} and calls {@code MethodInfo::getLineNumber(bci)} on a
- *       {@code MethodInfo} whose {@code _line_number_table->_table} was freed by the JVM →
- *       SIGSEGV without the fix.</li>
+ *       traces are still in {@code call_trace_storage} when {@code writeStackTraces} runs.
+ *   <li>The lambda inside {@code processCallTraces} resolves the unloaded method via {@code
+ *       Lookup::resolveMethod} and calls {@code MethodInfo::getLineNumber(bci)} on a {@code
+ *       MethodInfo} whose {@code _line_number_table->_table} was freed by the JVM → SIGSEGV without
+ *       the fix.
  * </ol>
  *
- * <p>With the fix, {@code Lookup::fillJavaMethodInfo} validates the JVMTI-returned
- * (pointer, size) pair once, at capture time (a sanity bound on the size plus a
- * {@code SafeAccess} readability probe), then holds that exact buffer directly in
- * {@code SharedLineNumberTable} -- no private copy. Per the JVMTI spec, {@code
- * GetLineNumberTable()}'s returned array is a fresh, caller-owned allocation decoupled
- * from the {@code Method}'s lifetime, so once validated it stays readable regardless of
- * class unload; {@code ~SharedLineNumberTable()} frees it with {@code jvmti->Deallocate()}
- * (not {@code free()}) only when the row is finally evicted from {@code method_map}.
+ * <p>With the fix, {@code Lookup::fillJavaMethodInfo} validates the JVMTI-returned (pointer, size)
+ * pair once, at capture time (a sanity bound on the size plus a {@code SafeAccess} readability
+ * probe), then holds that exact buffer directly in {@code SharedLineNumberTable} -- no private
+ * copy. Per the JVMTI spec, {@code GetLineNumberTable()}'s returned array is a fresh, caller-owned
+ * allocation decoupled from the {@code Method}'s lifetime, so once validated it stays readable
+ * regardless of class unload; {@code ~SharedLineNumberTable()} frees it with {@code
+ * jvmti->Deallocate()} (not {@code free()}) only when the row is finally evicted from {@code
+ * method_map}.
  *
  * <p><b>Limitations:</b>
+ *
  * <ul>
- *   <li>Not authored "blind" — the implementation existed before the test was written.</li>
- *   <li>Without ASan/UBSan, the freed JVMTI region may still hold plausible bytes at read time
- *       and the test will report green even on a buggy binary. ASan/UBSan builds are the
- *       authoritative signal here.</li>
- *   <li>Class unload is JVM-discretionary; if the {@code WeakReference} doesn't clear within
- *       the deadline the test {@code assumeTrue}-skips rather than passing spuriously.</li>
- *   <li>{@code mcleanup=false} is set deliberately so a SIGSEGV here exercises the
- *       {@code getLineNumber} read path, not the {@code ~SharedLineNumberTable} cleanup path
- *       covered by {@code CleanupAfterClassUnloadTest}.</li>
+ *   <li>Not authored "blind" — the implementation existed before the test was written.
+ *   <li>Without ASan/UBSan, the freed JVMTI region may still hold plausible bytes at read time and
+ *       the test will report green even on a buggy binary. ASan/UBSan builds are the authoritative
+ *       signal here.
+ *   <li>Class unload is JVM-discretionary; if the {@code WeakReference} doesn't clear within the
+ *       deadline the test {@code assumeTrue}-skips rather than passing spuriously.
+ *   <li>{@code mcleanup=false} is set deliberately so a SIGSEGV here exercises the {@code
+ *       getLineNumber} read path, not the {@code ~SharedLineNumberTable} cleanup path covered by
+ *       {@code CleanupAfterClassUnloadTest}.
  * </ul>
  */
 @Tag("slow")
@@ -108,7 +109,8 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTe
         // Skip the test (rather than pass spuriously) if the JVM declined to unload.
         // Without unload the JVMTI line-number-table memory is never freed and the bug
         // cannot manifest — running the dumps would prove nothing.
-        assumeTrue(loaderRef.get() == null,
+        assumeTrue(
+            loaderRef.get() == null,
             "JVM did not unload the dynamic class within the deadline; cannot exercise the use-after-free scenario");
 
         // 3. Immediately dump several times. The first dump runs writeStackTraces over
@@ -125,15 +127,22 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTe
         // 4. If the profiler crashed inside processCallTraces the JVM would have died and we
         //    would never reach this line. The non-empty-output assertion is secondary — the
         //    primary signal is reaching profiler.stop() at all.
-        assertTrue(Files.size(dumpFile) > 0,
+        assertTrue(
+            Files.size(dumpFile) > 0,
             "Profiler produced no output — SIGSEGV during writeStackTraces is suspected");
       } finally {
         profiler.stop();
       }
 
     } finally {
-      try { Files.deleteIfExists(baseFile); } catch (IOException ignored) {}
-      try { Files.deleteIfExists(dumpFile); } catch (IOException ignored) {}
+      try {
+        Files.deleteIfExists(baseFile);
+      } catch (IOException ignored) {
+      }
+      try {
+        Files.deleteIfExists(dumpFile);
+      } catch (IOException ignored) {
+      }
     }
   }
 
@@ -167,5 +176,4 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTe
     instance = null;
     return ref;
   }
-
 }

@@ -19,29 +19,28 @@ import java.util.concurrent.Executors;
  * Entry point of the demo leak app: a self-contained HTTP service that steadily leaks
  * request-scoped state.
  *
- * <p>The app takes no arguments. It starts a {@code HttpServer} on an ephemeral port and
- * then runs a single self-traffic loop that issues HTTP requests to its own server, so both
- * the traffic and the leak go through the real handler path - no external client is needed.
- * The loop never exits; shutdown is by process kill.
+ * <p>The app takes no arguments. It starts a {@code HttpServer} on an ephemeral port and then runs
+ * a single self-traffic loop that issues HTTP requests to its own server, so both the traffic and
+ * the leak go through the real handler path - no external client is needed. The loop never exits;
+ * shutdown is by process kill.
  *
  * <p>Leak-shape rationale, in the spirit of {@code ReferenceChainLeakDemo} in {@code
  * ddprof-stresstest} - every choice below exists because leaving it out produces zero
  * reference-chain events, silently:
  *
  * <ul>
- *   <li>{@code System.gc()} is forced every round. The profiler's per-klass population
- *       trend only advances on garbage-collection-finish callbacks, and a quiet heap
- *       under {@code -Xmx512m} may not GC often enough on its own to feed the trend.
- *   <li>The {@link RequestCache} has no cap and no eviction. A flat or capped population
- *       stops being a rising trend, and a periodically-reset population produces flat
- *       stretches that push the trend slope back to zero.
+ *   <li>{@code System.gc()} is forced every round. The profiler's per-klass population trend only
+ *       advances on garbage-collection-finish callbacks, and a quiet heap under {@code -Xmx512m}
+ *       may not GC often enough on its own to feed the trend.
+ *   <li>The {@link RequestCache} has no cap and no eviction. A flat or capped population stops
+ *       being a rising trend, and a periodically-reset population produces flat stretches that push
+ *       the trend slope back to zero.
  *   <li>Growth is paced, and each round the {@link HeapWatermark} is checked: when post-GC
- *       occupancy crosses {@link HeapWatermark#HIGH_WATERMARK} the whole cache is dropped in
- *       one {@link RequestCache#flush()} step, so the JVM never exhausts the heap, and
- *       growth resumes from an empty cache. Each growth phase lasts on the order of an
- *       hour - far longer than the roughly fifteen GC epochs the trend qualification
- *       needs at one forced GC per round - so the leak cycles are long, steady windows
- *       rather than noise.
+ *       occupancy crosses {@link HeapWatermark#HIGH_WATERMARK} the whole cache is dropped in one
+ *       {@link RequestCache#flush()} step, so the JVM never exhausts the heap, and growth resumes
+ *       from an empty cache. Each growth phase lasts on the order of an hour - far longer than the
+ *       roughly fifteen GC epochs the trend qualification needs at one forced GC per round - so the
+ *       leak cycles are long, steady windows rather than noise.
  * </ul>
  */
 public final class Main {
@@ -64,10 +63,10 @@ public final class Main {
   private Main() {}
 
   /**
-   * Starts the HTTP server on an ephemeral port and enters the self-traffic loop, which
-   * never returns. The loop serves the app's own requests, leaks one request state per
-   * handled request, forces a GC every round and flushes the cache when post-GC occupancy
-   * crosses the high watermark.
+   * Starts the HTTP server on an ephemeral port and enters the self-traffic loop, which never
+   * returns. The loop serves the app's own requests, leaks one request state per handled request,
+   * forces a GC every round and flushes the cache when post-GC occupancy crosses the high
+   * watermark.
    */
   public static void main(String[] args) throws IOException {
     // sun.net.httpserver.nodelay (documented on the jdk.httpserver module) sets
@@ -99,11 +98,11 @@ public final class Main {
   }
 
   /**
-   * The app's whole life, one round at a time. Each round issues the round's self-traffic,
-   * forces a GC, checks the watermark, and sleeps out the rest of the round interval. The
-   * forced GC must precede the watermark check: the watermark reads post-GC usage, and the
-   * profiler's GC-epoch counter (which the population trend keys on) only advances on
-   * garbage-collection-finish callbacks. Never returns.
+   * The app's whole life, one round at a time. Each round issues the round's self-traffic, forces a
+   * GC, checks the watermark, and sleeps out the rest of the round interval. The forced GC must
+   * precede the watermark check: the watermark reads post-GC usage, and the profiler's GC-epoch
+   * counter (which the population trend keys on) only advances on garbage-collection-finish
+   * callbacks. Never returns.
    */
   private static void selfTrafficLoop(RequestCache cache, int port) {
     HttpClient client = HttpClient.newHttpClient();
@@ -160,19 +159,17 @@ public final class Main {
   }
 
   /**
-   * Issues {@code count} sequential GETs to the app's own server, so every recorded state
-   * goes through the real handler path. Returns the number of requests that did not
-   * complete with a 200. Failures never stop the loop: they are reported once per round
-   * they occur in, a round is abandoned early once more than ten of its requests fail
-   * (a round that degraded that far will not feed the trend anyway), and the app itself
-   * has no exit path by design.
+   * Issues {@code count} sequential GETs to the app's own server, so every recorded state goes
+   * through the real handler path. Returns the number of requests that did not complete with a 200.
+   * Failures never stop the loop: they are reported once per round they occur in, a round is
+   * abandoned early once more than ten of its requests fail (a round that degraded that far will
+   * not feed the trend anyway), and the app itself has no exit path by design.
    */
   private static int issueRequests(HttpClient client, HttpRequest request, int count) {
     int failures = 0;
     for (int i = 0; i < count; i++) {
       try {
-        HttpResponse<Void> response =
-            client.send(request, HttpResponse.BodyHandlers.discarding());
+        HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
         if (response.statusCode() != 200) {
           failures++;
           if (failures > 10) {
@@ -199,9 +196,9 @@ public final class Main {
   }
 
   /**
-   * Sleeps out the remainder of the round interval, measured from the round's start, so a
-   * slow round (for example a long GC) does not further delay the next one: when the round
-   * overran the interval, the next round starts immediately and pacing self-corrects.
+   * Sleeps out the remainder of the round interval, measured from the round's start, so a slow
+   * round (for example a long GC) does not further delay the next one: when the round overran the
+   * interval, the next round starts immediately and pacing self-corrects.
    */
   private static void sleepUntilNextRound(long roundStartNanos) {
     long elapsedMillis = (System.nanoTime() - roundStartNanos) / 1_000_000L;

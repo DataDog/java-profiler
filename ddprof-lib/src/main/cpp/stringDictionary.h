@@ -61,20 +61,23 @@ struct SBTable {
 //
 // reset() frees all chunks after the first and resets the first chunk's
 // position counter.  The first chunk is kept to avoid a malloc on the next
-// use.  reset() must only be called when no concurrent alloc() calls are in
-// flight.
+// use.  release() frees it too.  Either must only be called when no
+// concurrent alloc() calls are in flight.
+//
+// The first chunk is allocated by the first alloc() (after construction or
+// release()), so an arena nothing writes to holds no memory.
 class StringArena {
     static constexpr size_t CHUNK_SIZE = 512 * 1024;
 
-    // Plain struct allocated via calloc (zero-initialised); pos accessed via
-    // __atomic builtins, consistent with the rest of the file.
+    // Plain struct allocated via calloc (zero-initialised), so pos is accessed
+    // via __atomic builtins rather than std::atomic.
     struct Chunk {
         Chunk* next;        // singly-linked for traversal in reset() / ~StringArena()
         size_t pos;         // bump pointer within data[]
         char   data[CHUNK_SIZE];
     };
 
-    Chunk*              _first;            // head of chain; kept across resets
+    std::atomic<Chunk*> _first;            // head of chain; kept across resets; published under _growing
     std::atomic<Chunk*> _active;           // current allocation target
     std::atomic<bool>   _growing{false};   // serialises new-chunk creation
     std::atomic<int>    _extra_chunks{0};  // chunks linked after _first
@@ -108,6 +111,43 @@ class StringArena {
         }
     }
 
+    // Spins until this thread owns _growing.
+    void lockGrowing() {
+        bool expected = false;
+        while (!_growing.compare_exchange_weak(expected, true,
+               std::memory_order_acquire, std::memory_order_relaxed)) {
+            expected = false;
+            spinPause();
+        }
+    }
+
+    // No active chunk: none yet (fresh or released arena), which this
+    // allocates (a failure is retried by the next alloc()), or a growth OOM
+    // latched until reset(). Returns the active chunk, or nullptr on OOM.
+    Chunk* acquireFirstChunk() {
+        // Without the growth lock once a first chunk exists: _active, published
+        // before _first, is then the racing first chunk or a latched OOM (null).
+        if (_first.load(std::memory_order_acquire) != nullptr) {
+            return _active.load(std::memory_order_acquire);
+        }
+        lockGrowing();
+        Chunk* c = _active.load(std::memory_order_relaxed);
+        if (c == nullptr && _first.load(std::memory_order_relaxed) == nullptr) {
+            c = make_chunk();
+            if (c != nullptr) {
+                countChunkAlloc();
+                _active.store(c, std::memory_order_release);
+                _first.store(c, std::memory_order_release);
+            } else if (!_oom_logged) {
+                _oom_logged = true;
+                Log::warn("StringArena: first chunk allocation failed; insert "
+                          "dropped, will retry on next insert");
+            }
+        }
+        _growing.store(false, std::memory_order_release);
+        return c;
+    }
+
     void grow(Chunk* full) {
         // One thread at a time creates the next chunk.  Others spin briefly
         // then re-check _active; if it has already advanced they return.
@@ -135,18 +175,19 @@ class StringArena {
             // logs; reset() clears the latch.
             if (!_oom_logged) {
                 _oom_logged = true;
-                Log::warn("StringArena: chunk allocation failed; new inserts will "
-                          "be dropped on this buffer until the next clearAll/reset");
+                Log::warn("StringArena: chunk allocation failed; new inserts "
+                          "will be dropped on this buffer until the next "
+                          "clearAll/reset");
             }
         }
         _growing.store(false, std::memory_order_release);
     }
 
 public:
-    StringArena() : _first(make_chunk()), _active(_first) {}
+    StringArena() : _first(nullptr), _active(nullptr) {}
 
     ~StringArena() {
-        Chunk* c = _first;
+        Chunk* c = _first.load(std::memory_order_relaxed);
         while (c) {
             Chunk* n = c->next;
             // Before free(): the overhead is read back off the live chunk.
@@ -159,12 +200,12 @@ public:
     StringArena(const StringArena&) = delete;
     StringArena& operator=(const StringArena&) = delete;
 
-    // Enable DICTIONARY_BYTES tracking for arena chunks beyond the initial one.
-    // The initial chunk is counted by StringDictionaryBuffer::initCounters(),
-    // which calls this method after construction.
+    // Enable DICTIONARY_BYTES tracking for this arena's chunks.  Called by
+    // StringDictionaryBuffer::initCounters() after construction, normally
+    // before any chunk exists; counts the first chunk if there is one.
     void initCounters(int offset) {
         _counter_offset = offset;
-        if (offset != 0 && _first != nullptr) {
+        if (offset != 0 && _first.load(std::memory_order_relaxed) != nullptr) {
             Counters::increment(DICTIONARY_BYTES, (long long)sizeof(Chunk), offset);
         }
     }
@@ -173,7 +214,10 @@ public:
         n = (n + alignof(void*) - 1) & ~(alignof(void*) - 1);
         for (;;) {
             Chunk* c = _active.load(std::memory_order_acquire);
-            if (!c) return nullptr;  // OOM
+            if (!c) {
+                c = acquireFirstChunk();
+                if (!c) return nullptr;  // OOM
+            }
             size_t off = __atomic_fetch_add(&c->pos, n, __ATOMIC_RELAXED);
             if (off + n <= CHUNK_SIZE) return c->data + off;
             grow(c);
@@ -185,7 +229,8 @@ public:
     // nullptr after a failed make_chunk(), the next alloc() after reset()
     // will succeed again (up to one chunk's worth).
     void reset() {
-        Chunk* c = _first ? _first->next : nullptr;
+        Chunk* first = _first.load(std::memory_order_relaxed);
+        Chunk* c = first ? first->next : nullptr;
         int freed = 0;
         while (c) {
             Chunk* n = c->next;
@@ -195,21 +240,37 @@ public:
             c = n;
             ++freed;
         }
-        if (_first) {
-            _first->next = nullptr;
-            __atomic_store_n(&_first->pos, (size_t)0, __ATOMIC_RELAXED);
+        if (first) {
+            first->next = nullptr;
+            __atomic_store_n(&first->pos, (size_t)0, __ATOMIC_RELAXED);
         }
-        _active.store(_first, std::memory_order_release);
+        _active.store(first, std::memory_order_release);
         _extra_chunks.store(0, std::memory_order_relaxed);
         countChunkFree(freed);
         _oom_logged = false;
+    }
+
+    // Free every chunk, the first one included.  The next alloc() allocates
+    // a first chunk again.  Same precondition as reset().
+    void release() {
+        reset();
+        Chunk* first = _first.load(std::memory_order_relaxed);
+        _first.store(nullptr, std::memory_order_relaxed);
+        _active.store(nullptr, std::memory_order_relaxed);
+        if (first != nullptr) {
+            // Before free(): the overhead is read back off the live chunk.
+            NativeMem::recordFreeBefore(NM_DICTIONARY, first, sizeof(Chunk));
+            free(first);
+            countChunkFree(1);
+        }
     }
 
     // Re-adds every live chunk to DICTIONARY_BYTES, for use after a global
     // Counters::reset() zeroed the gauge while the chunks stayed allocated.
     void reseedCounters() {
         if (_counter_offset == 0) return;
-        int chunks = (_first != nullptr ? 1 : 0) + _extra_chunks.load(std::memory_order_relaxed);
+        int chunks = (_first.load(std::memory_order_relaxed) != nullptr ? 1 : 0) +
+                     _extra_chunks.load(std::memory_order_relaxed);
         Counters::increment(DICTIONARY_BYTES, (long long)chunks * (long long)sizeof(Chunk), _counter_offset);
     }
 };
@@ -223,6 +284,9 @@ public:
 // clear() and destruction.  This makes clear() O(number-of-overflow-nodes)
 // rather than O(number-of-entries), and eliminates per-key malloc/free.
 //
+// The root table is allocated by the first insert (after construction or
+// release()); concurrent first inserts race a CAS to publish it.
+//
 // Concurrency model:
 //   - Inserts (insert_with_id, copyFrom): CAS on keys[c] to claim a slot.
 //     id stored AFTER winning CAS (release); readers check ids[c] != 0.
@@ -234,7 +298,7 @@ public:
 // Signal-safe for lookup (read-only, no allocation).
 class StringDictionaryBuffer {
 private:
-    SBTable*           _table;
+    SBTable*           _table{nullptr};  // published by CAS in ensureTable()
     std::atomic<int>   _size{0};
     StringArena        _arena;
     std::atomic<int>   _overflow_nodes{0};  // overflow SBTables linked below _table
@@ -254,6 +318,28 @@ private:
     // up front so the typical traversal never reallocates.  Deeper chains grow
     // the vector — no silent truncation.
     static constexpr int RESERVED_TRAVERSAL_DEPTH = 34;
+
+    SBTable* table() const { return __atomic_load_n(&_table, __ATOMIC_ACQUIRE); }
+
+    // Returns the root table, allocating and publishing it if there is none.
+    // Returns nullptr on OOM.
+    SBTable* ensureTable() {
+        SBTable* t = table();
+        if (t != nullptr) return t;
+        SBTable* fresh = static_cast<SBTable*>(calloc(1, sizeof(SBTable)));
+        if (fresh == nullptr) return nullptr;
+        if (!__atomic_compare_exchange_n(&_table, &t, fresh, false,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            free(fresh);  // another insert published one first; t holds it
+            return t;
+        }
+        NativeMem::record(NM_DICTIONARY, static_cast<long long>(sizeof(SBTable)));
+        if (_counter_offset != 0) {
+            Counters::increment(DICTIONARY_PAGES, 1, _counter_offset);
+            Counters::increment(DICTIONARY_BYTES, static_cast<long long>(sizeof(SBTable)), _counter_offset);
+        }
+        return fresh;
+    }
 
     // Free only overflow SBTable chain nodes (not key strings — arena-owned).
     // Returns the number of overflow nodes freed (excludes the root table).
@@ -306,12 +392,7 @@ private:
     }
 
 public:
-    StringDictionaryBuffer() {
-        _table = static_cast<SBTable*>(calloc(1, sizeof(SBTable)));
-        if (_table != nullptr) {
-            NativeMem::record(NM_DICTIONARY, (long long)sizeof(SBTable));
-        }
-    }
+    StringDictionaryBuffer() {}
 
     ~StringDictionaryBuffer() {
         if (_table != nullptr) {
@@ -328,9 +409,9 @@ public:
     StringDictionaryBuffer& operator=(StringDictionaryBuffer&&)      = delete;
 
     // Enable DICTIONARY_PAGES / DICTIONARY_BYTES tracking for this buffer.
-    // Called by StringDictionary after construction; counts the root SBTable
-    // and the initial arena Chunk.  Subsequent arena growth and reset() are
-    // accounted for by StringArena itself.
+    // Called by StringDictionary after construction, normally before the root
+    // table and first arena chunk exist; counts whichever do.  Their later
+    // allocation, arena growth and reset() are accounted for as they happen.
     void initCounters(int offset) {
         _counter_offset = offset;
         if (_table != nullptr) {
@@ -342,7 +423,7 @@ public:
 
     // Signal-safe read-only probe. Returns 0 on miss.
     u32 lookup(const char* key, size_t len) const {
-        const SBTable* table = _table;
+        const SBTable* table = this->table();
         unsigned int h = hash(key, len);
         while (table) {
             const SBRow* row = &table->rows[h % ROWS];
@@ -363,8 +444,8 @@ public:
     // Insert with the given id. Returns the id stored for this key.
     // NOT signal-safe (arena alloc; calloc for overflow nodes).
     u32 insert_with_id(const char* key, size_t len, u32 id) {
-        SBTable* table = _table;
-        if (table == nullptr) return 0;   // calloc OOM at ctor; match lookup() contract
+        SBTable* table = ensureTable();
+        if (table == nullptr) return 0;   // calloc OOM; match lookup() contract
         unsigned int h = hash(key, len);
         while (true) {
             SBRow* row = &table->rows[h % ROWS];
@@ -436,7 +517,7 @@ public:
     // NOT signal-safe.
     CopyResult copyFrom(const StringDictionaryBuffer& src) {
         CopyResult result = {0, 0};
-        forEachEntry(src._table, [this, &result](const char* key, u32 id) {
+        forEachEntry(src.table(), [this, &result](const char* key, u32 id) {
             u32 stored = insert_with_id(key, strlen(key), id);
             if (stored == id) {
                 result.copied++;
@@ -449,7 +530,7 @@ public:
 
     // Populate out with {id -> key} for all entries in this buffer.
     void collect(std::map<u32, const char*>& out) const {
-        forEachEntry(_table, [&out](const char* key, u32 id) { out[id] = key; });
+        forEachEntry(table(), [&out](const char* key, u32 id) { out[id] = key; });
     }
 
     // Free overflow nodes, zero the root table, reset the arena.
@@ -465,6 +546,22 @@ public:
             Counters::decrement(DICTIONARY_PAGES, freed, _counter_offset);
             Counters::decrement(DICTIONARY_BYTES, (long long)(freed * sizeof(SBTable)), _counter_offset);
         }
+    }
+
+    // Free all storage, the root table and first arena chunk included; the
+    // next insert allocates them again.  Same precondition as clear().
+    void release() {
+        clear();
+        if (_table != nullptr) {
+            free(_table);
+            NativeMem::record(NM_DICTIONARY, -static_cast<long long>(sizeof(SBTable)));
+            _table = nullptr;
+            if (_counter_offset != 0) {
+                Counters::decrement(DICTIONARY_PAGES, 1, _counter_offset);
+                Counters::decrement(DICTIONARY_BYTES, static_cast<long long>(sizeof(SBTable)), _counter_offset);
+            }
+        }
+        _arena.release();
     }
 
     // Re-adds the root table, overflow tables and arena chunks to
@@ -933,16 +1030,32 @@ public:
     // that existing entries already use.  An unreset dictionary stays
     // consistent - its ids remain valid and generation() is unchanged.
     [[nodiscard]] bool clearAll() {
+        return resetBuffers(false);
+    }
+
+    // Like clearAll() but frees all storage, and keeps the id counter so an
+    // id from before cannot alias a later key; it stays open for inserts.
+    // Returns false, leaving it unchanged, if the drain times out.
+    [[nodiscard]] bool release() {
+        return resetBuffers(true);
+    }
+
+private:
+    bool resetBuffers(bool release) {
         _accepting.store(false, std::memory_order_seq_cst);
         void* const buffers[] = {&_a, &_b, &_c};
         if (!RefCountGuard::tryWaitForRefCountsToClear(buffers, 3)) {
             _accepting.store(true, std::memory_order_release);
             return false;
         }
-        _a.clear(); _b.clear(); _c.clear();
+        if (release) {
+            _a.release(); _b.release(); _c.release();
+        } else {
+            _a.clear(); _b.clear(); _c.clear();
+            _next_id.store(1, std::memory_order_relaxed);
+        }
         _rot.reset();
         _uncleared = nullptr;
-        _next_id.store(1, std::memory_order_relaxed);
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
         _generation.fetch_add(1, std::memory_order_release);

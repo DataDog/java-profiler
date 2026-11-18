@@ -15,13 +15,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * The demo's only HTTP endpoint: every handled request leaks.
  *
  * <p>Each request gets a unique request-scoped id (a per-handler monotonic counter), and the
- * handler hands the resulting state to {@link RequestCache#record} - so the leak grows
- * through the real handler path, one retained entry per handled request. The response is a
- * tiny constant 200 body, so all response traffic stays fixed-size and the only growing
- * state is the retained request population.
+ * handler hands the resulting state to {@link RequestCache#record} - so the leak grows through the
+ * real handler path, one retained entry per handled request. The response is a tiny constant 200
+ * body, so all response traffic stays fixed-size and the only growing state is the retained request
+ * population.
  *
- * <p>Thread safety: the id counter is atomic and the cache synchronizes its methods, so
- * handler threads may run concurrently.
+ * <p>Thread safety: the id counter is atomic and the cache synchronizes its methods, so handler
+ * threads may run concurrently.
  */
 public final class HttpLeakHandler implements HttpHandler {
 
@@ -42,10 +42,10 @@ public final class HttpLeakHandler implements HttpHandler {
   }
 
   /**
-   * Handles one request: builds the unique request-scoped id, records it in the cache (the
-   * leak), and answers with the fixed 200 body. The id is unique for this handler instance
-   * for the lifetime of the process - the counter never repeats, so no id collides with a
-   * retained entry, including across {@link RequestCache#flush()} cycles.
+   * Handles one request: builds the unique request-scoped id, records it in the cache (the leak),
+   * and answers with the fixed 200 body. The id is unique for this handler instance for the
+   * lifetime of the process - the counter never repeats, so no id collides with a retained entry,
+   * including across {@link RequestCache#flush()} cycles.
    */
   @Override
   public void handle(HttpExchange exchange) throws IOException {

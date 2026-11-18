@@ -7,16 +7,15 @@ package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
-import org.openjdk.jmc.common.IMCType;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.ItemFilters;
-import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
-
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import org.openjdk.jmc.common.IMCType;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.ItemFilters;
+import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 /**
  * The actual "leaking Java app" body run inside a separate child JVM by {@code ExternalLauncher}'s
@@ -52,8 +51,8 @@ public final class LeakingCacheScenario {
   /**
    * Durable holder for the cache fixture. The discovered-chain gate suppresses chains shallower
    * than the first real holder hop that are rooted at a TRANSIENT root (stack/JNI local) - a
-   * frame-held "leak" is by definition not a leak - so the cache must be retained through a
-   * static field; {@code run()}'s local {@code cache} variable below aliases this static.
+   * frame-held "leak" is by definition not a leak - so the cache must be retained through a static
+   * field; {@code run()}'s local {@code cache} variable below aliases this static.
    */
   private static final Map<String, CachedPayload> CACHE = new HashMap<>();
 
@@ -65,30 +64,31 @@ public final class LeakingCacheScenario {
 
   /**
    * Printed to stdout (with the offending class name appended) if a match was found but its chain
-   * did not pass through {@code java.util.HashMap}'s own internal storage - asserted in the
-   * parent process rather than here, keeping this scenario's stdout contract to "found/not-found".
+   * did not pass through {@code java.util.HashMap}'s own internal storage - asserted in the parent
+   * process rather than here, keeping this scenario's stdout contract to "found/not-found".
    */
   public static final String NO_HASHMAP_INTERNALS_MARKER = "[chain-found-no-hashmap-internals] ";
 
   /**
-   * Printed to stdout (with an "N/M" re-emitted-dump count appended) if the chain was
-   * reconstructed but did <em>not</em> re-emit into one or more subsequent, independently written
-   * JFR dumps - i.e. the "snapshot-and-keep" contract of {@code drainPendingChainEvents()} failed
-   * to hold across dumps. Asserted by {@code ExternalProcessReferenceChainTest}.
+   * Printed to stdout (with an "N/M" re-emitted-dump count appended) if the chain was reconstructed
+   * but did <em>not</em> re-emit into one or more subsequent, independently written JFR dumps -
+   * i.e. the "snapshot-and-keep" contract of {@code drainPendingChainEvents()} failed to hold
+   * across dumps. Asserted by {@code ExternalProcessReferenceChainTest}.
    */
   public static final String CHAIN_NOT_PERSISTED_MARKER = "[chain-not-persisted] ";
 
   /**
    * Seeds {@code cache} with an initial batch, *then* starts the profiler (order is load-bearing,
-   * see the class comment), then runs the same population-growth loop
-   * {@code ReferenceChainTrackingTest} pioneered - dumping after every round (plus a grace period)
-   * until a {@code datadog.ReferenceChain} event whose {@code chain[0]} is {@link CachedPayload}
-   * appears - then prints exactly one result line to stdout. Called from {@code ExternalLauncher}
-   * (a different package - hence {@code public}), which owns the generic child-process bootstrap;
+   * see the class comment), then runs the same population-growth loop {@code
+   * ReferenceChainTrackingTest} pioneered - dumping after every round (plus a grace period) until a
+   * {@code datadog.ReferenceChain} event whose {@code chain[0]} is {@link CachedPayload} appears -
+   * then prints exactly one result line to stdout. Called from {@code ExternalLauncher} (a
+   * different package - hence {@code public}), which owns the generic child-process bootstrap;
    * starting the profiler happens here, not there, specifically so {@code cache} can be seeded
    * first.
    */
-  public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath) throws Exception {
+  public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath)
+      throws Exception {
     Map<String, CachedPayload> cache = CACHE;
     seedInitialBatch(cache, 300);
     System.out.println("[debug] startCommand=" + startCommand);
@@ -105,12 +105,14 @@ public final class LeakingCacheScenario {
     for (int round = 1; round <= totalRounds && match == null; round++) {
       int newEntries = round * 300;
       int roundNumber = round;
-      Thread allocator = new Thread(() -> {
-        for (int i = 0; i < newEntries; i++) {
-          String key = "leak-" + roundNumber + "-" + i;
-          cache.put(key, new CachedPayload(key));
-        }
-      });
+      Thread allocator =
+          new Thread(
+              () -> {
+                for (int i = 0; i < newEntries; i++) {
+                  String key = "leak-" + roundNumber + "-" + i;
+                  cache.put(key, new CachedPayload(key));
+                }
+              });
       allocator.start();
       allocator.join();
       System.gc();
@@ -197,7 +199,8 @@ public final class LeakingCacheScenario {
         if (findMatch(reDumpPath) != null) {
           persisted++;
         } else {
-          System.out.println("[debug] across-dumps: CachedPayload chain missing from fresh dump #" + i);
+          System.out.println(
+              "[debug] across-dumps: CachedPayload chain missing from fresh dump #" + i);
         }
       } finally {
         Files.deleteIfExists(reDumpPath);
@@ -207,15 +210,17 @@ public final class LeakingCacheScenario {
       System.out.println(CHAIN_NOT_PERSISTED_MARKER + persisted + "/" + persistChecks);
       return;
     }
-    System.out.println("[debug] across-dumps: CachedPayload chain re-emitted in all "
-        + persistChecks + " fresh dumps");
+    System.out.println(
+        "[debug] across-dumps: CachedPayload chain re-emitted in all "
+            + persistChecks
+            + " fresh dumps");
     System.out.println(FOUND_MARKER + match.chain.get(0).getFullName());
   }
 
   /**
    * Populates {@code cache} with {@code count} entries under a key namespace ("seed-") disjoint
-   * from the round loop's own ("leak-") - before the profiler (and its BFS thread) even starts,
-   * so the one-shot root-seeded walk can never catch {@code cache} empty.
+   * from the round loop's own ("leak-") - before the profiler (and its BFS thread) even starts, so
+   * the one-shot root-seeded walk can never catch {@code cache} empty.
    */
   private static void seedInitialBatch(Map<String, CachedPayload> cache, int count) {
     for (int i = 0; i < count; i++) {
@@ -259,9 +264,10 @@ public final class LeakingCacheScenario {
       long totalAbandoned = abandoned.stream().mapToLong(it -> it.getItemCount()).sum();
       System.out.println("[debug] datadog.ReferenceChainAbandoned total events: " + totalAbandoned);
       for (org.openjdk.jmc.common.item.IItemIterable iterable : chains) {
-        org.openjdk.jmc.common.item.IType<org.openjdk.jmc.common.item.IItem> type = iterable.getType();
-        org.openjdk.jmc.common.item.IMemberAccessor<?, org.openjdk.jmc.common.item.IItem> chainAccessor =
-            ReferenceChainAssertions.findAccessor(type, "chain");
+        org.openjdk.jmc.common.item.IType<org.openjdk.jmc.common.item.IItem> type =
+            iterable.getType();
+        org.openjdk.jmc.common.item.IMemberAccessor<?, org.openjdk.jmc.common.item.IItem>
+            chainAccessor = ReferenceChainAssertions.findAccessor(type, "chain");
         if (chainAccessor == null) {
           System.out.println("[debug] no chain accessor found");
           continue;
@@ -270,8 +276,10 @@ public final class LeakingCacheScenario {
           Object chainValue = chainAccessor.getMember(item);
           if (chainValue instanceof Object[]) {
             Object[] raw = (Object[]) chainValue;
-            String leaf = raw.length > 0 && raw[0] instanceof IMCType
-                ? ((IMCType) raw[0]).getFullName() : "<empty-or-non-IMCType>";
+            String leaf =
+                raw.length > 0 && raw[0] instanceof IMCType
+                    ? ((IMCType) raw[0]).getFullName()
+                    : "<empty-or-non-IMCType>";
             System.out.println("[debug] chain leaf: " + leaf);
           }
         }
@@ -281,7 +289,8 @@ public final class LeakingCacheScenario {
     }
   }
 
-  private static ReferenceChainAssertions.ChainMatch findMatch(Path scratchDumpPath) throws Exception {
+  private static ReferenceChainAssertions.ChainMatch findMatch(Path scratchDumpPath)
+      throws Exception {
     if (!Files.exists(scratchDumpPath)) {
       return null;
     }
@@ -296,9 +305,9 @@ public final class LeakingCacheScenario {
   /**
    * Realistic-leak fixture - identical shape to {@code ReferenceChainTrackingTest.CachedPayload}.
    * The 32 {@code long} fields exist purely so a given number of megabytes needs far fewer entries
-   * to reach {@code ObjectSampler}'s real 256KiB sampling floor - deliberately plain fields, not
-   * a nested array (a same-instance companion array would be a second, separate heap allocation
-   * the size-weighted sampler would compete for, taking attention away from CachedPayload).
+   * to reach {@code ObjectSampler}'s real 256KiB sampling floor - deliberately plain fields, not a
+   * nested array (a same-instance companion array would be a second, separate heap allocation the
+   * size-weighted sampler would compete for, taking attention away from CachedPayload).
    */
   static final class CachedPayload {
     final String key;

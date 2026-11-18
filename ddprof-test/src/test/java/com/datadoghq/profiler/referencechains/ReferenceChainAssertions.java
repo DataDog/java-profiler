@@ -5,10 +5,16 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.NativeBuildConfig;
 import com.datadoghq.profiler.ReferenceChainTestHooks;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
 import org.openjdk.jmc.common.item.IItem;
@@ -18,19 +24,13 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.unit.IQuantity;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-
 /**
  * Shared {@code datadog.ReferenceChain} JFR-parsing helpers.
  *
- * <p>Two overloads because callers load recordings differently:
- * {@code ReferenceChainTrackingTest} uses {@code AbstractProfilerTest}'s {@code JfrEvents}
- * helpers ({@link #findMatchForClass(JfrEvents, Class)}), while {@link LeakingCacheScenario} loads
- * via JMC's {@code JfrLoaderToolkit} ({@link #findMatchForClass(IItemCollection, Class)}).
+ * <p>Two overloads because callers load recordings differently: {@code ReferenceChainTrackingTest}
+ * uses {@code AbstractProfilerTest}'s {@code JfrEvents} helpers ({@link
+ * #findMatchForClass(JfrEvents, Class)}), while {@link LeakingCacheScenario} loads via JMC's {@code
+ * JfrLoaderToolkit} ({@link #findMatchForClass(IItemCollection, Class)}).
  */
 public final class ReferenceChainAssertions {
 
@@ -39,7 +39,8 @@ public final class ReferenceChainAssertions {
    * reference-chain {@code *ForTest0} seams exist only under javaApi.cpp's {@code #ifdef DEBUG}.
    */
   public static void assumeDebugBuild() {
-    assumeTrue(isDebugInstrumentedBuild(),
+    assumeTrue(
+        isDebugInstrumentedBuild(),
         "reference-chain test seams only exist in a -DDEBUG native build (debug/asan/tsan - "
             + "javaApi.cpp's #ifdef DEBUG guard)");
   }
@@ -56,13 +57,17 @@ public final class ReferenceChainAssertions {
 
   public static final long LEAK_TAG_POOL_SIZE = 256;
 
-  /** {@link #observedChainHeads} entry for a {@code datadog.ReferenceChain} event with an empty chain. */
+  /**
+   * {@link #observedChainHeads} entry for a {@code datadog.ReferenceChain} event with an empty
+   * chain.
+   */
   private static final String EMPTY_CHAIN_SENTINEL = "<empty-chain>";
 
   /**
    * True on every native build that compiles javaApi.cpp's {@code #ifdef DEBUG} test seams: debug,
-   * coverage, asan and tsan (all add -DDEBUG, ConfigurationPresets.kt). Release builds get no-op seam stubs.
-   * Child JVMs see the same answer because the launchers forward {@code -Dddprof_test.config}.
+   * coverage, asan and tsan (all add -DDEBUG, ConfigurationPresets.kt). Release builds get no-op
+   * seam stubs. Child JVMs see the same answer because the launchers forward {@code
+   * -Dddprof_test.config}.
    */
   public static boolean isDebugInstrumentedBuild() {
     return NativeBuildConfig.isDebugInstrumented();
@@ -84,7 +89,10 @@ public final class ReferenceChainAssertions {
     return config;
   }
 
-  /** Result of {@link #findMatchForClass(IItemCollection, Class)}: one resolved chain event's fields. */
+  /**
+   * Result of {@link #findMatchForClass(IItemCollection, Class)}: one resolved chain event's
+   * fields.
+   */
   public static final class ChainMatch {
     public final List<IMCType> chain;
     public final long targetTag;
@@ -111,10 +119,10 @@ public final class ReferenceChainAssertions {
   }
 
   /**
-   * Scans {@code events} for a {@code datadog.ReferenceChain} item whose {@code chain[0]} is
-   * {@code targetClass} specifically, ignoring any events for other klasses this same
-   * leak-candidate mechanism may have legitimately flagged (e.g. "[B"/byte[] - see each caller's
-   * own comment). Returns {@code null} if {@code events} is empty or none match.
+   * Scans {@code events} for a {@code datadog.ReferenceChain} item whose {@code chain[0]} is {@code
+   * targetClass} specifically, ignoring any events for other klasses this same leak-candidate
+   * mechanism may have legitimately flagged (e.g. "[B"/byte[] - see each caller's own comment).
+   * Returns {@code null} if {@code events} is empty or none match.
    */
   public static ChainMatch findMatchForClass(IItemCollection events, Class<?> targetClass) {
     return findMatch(events, targetClass, false, 0);
@@ -125,13 +133,13 @@ public final class ReferenceChainAssertions {
    * instance: only an item whose {@code targetTag} equals {@code requiredTargetTag} matches (an
    * item without a readable {@code targetTag} never does).
    */
-  public static ChainMatch findMatchForClassAndTargetTag(IItemCollection events,
-      Class<?> targetClass, long requiredTargetTag) {
+  public static ChainMatch findMatchForClassAndTargetTag(
+      IItemCollection events, Class<?> targetClass, long requiredTargetTag) {
     return findMatch(events, targetClass, true, requiredTargetTag);
   }
 
-  private static ChainMatch findMatch(IItemCollection events, Class<?> targetClass,
-      boolean requireTag, long requiredTargetTag) {
+  private static ChainMatch findMatch(
+      IItemCollection events, Class<?> targetClass, boolean requireTag, long requiredTargetTag) {
     if (events == null || !events.hasItems()) {
       return null;
     }
@@ -152,11 +160,13 @@ public final class ReferenceChainAssertions {
               "'chain' field resolved to " + chainValue + ", expected an array");
         }
         Object[] rawChain = (Object[]) chainValue;
-        if (rawChain.length == 0 || !(rawChain[0] instanceof IMCType)
+        if (rawChain.length == 0
+            || !(rawChain[0] instanceof IMCType)
             || !targetName.equals(((IMCType) rawChain[0]).getFullName())) {
           continue;
         }
-        long targetTag = targetTagAccessor != null ? numberValue(targetTagAccessor.getMember(item)) : -1;
+        long targetTag =
+            targetTagAccessor != null ? numberValue(targetTagAccessor.getMember(item)) : -1;
         if (requireTag && targetTag != requiredTargetTag) {
           continue;
         }
@@ -174,8 +184,8 @@ public final class ReferenceChainAssertions {
   /**
    * One entry per observed {@code datadog.ReferenceChain} event in {@code events}, in file order:
    * {@code chain[0]} (full name, same notation as {@link JfrChainMatch#chain}), or the sentinel
-   * {@code "<empty-chain>"} for an event with an empty {@code chain} array (or
-   * {@code "<non-array-chain:...>"} if the field did not resolve to an array). Diagnostic helper for
+   * {@code "<empty-chain>"} for an event with an empty {@code chain} array (or {@code
+   * "<non-array-chain:...>"} if the field did not resolve to an array). Diagnostic helper for
    * failure messages: an empty result means no chain event was ever emitted; only sentinels means
    * events were emitted but carried no chain; real heads that all differ from the target class mean
    * the candidate mechanism fired for OTHER klasses. Never throws on malformed events, unlike
@@ -212,22 +222,27 @@ public final class ReferenceChainAssertions {
    * the seam stubs cannot report any of these states. Callers invoke it only when the match is
    * missing, so the seam queries run on failure only.
    */
-  public static String referenceChainFailureDiagnostics(Object representative, JfrEvents lastEvents) {
+  public static String referenceChainFailureDiagnostics(
+      Object representative, JfrEvents lastEvents) {
     if (!isDebugInstrumentedBuild()) {
       return "";
     }
     return " [leak-signal candidates="
         + Arrays.toString(ReferenceChainTestHooks.selectLeakCandidateKlassIds0())
-        + ", bfsPassesRun=" + ReferenceChainTestHooks.referenceChainPassesRunForTest0()
+        + ", bfsPassesRun="
+        + ReferenceChainTestHooks.referenceChainPassesRunForTest0()
         + ", representativeFrontierState="
         + ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(representative)
         + " (-1=never admitted, 0=admitted pending expansion, 1=expanded, 3=abandoned)"
-        + ", observedChain0s=" + observedChainHeads(lastEvents) + "]";
+        + ", observedChain0s="
+        + observedChainHeads(lastEvents)
+        + "]";
   }
 
   /**
-   * jafar/{@code JfrEvents}-backed counterpart to {@link #findMatchForClass(IItemCollection, Class)} -
-   * see this class's own header comment for why these are two separate overloads rather than one.
+   * jafar/{@code JfrEvents}-backed counterpart to {@link #findMatchForClass(IItemCollection,
+   * Class)} - see this class's own header comment for why these are two separate overloads rather
+   * than one.
    */
   public static JfrChainMatch findMatchForClass(JfrEvents events, Class<?> targetClass) {
     if (events == null || !events.hasItems()) {
@@ -281,8 +296,8 @@ public final class ReferenceChainAssertions {
 
   /**
    * The full name (e.g. {@code java.lang.String}) of a resolved {@code chain[]} array element -
-   * mirrors {@code JfrEvent.getClassName(String)}'s own class-reference-map unwrapping, applied
-   * to an array element rather than a named field.
+   * mirrors {@code JfrEvent.getClassName(String)}'s own class-reference-map unwrapping, applied to
+   * an array element rather than a named field.
    */
   @SuppressWarnings("unchecked")
   private static String classFullName(Object element) {
@@ -302,10 +317,10 @@ public final class ReferenceChainAssertions {
   }
 
   /**
-   * Looks up a field's accessor by identifier rather than via {@code Attribute.attr(...)}: JMC's
-   * v1 chunk parser registers {@code UnitLookup.UNKNOWN} as the declared content type for every
-   * array field regardless of what its element reader resolves to, so an {@code F_ARRAY} field
-   * like {@code chain} cannot be bound via a compile-time-typed {@code Attribute}.
+   * Looks up a field's accessor by identifier rather than via {@code Attribute.attr(...)}: JMC's v1
+   * chunk parser registers {@code UnitLookup.UNKNOWN} as the declared content type for every array
+   * field regardless of what its element reader resolves to, so an {@code F_ARRAY} field like
+   * {@code chain} cannot be bound via a compile-time-typed {@code Attribute}.
    */
   public static IMemberAccessor<?, IItem> findAccessor(IType<IItem> type, String identifier) {
     for (IAccessorKey<?> key : type.getAccessorKeys().keySet()) {

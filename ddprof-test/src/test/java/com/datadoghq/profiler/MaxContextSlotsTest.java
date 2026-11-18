@@ -15,24 +15,25 @@
  */
 package com.datadoghq.profiler;
 
-import org.junit.jupiter.api.Test;
-
-import java.io.IOException;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.io.IOException;
+import org.junit.jupiter.api.Test;
+
 /**
- * Guards against drift between the Java custom-attribute slot bound
- * ({@link JavaProfiler#MAX_CONTEXT_SLOTS}) and its native source of truth, {@code DD_TAGS_CAPACITY}
- * in {@code context.h}. The Java bound is a literal (it cannot be derived via JNI at class-init
- * time, before the library is loaded), so nothing but this test catches the two falling out of sync.
+ * Guards against drift between the Java custom-attribute slot bound ({@link
+ * JavaProfiler#MAX_CONTEXT_SLOTS}) and its native source of truth, {@code DD_TAGS_CAPACITY} in
+ * {@code context.h}. The Java bound is a literal (it cannot be derived via JNI at class-init time,
+ * before the library is loaded), so nothing but this test catches the two falling out of sync.
  */
 public class MaxContextSlotsTest {
 
-    @Test
-    public void javaBoundMatchesNativeCapacity() throws IOException {
-        JavaProfiler.getInstance(); // ensure the native library is loaded
-        assertEquals(JavaProfiler.maxContextSlots0(), JavaProfiler.MAX_CONTEXT_SLOTS,
-                "JavaProfiler.MAX_CONTEXT_SLOTS drifted from native DD_TAGS_CAPACITY");
-    }
+  @Test
+  public void javaBoundMatchesNativeCapacity() throws IOException {
+    JavaProfiler.getInstance(); // ensure the native library is loaded
+    assertEquals(
+        JavaProfiler.maxContextSlots0(),
+        JavaProfiler.MAX_CONTEXT_SLOTS,
+        "JavaProfiler.MAX_CONTEXT_SLOTS drifted from native DD_TAGS_CAPACITY");
+  }
 }
