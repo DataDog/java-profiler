@@ -45,13 +45,24 @@ protected:
   static int *_timers;
 
   static bool resizeTimers(int max_timers);
-  // Sizes the timer table for start(), replacing it under a
-  // Profiler::ThreadTablesFreeze only when the size changes.
+  // Sizes the timer table for start(). Reusing or replacing a kept table
+  // sweeps it under a Profiler::ThreadTablesFreeze; allocating into none does not.
   static Error sizeTimerTable(int max_timers);
+  // Deletes every timer in the table; deleteTimer() deletes one.
+  static void sweepTimers();
+  static void deleteTimer(int tid);
+  // Under a Profiler::ThreadTablesFreeze, deletes every timer and frees the
+  // table. Returns false, deleting nothing, if there is no table or hook calls
+  // do not drain within the wait budget.
+  bool releaseTimerTable();
+  // Deletes every timer and frees the table, if any. Requires a drained
+  // Profiler::ThreadTablesFreeze.
+  static void freeTimerTable();
   // start() with the timer table size passed in rather than read from
   // pid_max, so a test can drive the allocation-failure path.
   Error startWithTableSize(Arguments &args, int max_timers);
   int registerThread(int tid);
+  // The Engine hook; internal callers use deleteTimer() directly.
   void unregisterThread(int tid);
   // Unregisters the tids recorded by Profiler::recordSkippedUnregistration(),
   // after the listing may have armed a timer for an exited thread.
@@ -67,6 +78,8 @@ public:
   Error check(Arguments &args);
   Error start(Arguments &args);
   void stop();
+  // Runs under replaceCpuEngine()'s drained freeze.
+  void releaseThreads() override;
 
   inline void enableEvents(bool enabled) {
     __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);

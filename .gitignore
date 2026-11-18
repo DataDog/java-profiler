@@ -3,6 +3,7 @@
 **/build-*/
 !build-logic/
 !.gitlab/build-deploy/
+!.agents/skills/build-test-review/
 /nbproject/
 /out/
 /.idea/

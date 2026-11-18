@@ -153,8 +153,8 @@ The abandonment reasons are:
 - `CANARY_STUCK`: both frontier and candidate progress met their stall limits. This can occur
   during urgency or when incomplete enumeration suppresses the earlier no-progress exit.
 
-Abandonment events use a separate queue. The current writer maps `ROOT_ENUM_ERROR` to
-`unknown`. Recording stop does not enqueue a `RECORDING_END` abandonment event.
+Abandonment events use a separate queue. Their `reason` field is `root_enum_error` for
+`ROOT_ENUM_ERROR`. Recording stop does not enqueue a `RECORDING_END` abandonment event.
 
 A restart requires released search tags, cleared safepoint-cost debt, the root-enumeration
 interval, and a current leak candidate. A running search does not restart itself.

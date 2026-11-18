@@ -113,9 +113,11 @@ Typical overhead (UNVERIFIABLE estimate; depends on workload):
 - Applications with dynamic dispatch: 100K-1M unique traces
 
 **Lifecycle:**
-- Allocated with the `Profiler` singleton
+- Allocated by `start()` (`CallTraceStorage::acquire()`), together with the per-stripe
+  frame buffers `recordSample()` unwinds into
 - Rotated and partly reset on every JFR chunk
-- Cleared on profiler restart
+- Freed by `stop()` once the final chunk is written (`CallTraceStorage::release()`), so
+  an idle profiler holds none of it
 
 ### 4. RefCountSlot Arrays (Thread-Local Reference Counting)
 
@@ -147,9 +149,11 @@ Fixed allocation (static arrays):
 
 **Memory cost:**
 ```
-Fixed per StringDictionary:
+Per StringDictionary, once each buffer has been written to:
 - 3 buffers × (~6 KB root table + one 512 KB arena chunk) ≈ 1.5 MB
 - 3 dictionaries ≈ 4.6 MB
+(A buffer's root table and first chunk are allocated by its first insert, so an
+unused dictionary holds nothing.)
 
 Growth:
 - Further 512 KB arena chunks and overflow tables as unique strings accumulate
@@ -162,10 +166,14 @@ Growth:
 - Context values: Bounded by unique span/trace attribute values
 
 **Lifecycle:**
-- Allocated with the `Profiler` singleton
+- Storage is allocated on first use
 - Buffers rotate with each dump; a rotated-out buffer is cleared (keeping its root
   table and first arena chunk)
 - `clearAll()` on a fresh profiler start resets all buffers
+- `stop()` frees all storage of the class-name and string-label dictionaries
+  (`release()`); the tracer's endpoint and queue-time calls skip interning while the
+  profiler is idle, so they stay empty until the next start. The context-value dictionary is kept across `stop()`, because threads cache
+  its encodings (see [StringDictionary](../architecture/StringDictionary.md#release-protocol))
 
 ### 6. Recording Buffers (JFR Event Storage)
 
@@ -272,6 +280,22 @@ Typical overhead:
 **Lifecycle:**
 - Lives as long as the thread's `ProfiledThread`
 - Counted in the `thread_local` native-memory category
+
+### Idle Profiler (after `stop()`)
+
+Recording-scoped memory is freed when a recording stops: the call-trace tables and
+per-stripe frame buffers (`calltrace`), the class-name and string-label dictionaries
+(the `dictionary_classes_bytes` and `dictionary_endpoints_bytes` debug counters), the JFR buffers (`jfr_buffers`), and the liveness tracker's tracking
+table and its weak refs (`liveness`; up to 262,144 × 256 bytes = 64 MB while
+recording), and the CPU timer table (`ctimer`; `pid_max × 4` bytes, 16 MiB at a
+`pid_max` of 4194304, mostly untouched address space). Native malloc hooks are restored, except in a library that was unloaded or replaced
+since it was patched (see [Stopping](../architecture/NativeMemoryProfiling.md#stopping)).
+What stays: the context-value dictionary (so the `dictionary` gauge stays non-zero),
+per-thread state (`thread_local`), parsed native symbols (`native_symbols`), the thread
+filter, the persistent `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`'
+per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
+`line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
+counters, read 0 after every `stop()`.
 
 ### Summary: Total Memory Overhead
 

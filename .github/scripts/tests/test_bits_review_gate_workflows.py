@@ -353,6 +353,10 @@ class PublisherWorkflowTest(unittest.TestCase):
             ),
             self.publish,
         )
+        self.assertTrue(
+            exact_line(self.publish, "pool_name: java-profiler-bits-gate"),
+            self.publish,
+        )
 
     def test_resolve_inputs_arrive_through_env_only(self):
         env_lines = (

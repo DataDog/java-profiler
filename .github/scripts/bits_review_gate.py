@@ -19,8 +19,9 @@ the snapshot and compares full decision-input fingerprints until they
 match — return values only: no status is read or written there. The
 ``publish --sha H``
 subcommand consumes the seam's decision: it suppresses the write when
-the newest ``bits-review/head`` status created by ``dd-octo-sts[bot]``
-already equals the decision, else POSTs it with ``STATUS_TOKEN`` only;
+the newest ``bits-review/head`` status created by
+``java-profiler-bits-gate-c5a8bc[bot]`` already equals the decision, else
+POSTs it with ``STATUS_TOKEN`` only;
 an unchanged or published ``error`` decision still exits 1. The
 ``resolve`` subcommand turns event selectors, received only through
 environment
@@ -66,7 +67,7 @@ _DEFAULT_API_URL = "https://api.github.com"
 _DEFAULT_GRAPHQL_URL = "https://api.github.com/graphql"
 #: The app login whose statuses are this gate's own output; only its
 #: entries are candidates for unchanged-status suppression.
-STATUS_CREATOR = "dd-octo-sts[bot]"
+STATUS_CREATOR = "java-profiler-bits-gate-c5a8bc[bot]"
 
 #: The contract's review query: identity, state, body, timestamps, the
 #: head commit and author typing. No edit-history field is requested.

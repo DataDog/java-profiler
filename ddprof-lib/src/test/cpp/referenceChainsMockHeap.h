@@ -17,9 +17,11 @@
 #include <jni.h>
 #include <jvmti.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -94,6 +96,23 @@ public:
     // failing to resolve (dead_tags above).
     bool fail_get_objects_with_tags = false;
 
+    // When true, mock_GetObjectsWithTags() below returns its results reversed:
+    // JVMTI leaves result order unspecified (HotSpot returns tag-map order),
+    // so callers must not depend on request order.
+    bool reverse_gotw_results = false;
+
+    // Failure knobs for the JNI upcalls expandFrontier() makes after
+    // GetObjectsWithTags(); each injects the real failure it names, leaving
+    // the pending exception mock_ExceptionCheck()/ExceptionClear() model.
+    bool fail_ensure_local_capacity = false;  // EnsureLocalCapacity -> JNI_ENOMEM + pending exception
+    int fail_ensure_local_capacity_on_gotw_call = 0;  // >0: fail only the capacity call after that GetObjectsWithTags count
+    bool fail_new_object_array = false;      // NewObjectArray -> nullptr + pending exception, no holder registered
+    int fail_set_element_at = -1;            // array idx whose SetObjectArrayElement raises instead of recording
+    jvmtiError follow_references_error = JVMTI_ERROR_NONE;  // returned before any callback runs
+
+    // Set by the knobs above; reported/cleared like real JNI pending exceptions.
+    bool pending_exception = false;
+
     // When non-zero, mock_GetObjectsWithTags() below busy-waits this many nanoseconds.
     u64 gotw_delay_ns = 0;
 
@@ -109,7 +128,7 @@ public:
     // Synthetic frontier-holder arrays for expandFrontier()'s array-holder walk:
     // mock_NewObjectArray() hands back an opaque handle, mock_SetObjectArrayElement() records its
     // elements here, and mock_FollowReferences() treats every recorded element as an expansion seed
-    // (one hop, gated by the production callback's batch_tags) when the holder is passed as
+    // (one hop, gated by the production callback's batch set) when the holder is passed as
     // initial_object.
     std::unordered_map<jobject, std::vector<jobject>> holders;
     uintptr_t next_holder = 0xF00D0000;
@@ -128,6 +147,64 @@ public:
 
     // GetClassSignature call count (see mock_GetClassSignature).
     int class_signature_calls_ = 0;
+
+    // Mock-call counters (see the matching mock functions).
+    int local_refs_deleted_ = 0;
+    int deallocate_calls_ = 0;
+    int gotw_calls_ = 0;
+    int follow_references_calls_ = 0;
+
+    // When set, marks mock-internal work as "not a production allocation":
+    // the mock allocates per element (expandable, holders, result vectors), so
+    // allocation tests count only production allocations via this hook.
+    inline static void (*alloc_accounting_hook)(bool pause) = nullptr;
+
+    // Marks the scope's allocations as mock-internal; the destructor releases
+    // through the hook captured at construction (null included), so replacing
+    // alloc_accounting_hook mid-scope cannot redirect the release.
+    struct MockAllocPause {
+        MockAllocPause() : hook_(ReferenceChainsMockHeap::alloc_accounting_hook) {
+            if (hook_ != nullptr) {
+                hook_(true);
+            }
+        }
+        ~MockAllocPause() {
+            if (hook_ != nullptr) {
+                hook_(false);
+            }
+        }
+        MockAllocPause(const MockAllocPause&) = delete;
+        MockAllocPause& operator=(const MockAllocPause&) = delete;
+
+        void (*hook_)(bool pause);
+    };
+
+    // Un-pauses around a production callback (heap_reference_callback in
+    // mock_FollowReferences) so its allocations count as production; balances
+    // through the captured hook like Pause.
+    struct MockAllocResume {
+        MockAllocResume() : hook_(ReferenceChainsMockHeap::alloc_accounting_hook) {
+            if (hook_ != nullptr) {
+                hook_(false);
+            }
+        }
+        ~MockAllocResume() {
+            if (hook_ != nullptr) {
+                hook_(true);
+            }
+        }
+        MockAllocResume(const MockAllocResume&) = delete;
+        MockAllocResume& operator=(const MockAllocResume&) = delete;
+
+        void (*hook_)(bool pause);
+    };
+
+    static_assert(!std::is_copy_constructible<MockAllocPause>::value &&
+                          !std::is_move_constructible<MockAllocPause>::value,
+                  "MockAllocPause must not be copyable or movable");
+    static_assert(!std::is_copy_constructible<MockAllocResume>::value &&
+                          !std::is_move_constructible<MockAllocResume>::value,
+                  "MockAllocResume must not be copyable or movable");
 
     jvmtiEnv *orig_jvmti = nullptr;
 
@@ -221,6 +298,7 @@ public:
     }
 
     static jvmtiError JNICALL mock_SetTag(jvmtiEnv *, jobject object, jlong tag) {
+        MockAllocPause alloc_pause;
         // releaseSearchTags() calls SetTag(obj, 0) on the resolved objects GetObjectsWithTags()
         // (below) hands back for a frontier node - route that through node_tags[idx] directly (the
         // same storage GetObjectsWithTags's resolution and the production callback's tag_ptr writes
@@ -240,6 +318,7 @@ public:
     }
 
     static jvmtiError JNICALL mock_GetTag(jvmtiEnv *, jobject object, jlong *tag_ptr) {
+        MockAllocPause alloc_pause;
         int idx = active_fixture->indexOfNode(object);
         if (idx >= 0) {
             *tag_ptr = active_fixture->node_tags[idx];
@@ -252,6 +331,7 @@ public:
 
     static jvmtiError JNICALL mock_GetLoadedClasses(jvmtiEnv *, jint *count_ptr,
                                                      jclass **classes_ptr) {
+        MockAllocPause alloc_pause;
         auto &classes = active_fixture->classes;        *count_ptr = (jint)classes.size();
         *classes_ptr = classes.empty()
                 ? nullptr
@@ -287,12 +367,17 @@ public:
     }
 
     static jvmtiError JNICALL mock_Deallocate(jvmtiEnv *, unsigned char *mem) {
+        MockAllocPause alloc_pause;
+        active_fixture->deallocate_calls_++;
         free(mem);
         return JVMTI_ERROR_NONE;
     }
 
     static void JNICALL mock_DeleteLocalRef(JNIEnv *, jobject) {
-        // no-op: this fixture's fake jobject/jclass values are not real JNI local refs.
+        MockAllocPause alloc_pause;
+        // The fixture's fake jobject/jclass values are not real JNI local
+        // refs, so only the count is observable.
+        active_fixture->local_refs_deleted_++;
     }
 
     // Retention-edge label decode fixtures (fillHopEdgeLabels()/ hopLabelClassFor()): a fake class
@@ -374,6 +459,7 @@ public:
     // element type - a non-null fake jclass is all it needs (the type is never introspected, only
     // passed to NewObjectArray()).
     static jclass JNICALL mock_FindClass(JNIEnv *, const char *name) {
+        MockAllocPause alloc_pause;
         auto it = active_fixture->find_classes.find(name);
         if (it != active_fixture->find_classes.end()) {
             return (jclass)it->second;
@@ -392,6 +478,7 @@ public:
     // The production code wraps that fake jclass in a global ref (a real local ref would dangle
     // across JNI-entered test seams - see _cached_object_class's own comment).
     static jobject JNICALL mock_NewGlobalRef(JNIEnv *, jobject obj) {
+        MockAllocPause alloc_pause;
         return obj;
     }
 
@@ -402,31 +489,52 @@ public:
     }
 
     static jint JNICALL mock_EnsureLocalCapacity(JNIEnv *, jint) {
+        MockAllocPause alloc_pause;
+        // Targeted variant keys off gotw_calls_ because production calls this
+        // right after GetObjectsWithTags (expandFrontier's resolve step).
+        if (active_fixture->fail_ensure_local_capacity ||
+            (active_fixture->fail_ensure_local_capacity_on_gotw_call > 0 &&
+             active_fixture->gotw_calls_ ==
+                     active_fixture->fail_ensure_local_capacity_on_gotw_call)) {
+            active_fixture->pending_exception = true;
+            return JNI_ENOMEM;
+        }
         return JNI_OK;
     }
 
     // expandFrontier() calls jniExceptionCheck() after every upcall that can legally throw
-    // (NewObjectArray/SetObjectArrayElement/EnsureLocalCapacity failures) - this fixture's mocks
-    // never throw, so there is never a pending exception to report or clear.
+    // (NewObjectArray/SetObjectArrayElement/EnsureLocalCapacity failures); the failure knobs
+    // above leave a pending exception here, which these mocks report and clear like real JNI.
     static jboolean JNICALL mock_ExceptionCheck(JNIEnv *) {
-        return JNI_FALSE;
+        return active_fixture->pending_exception ? JNI_TRUE : JNI_FALSE;
     }
 
     static void JNICALL mock_ExceptionClear(JNIEnv *) {
-        // no-op: mock_ExceptionCheck() never reports a pending exception.
+        active_fixture->pending_exception = false;
     }
 
     // Hands back a fresh opaque holder handle and registers it in `holders` so
     // mock_SetObjectArrayElement()/mock_FollowReferences() can find its elements.
     static jobjectArray JNICALL mock_NewObjectArray(JNIEnv *, jsize, jclass,
                                                      jobject) {
+        MockAllocPause alloc_pause;
+        if (active_fixture->fail_new_object_array) {
+            active_fixture->pending_exception = true;
+            return nullptr;
+        }
         jobject handle = (jobject)(active_fixture->next_holder++);
         active_fixture->holders[handle] = {};
         return (jobjectArray)handle;
     }
 
     static void JNICALL mock_SetObjectArrayElement(JNIEnv *, jobjectArray array,
-                                                    jsize idx, jobject value) {        active_fixture->holders[(jobject)array].push_back(value);
+                                                    jsize idx, jobject value) {
+        MockAllocPause alloc_pause;
+        if (idx == active_fixture->fail_set_element_at) {
+            active_fixture->pending_exception = true;
+            return;
+        }
+        active_fixture->holders[(jobject)array].push_back(value);
     }
 
     // runPassManualWalk()'s root enumeration (the default, non-fallback path): reports each
@@ -474,6 +582,8 @@ public:
     static jvmtiError JNICALL mock_GetObjectsWithTags(
             jvmtiEnv *, jint tag_count, const jlong *req_tags, jint *count_ptr,
             jobject **object_result_ptr, jlong **tag_result_ptr) {
+        MockAllocPause alloc_pause;
+        active_fixture->gotw_calls_++;
         if (active_fixture->fail_get_objects_with_tags) {
             // Deliberately leave *count_ptr/*object_result_ptr/*tag_result_ptr untouched - a real
             // failed JVMTI call makes no promise about them, and releaseSearchTags() must not read
@@ -512,6 +622,12 @@ public:
                 }
             }
         }
+        if (active_fixture->reverse_gotw_results) {
+            // objs and found are index-paired; reverse both together so each
+            // tag still resolves to its own object.
+            std::reverse(objs.begin(), objs.end());
+            std::reverse(found.begin(), found.end());
+        }
         *count_ptr = (jint)objs.size();
         *object_result_ptr = objs.empty()
                 ? nullptr : (jobject *)malloc(sizeof(jobject) * objs.size());
@@ -532,6 +648,11 @@ public:
     static jvmtiError JNICALL mock_FollowReferences(
             jvmtiEnv *, jint, jclass, jobject initial_object,
             const jvmtiHeapCallbacks *callbacks, const void *user_data) {
+        MockAllocPause alloc_pause;
+        active_fixture->follow_references_calls_++;
+        if (active_fixture->follow_references_error != JVMTI_ERROR_NONE) {
+            return active_fixture->follow_references_error;
+        }
         std::unordered_map<int, bool> expandable;        // seed_idx == -2 marks the root walk (initial_object == NULL); any
         // other value marks an expansion walk seeded from one or more boundary objects, in which
         // case root edges are never replayed.
@@ -558,11 +679,15 @@ public:
                         continue;
                     }
                     jlong *tag_ptr = &active_fixture->node_tags[idx];
-                    jint ctl = callbacks->heap_reference_callback(
-                            JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, nullptr,
-                            /*class_tag=*/0, /*referrer_class_tag=*/0,
-                            /*size=*/0, tag_ptr, &holder_tag,
-                            /*length=*/-1, const_cast<void *>(user_data));
+                    jint ctl;
+                    {
+                        MockAllocResume alloc_resume;
+                        ctl = callbacks->heap_reference_callback(
+                                JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, nullptr,
+                                /*class_tag=*/0, /*referrer_class_tag=*/0,
+                                /*size=*/0, tag_ptr, &holder_tag,
+                                /*length=*/-1, const_cast<void *>(user_data));
+                    }
                     if (*tag_ptr != 0) {
                         active_fixture->tags_ever_assigned[idx] = *tag_ptr;
                     }
@@ -591,10 +716,14 @@ public:
             jlong *referrer_tag_ptr = e.referrer_idx >= 0
                     ? &active_fixture->node_tags[e.referrer_idx] : nullptr;
             jlong *tag_ptr = &active_fixture->node_tags[e.referee_idx];
-            jint ctl = callbacks->heap_reference_callback(
-                    e.kind, nullptr, class_tag, /*referrer_class_tag=*/0,
-                    /*size=*/0, tag_ptr, referrer_tag_ptr, /*length=*/-1,
-                    const_cast<void *>(user_data));
+            jint ctl;
+            {
+                MockAllocResume alloc_resume;
+                ctl = callbacks->heap_reference_callback(
+                        e.kind, nullptr, class_tag, /*referrer_class_tag=*/0,
+                        /*size=*/0, tag_ptr, referrer_tag_ptr, /*length=*/-1,
+                        const_cast<void *>(user_data));
+            }
             if (*tag_ptr != 0) {
                 active_fixture->tags_ever_assigned[e.referee_idx] = *tag_ptr;
             }
