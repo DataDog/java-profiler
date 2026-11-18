@@ -433,6 +433,57 @@ class EvaluateShaTest(unittest.TestCase):
         self.assertEqual(state, "failure")
         self.assertIn("malformed review record", description)
 
+    def test_garbage_submitted_at_fails_closed(self):
+        # An unparseable timestamp cannot be ordered: a garbage submitted_at
+        # must not let a stale approval survive revalidation.
+        superseding = review("owner-a", "CHANGES_REQUESTED",
+                             "2026-01-02T00:00:00Z", 2)
+        node = json.loads(json.dumps(superseding))
+        node["submittedAt"] = "!"
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([
+                review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+                node])),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("malformed review record", description)
+
+    def test_pending_review_with_null_submitted_at_passes(self):
+        # An unsubmitted draft review legitimately carries submittedAt=null
+        # and states no decision: it must not block an otherwise-approved PR.
+        draft = review("owner-b", "PENDING", "2026-01-02T00:00:00Z", 3)
+        node = json.loads(json.dumps(draft))
+        node["submittedAt"] = None
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([
+                review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+                node])),
+            FakeResponse(200, pr(101)),
+            FakeResponse(200, reviews_page([
+                review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+                node])),
+        ])
+        self.assertEqual(self.evaluate(transport)[1], "success")
+
+    def test_renamed_entry_without_previous_name_fails_closed(self):
+        # A rename away from a sensitive path whose old name is missing can
+        # never be checked, so the entry is malformed, not skippable.
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, {"files": [
+                {"filename": "renamed-away.py", "status": "renamed"}]}),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("files read failed", description)
+
     def test_failed_revalidation_reviews_read_fails_closed(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),

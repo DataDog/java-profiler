@@ -20,6 +20,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import sys
 import urllib.parse
 
@@ -230,19 +231,27 @@ def is_sensitive(path, patterns):
     return False
 
 
+_SUBMITTED_AT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+
+
 def _validated_reviews(nodes, number):
     """The normalized review records of one PR, fail-closed: a record the
     approval decision cannot read — no id, a null author login, a missing
-    or non-string ``submitted_at`` — is malformed input, not a review to
+    or unparseable ``submitted_at`` — is malformed input, not a review to
     skip. A dropped record could hide the superseding CHANGES_REQUESTED
-    of an owner approval, so the decision must not be made from it."""
+    of an owner approval, so the decision must not be made from it. A
+    PENDING review states no decision and carries none of these fields
+    reliably, so it is skipped outright."""
     records = [gate.normalize_review(node) for node in nodes]
     for record in records:
+        if record.get("state") == "PENDING":
+            continue
         if (not isinstance(record.get("id"), int)
                 or not isinstance(record.get("author_login"), str)
                 or not record.get("author_login")
                 or not isinstance(record.get("submitted_at"), str)
-                or not record.get("submitted_at")):
+                or not _SUBMITTED_AT_RE.fullmatch(record["submitted_at"])):
             raise gate.ApiError(
                 "malformed review record on PR %d" % (number,))
     return records
@@ -376,6 +385,12 @@ def evaluate_sha(sha, client, patterns):
             renamed = entry.get("previous_filename")
             if not isinstance(filename, str) or not (
                     renamed is None or isinstance(renamed, str)):
+                malformed_files = True
+                break
+            if entry.get("status") == "renamed" and (
+                    not isinstance(renamed, str) or not renamed):
+                # Without the old name the rename-away from a sensitive
+                # path would pass unchecked, so the entry is malformed.
                 malformed_files = True
                 break
             filenames.append(filename)
