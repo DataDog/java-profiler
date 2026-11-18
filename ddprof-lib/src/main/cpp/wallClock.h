@@ -11,6 +11,7 @@
 #include <cassert>
 #include <mutex>
 #include "engine.h"
+#include "guards.h"
 #include "nativeMem.h"
 #include "os.h"
 #include "profiler.h"
@@ -70,6 +71,10 @@ class BaseWallClock : public Engine {
 
     static void *threadEntry(void *wall_clock) {
       ((BaseWallClock *)wall_clock)->timerLoop();
+      // ITimer delivers process-wide SIGPROF to any thread: block before the
+      // exit mark or a sampler can fault on the marked identity (see
+      // Profiler::onThreadEnd).
+      blockProfilingForExit();
       ThreadExitRegistry::markCurrent();
       return NULL;
     }

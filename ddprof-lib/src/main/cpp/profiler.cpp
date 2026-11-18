@@ -141,6 +141,11 @@ void (*Profiler::crashHandlerAdmittedForTest)() = nullptr;
 #endif
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  // Stop sampler admission before publishing the exit identity: a marked
+  // thread's crash-handler faults chain out without SafeAccess/checkFault
+  // recovery, so a walk must never fault once the thread is marked. The
+  // pre-block window keeps only the pre-registry handler-bootstrap exposure.
+  blockProfilingForExit();
   ThreadExitRegistry::markCurrent();
 #ifdef UNIT_TEST
   if (threadEndMarkedForTest != nullptr) threadEndMarkedForTest();
@@ -169,15 +174,12 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
       // comments).
       ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
     }
-    // Block profiling signals around engine unregistration + TLS release to
-    // close the window where a wall-clock/CPU signal could sample a
-    // partially-torn-down thread (PROF-14674).
-    {
-      blockProfilingForExit();
-      unregisterThread(tid);
-      LivenessTracker::instance()->releaseThreadLocalState();
-      ProfiledThread::release();
-    }
+    // Engine unregistration and TLS release run under the block taken at
+    // entry, so a sampling signal cannot observe the partially torn-down
+    // thread (PROF-14674).
+    unregisterThread(tid);
+    LivenessTracker::instance()->releaseThreadLocalState();
+    ProfiledThread::release();
     return;
   }
 

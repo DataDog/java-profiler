@@ -18,6 +18,8 @@ class TaskBlockRecorderTestSupportTest extends AbstractProfilerTest {
   @Test
   void durationRefusalRetainsTokenAndOriginAfterStop() throws Exception {
     Assumptions.assumeTrue(NativeBuildConfig.isDebugInstrumented());
+    // A reused JUnit thread can retain context-window membership across recordings.
+    profiler.removeThread();
     try (TaskBlockRecorderTestSupport.Evidence evidence =
         new TaskBlockRecorderTestSupport.Evidence(profiler.getVersion())) {
       long token = profiler.beginTaskBlock();
