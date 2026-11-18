@@ -157,13 +157,14 @@ if [ $? -eq 0 ]; then pass; else fail "non-git payload cwd should exit 0 (got: $
 # --- .pi/extensions/babysit-pr.ts (driven through a stub Pi API) ---
 if node --experimental-strip-types --no-warnings -e "" >/dev/null 2>&1; then
   cat > "$TEMP_DIR/pi-driver.mjs" <<'EOF'
-const [ext, cwd, toolName, command, response] = process.argv.slice(2);
+const [ext, cwd, toolName, command, response, isErrorArg] = process.argv.slice(2);
 const mod = await import(ext);
 let handler;
 mod.default({ on: (name, fn) => { if (name === "tool_result") handler = fn; } });
 const content = response ? [{ type: "text", text: response }] : [];
 const result = await handler(
-  { toolName, input: command === undefined ? {} : { command }, content, isError: false },
+  { toolName, input: command === undefined ? {} : { command }, content,
+    isError: isErrorArg === "error" },
   { cwd });
 const appended = result?.content?.length > content.length
   ? result.content[result.content.length - 1].text : "";
@@ -173,9 +174,9 @@ EOF
   REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
   pi_hook() {
     node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
-      "$REPO_ROOT/.pi/extensions/babysit-pr.ts" "${4:-$TEMP_DIR/repo}" "$1" "$2" "$3"
+      "$REPO_ROOT/.pi/extensions/babysit-pr.ts" "${4:-$TEMP_DIR/repo}" "$1" "$2" "$3" "${5:-}"
   }
-  expect() { # expect <name> <rc> <grep-pattern> <args to pi_hook...>
+  expect() { # expect <name> <rc> <grep-pattern> <args to pi_hook...> [error]
     local name="$1" want_rc="$2" pattern="$3"; shift 3
     local out rc
     out=$(pi_hook "$@"); rc=$?
@@ -194,6 +195,9 @@ EOF
     bash "gh pr create --draft -F pr-body.md" "https://github.com/datadog/java-profiler/pull/1234"
   expect "pi adapter appends nothing when the hook stays silent" 0 "" \
     bash "gh pr create --draft -F pr-body.md" "gh: Not Found (HTTP 404)"
+  expect "pi adapter never triggers on a failed creation command" 0 "" \
+    bash "gh pr create --draft -F pr-body.md" \
+    $'a pull request for branch "proud-pearly-dolphin" already exists:\nhttps://github.com/DataDog/java-profiler/pull/1001' "$TEMP_DIR/repo" "error"
 else
   echo "SKIP: pi adapter tests (node with --experimental-strip-types not found)"
 fi
