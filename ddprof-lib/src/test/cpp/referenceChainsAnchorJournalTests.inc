@@ -258,6 +258,117 @@ TEST_F(ReferenceChainsBfsTest, AnchorJournalStablePopulationLeavesSlotsForLaterR
     tracker->stop();
 }
 
+// Root retries keep accepted durable reports complete when callback order changes.
+TEST_F(ReferenceChainsBfsTest, RootEnumerationProgressSurvivesRepeatedAnchorJournalOverflow) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr size_t kJournalCapacity = AnchorObservationBuffer::CAPACITY;
+    constexpr size_t kRootCount = 2 * kJournalCapacity + 1;
+    const jlong first_tag = 20000;
+    const std::vector<jlong> root_tags =
+        insertRootAttachedDurableEntries(frontier, first_tag, kRootCount);
+    std::vector<int> root_nodes;
+    root_nodes.reserve(kRootCount);
+    script.reserve(kRootCount);
+    for (size_t i = 0; i < kRootCount; i++) {
+        const int node = addNode();
+        root_nodes.push_back(node);
+        node_tags[node] = root_tags[i];
+        script.push_back({JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, node, -1});
+    }
+    // Keep the search active after the final complete root enumeration to inspect the retained index.
+    AnchorAcc::setCandidateCountForTest(1);
+    AnchorAcc::setCandidateKlassIdForTest(0, 999);
+
+    bool truncated = false;
+    t8AllowRootEnumeration();
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(
+        root_tags[kJournalCapacity - 1]));
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(
+        root_tags[kJournalCapacity]));
+    EXPECT_EQ((int)JVMTI_ITERATION_ABORT, active_fixture->last_ior_control);
+    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+
+    // The retry skips completed tag observations and reaches the next journal-sized segment.
+    t8AllowRootEnumeration();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(
+        root_tags[2 * kJournalCapacity - 1]));
+    EXPECT_FALSE(AnchorAcc::anchorIndexContainsForTest(
+        root_tags[2 * kJournalCapacity]));
+    EXPECT_EQ((int)JVMTI_ITERATION_ABORT, active_fixture->last_ior_control);
+    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+
+    // The final root was rejected; the next retry skips completed tags and indexes it. A pass's
+    // truncated flag may also come from the unrelated static-field sweep, so membership proves it.
+    t8AllowRootEnumeration();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    const int late_node = root_nodes.back();
+    EXPECT_EQ(root_tags.back(), tags_ever_assigned[late_node]);
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(root_tags.back()));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, RootEnumProgressStampBoundaries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong tag = 21001;
+    insertAnchorEntry(frontier, tag, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+
+    frontier->markRootEnumObserved(0, 7);
+    frontier->markRootEnumObserved(-5, 7);
+    frontier->markRootEnumObserved((jlong)INT_MAX + 1, 7);
+    const jlong past_end = (jlong)frontier->size() + 1;
+    frontier->markRootEnumObserved(past_end, 7);
+    frontier->markRootEnumObserved(tag, 0);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(tag, &entry));
+    EXPECT_EQ(0u, entry.root_enum_attempt);
+    EXPECT_FALSE(frontier->lookup(past_end, &entry));
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        past_end, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, true, 7, 6, true));
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        (jlong)INT_MAX + 1, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, true, 7, 6, true));
+
+    frontier->markRootEnumObserved(tag, 7);
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 7, 6, true));
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 7, true));
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 7, false));
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 6, true));
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, true, 0, 0, false));
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_LOCAL, true, 7, 6, true));
+
+    insertAnchorEntry(frontier, 21007, 21001, JVMTI_HEAP_REFERENCE_STACK_LOCAL);
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        21007, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 0, 0, false));
+    frontier->markRootEnumObserved(21007, 9);
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        21007, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 0, false));
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        21007, JVMTI_HEAP_REFERENCE_JNI_LOCAL, true, 0, 0, false));
+
+    tracker->stop();
+}
+
 // A local holder whose class is already classified non-container replays as a pure no-op
 // (noteLocalRootHolder() returns before any state change): the LOCAL gate must not stage it, so
 // a stable non-container local population never occupies journal slots.
@@ -282,13 +393,19 @@ TEST_F(ReferenceChainsBfsTest, AnchorJournalClassifiedNonContainerLocalStagesNot
     ASSERT_GT(local, 0);
     EXPECT_EQ(0u, AnchorAcc::anchorIndexSizeForTest());
 
-    // Re-report the same admitted tag: still a no-op, still unstaged.
+    // Re-report the same admitted tag at a full journal: it must not abort as a no-op.
     AnchorScopedPass retry(tracker, frontier);
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY,
+              AnchorAcc::fillAnchorJournalForTest(
+                  retry.ctx, AnchorObservationBuffer::CAPACITY));
     jlong tag = local;
     EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
               retry.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kNonContainer, &tag));
     EXPECT_EQ(local, tag);
-    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+    EXPECT_FALSE(retry.ctx.anchor_observation_overflow);
+    EXPECT_EQ(AnchorObservationBuffer::CAPACITY,
+              AnchorAcc::journalCountForTest());
+    retry.scope.flush();
 
     tracker->stop();
 }
@@ -321,6 +438,197 @@ TEST_F(ReferenceChainsBfsTest, AnchorJournalParkedLocalRestagesNothing) {
     EXPECT_EQ(local, tag);
     EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
     EXPECT_EQ(1u, AnchorAcc::pendingLocalAnchorCountForTest());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, AnchorJournalFullPendingBufferSkipsUnknownLocalNoops) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong unknown = -4101;
+    const size_t cap = AnchorAcc::kPendingLocalAnchorCap;
+
+    for (size_t i = 0; i < cap; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(50000 + (jlong)i, unknown);
+    }
+    ASSERT_EQ(cap, AnchorAcc::pendingLocalAnchorCountForTest());
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong tag = 0;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, unknown, &tag));
+    ASSERT_GT(tag, 0);
+    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+    pass.scope.flush();
+    EXPECT_EQ(cap, AnchorAcc::pendingLocalAnchorCountForTest());
+    EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(tag));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, AnchorJournalFullConfirmedPendingWithNoVictimSkipsLocalNoop) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong container = -4102;
+    const size_t local_cap = AnchorAcc::kLocalAnchorIndexCap;
+    const size_t pending_cap = AnchorAcc::kPendingLocalAnchorCap;
+    AnchorAcc::primeClassShapeForTest(container, true);
+
+    for (size_t i = 0; i < local_cap; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(60000 + (jlong)i, container);
+    }
+    for (size_t i = 0; i < pending_cap; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(70000 + (jlong)i, container);
+    }
+    ASSERT_EQ(local_cap, AnchorAcc::localAnchorCountForTest());
+    ASSERT_EQ(pending_cap, AnchorAcc::pendingLocalAnchorCountForTest());
+
+    AnchorScopedPass pass(tracker, frontier);
+    ASSERT_EQ(pending_cap, AnchorAcc::pendingLocalEvictCursorForTest());
+    jlong tag = 0;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, container, &tag));
+    ASSERT_GT(tag, 0);
+    EXPECT_EQ(0u, AnchorAcc::journalCountForTest());
+    pass.scope.flush();
+    EXPECT_EQ(pending_cap, AnchorAcc::pendingLocalAnchorCountForTest());
+    EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(tag));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, AnchorJournalFullPendingWithVictimStagesConfirmedLocal) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong container = -4103, unknown = -4104;
+    const size_t local_cap = AnchorAcc::kLocalAnchorIndexCap;
+    const size_t pending_cap = AnchorAcc::kPendingLocalAnchorCap;
+    AnchorAcc::primeClassShapeForTest(container, true);
+
+    for (size_t i = 0; i < local_cap; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(80000 + (jlong)i, container);
+    }
+    for (size_t i = 0; i < pending_cap; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(90000 + (jlong)i, unknown);
+    }
+    ASSERT_EQ(local_cap, AnchorAcc::localAnchorCountForTest());
+    ASSERT_EQ(pending_cap, AnchorAcc::pendingLocalAnchorCountForTest());
+
+    AnchorScopedPass pass(tracker, frontier);
+    ASSERT_EQ(0u, AnchorAcc::pendingLocalEvictCursorForTest());
+    jlong tag = 0;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, container, &tag));
+    ASSERT_GT(tag, 0);
+    EXPECT_EQ(1u, AnchorAcc::journalCountForTest());
+    pass.scope.flush();
+    EXPECT_EQ(tag, AnchorAcc::pendingLocalAnchorTagForTest(0));
+    EXPECT_EQ(1u, AnchorAcc::pendingLocalEvictCursorForTest());
+    EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(90000));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, AnchorJournalSkipsAlreadyQueuedAtRiskNoop) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong non_container = -4105;
+    const jlong holder = 20001;
+    AnchorAcc::primeClassShapeForTest(-555, false);
+    insertAnchorEntry(frontier, holder, 20000, JVMTI_HEAP_REFERENCE_STACK_LOCAL,
+                      non_container);
+    AnchorAcc::pushStaticAnchorFifoForTest(holder, 0);
+
+    AnchorScopedPass pass(tracker, frontier);
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY,
+              AnchorAcc::fillAnchorJournalForTest(
+                  pass.ctx, AnchorObservationBuffer::CAPACITY));
+    jlong tag = holder;
+    EXPECT_EQ(JVMTI_VISIT_OBJECTS, pass.staticEdge(&tag));
+    EXPECT_FALSE(pass.ctx.anchor_observation_overflow);
+    EXPECT_EQ(AnchorObservationBuffer::CAPACITY,
+              AnchorAcc::journalCountForTest());
+    EXPECT_TRUE(AnchorAcc::staticAnchorFifoContainsForTest(holder));
+    pass.scope.flush();
+    EXPECT_EQ(1u, AnchorAcc::staticAnchorFifoSizeForTest());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, AtRiskObservationGateHonorsQueueAndClassCaps) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    const size_t fifo_cap = AnchorAcc::priorityExpandCap();
+    const u32 klass_cap = AnchorAcc::kAtRiskPerKlassCap;
+
+    EXPECT_TRUE(AnchorAcc::atRiskAnchorNeedsObservationForTest(1, 42));
+    for (u32 i = 0; i < klass_cap; i++) {
+        AnchorAcc::pushStaticAnchorFifoForTest(100 + (jlong)i, 42);
+    }
+    EXPECT_FALSE(AnchorAcc::atRiskAnchorNeedsObservationForTest(1000, 42));
+    EXPECT_TRUE(AnchorAcc::atRiskAnchorNeedsObservationForTest(1000, 43));
+
+    for (size_t i = 0; i < fifo_cap - klass_cap; i++) {
+        u32 klass_id = 100 + (u32)(i / klass_cap);
+        AnchorAcc::pushStaticAnchorFifoForTest(2000 + (jlong)i, klass_id);
+    }
+    ASSERT_EQ(fifo_cap, AnchorAcc::staticAnchorFifoSizeForTest());
+    EXPECT_FALSE(AnchorAcc::atRiskAnchorNeedsObservationForTest(5000, 999));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, AnchorJournalDeduplicatesLocalAndAtRiskWithinScope) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong unknown = -4106;
+    const jlong non_container = -555;
+    const jlong holder = 20002;
+    AnchorAcc::primeClassShapeForTest(non_container, false);
+    insertAnchorEntry(frontier, holder, 20000, JVMTI_HEAP_REFERENCE_STACK_LOCAL,
+                      non_container);
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong local = 0;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, unknown, &local));
+    ASSERT_GT(local, 0);
+    jlong at_risk = holder;
+    EXPECT_EQ(JVMTI_VISIT_OBJECTS, pass.staticEdge(&at_risk));
+    ASSERT_EQ(2u, AnchorAcc::journalCountForTest());
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY,
+              AnchorAcc::fillAnchorJournalForTest(
+                  pass.ctx, AnchorObservationBuffer::CAPACITY));
+    for (int i = 0; i < 8; i++) {
+        jlong repeated = local;
+        EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+                  pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, unknown, &repeated));
+        EXPECT_EQ(JVMTI_VISIT_OBJECTS, pass.staticEdge(&at_risk));
+    }
+    EXPECT_FALSE(pass.ctx.anchor_observation_overflow);
+    EXPECT_EQ(AnchorObservationBuffer::CAPACITY,
+              AnchorAcc::journalCountForTest());
+    EXPECT_FALSE(AnchorAcc::staticAnchorFifoContainsForTest(holder));
+    pass.scope.flush();
+    EXPECT_TRUE(AnchorAcc::pendingLocalAnchorContainsForTest(local));
+    EXPECT_TRUE(AnchorAcc::staticAnchorFifoContainsForTest(holder));
 
     tracker->stop();
 }

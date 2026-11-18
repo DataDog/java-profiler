@@ -708,16 +708,15 @@ private:
   std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
-  // Chain invalidations deferred by heap callbacks. Only tags present in the immutable
-  // pre-traversal resolved-cache snapshot are eligible, so distinct pending tags are bounded
-  // exactly by the cache cap. Both buffers are reserved up front: drains move entries into the
-  // scratch buffer under the pending lock, then touch cache entries after releasing that lock.
+  // Chain invalidations deferred by heap callbacks. Both buffers are reserved up front; if the
+  // snapshot bound is violated, the next drain clears the cache rather than retaining stale chains.
   // The ChainInvalidationKind is stored in-band (see encodePendingChainInvalidation()): EVICT
   // entries hold the source tag, REBUILD entries its bitwise complement. Every read and write of
-  // both buffers happens under _pending_chain_invalidations_lock (full-barrier acquire/release).
+  // both buffers and the overflow flag happens under _pending_chain_invalidations_lock.
   static constexpr int MAX_PENDING_CHAIN_INVALIDATIONS = MAX_RESOLVED_CHAINS;
   std::vector<jlong> _pending_chain_invalidations;
   std::vector<jlong> _draining_chain_invalidations;
+  bool _pending_chain_invalidation_overflow = false;
   SpinLock _pending_chain_invalidations_lock;
 #ifdef DEBUG
   // Test hook for evicting a scanned chain before write-back; absent from release builds.
@@ -880,6 +879,8 @@ private:
   // may still hold reachable chains. Cleared on a completed attempt, by restartSearch(), and by
   // resetSearchStateForTest(); runPass()'s termination ladder treats it as pending frontier.
   bool _root_enum_incomplete = false;
+  // Frontier stamps use this id to skip accepted reports across an incomplete retry.
+  u32 _root_enum_attempt_id = 0;
 
   // Consecutive root-enumeration attempts ended by a JVMTI error; reset by any successful
   // attempt, restartSearch(), and resetSearchStateForTest(). At MAX_CONSECUTIVE_ENUM_ERRORS the
@@ -1183,24 +1184,18 @@ private:
   // with a tiered cursor: leak-tagged, fresh, containers, then other roots fairly.
   std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
   bool isSelectableAnchor(const FrontierEntry &entry, jlong own_class_tag) const;
-  // True iff the tag currently occupies the anchor index. Callback and replay are serialized on
-  // the BFS thread, so callback-time reads see the replay's own writes.
+  // Callback and replay are serialized on the BFS thread, so callback-time reads see prior flushes.
   bool isAnchorIndexed(jlong tag) const {
     return _static_anchor_index_tags.count(tag) > 0;
   }
-  // True iff noteLocalRootHolder() would not return unchanged for this observation: not indexed,
-  // not already parked, not a classified non-container. Staging a known no-op wastes a slot, and
-  // re-staging a stable population every enumeration refills the journal at the same prefix, so
-  // the overflow aborts at the same report every pass and no later root is ever reached.
-  bool localHolderNeedsObservation(jlong tag, jlong own_class_tag) const {
-    if (_static_anchor_index_tags.count(tag) > 0 ||
-        _pending_local_anchor_tags.count(tag) > 0) {
-      return false;
-    }
-    auto shape = _class_shape_cache.find(own_class_tag);
-    return shape == _class_shape_cache.end() ||
-           shape->second == (u8)AnchorClassShape::CONTAINER;
-  }
+  // Advances past pending entries already confirmed as containers; both callers share this scan.
+  void advancePendingLocalAnchorEvictionCursor();
+  // Normalize the pending eviction cursor once before root callbacks so their gate stays O(1).
+  void preparePendingLocalAnchorEvictionCursor();
+  // Mirrors noteLocalRootHolder()'s current admission limits without changing pending state.
+  bool localHolderNeedsObservation(jlong tag, jlong own_class_tag) const;
+  // Mirrors pushAtRiskStaticAnchor() so callbacks do not stage known queue no-ops.
+  bool atRiskAnchorNeedsObservation(jlong tag, u32 klass_id) const;
   // At-risk anchor push: deduped, capped, and quota-limited per klass.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   // Add `tag` to _static_anchor_index if its root_kind is a durable anchor-tier kind (STATIC_FIELD

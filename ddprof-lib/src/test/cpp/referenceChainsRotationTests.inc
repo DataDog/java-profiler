@@ -1024,9 +1024,7 @@ struct T9RJournalFill {
         follow_seeds.clear();
     }
 
-    // Seeds the holder the fill reports: a reparented static-field holder already sitting in the
-    // at-risk FIFO. Its repeated AT_RISK reports stage records (filling the journal) whose replay
-    // is a pure no-op (pushAtRiskStaticAnchor() dedups), so the fill leaves no state behind.
+    // Keeps one fixture frontier entry for tests that assert the count after a rejected report.
     static void seedHolder(ReferenceChainTracker *tracker) {
         holder_tag = tracker->nextTag();
         T9RAcc::primeClassShapeForTest(holder_class_tag, false);
@@ -1034,21 +1032,13 @@ struct T9RJournalFill {
             tracker->frontierTable(), holder_tag, /*parent_tag=*/1, /*depth=*/1,
             FrontierEntryState::FRONTIER, JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0,
             holder_class_tag));
-        T9RAcc::pushStaticAnchorFifoForTest(holder_tag, 0);
     }
 
     static void fill(const void *user_data) {
-        void *ctx = const_cast<void *>(user_data);
-        for (u32 i = 0; i < AnchorObservationBuffer::CAPACITY; i++) {
-            jlong tag = holder_tag;
-            // The edge callback returns VISIT_OBJECTS for a descend-able holder; only an ABORT
-            // ends the fill.
-            if (T9RAcc::reportStaticFieldEdgeForTest(-555, &tag, ctx) &
-                JVMTI_VISIT_ABORT) {
-                break;
-            }
-        }
-        count_after_fill = T9RAcc::journalCountForTest();
+        auto *ctx = const_cast<ReferenceChainPassContext *>(
+            static_cast<const ReferenceChainPassContext *>(user_data));
+        count_after_fill = static_cast<u32>(T9RAcc::fillAnchorJournalForTest(
+            *ctx, AnchorObservationBuffer::CAPACITY));
     }
 };
 

@@ -112,6 +112,7 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
       _table[idx].depth = depth;
       _table[idx].state = state;
       _table[idx].root_kind = root_kind;
+      _table[idx].root_enum_attempt = 0;
       _table[idx].class_tag = class_tag;
       _table[idx].leak_tag = 0;
       _table[idx].leak_tag_incarnation = 0;
@@ -216,6 +217,46 @@ void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
   if (idx < _table_size) {
     _table[idx].root_kind = root_kind;
   }
+}
+
+void FrontierTable::markRootEnumObserved(jlong tag, u32 attempt_id) {
+  if (attempt_id == 0 || tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
+    return;
+  }
+  int idx = (int)(tag - 1);
+  {
+    SharedLockGuard guard(&_table_lock);
+    // A report restamped in this attempt needs no exclusive write acquisition.
+    if (idx >= _table_size || _table[idx].root_enum_attempt == attempt_id) {
+      return;
+    }
+  }
+  ExclusiveLockGuard guard(&_table_lock);
+  if (idx < _table_size) {
+    _table[idx].root_enum_attempt = attempt_id;
+  }
+}
+
+bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
+                                        bool anchor_indexed, u32 attempt_id,
+                                        u32 previous_attempt_id,
+                                        bool retrying_incomplete) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
+    return false;
+  }
+  int idx = (int)(tag - 1);
+  SharedLockGuard guard(&_table_lock);
+  // Root-attached kind changes are real upgrades; chain-attached entries cannot be upgraded by a root.
+  // Therefore only root-attached entries require a matching root_kind here.
+  if (idx >= _table_size ||
+      (_table[idx].parent_tag == 0 && _table[idx].root_kind != root_kind)) {
+    return false;
+  }
+  u32 stamped = _table[idx].root_enum_attempt;
+  return anchor_indexed ||
+         (attempt_id != 0 && stamped == attempt_id) ||
+         (retrying_incomplete && previous_attempt_id != 0 &&
+          stamped == previous_attempt_id);
 }
 
 bool FrontierTable::improveChain(jlong tag, jlong parent_tag,

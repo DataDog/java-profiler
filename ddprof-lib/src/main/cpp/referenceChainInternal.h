@@ -35,6 +35,9 @@ public:
   // Every journal operation goes through the scope's token; a non-owning scope's calls are
   // rejected by the buffer and never touch another scope's journal.
   AnchorObservationReservation reserve() { return AnchorObservationReservation(*_buffer, _lease); }
+  bool containsAction(jlong tag, u8 action) {
+    return _buffer->containsAction(_lease, tag, action);
+  }
   void markOverflow(bool static_attachment) { _buffer->markOverflow(_lease, static_attachment); }
   bool ownsLease() const { return _lease.id != 0; }
 
@@ -105,6 +108,11 @@ struct ReferenceChainPassContext {
       : anchor_scope(scope) {}
 
   ReferenceChainAnchorObservationScope &anchor_scope;
+
+  // Attempt ids let retries match accepted root observations by frontier tag.
+  u32 root_enum_attempt_id = 0;
+  u32 root_enum_previous_attempt_id = 0;
+  bool root_enum_retrying_incomplete = false;
 
   // Set with `truncated` when the journal had no room; distinct from frontier_cap_hit. The rejected
   // transition is not performed, so the source traversal obligation stays unserved.

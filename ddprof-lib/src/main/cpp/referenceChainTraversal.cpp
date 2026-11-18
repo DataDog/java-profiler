@@ -69,14 +69,33 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
 
   u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
   u8 translated_root_kind = translateHeapRootKind(root_kind);
-  // Reserve one journal record before any frontier/tag transition when this report can produce an
-  // anchor effect (leak conversion or upgrade/re-enlist of a durable root, or a local holder).
-  // A full journal aborts with nothing changed so root enumeration retries the report.
+  // Reserve before a frontier/tag transition that may publish an anchor effect; known local
+  // no-ops are filtered first. A full journal aborts with nothing changed so root enumeration retries.
   const bool durable_root = isDurableAnchorRootKind(translated_root_kind);
   const bool local_root =
       isTransientRootKind(translated_root_kind) && class_tag != 0;
+  bool completed_durable_report = false;
+  if (durable_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    completed_durable_report = ctx->frontier->rootReportCompleted(
+        *tag_ptr, translated_root_kind,
+        /*anchor_indexed=*/ctx->tracker->isAnchorIndexed(*tag_ptr),
+        ctx->root_enum_attempt_id, ctx->root_enum_previous_attempt_id,
+        ctx->root_enum_retrying_incomplete);
+  }
+  bool durable_observation_complete = false;
+  bool local_action_checked = false;
+  bool local_action_may_be_needed = local_root;
+  if (local_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    // A known frontier tag stays unchanged in admitObject(), so skip a full-journal no-op here.
+    local_action_checked = true;
+    local_action_may_be_needed =
+        ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag) &&
+        !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL);
+  }
   AnchorObservationReservationGuard reservation;
-  if (*tag_ptr >= 0 && ((durable_root && *tag_ptr > 0) || local_root) &&
+  if (*tag_ptr >= 0 &&
+      ((durable_root && *tag_ptr > 0 && !completed_durable_report) ||
+       local_action_may_be_needed) &&
       !reservation.acquire(ctx->anchor_scope)) {
     ctx->abortForObservationOverflow(/*static_attachment=*/false);
     return JVMTI_ITERATION_ABORT;
@@ -118,6 +137,7 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         if (durable_root) {
           actions |= AnchorObservation::DURABLE_ADD;
           durable_kind = translated_root_kind;
+          durable_observation_complete = true;
         }
         if (ctx->tracker->_candidate_count > 0) {
           u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
@@ -147,6 +167,7 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         actions |= AnchorObservation::DURABLE_ADD;
         durable_kind = translated_root_kind;
         record_class_tag = upgraded_class_tag;
+        durable_observation_complete = true;
       }
       ctx->tracker->deferResolvedChainInvalidation(
           *tag_ptr, ctx->resolved_chain_tags,
@@ -154,16 +175,14 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
           ReferenceChainTracker::ChainInvalidationKind::REBUILD);
     } else if (translated_root_kind ==
                (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
-      // Unchanged JNI_GLOBAL roots re-enlist evicted anchors here; static-field roots re-enlist
-      // from the sweep. Skipped for already-indexed tags (cheap probe first - the indexed steady
-      // state is the common case): their replay is a no-op, and re-staging the same selectable
-      // holders every enumeration refills the journal at the same prefix - the overflow then
-      // aborts at the same report every pass and no later root is ever reached.
+      // Re-enlist evicted anchors unless this report was accepted in this or the preceding retry.
       FrontierEntry current{};
-      if (!ctx->tracker->isAnchorIndexed(*tag_ptr) &&
-          ctx->frontier->lookup(*tag_ptr, &current) &&
-          ctx->tracker->isSelectableAnchor(current, class_tag)) {
+      if (completed_durable_report) {
+        durable_observation_complete = true;
+      } else if (ctx->frontier->lookup(*tag_ptr, &current) &&
+                 ctx->tracker->isSelectableAnchor(current, class_tag)) {
         actions |= AnchorObservation::REENLIST_ELIGIBLE;
+        durable_observation_complete = true;
       }
     }
     break;
@@ -177,9 +196,16 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   // waits in the pending buffer. Skipped under the same conditions noteLocalRootHolder() returns
   // unchanged (see localHolderNeedsObservation()): a stable local population must not refill the
   // journal with its own no-op records every enumeration.
-  if (local_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr) &&
-      ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag)) {
-    actions |= AnchorObservation::LOCAL;
+  if (local_root && local_action_may_be_needed && *tag_ptr > 0 &&
+      !isLeakTag(*tag_ptr)) {
+    if (!local_action_checked) {
+      local_action_may_be_needed =
+          ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag) &&
+          !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL);
+    }
+    if (local_action_may_be_needed) {
+      actions |= AnchorObservation::LOCAL;
+    }
   }
   if (actions != 0) {
     AnchorObservation record{};
@@ -188,6 +214,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     record.actions = actions;
     record.durable_root_kind = durable_kind;
     reservation.commit(record);
+  }
+  if (durable_observation_complete) {
+    ctx->frontier->markRootEnumObserved(*tag_ptr, ctx->root_enum_attempt_id);
   }
   return JVMTI_ITERATION_CONTINUE;
 }
@@ -251,12 +280,19 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // comment) - so even when it runs this pass, the expandFrontier() call below is still needed to
   // make any further progress.
   if (run_root_enum) {
+    preparePendingLocalAnchorEvictionCursor();
     jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
     // Root-enumeration scope: flushed right after the call returns, before any result handling,
     // so every exit below (error, truncation, completion) sees the accepted prefix applied.
     ReferenceChainAnchorObservationScope root_scope(this);
     ReferenceChainPassContext ctx(root_scope);
     ctx.tracker = this;
+    ctx.root_enum_retrying_incomplete = _root_enum_incomplete;
+    ctx.root_enum_previous_attempt_id = _root_enum_attempt_id;
+    if (++_root_enum_attempt_id == 0) {
+      ++_root_enum_attempt_id;
+    }
+    ctx.root_enum_attempt_id = _root_enum_attempt_id;
     ctx.resolved_chain_tags = resolved_chain_tags;
     ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
     ctx.frontier = _frontier;

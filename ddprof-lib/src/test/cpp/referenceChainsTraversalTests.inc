@@ -904,9 +904,7 @@ namespace {
 
 using T8Acc = ReferenceChainsTestAccessor;
 
-// Fills the live caller scope's journal to capacity from inside a JVMTI call, as a long traversal
-// whose earlier callbacks recorded CAPACITY effects would. Records are LOCAL reports of one
-// admitted holder; the caller replays them at its flush like any other prefix.
+// Fills the live caller scope at a JVMTI return boundary so the next real callback reaches overflow.
 struct T8JournalFill {
     static inline bool fill_on_ior = false;
     static inline int fill_on_follow_call = -1; // 0-based FollowReferences call to fill before
@@ -923,9 +921,7 @@ struct T8JournalFill {
         count_after_fill = 0;
     }
 
-    // Seeds the holder the fill reports: a reparented static-field holder already sitting in the
-    // at-risk FIFO. Its repeated AT_RISK reports stage records (filling the journal) whose replay
-    // is a pure no-op (pushAtRiskStaticAnchor() dedups), so the fill leaves no state behind.
+    // Keeps one fixture frontier entry for tests that assert the count after a rejected report.
     static void seedHolder(ReferenceChainTracker *tracker) {
         holder_tag = tracker->nextTag();
         T8Acc::primeClassShapeForTest(holder_class_tag, false);
@@ -933,21 +929,13 @@ struct T8JournalFill {
             tracker->frontierTable(), holder_tag, /*parent_tag=*/1, /*depth=*/1,
             FrontierEntryState::FRONTIER, JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0,
             holder_class_tag));
-        T8Acc::pushStaticAnchorFifoForTest(holder_tag, 0);
     }
 
     static void fill(const void *user_data) {
-        void *ctx = const_cast<void *>(user_data);
-        for (u32 i = 0; i < AnchorObservationBuffer::CAPACITY; i++) {
-            jlong tag = holder_tag;
-            // The edge callback returns VISIT_OBJECTS for a descend-able holder; only an ABORT
-            // ends the fill.
-            if (T8Acc::reportStaticFieldEdgeForTest(-555, &tag, ctx) &
-                JVMTI_VISIT_ABORT) {
-                break;
-            }
-        }
-        count_after_fill = T8Acc::journalCountForTest();
+        auto *ctx = const_cast<ReferenceChainPassContext *>(
+            static_cast<const ReferenceChainPassContext *>(user_data));
+        count_after_fill = static_cast<u32>(T8Acc::fillAnchorJournalForTest(
+            *ctx, AnchorObservationBuffer::CAPACITY));
     }
 };
 
@@ -1161,7 +1149,7 @@ TEST_F(ReferenceChainsBfsTest, ExpansionOverflowKeepsDemotionAndBatchForRetry) {
 
     int edges = 0;
     bool truncated = false;
-    // The fill's own holder occupies one FIFO slot; the demotion rejection must not push a second.
+    // The test-only journal fill has no FIFO effect; the rejected demotion must not push one.
     const size_t fifo_before = T8Acc::staticAnchorFifoSizeForTest();
     T8Acc::expandFrontierWithBudgetForTest(&mock_jvmti, &mock_jni, 1000, &edges, &truncated);
     ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill);

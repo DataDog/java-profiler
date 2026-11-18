@@ -17,6 +17,7 @@ struct AnchorScopedPass {
     AnchorScopedPass(ReferenceChainTracker *tracker, FrontierTable *frontier,
                      int budget = 100000)
         : scope(tracker), ctx(scope) {
+        AnchorAcc::preparePendingLocalAnchorEvictionCursorForTest();
         ctx.tracker = tracker;
         ctx.frontier = frontier;
         ctx.hop_cap = 64;

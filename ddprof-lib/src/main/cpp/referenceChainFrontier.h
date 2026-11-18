@@ -61,8 +61,8 @@ typedef struct FrontierEntry {
   // LivenessTracker::leakTagIncarnation(leak_tag) captured when leak_tag was bound to this entry
   // (setLeakTag()): the ownership period of the tag this entry's object held. A leak tag is
   // recycled after its object dies, so (leak_tag, leak_tag_incarnation) - not leak_tag alone -
-  // identifies the object. 0 while leak_tag == 0. Sits in the padding after `state`, so
-  // sizeof(FrontierEntry) is unchanged (static_assert below).
+  // identifies the object. 0 while leak_tag == 0. It uses padding after `state`; the root-enum
+  // stamp uses padding after `root_kind`, so sizeof(FrontierEntry) stays unchanged.
   u32 leak_tag_incarnation;
   // The leak tag assigned by LivenessTracker to this specific tracked object, copied from the JVMTI
   // tag at admission time.
@@ -73,6 +73,8 @@ typedef struct FrontierEntry {
   // reconstructChain()'s callers want to report (they want to label the chain's root, not every
   // hop).
   u8 root_kind;
+  // Last root-enumeration attempt that accepted this entry's durable anchor observation.
+  u32 root_enum_attempt;
   // Raw JVMTI class tag of THIS entry's own object, from the shared, process-wide allocator
   // (classTagAllocator.h) - NOT referrer_klass above (a classMap dictionary id, which can differ
   // for the same class at different times if that dictionary gets compacted/regenerated - see
@@ -98,7 +100,7 @@ typedef struct FrontierEntry {
 } FrontierEntry;
 
 static_assert(sizeof(FrontierEntry) == 64,
-              "FrontierEntry::leak_tag_incarnation must stay in the padding after `state`");
+              "frontier stamps must stay within existing FrontierEntry padding");
 
 // Per-hop retention-edge identity collected by reconstructChain() alongside the class chain:
 // everything needed at emission to label HOW chain[i] is retained (the field of chain[i+1] pointing
@@ -206,6 +208,14 @@ public:
 
   // Updates only the recorded root kind.
   void updateRootKind(jlong tag, u8 root_kind);
+
+  // Records that the current root-enumeration attempt accepted this entry's anchor observation.
+  void markRootEnumObserved(jlong tag, u32 attempt_id);
+  // Checks current/prior-incomplete attempt stamps or index membership for a durable-root report.
+  // A chain-attached entry may match a different root kind because it cannot be upgraded by a root.
+  bool rootReportCompleted(jlong tag, u8 root_kind, bool anchor_indexed,
+                           u32 attempt_id, u32 previous_attempt_id,
+                           bool retrying_incomplete);
 
   // Set the leak tag on a frontier entry (the JVMTI tag assigned by LivenessTracker to this
   // specific tracked leaking object) together with that tag's ownership-period stamp

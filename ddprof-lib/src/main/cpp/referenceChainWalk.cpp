@@ -532,6 +532,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       const bool durable_edge =
           isDurableAnchorRootKind((u8)reference_kind);
       u8 pending_actions = 0;
+      u32 pending_at_risk_klass_id = 0;
       AnchorObservationReservationGuard root_reservation;
       if (durable_edge) {
         // Decide the possible anchor effects from the current entry before any mutation. A
@@ -554,7 +555,14 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         // filter can never see.
         if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD && found &&
             current.parent_tag != 0) {
-          pending_actions |= AnchorObservation::AT_RISK;
+          pending_at_risk_klass_id =
+              ctx->tracker->classTags()->resolve(class_tag);
+          if (ctx->tracker->atRiskAnchorNeedsObservation(
+                  *tag_ptr, pending_at_risk_klass_id) &&
+              !ctx->anchor_scope.containsAction(*tag_ptr,
+                                                AnchorObservation::AT_RISK)) {
+            pending_actions |= AnchorObservation::AT_RISK;
+          }
         }
         if ((upgrade_possible || pending_actions != 0) &&
             !root_reservation.acquire(ctx->anchor_scope)) {
@@ -582,7 +590,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         root_reservation.commit(makeAnchorObservation(
             *tag_ptr, class_tag,
             (pending_actions & AnchorObservation::AT_RISK)
-                ? ctx->tracker->classTags()->resolve(class_tag)
+                ? pending_at_risk_klass_id
                 : 0,
             pending_actions, 0));
       }

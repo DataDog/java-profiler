@@ -8,6 +8,7 @@
 
 #include "arch.h"
 #include "spinLock.h"
+#include <cstring>
 #include <jni.h>
 
 // One callback report's anchor effects for one frontier tag. Callbacks only record these; the
@@ -33,14 +34,19 @@ struct AnchorObservationLease {
   u64 id = 0;
 };
 
-// Fixed-capacity, tracker-owned journal. All metadata is read and written under _lock (a full
-// barrier, so arm64 publication between the callback and caller threads is ordered); the lock is
-// never held across JVMTI, frontier or index work. The records array is written only by the single
-// serialized heap callback between begin and flush, and read by the caller after the traversal
-// returned, so it needs no lock of its own.
+// Fixed-capacity, tracker-owned journal. The record array uses at most 384 KiB; the two per-scope
+// LOCAL/AT_RISK indexes add 136 KiB. Metadata is locked; callbacks write records and the caller
+// reads them after traversal returns. The lock is never held across JVMTI, frontier or index work.
 class AnchorObservationBuffer {
 public:
   static constexpr u32 CAPACITY = 16384;
+  static constexpr u32 ACTION_TAG_SET_SLOTS = CAPACITY * 2;
+  static constexpr u32 ACTION_TAG_SET_BITMAP_BYTES = ACTION_TAG_SET_SLOTS / 8;
+  static constexpr u32 ACTION_DEDUP_STORAGE_BYTES =
+      2 * (ACTION_TAG_SET_SLOTS * sizeof(u16) + ACTION_TAG_SET_BITMAP_BYTES);
+  static_assert(ACTION_TAG_SET_SLOTS == 32768 &&
+                    ACTION_DEDUP_STORAGE_BYTES == 139264,
+                "anchor action indexes must stay bounded at 136 KiB");
 
   AnchorObservationBuffer() = default;
   AnchorObservationBuffer(const AnchorObservationBuffer &) = delete;
@@ -80,12 +86,46 @@ public:
     return true;
   }
 
+  bool containsAction(const AnchorObservationLease &lease, jlong tag, u8 action) {
+    ExclusiveLockGuard guard(&_lock);
+    if (!owns(lease)) {
+      return false;
+    }
+    if (action == AnchorObservation::LOCAL) {
+      return _local_action_tags.contains(tag, _records);
+    }
+    if (action == AnchorObservation::AT_RISK) {
+      return _at_risk_action_tags.contains(tag, _records);
+    }
+    return false;
+  }
+
   void commit(const AnchorObservationLease &lease, const AnchorObservation &record) {
     ExclusiveLockGuard guard(&_lock);
     if (!owns(lease) || !_reserved) {
       return;
     }
-    _records[_count] = record;
+    AnchorObservation staged = record;
+    if ((staged.actions & AnchorObservation::LOCAL) != 0 &&
+        _local_action_tags.contains(staged.tag, _records)) {
+      staged.actions &= static_cast<u8>(~AnchorObservation::LOCAL);
+    }
+    if ((staged.actions & AnchorObservation::AT_RISK) != 0 &&
+        _at_risk_action_tags.contains(staged.tag, _records)) {
+      staged.actions &= static_cast<u8>(~AnchorObservation::AT_RISK);
+    }
+    if (staged.actions == 0) {
+      _reserved = false;
+      return;
+    }
+    u16 record_index = static_cast<u16>(_count + 1);
+    _records[_count] = staged;
+    if ((staged.actions & AnchorObservation::LOCAL) != 0) {
+      _local_action_tags.insert(staged.tag, record_index);
+    }
+    if ((staged.actions & AnchorObservation::AT_RISK) != 0) {
+      _at_risk_action_tags.insert(staged.tag, record_index);
+    }
     _count++;
     _reserved = false;
   }
@@ -136,6 +176,8 @@ public:
     // commit after this clear would be silently dropped by the !_reserved check. Keeping the
     // assignment is the defensive fallback if that discipline is ever broken in a release build.
     assert(_reserved == false);
+    _local_action_tags.clear();
+    _at_risk_action_tags.clear();
     _count = 0;
     _static_retry = false;
     _overflow = false;
@@ -146,6 +188,8 @@ public:
   // joined thread). Invalidates every outstanding lease token.
   void reset() {
     ExclusiveLockGuard guard(&_lock);
+    _local_action_tags.clear();
+    _at_risk_action_tags.clear();
     _count = 0;
     _static_retry = false;
     _overflow = false;
@@ -167,6 +211,61 @@ public:
   const AnchorObservation *records() const { return _records; }
 
 private:
+  class ActionTagSet {
+  public:
+    bool contains(jlong tag, const AnchorObservation *records) const {
+      u32 slot = start(tag);
+      for (u32 probes = 0; probes < ACTION_TAG_SET_SLOTS; probes++) {
+        if (!isUsed(slot)) {
+          return false;
+        }
+        u16 record_index = _record_indices[slot];
+        if (records[record_index - 1].tag == tag) {
+          return true;
+        }
+        slot = (slot + 1) & (ACTION_TAG_SET_SLOTS - 1);
+      }
+      return false;
+    }
+
+    void insert(jlong tag, u16 record_index) {
+      assert(_size < CAPACITY);
+      u32 slot = start(tag);
+      for (u32 probes = 0; probes < ACTION_TAG_SET_SLOTS; probes++) {
+        if (!isUsed(slot)) {
+          _record_indices[slot] = record_index;
+          _used[slot >> 3] |= static_cast<u8>(1u << (slot & 7));
+          _size++;
+          return;
+        }
+        slot = (slot + 1) & (ACTION_TAG_SET_SLOTS - 1);
+      }
+      assert(false && "anchor action index capacity proof violated");
+    }
+
+    void clear() {
+      if (_size == 0) {
+        return;
+      }
+      memset(_used, 0, sizeof(_used));
+      _size = 0;
+    }
+
+  private:
+    static u32 start(jlong tag) {
+      return static_cast<u32>(static_cast<u64>(tag) *
+                              0x9E3779B97F4A7C15ULL >> 49);
+    }
+
+    bool isUsed(u32 slot) const {
+      return (_used[slot >> 3] & static_cast<u8>(1u << (slot & 7))) != 0;
+    }
+
+    u16 _record_indices[ACTION_TAG_SET_SLOTS];
+    u8 _used[ACTION_TAG_SET_BITMAP_BYTES] = {};
+    u32 _size = 0;
+  };
+
   // Caller holds _lock. A token owns the journal only for its own lease within its own epoch.
   bool owns(const AnchorObservationLease &lease) const {
     return lease.id != 0 && lease.id == _lease_id && lease.epoch == _epoch;
@@ -180,6 +279,8 @@ private:
   bool _reserved = false;
   u64 _lease_id = 0;      // 0 = no lease held
   u64 _next_lease_id = 0; // never reused, so a stale token cannot match a newer lease
+  ActionTagSet _local_action_tags;
+  ActionTagSet _at_risk_action_tags;
   AnchorObservation _records[CAPACITY];
 };
 static_assert(sizeof(AnchorObservation) * AnchorObservationBuffer::CAPACITY <= 393216,

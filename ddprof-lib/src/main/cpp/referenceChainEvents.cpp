@@ -597,6 +597,8 @@ void ReferenceChainTracker::deferResolvedChainInvalidation(
   const jlong evict = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::EVICT);
   const jlong rebuild = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::REBUILD);
 
+  // A traversal snapshot and the cache cap bound distinct eligible tags; polling drains pending
+  // work before inserting chains. The overflow path still fails closed if that contract changes.
   _pending_chain_invalidations_lock.lock();
   for (jlong &pending : _pending_chain_invalidations) {
     if (pending == evict) {
@@ -611,16 +613,13 @@ void ReferenceChainTracker::deferResolvedChainInvalidation(
       return;
     }
   }
-  // Cache insertion is serialized with traversals on the engine thread and dumps can only remove
-  // keys, so one pre-traversal snapshot bounds distinct eligible tags to the cache cap. REBUILD
-  // entries the dump path leaves pending do not break the bound: only pollWatchedTargets() inserts
-  // into the cache, and it drains every pending entry first.
-  assert((int)_pending_chain_invalidations.size() <
-         MAX_PENDING_CHAIN_INVALIDATIONS);
   if ((int)_pending_chain_invalidations.size() <
       MAX_PENDING_CHAIN_INVALIDATIONS) {
     _pending_chain_invalidations.push_back(
         kind == ChainInvalidationKind::REBUILD ? rebuild : evict);
+  } else {
+    // No callback may drop an invalidation; the next drain clears every cached chain instead.
+    _pending_chain_invalidation_overflow = true;
   }
   _pending_chain_invalidations_lock.unlock();
 }
@@ -633,6 +632,15 @@ void ReferenceChainTracker::drainPendingChainInvalidations() {
   ExclusiveLockGuard guard(&_resolved_chains_lock);
   _pending_chain_invalidations_lock.lock();
   assert(_draining_chain_invalidations.empty());
+  if (_pending_chain_invalidation_overflow) {
+    _pending_chain_invalidation_overflow = false;
+    _pending_chain_invalidations.clear();
+    _pending_chain_invalidations_lock.unlock();
+    Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED,
+                        static_cast<long long>(_resolved_chains.size()));
+    _resolved_chains.clear();
+    return;
+  }
   size_t kept = 0;
   for (size_t i = 0; i < _pending_chain_invalidations.size(); i++) {
     jlong pending = _pending_chain_invalidations[i];
@@ -665,6 +673,15 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     _pending_chain_invalidations_lock.lock();
     assert(_draining_chain_invalidations.empty());
+    if (_pending_chain_invalidation_overflow) {
+      _pending_chain_invalidation_overflow = false;
+      _pending_chain_invalidations.clear();
+      _pending_chain_invalidations_lock.unlock();
+      Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED,
+                          static_cast<long long>(_resolved_chains.size()));
+      _resolved_chains.clear();
+      return;
+    }
     _pending_chain_invalidations.swap(_draining_chain_invalidations);
     _pending_chain_invalidations_lock.unlock();
 
@@ -735,6 +752,7 @@ void ReferenceChainTracker::clearPendingChainInvalidations() {
   _pending_chain_invalidations_lock.lock();
   _pending_chain_invalidations.clear();
   _draining_chain_invalidations.clear();
+  _pending_chain_invalidation_overflow = false;
   _pending_chain_invalidations_lock.unlock();
 }
 

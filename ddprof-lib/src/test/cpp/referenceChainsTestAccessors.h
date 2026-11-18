@@ -57,6 +57,7 @@ public:
         t->_search_started = false;
         t->_tags_released = true;
         t->_root_enum_incomplete = false;
+        t->_root_enum_attempt_id = 0;
         t->_consecutive_enum_errors = 0;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
@@ -138,6 +139,21 @@ public:
     // Anchor-observation journal: accepted-record count and the lifecycle epoch reset() advances.
     static u32 journalCountForTest() {
         return ReferenceChainTracker::instance()->_anchor_observations.count();
+    }
+    // Pre-fills the active scope to a total record count without replay effects.
+    static size_t fillAnchorJournalForTest(ReferenceChainPassContext &ctx,
+                                           size_t target_count) {
+        size_t filled = journalCountForTest();
+        for (; filled < target_count; filled++) {
+            AnchorObservationReservation reservation = ctx.anchor_scope.reserve();
+            if (!reservation.held()) {
+                break;
+            }
+            AnchorObservation record{};
+            record.actions = AnchorObservation::DURABLE_ADD;
+            reservation.commit(record);
+        }
+        return filled;
     }
     static u64 journalEpochForTest() {
         return ReferenceChainTracker::instance()->_anchor_observations.epoch();
@@ -362,6 +378,11 @@ public:
 
     static void drainPendingChainInvalidations() {
         ReferenceChainTracker::instance()->drainPendingChainInvalidations();
+    }
+
+    static void applyPendingChainInvalidationsForTest(u64 search_ns) {
+        ReferenceChainTracker::instance()->applyPendingChainInvalidations(nullptr, nullptr,
+                                                                          search_ns);
     }
 
     static void invalidateResolvedChainForTest(jlong tag) {
@@ -708,6 +729,9 @@ public:
     }
     static size_t pendingLocalEvictCursorForTest() {
         return ReferenceChainTracker::instance()->_pending_local_evict_cursor;
+    }
+    static void preparePendingLocalAnchorEvictionCursorForTest() {
+        ReferenceChainTracker::instance()->preparePendingLocalAnchorEvictionCursor();
     }
     // Caller keeps idx < pendingLocalAnchorCountForTest().
     static jlong pendingLocalAnchorTagForTest(size_t idx) {
@@ -1116,6 +1140,10 @@ public:
     static bool staticAnchorFifoContainsForTest(jlong tag) {
         return ReferenceChainTracker::instance()
             ->_static_anchor_fifo_set.contains(tag);
+    }
+    static bool atRiskAnchorNeedsObservationForTest(jlong tag, u32 klass_id) {
+        return ReferenceChainTracker::instance()->atRiskAnchorNeedsObservation(
+            tag, klass_id);
     }
 
     static void walkStaticAnchorFifoForTest(jvmtiEnv *jvmti, JNIEnv *jni,

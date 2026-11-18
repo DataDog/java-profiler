@@ -108,14 +108,13 @@ can expand already-admitted roots while waiting for the next enumeration attempt
 
 Root enumeration uses `firstpassbudget`, including attempts after the first pass.
 
-This phase does not use the callback deadline or keep an enumeration cursor. Repeated
-attempts can examine already-admitted roots without charging admission budget. Direct-root
-leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
+Root enumeration has no JVMTI cursor. The frontier stamps accepted durable-root reports by tag and
+attempt; an incomplete retry skips only stamps from its preceding incomplete attempt.
+Root-attached kind changes and rejected transitions remain eligible. Chain-attached entries cannot
+be upgraded by a root. Restart and test reset clear the attempt id.
 
-For this release, a root-enumeration pause is acceptable if it is shorter than three
-seconds. This threshold is not the desired latency and is not a hard real-time
-guarantee. [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284)
-tracks separate measurement and a progress-preserving mitigation.
+Repeated attempts can examine already-admitted roots without charging admission budget. Direct-root
+leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
 
 ### Static fields
 
@@ -270,10 +269,14 @@ Only the targeted anchor-index mutations are deferred: the local-holder note, th
 the re-enlist and the at-risk push. A heap callback does not call them. It reserves one record in
 a fixed journal (`AnchorObservationBuffer`) and commits the record when the report is admitted.
 The traversal caller replays the records in arrival order after the synchronous JVMTI call
-returns.
+returns. Callbacks skip known no-op LOCAL and AT_RISK actions before reserving a record; the
+scope-local indexes suppress duplicate actions across records in the same prefix.
 
-The journal holds 16,384 records of at most 24 bytes each, so the record array uses at most 384 KiB. Metadata adds a fixed overhead. A
-reservation fails when the journal is full. The callback then aborts the traversal before the
+The journal holds 16,384 records of at most 24 bytes each, so the record array uses at most
+384 KiB. Two scope-local indexes suppress duplicate LOCAL and AT_RISK actions. Each index has
+32,768 16-bit slots and a 4 KiB occupancy bitmap; together they add 136 KiB. The record and index
+arrays use 520 KiB per tracker, before other metadata. A reservation fails when the journal is
+full. The callback then aborts the traversal before the
 frontier or tag transition that the report would cause. The caller flushes the accepted prefix.
 The source traversal obligation stays unserved, so a later pass retries it:
 
@@ -421,7 +424,9 @@ length. Edge labels are emitted only when all emitted hops have labels.
 
 Callbacks queue bounded, exact-source-tag invalidations under a pending spin lock, not a
 lock-free protocol. Candidate polling and dump snapshots drain them; a dump can drain
-while traversal is active. Callbacks do not acquire the resolved-cache lock.
+while traversal is active. On overflow, the next drain clears the whole cache and increments
+`REFERENCE_CHAIN_EVENTS_DROPPED` for each removed chain, including unaffected cached chains.
+Callbacks do not acquire the resolved-cache lock.
 
 Dump and stop write `datadog.ReferenceChain` events; the traversal thread does not write
 JFR events directly. Stop joins that thread and emits pending output before clearing
