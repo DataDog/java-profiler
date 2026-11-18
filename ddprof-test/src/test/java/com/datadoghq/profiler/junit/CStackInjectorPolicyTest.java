@@ -281,7 +281,9 @@ public class CStackInjectorPolicyTest {
             });
   }
 
-  private void parameters(@CStack String mode, String unannotated, @CStack int wrongType) {}
+  /** Signature fixture: only its parameter metadata is read via reflection. */
+  private void parameters(
+      @CStack String unusedMode, String unusedUnannotated, @CStack int unusedWrongType) {}
 
   private static void resetLifecycle() {
     setupEntries = callbacks = before = body = after = 0;
