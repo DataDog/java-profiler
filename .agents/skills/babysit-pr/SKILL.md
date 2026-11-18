@@ -84,25 +84,29 @@ one status comment; at stop it removes the label and edits that same comment —
 the status line flips to stopped — one timeline entry per run, never a reply. A missing
 label is flagged in the stop report, never created (the worker does not create repo
 labels). The status comment
-is fixed boilerplate — a status card whose status line flips at stop (never
-removed: one timeline entry per run):
+is fixed boilerplate — one visible line, the rest collapsed, and a quiet
+status footer that flips at stop (never removed: one timeline entry per run):
 
 ```
-## 🐶 babysit-pr
+🐶 **babysit-pr** is watching this PR — CI breakages and mechanical findings
+are fixed and pushed automatically; design decisions are always brought to you.
 
-| Scope | What happens |
-|---|---|
-| CI breakages | fixed and pushed through the repo's review gates |
-| Mechanical findings | fixed and pushed in the same cycle |
-| Design-level findings | surfaced to the author, never auto-implemented |
+<details><summary>How it works</summary>
 
-👀 **Watching** — run caps and stop conditions per the babysit-pr skill.
+- Polls every 10 minutes; stops when CI is green, review bots have returned,
+  and findings are handled — or at its two-hour cap.
+- Every push goes through the repo's review gates (signed, marker-checked).
+- It stops with the session that launched it.
+
+</details>
+
+👀 *watching · since <UTC start time>*
 ```
 
-At stop, edit that same comment: replace the last status line with
-`✅ **Stopped at <UTC time>** — <one-line outcome: CI green / cap reached / blocked-on-X>`
-and append the stop summary under a `---` separator (commits pushed, findings
-flagged, threads left, `bits_triggered` heads).
+At stop, edit that same comment: replace the status footer with
+`✅ *stopped <UTC time> · <one-line outcome: CI green / cap reached / blocked on X>*`
+and append a `---` separator plus a second collapsed block holding the stop
+summary (commits pushed, findings flagged, threads left, `bits_triggered` heads).
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json state,reviews,comments,url,mergeable,mergeStateStatus`;
