@@ -245,8 +245,7 @@ class JvmSelectionTest(unittest.TestCase):
         base = config.split(".integration_test_base:\n", 1)[1].split("\n  script:", 1)[0]
         exclusions = [
             "    - !reference [.skip-on-release, rules]",
-            '    - if: \'$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null\'\n'
-            "      when: never",
+            "    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'\n      when: never",
             '    - if: \'$CI_PIPELINE_SOURCE == "merge_request_event"\'\n      when: never',
         ]
         positions = [base.index(exclusion) for exclusion in exclusions]
