@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk17
 
 ## musl-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-18 10:28:04 EST
+**Date:** 2026-11-18 10:33:16 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 463 |
-| Sample Rate | 7.72/sec |
-| Health Score | 482% |
+| CPU Samples | 488 |
+| Sample Rate | 8.13/sec |
+| Health Score | 508% |
 | Threads | 9 |
-| Allocations | 394 |
+| Allocations | 372 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 849 |
-| Sample Rate | 14.15/sec |
-| Health Score | 884% |
-| Threads | 11 |
-| Allocations | 490 |
+| CPU Samples | 702 |
+| Sample Rate | 11.70/sec |
+| Health Score | 731% |
+| Threads | 10 |
+| Allocations | 482 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 55-55 cores)</summary>
+<summary>CPU Timeline (2 unique values: 55-57 cores)</summary>
 
 ```
-1795015347 55
-1795015352 55
-1795015357 55
-1795015362 55
-1795015367 55
-1795015372 55
-1795015377 55
-1795015382 55
-1795015387 55
-1795015392 55
-1795015397 55
-1795015402 55
-1795015407 55
-1795015412 55
-1795015417 55
-1795015422 55
-1795015427 55
-1795015432 55
-1795015437 55
-1795015442 55
+1795015590 55
+1795015595 55
+1795015600 55
+1795015605 55
+1795015610 55
+1795015615 55
+1795015620 55
+1795015625 55
+1795015630 55
+1795015635 55
+1795015640 55
+1795015645 55
+1795015650 55
+1795015655 55
+1795015660 55
+1795015666 55
+1795015671 55
+1795015676 55
+1795015681 55
+1795015686 55
 ```
 </details>
 
