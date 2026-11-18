@@ -120,7 +120,10 @@ class CodeownerClient(gate.GitHubClient):
         no pagination, so a full page is indistinguishable from a
         truncation and fails closed.
         """
-        base = urllib.parse.quote(base_ref, safe="")
+        # The base is qualified as a branch: GitHub resolves an ambiguous
+        # comparison base to a tag first, so a tag named like the branch
+        # would shadow the merge base and blank the file list.
+        base = urllib.parse.quote("refs/heads/" + base_ref, safe="")
         url = "%s/repos/%s/compare/%s...%s" % (
             self._api_url, self._repo, base, head_sha)
         body, _ = self._fetch(url)

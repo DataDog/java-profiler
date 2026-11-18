@@ -785,6 +785,21 @@ class MembershipTokenTest(unittest.TestCase):
         self.assertEqual(client._membership_token, "token-1")
 
 
+class CompareBaseTest(unittest.TestCase):
+    def test_compare_base_is_qualified_as_a_branch(self):
+        # A tag named like the base branch would otherwise shadow the merge
+        # base and blank the changed-file list.
+        transport = testlib.FakeTransport([
+            FakeResponse(200, compare_page("doc/README.md")),
+        ])
+        make_client(transport).compare_files("main", SHA)
+        compare_calls = [call for call in transport.calls
+                         if "/compare/" in call.full_url]
+        self.assertEqual(len(compare_calls), 1)
+        self.assertIn("/compare/refs%2Fheads%2Fmain...",
+                      compare_calls[0].full_url)
+
+
 class SelectedStatusTest(unittest.TestCase):
     def status(self, status_id, creator=gate.STATUS_CREATOR,
                context=cogate.STATUS_CONTEXT, state="success",
