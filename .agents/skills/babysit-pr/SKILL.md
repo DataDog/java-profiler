@@ -83,31 +83,40 @@ edit no finding justifies goes to the stop summary instead of the tree.
 one status comment; at stop it removes the label and edits that same comment —
 the status line flips to stopped — one timeline entry per run, never a reply. A missing
 label is flagged in the stop report, never created (the worker does not create repo
-labels). The status comment
-is fixed boilerplate — one visible line stating what the babysitter does, a
-collapsed "How it works" details block, and a quiet italic status footer that
-flips at stop (never removed: one timeline entry per run):
+labels). The status comment is one visible line (what the babysitter does), a
+collapsed live run log, and a quiet italic status footer with current facts
+(never removed: one timeline entry per run):
 
 ```
 🐶 **babysit-pr** is watching this PR — CI breakages and mechanical findings
 are fixed and pushed automatically; design decisions are always brought to you.
 
-<details><summary>How it works</summary>
+<details><summary>This run</summary>
 
-- Polls every 10 minutes; stops when CI is green, review bots have returned,
-  and findings are handled — or at its two-hour cap.
-- Every push goes through the repo's review gates (signed, marker-checked).
-- It stops with the session that launched it.
+- 12:30 UTC — started; CI on head `<sha>` in progress
 
 </details>
 
-👀 *watching · since <UTC start time>*
+👀 *watching · since 12:30 UTC · CI running · 0 findings answered*
 ```
 
-At stop, edit that same comment: replace the status footer with
+The content is live, never repeated boilerplate: append one line to the run
+log whenever something happens — a CI state change, a thread answered, a fix
+pushed, a retry used, an operator ask — and keep the footer's facts current
+(CI state, answered-thread count, Bits state). Edit the same comment; a
+comment edit is silent, a new comment is noise. Every log line names its
+facts — the failing check's name (`test-matrix / linux-musl-amd64 (21) red —
+retrying`), the thread being addressed (`answered rkennke's thread on
+SKILL.md:123 — trust gate`), the pushed fix (`pushed fix 4f16387 — census
+semantics`), the Bits head (`Bits auto-review pending on 3c23a6ad7`); a line
+that does not name what it acted on is not informative and does not belong.
+The static how-it-works prose stays out: the visible line already says what
+the babysitter is.
+
+At stop, edit that same comment: flip the footer to
 `✅ *stopped <UTC time> · <one-line outcome: CI green / cap reached / blocked on X>*`
-and append a `---` separator plus a second collapsed block holding the stop
-summary (commits pushed, findings flagged, threads left, `bits_triggered` heads).
+and close the run log with the stop summary — commits pushed, findings
+flagged, threads left for the author, `bits_triggered` heads.
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json state,reviews,comments,url,mergeable,mergeStateStatus`;
