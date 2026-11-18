@@ -442,9 +442,9 @@ resolved through `Arguments::cpuSamplerInterval()`.
 
 ### `ITimer` / `ITimerJvmti` (`itimer.cpp`, all platforms)
 
-- **Mechanism**: one process-wide `setitimer(ITIMER_PROF, interval)`
-  (`ITimer::start`). `registerThread` is not overridden, so the kernel
-  chooses which thread receives each `SIGPROF`.
+- **Mechanism**: one process-wide `setitimer(ITIMER_PROF, interval)`, armed by
+  both `ITimer::start` and `ITimerJvmti::start`. `registerThread` is not
+  overridden, so the kernel chooses which thread receives each `SIGPROF`.
 - **Origin check**: none. `setitimer` signals arrive with no `sival` payload,
   so a foreign `SIGPROF` cannot be told apart from the profiler's own. The
   code comments call out this exposure (the NOTE in `ITimer::signalHandler`).

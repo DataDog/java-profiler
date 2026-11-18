@@ -81,7 +81,16 @@ static bool sameSigmask(const sigset_t &a, const sigset_t &b) {
 }
 
 static bool sameDisposition(const struct sigaction &a, const struct sigaction &b) {
-  return a.sa_sigaction == b.sa_sigaction && a.sa_flags == b.sa_flags &&
+  // musl reports its internal SA_RESTORER in the read-back sa_flags; that is
+  // libc bookkeeping, not part of the application-level disposition.
+#ifdef SA_RESTORER
+  constexpr unsigned long kLibcInternal = SA_RESTORER;
+#else
+  constexpr unsigned long kLibcInternal = 0;
+#endif
+  return a.sa_sigaction == b.sa_sigaction &&
+         (static_cast<unsigned long>(a.sa_flags) & ~kLibcInternal) ==
+             (static_cast<unsigned long>(b.sa_flags) & ~kLibcInternal) &&
          sameSigmask(a.sa_mask, b.sa_mask);
 }
 
@@ -171,6 +180,8 @@ TEST_F(ITimerTest, JvmtiStartAcceptsCpuOnlyArguments) {
   EXPECT_FALSE((bool)error);
   EXPECT_EQ(1000000, engine.interval());
   engine.stop();
+  // stop() installs SIG_IGN: a late SIGPROF is discarded at kernel level.
+  EXPECT_EQ(SIG_IGN, sigprofDisposition().sa_handler);
   EXPECT_TRUE(itimerDisarmed());
 }
 
@@ -189,6 +200,23 @@ TEST_F(ITimerTest, JvmtiStartDefaultsInterval) {
   EXPECT_TRUE(itimerDisarmed());
 }
 
+// With no cpu, cpuSamplerInterval() resolves the positive _interval before
+// falling back to DEFAULT_CPU_INTERVAL; start() must run with that value.
+TEST_F(ITimerTest, JvmtiStartUsesIntervalFallback) {
+  ITimerJvmti engine;
+  Arguments args;
+  args._event = EVENT_CPU;
+  args._cpu = -1;
+  args._interval = 5000000;
+
+  Error error = engine.start(args);
+
+  EXPECT_FALSE((bool)error);
+  EXPECT_EQ(5000000, engine.interval());
+  engine.stop();
+  EXPECT_TRUE(itimerDisarmed());
+}
+
 // cpuSamplerInterval() returns 0 for a non-CPU event; the engine must reject
 // it instead of arming a zero (disarmed) timer. _interval stays at its
 // default 0 so the rejection cannot come from a negative-field shortcut.
@@ -197,29 +225,33 @@ TEST_F(ITimerTest, JvmtiStartRejectsNonCpuEvent) {
   Arguments args;
   args._event = EVENT_WALL;
   args._cpu = 1000000;
+  long interval_before = engine.interval();
   struct sigaction before = sigprofDisposition();
 
   Error error = engine.start(args);
 
   EXPECT_TRUE((bool)error);
   EXPECT_STREQ("interval must be positive", error.message());
+  EXPECT_EQ(interval_before, engine.interval());
   EXPECT_TRUE(sameDisposition(before, sigprofDisposition()));
   EXPECT_TRUE(itimerDisarmed());
 }
 
-// Same validation contract as ITimerJvmti::start(): a non-CPU event reaching
-// the CPU-time engine must be rejected.
+// The same validation contract as ITimerJvmti::start(): a non-CPU event
+// reaching the CPU-time engine must be rejected, and _interval stays as-is.
 TEST_F(ITimerTest, StartRejectsNonCpuEvent) {
   ITimer engine;
   Arguments args;
   args._event = EVENT_WALL;
   args._cpu = 1000000;
+  long interval_before = engine.interval();
   struct sigaction before = sigprofDisposition();
 
   Error error = engine.start(args);
 
   EXPECT_TRUE((bool)error);
   EXPECT_STREQ("interval must be positive", error.message());
+  EXPECT_EQ(interval_before, engine.interval());
   EXPECT_TRUE(sameDisposition(before, sigprofDisposition()));
   EXPECT_TRUE(itimerDisarmed());
 }
@@ -235,5 +267,8 @@ TEST_F(ITimerTest, StartAcceptsCpuOnlyArguments) {
   EXPECT_FALSE((bool)error);
   EXPECT_EQ(1000000, engine.interval());
   engine.stop();
+  // ITimer::stop() keeps the engine handler installed (drops on _enabled);
+  // only the timer is disarmed.
+  EXPECT_NE((void (*)(int))SIG_IGN, sigprofDisposition().sa_handler);
   EXPECT_TRUE(itimerDisarmed());
 }
