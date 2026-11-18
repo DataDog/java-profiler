@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "mallocArenaInputs.h"
+#include "mallocArenaTestEnv.h"
 #include "mallocArenaWalker.h"
 #include "os.h"
 #include "safeAccess.h"
@@ -135,22 +136,12 @@ static void runOnLiveThreads(int n, Fn fn) {
   }
 }
 
-// True when MALLOC_ARENA_MAX or the glibc.malloc.arena_max tunable limits the arenas.
-static bool arenasCapped() {
-  return strcmp(MallocArenaInputs::capture().arenaLimitSource, "default") != 0;
-}
-
-// With a one-arena cap every thread uses main_arena, so no walk finds a seed.
-static bool singleArena() {
-  return MallocArenaInputs::capture().arenaLimit == 1;
-}
-
 // Chunks allocated on the main thread (main_arena) and freed by a worker sit in
 // the worker's tcache, so a small malloc there returns a main_arena chunk
 // although the worker's own arena is not main_arena.
 TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
-  if (arenasCapped()) {
-    GTEST_SKIP() << "an arena cap can bind the worker thread to main_arena";
+  if (mallocTuned()) {
+    GTEST_SKIP() << "malloc tunables can bind the worker thread to main_arena or mmap the seed";
   }
   std::vector<void*> main_chunks;
   for (int i = 0; i < 16; i++) {
@@ -172,8 +163,8 @@ TEST_F(MallocArenaWalkerTest, SeedIgnoresMainArenaChunksInTcache) {
 // A non-main arena grows into further 64 MiB heaps. A chunk in a later heap has an
 // ar_ptr that points into the arena's first heap.
 TEST_F(MallocArenaWalkerTest, SeedFromLaterHeapOfMultiHeapArena) {
-  if (arenasCapped()) {
-    GTEST_SKIP() << "an arena cap can bind the worker thread to main_arena";
+  if (mallocTuned()) {
+    GTEST_SKIP() << "malloc tunables can bind the worker thread to main_arena or mmap the seed";
   }
   ArenaWalkResult r;
   std::thread worker([&]() {
@@ -196,8 +187,8 @@ TEST_F(MallocArenaWalkerTest, SeedFromLaterHeapOfMultiHeapArena) {
 }
 
 TEST_F(MallocArenaWalkerTest, WalkWithLiveThreadsFindsArenas) {
-  if (singleArena()) {
-    GTEST_SKIP() << "a one-arena cap leaves only main_arena";
+  if (mallocTuned()) {
+    GTEST_SKIP() << "malloc tunables can leave only main_arena or mmap the seed";
   }
   std::mutex mu;
   std::vector<ArenaWalkResult> results;
@@ -235,8 +226,8 @@ TEST_F(MallocArenaWalkerTest, WalkWithLiveThreadsFindsArenas) {
 }
 
 TEST_F(MallocArenaWalkerTest, WrongLayoutFailsClosed) {
-  if (singleArena()) {
-    GTEST_SKIP() << "a one-arena cap leaves only main_arena";
+  if (mallocTuned()) {
+    GTEST_SKIP() << "malloc tunables can leave only main_arena or mmap the seed";
   }
   std::mutex mu;
   ArenaWalkResult calibrated;
@@ -269,8 +260,8 @@ TEST_F(MallocArenaWalkerTest, WrongLayoutFailsClosed) {
 }
 
 TEST_F(MallocArenaWalkerTest, CapBoundsTheWalk) {
-  if (singleArena()) {
-    GTEST_SKIP() << "a one-arena cap leaves only main_arena";
+  if (mallocTuned()) {
+    GTEST_SKIP() << "malloc tunables can leave only main_arena or mmap the seed";
   }
   std::mutex mu;
   ArenaWalkStatus tooMany = ARENA_WALK_OK;

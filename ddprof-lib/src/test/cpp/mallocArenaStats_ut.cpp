@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "flightRecorder.h"
+#include "mallocArenaTestEnv.h"
 #include "mallocInfo.h"
 
 // malloc_trim is a glibc extension: musl also defines __linux__, but its
@@ -132,6 +133,11 @@ static const size_t MMAPPED_BLOCK = (size_t)256 << 20;
     GTEST_SKIP() << "glibc malloc is not the allocator in force";              \
   }
 
+#define SKIP_IF_MALLOC_TUNED()                                                 \
+  if (mallocTuned()) {                                                         \
+    GTEST_SKIP() << "malloc tunables change the trim and mmap thresholds";     \
+  }
+
 #define SKIP_UNLESS_MALLINFO2(out)                                             \
   if (!mallocArenaSnapshot(out)) {                                             \
     GTEST_SKIP() << "mallinfo2 not available at runtime; arena counters "      \
@@ -202,6 +208,7 @@ TEST(MallocArenaStats, SnapshotFieldsSatisfyGlibcAccountingIdentity) {
 // flush burst is not, by itself, an explanation for retained memory. The next
 // test shows what is actually required.
 TEST(MallocArenaStats, ContiguousChurnIsReturnedToTheOS) {
+  SKIP_IF_MALLOC_TUNED();
   SKIP_UNLESS_GLIBC_MALLOC();
   {
     std::vector<void *> warm;
@@ -265,6 +272,7 @@ TEST(MallocArenaStats, ContiguousChurnIsReturnedToTheOS) {
 // total free-but-held, and why arena slack is a property of the whole process's
 // allocation *pattern* rather than of any one subsystem's allocations.
 TEST(MallocArenaStats, InterleavedSurvivorsStrandFreeChunksBeyondTrim) {
+  SKIP_IF_MALLOC_TUNED();
   SKIP_UNLESS_GLIBC_MALLOC();
   // Probe before allocating anything, so a skip cannot strand the survivors.
   // Scratch only: the measurement must be taken after the churn is freed.
@@ -325,6 +333,7 @@ TEST(MallocArenaStats, InterleavedSurvivorsStrandFreeChunksBeyondTrim) {
 // are signed so an unsigned wrap can never satisfy >=; a dropped hblkhd copy
 // reads the SIZE_MAX sentinel (-1 as long long) in every snapshot, delta 0.
 TEST(MallocArenaStats, MmappedChunkIsReportedInHblkhdOnly) {
+  SKIP_IF_MALLOC_TUNED();
   SKIP_UNLESS_GLIBC_MALLOC();
   MallocArenaInfo before, held, released;
   if (!sentinelSnapshot(&before)) {

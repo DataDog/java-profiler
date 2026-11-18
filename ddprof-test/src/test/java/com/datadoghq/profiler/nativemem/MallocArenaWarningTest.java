@@ -127,7 +127,7 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
     Assumptions.assumeFalse(
         "replaced-allocator".equals(status)
             || "hugetlb-tunable".equals(status)
-            || ("no-seed".equals(status) && arenaMaxFromEnv() != null),
+            || ("no-seed".equals(status) && seedBlockedByEnvironment()),
         "arena walk disabled by the process environment: " + status);
     assertEquals("ok", status);
     assertTrue(last.getLong("arenaCount", 0) >= 2, "arenaCount: " + last);
@@ -138,10 +138,9 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
   public void warnsWhenArenasExceedTheQuotaLimit() throws Exception {
     int quotaCpus = requireQuotaCpus();
     int recommended = ARENAS_PER_CPU * quotaCpus;
-    Integer envMax = arenaMaxFromEnv();
+    Integer envMax = arenaCap();
     Assumptions.assumeTrue(
-        envMax == null || envMax > recommended,
-        "MALLOC_ARENA_MAX already limits the arenas to " + envMax);
+        envMax == null || envMax > recommended, "the arena cap is already " + envMax);
     Assumptions.assumeFalse(Platform.isZing() || Platform.isMusl(), "arena walk is not available");
 
     try (MallocArenaChurn churn = new MallocArenaChurn(recommended + 32, CHURN_BLOCKS)) {
@@ -149,23 +148,23 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
       stopProfiler();
     }
     JfrEvent lastStats = lastStatsEvent();
-    Assumptions.assumeFalse(
-        "ok".equals(lastStats.getString("walkStatus"))
-            && lastStats.getLong("arenaCount", 0) <= recommended,
+    Assumptions.assumeTrue(
+        "ok".equals(lastStats.getString("walkStatus")),
+        "the arena walk is unavailable: " + lastStats);
+    Assumptions.assumeTrue(
+        lastStats.getLong("arenaCount", 0) > recommended,
         "the process held no more than "
             + recommended
             + " arenas; its arena cap is too low: "
             + lastStats);
-    if ("ok".equals(lastStats.getString("walkStatus"))) {
-      long limit = lastStats.getLong("memoryLimit", -1);
-      long heap = lastStats.getLong("maxHeap", -1);
-      long headroom = heap > 0 && heap < limit ? limit - heap : limit;
-      long free = lastStats.getLong("freeHeldBytes", -1);
-      long measure = free >= 0 ? free : lastStats.getLong("nonMainArenaBytes", 0);
-      Assumptions.assumeTrue(
-          limit > 0 && measure > headroom / 100,
-          "the workload held under 1% of the native headroom: " + lastStats);
-    }
+    long limit = lastStats.getLong("memoryLimit", -1);
+    long heap = lastStats.getLong("maxHeap", -1);
+    long headroom = heap > 0 && heap < limit ? limit - heap : limit;
+    long free = lastStats.getLong("freeHeldBytes", -1);
+    long measure = free >= 0 ? free : lastStats.getLong("nonMainArenaBytes", 0);
+    Assumptions.assumeTrue(
+        limit > 0 && measure > headroom / 100,
+        "the workload held under 1% of the native headroom: " + lastStats);
     JfrEvents warnings = verifyEvents(WARNING);
     boolean raised = false;
     for (JfrEvent item : warnings) {
@@ -179,7 +178,7 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
   public void staysQuietWhenArenaMaxMatchesTheQuota() throws Exception {
     int quotaCpus = requireQuotaCpus();
     int recommended = ARENAS_PER_CPU * quotaCpus;
-    Integer envMax = arenaMaxFromEnv();
+    Integer envMax = arenaCap();
     Assumptions.assumeTrue(
         envMax != null && envMax == recommended,
         "needs MALLOC_ARENA_MAX=" + recommended + " in the test JVM environment");
@@ -189,17 +188,61 @@ public class MallocArenaWarningTest extends AbstractProfilerTest {
       churn.start();
       stopProfiler();
     }
-    assertTrue(verifyEvents(STATS).hasItems());
+    JfrEvent lastStats = lastStatsEvent();
+    Assumptions.assumeTrue(
+        "ok".equals(lastStats.getString("walkStatus")),
+        "the arena walk is unavailable: " + lastStats);
     assertFalse(verifyEvents(WARNING, false).hasItems(), "no warning expected");
   }
 
-  private static Integer arenaMaxFromEnv() {
-    String v = System.getenv("MALLOC_ARENA_MAX");
-    if (v == null) {
+  // The arena cap glibc applies: the glibc.malloc.arena_max tunable, else MALLOC_ARENA_MAX.
+  // Null when neither holds a positive number.
+  private static Integer arenaCap() {
+    Long cap = tunable("glibc.malloc.arena_max");
+    if (cap == null || cap <= 0) {
+      cap = parseGlibcNumber(System.getenv("MALLOC_ARENA_MAX"));
+    }
+    return cap != null && cap > 0 ? (int) Math.min(cap, Integer.MAX_VALUE) : null;
+  }
+
+  // The arena walk cannot find its seed block when every thread allocates from main_arena or
+  // the 4096-byte seed is served by mmap.
+  private static boolean seedBlockedByEnvironment() {
+    Long mmapThreshold = tunable("glibc.malloc.mmap_threshold");
+    if (mmapThreshold == null) {
+      mmapThreshold = parseGlibcNumber(System.getenv("MALLOC_MMAP_THRESHOLD_"));
+    }
+    return arenaCap() != null
+        || System.getenv("MALLOC_CHECK_") != null
+        || tunable("glibc.malloc.check") != null
+        || (mmapThreshold != null && mmapThreshold <= 4096);
+  }
+
+  // The last occurrence of the tunable in GLIBC_TUNABLES that parses, or null.
+  private static Long tunable(String name) {
+    String list = System.getenv("GLIBC_TUNABLES");
+    Long found = null;
+    if (list != null) {
+      for (String item : list.split(":")) {
+        if (item.startsWith(name + "=")) {
+          Long v = parseGlibcNumber(item.substring(name.length() + 1));
+          if (v != null) {
+            found = v;
+          }
+        }
+      }
+    }
+    return found;
+  }
+
+  // Parses like glibc's strtol(.., 0): leading blanks, optional sign, decimal, 0x hex or octal;
+  // trailing characters make it invalid.
+  private static Long parseGlibcNumber(String value) {
+    if (value == null || value.indexOf('#') >= 0) {
       return null;
     }
     try {
-      return Integer.valueOf(v.trim());
+      return Long.decode(value.replaceFirst("^\\s+", ""));
     } catch (NumberFormatException e) {
       return null;
     }

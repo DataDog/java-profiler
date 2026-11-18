@@ -141,7 +141,7 @@ the walk, in this order. The walker itself never returns these three values.
 
 | Input | Source |
 |---|---|
-| CPU quota (`cpuQuotaMilli`) | `OS::getCgroupCpuMillicores()`: cgroup v2 `cpu.max`, else cgroup v1 `cpu.cfs_quota_us`. `-1` when there is no quota |
+| CPU quota (`cpuQuotaMilli`) | `OS::getCgroupCpuMillicores()`: cgroup v2 `cpu.max`, else cgroup v1 `cpu.cfs_quota_us`, read from the process's own cgroup and its ancestors. `-1` when there is no quota, and when the process's own cgroup has no quota file even though an ancestor sets one |
 | Online CPUs | `OS::getCpuCount()`, at least 1 |
 | Arena limit and its source | `glibc.malloc.arena_max` in `GLIBC_TUNABLES` (`tunable`), else `MALLOC_ARENA_MAX` (`env`), else 8 x online CPUs (`default`). A value that is not a positive integer is ignored |
 | Memory limit and its source | `OS::getContainerMemoryLimit()` (`cgroup`), else `OS::getRamSize()` (`physical`), else -1 (`unknown`) |
