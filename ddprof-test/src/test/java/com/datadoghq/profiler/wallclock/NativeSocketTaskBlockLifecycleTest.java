@@ -5,11 +5,14 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import java.io.InputStream;
@@ -29,6 +32,8 @@ import org.junit.jupiter.api.Test;
 public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
   private static final int BLOCK_HOLD_MILLIS = 250;
   private static final int NATIVE_BLOCK_ATTEMPTS = 5;
+  private static final String READ_RELEASE_BOUNDARY = "native-first-read-release-boundary";
+  private static final String STOP_BOUNDARY = "native-stop-inflight-boundary";
 
   @BeforeAll
   static void preloadJdkNetworking() throws Exception {
@@ -107,6 +112,7 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
   @Test
   public void stopWhileSocketReadIsBlockedCleansUpAndAllowsReinstall() throws Exception {
     String workerName = "taskblock-native-stop-inflight";
+    CountDownLatch firstReadAttempted = new CountDownLatch(1);
     CountDownLatch readAttempted = new CountDownLatch(1);
     AtomicReference<Throwable> error = new AtomicReference<>();
     ServerSocket server = new ServerSocket(0);
@@ -118,8 +124,10 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
             () -> {
               try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
                 InputStream input = socket.getInputStream();
+                firstReadAttempted.countDown();
+                assertEquals(1, input.read(), "unexpected pre-stop socket byte");
                 readAttempted.countDown();
-                input.read();
+                assertEquals(-1, input.read(), "post-stop socket read must finish at EOF");
               } catch (Throwable t) {
                 error.set(t);
               }
@@ -130,11 +138,18 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
       reader.start();
       accepted = server.accept();
       assertTrue(
+          firstReadAttempted.await(5, TimeUnit.SECONDS),
+          "reader did not attempt the pre-stop socket read");
+      Thread.sleep(BLOCK_HOLD_MILLIS);
+      recordBoundary(READ_RELEASE_BOUNDARY);
+      accepted.getOutputStream().write(1);
+      assertTrue(
           readAttempted.await(5, TimeUnit.SECONDS),
           "reader did not attempt the blocking socket read");
       Thread.sleep(BLOCK_HOLD_MILLIS);
       assertTrue(reader.isAlive(), "socket read returned before the profiler was stopped");
 
+      recordBoundary(STOP_BOUNDARY);
       stopProfiler();
       stopped = true;
       assertTrue(reader.isAlive(), "socket read returned before profiler shutdown completed");
@@ -153,9 +168,32 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
     if (error.get() != null) {
       throw new AssertionError(error.get());
     }
+    long readReleaseBoundary = boundaryNanos(READ_RELEASE_BOUNDARY);
+    long stopBoundary = boundaryNanos(STOP_BOUNDARY);
+    JfrEvents workerIoWait =
+        verifyEvents("datadog.TaskBlock", false)
+            .filter(
+                event ->
+                    "IO_WAIT".equals(event.getString("observedBlockingState"))
+                        && workerName.equals(event.getThreadName("eventThread")));
+    JfrEvents straddlingRead =
+        workerIoWait.filter(
+            event ->
+                completesAtOrAfter(event, readReleaseBoundary)
+                    && event.getLong("startTime") < readReleaseBoundary);
+    assertTrue(straddlingRead.hasItems(), "the first read must straddle its release boundary");
+    for (JfrEvent event : straddlingRead) {
+      long completion = completionTimeNanos(event);
+      assertTrue(completesAtOrAfter(event, completion), "completion at the boundary is included");
+      assertFalse(
+          completesAtOrAfter(event, completion + 1), "completion before the boundary is excluded");
+    }
+    assertTrue(
+        workerIoWait.filter(event -> completionTimeNanos(event) < stopBoundary).hasItems(),
+        "the controlled pre-stop read must produce an IO_WAIT before the stop boundary");
+    // Completed setup I/O is allowed; an interval crossing the stop boundary is not.
     assertFalse(
-        TaskBlockAssertions.containsObservedStateForEventThread(
-            verifyEvents("datadog.TaskBlock", false), "IO_WAIT", workerName),
+        workerIoWait.filter(event -> completesAtOrAfter(event, stopBoundary)).hasItems(),
         "a native I/O operation returning after stop must not emit TaskBlock");
 
     Path restartedRecording =
@@ -191,6 +229,33 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
       }
       Files.deleteIfExists(restartedRecording);
     }
+  }
+
+  private void recordBoundary(String markerName) {
+    // Endpoint timestamps use the call's TSC ticks; ProfilerSetting timestamps use chunk start.
+    assertTrue(profiler.recordTraceRoot(0, markerName, null, Integer.MAX_VALUE));
+  }
+
+  private long boundaryNanos(String markerName) {
+    JfrEvents boundaries =
+        verifyEvents("datadog.Endpoint")
+            .filter(event -> markerName.equals(event.getString("endpoint")));
+    assertEquals(1, boundaries.count(), "expected exactly one boundary marker: " + markerName);
+    Long startTime = boundaries.iterator().next().getLong("startTime");
+    assertNotNull(startTime, "the boundary marker must have a timestamp");
+    return startTime;
+  }
+
+  private static boolean completesAtOrAfter(JfrEvent event, long boundaryNanos) {
+    return completionTimeNanos(event) >= boundaryNanos;
+  }
+
+  private static long completionTimeNanos(JfrEvent event) {
+    Long startTime = event.getLong("startTime");
+    Long duration = event.getLong("duration");
+    assertNotNull(startTime, "TaskBlock must have a start timestamp");
+    assertNotNull(duration, "TaskBlock must have a duration");
+    return startTime + duration;
   }
 
   @Override
