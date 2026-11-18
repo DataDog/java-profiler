@@ -210,12 +210,16 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     return words;
 }
 
-// Inline compare of code bytes: checkFault() cannot recover a fault inside libc memcmp.
+// Inline reads of code bytes: checkFault() cannot recover a fault inside libc memcmp/memcpy.
 static bool codeBytesEqual(const unsigned char* p, const unsigned char* expected, size_t size) {
     for (size_t i = 0; i < size; i++) {
         if (p[i] != expected[i]) return false;
     }
     return true;
+}
+
+static int32_t codeInt32(const unsigned char* p) {
+    return static_cast<int32_t>(p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24));
 }
 
 // Bounded instruction shapes used only by gen_continuation_enter's VM-leaf
@@ -236,10 +240,10 @@ static int continuationBranchSize(const unsigned char* p, const unsigned char* e
         displacement = (int8_t)p[1];
     } else if (conditional && end - p >= 6 && p[0] == 0x0f && p[1] == 0x84) {
         size = 6;
-        memcpy(&displacement, p + 2, sizeof(displacement));
+        displacement = codeInt32(p + 2);
     } else if (!conditional && end - p >= 5 && p[0] == 0xe9) {
         size = 5;
-        memcpy(&displacement, p + 1, sizeof(displacement));
+        displacement = codeInt32(p + 1);
     }
     if (size != 0) target = (const unsigned char*)((uintptr_t)p + size + displacement);
     return size;
