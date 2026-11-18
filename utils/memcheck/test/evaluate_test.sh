@@ -110,14 +110,14 @@ cp -r "$R" "$R7"
 record "$R7" alpha nmt 3 '{"line_number_tables":110}' '{"class":3000,"internal":500}'
 RUN="$R7"
 check "counter missing in one run" 2 "alpha native_mem_max_bytes 2MiB -" \
-  "1 run(s) of scenario alpha lack native_mem_max_bytes (budget line 1)"
+  "1 run(s) of scenario alpha lack native_mem_max_bytes (budget line 1)" "| ❌ MISSING |"
 check "report-only counter missing in one run" 0 "alpha native_mem_max_bytes - -"
 R8="$TMP/run8"
 cp -r "$R" "$R8"
 record "$R8" alpha nmt 3 '{"native_mem_max_bytes":1048576}' '{"class":3000,"internal":500}'
 RUN="$R8"
 check "method count missing in one run" 2 "alpha native_mem_max_bytes 2MiB - per_method=1024 ref_methods=100" \
-  "1 run(s) of scenario alpha lack line_number_tables"
+  "1 run(s) of scenario alpha lack line_number_tables" "| ❌ MISSING |"
 RUN="$R"
 
 # A truncated record and a record without a scenario: input errors (2), never "over budget" (1).
@@ -270,6 +270,12 @@ record "$CM/memcheck-1" cov counters 3 "{\"native_mem_max_bytes\":$MIB}" '{}'
 JOBS="$CM/memcheck-1 $CM/memcheck-2"
 calibrate "method count missing in a counters-only run" 2 "cov native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
   "1 run(s) of cov lack line_number_tables"
+CC="$TMP/cal-counter"
+cp -r "$TMP/cal" "$CC"
+record "$CC/memcheck-1" cov counters 3 '{"line_number_tables":1000}' '{}'
+JOBS="$CC/memcheck-1 $CC/memcheck-2"
+calibrate "counter missing in a counters-only run" 2 "cov native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
+  "1 run(s) of cov lack native_mem_max_bytes"
 JOBS="$C1 $C2"
 calibrate "missing counter" 2 "flat native_mem_bogus 1MiB 1MiB" "lacks counter native_mem_bogus"
 calibrate "no coverage variation" 2 "flat native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
