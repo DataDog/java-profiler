@@ -298,10 +298,11 @@ string dictionaries) drain their signal-context readers with
 holds an `InflightGuard`.
 
 **Thread termination.** An exiting thread calls `blockProfilingForExit()` before
-unregistering from the engines and before releasing its `ProfiledThread`
-(`Profiler::onThreadEnd()`, `unregister_and_release()` in `libraryPatcher_linux.cpp`).
-The wrapper, JVMTI ThreadEnd and normal engine returns mark `ThreadExitRegistry`
-before pthread teardown; the TSD destructor is a later fallback. Unhooked threads
+publishing its `ThreadExitRegistry` mark, before unregistering from the engines and
+before releasing its `ProfiledThread` (`Profiler::onThreadEnd()`,
+`unregister_and_release()` in `libraryPatcher_linux.cpp`). The wrapper, JVMTI
+ThreadEnd and normal engine returns mark `ThreadExitRegistry` under that block;
+the TSD destructor is a later fallback. Unhooked threads
 and J9 cancellation can remain unmarked; an unusable handler-entry stack is not
 protected (no `sigaltstack`). Darwin has no fault-mask fence, and lifetime pressure
 can evict marks. See [SigsegvPatching.md](doc/architecture/SigsegvPatching.md).
