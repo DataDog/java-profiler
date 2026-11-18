@@ -332,15 +332,16 @@ TEST_F(SafeFetchTest, safeCopy_shortLength_doesNotOverwriteDst) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_unmappedSource_returnsFalse) {
-  // Page zero is never mapped, so unlike a munmap()ed page no concurrent mmap
-  // can make it readable. safeCopy must return false rather than SIGSEGV.
+  // Page zero stays unmapped (vm.mmap_min_addr on Linux, __PAGEZERO on macOS),
+  // so unlike a munmap()ed page no ordinary concurrent mmap can make it
+  // readable. safeCopy must return false rather than SIGSEGV.
   char dst[64] = {0};
   EXPECT_FALSE(SafeAccess::safeCopy(dst, nullptr, 32));
 }
 
 TEST_F(SafeFetchTest, safeCopy_protNoneSource_returnsFalse) {
   // mprotect-PROT_NONE the page (similar to mprotectedMemory32). safeCopy
-  // must return false on the first faulting word, not crash.
+  // must return false on the first faulting byte, not crash.
   void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   ASSERT_NE(page, MAP_FAILED);
@@ -419,8 +420,8 @@ TEST_F(SafeFetchTest, safeCopy_partialPrefixCopiedBeforeFault) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_unalignedSource_allMisalignments) {
-  // The front fixup must correctly extract leading bytes from the
-  // previous-aligned-word fetch for every misalignment k ∈ {1, 2, 3}.
+  // safeCopy has no alignment requirement on src: every misalignment
+  // k ∈ {1, 2, 3} must copy the bytes exactly.
   static const char kSentinel[] = "ABCDEFGHIJKLMNOP";  // 16 bytes
   // Use a 4-byte-aligned buffer so we can shift src forward by k.
   alignas(4) char buf[32];
