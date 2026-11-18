@@ -97,9 +97,8 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
     assertTrue(
         profiler.getDebugCounters().getOrDefault("walkvm_cont_barrier_hit", 0L) > 0,
         "The workload must exercise a continuation return barrier");
-    // First offending stack per assertion: [0] carrier count, [1] truncation, [2] continuation
-    // error.
-    String[] firstBadStack = {null, null, null};
+    // First offending stack, indexed like the counts it explains.
+    String[] firstBadStack = new String[4];
     String warmupThread = Thread.currentThread().getName();
     Map<String, Integer> excludedBreaks = new TreeMap<>();
     int[] counts =
@@ -144,15 +143,15 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 }
                 count[0]++;
                 count[1] += errors;
-                if (errors > 0 && firstBadStack[2] == null)
-                  firstBadStack[2] = sample.getStackTraceString();
+                if (errors > 0 && firstBadStack[1] == null)
+                  firstBadStack[1] = sample.getStackTraceString();
                 if (carriers != 1) {
                   count[2]++;
-                  if (firstBadStack[0] == null) firstBadStack[0] = sample.getStackTraceString();
+                  if (firstBadStack[2] == null) firstBadStack[2] = sample.getStackTraceString();
                 }
                 if (!trace.isTruncated()) {
                   count[3]++;
-                  if (firstBadStack[1] == null) firstBadStack[1] = sample.getStackTraceString();
+                  if (firstBadStack[3] == null) firstBadStack[3] = sample.getStackTraceString();
                 }
               }
             });
@@ -169,11 +168,11 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
     assertEquals(
         0,
         counts[1],
-        "High-arity carrier recovery rejected valid argument metadata\n" + firstBadStack[2]);
+        "High-arity carrier recovery rejected valid argument metadata\n" + firstBadStack[1]);
     assertEquals(
-        0, counts[2], "High-arity samples must retain exactly one carrier\n" + firstBadStack[0]);
+        0, counts[2], "High-arity samples must retain exactly one carrier\n" + firstBadStack[2]);
     assertEquals(
-        0, counts[3], "Skipped frozen callers must remain marked truncated\n" + firstBadStack[1]);
+        0, counts[3], "Skipped frozen callers must remain marked truncated\n" + firstBadStack[3]);
   }
 
   /** Frames below the continuation entry, present only once the walk reached the carrier. */
