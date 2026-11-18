@@ -1208,7 +1208,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       !(safe_mode & UNKNOWN_JAVA) && ucontext != NULL) {
     VMSymbol* receiver_symbol = nullptr;
     StackWalkFeatures features = Profiler::instance()->stackWalkFeatures();
-    if (cstack != CSTACK_NO && max_depth >= 3 && features.vtable_target && VMStructs::hasClassNames()) {
+    if (cstack != CSTACK_NO && max_depth >= 3 && features.vtable_target) {
       VMNMethod* leaf = CodeHeap::findNMethod(reinterpret_cast<const void*>(frame.pc()));
       if (leaf != nullptr && leaf->isVTableStub()) {
         // A java_ctx redirect leaves the interrupted argument registers behind.
