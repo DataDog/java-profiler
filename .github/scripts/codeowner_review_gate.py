@@ -149,13 +149,6 @@ def load_sensitive_patterns(path):
             raise gate.ApiError(
                 "%s entry %r is not root-anchored; prefix it with /"
                 % (path, pattern))
-        if pattern.endswith("/") and ("*" in pattern or "?" in pattern):
-            # A wildcard directory pattern matches only under the loader's
-            # literal-prefix rule, which under-blocks; reject the form.
-            raise gate.ApiError(
-                "%s entry %r combines a wildcard with a trailing slash; "
-                "list the directory or files it covers"
-                % (path, pattern))
         patterns.append(pattern)
     return patterns
 
@@ -165,22 +158,30 @@ def is_sensitive(path, patterns):
 
     Supported grammar: root-anchored entries only (leading ``/``, dropped
     before matching, because the changed-file API reports paths without
-    it) — exact paths, ``*``/``?`` wildcards and directory patterns with a
-    trailing slash, which match every path inside the directory. An
-    unanchored pattern is rejected by ``load_sensitive_patterns`` instead
-    of being mis-evaluated: GitHub would match it in any directory while
-    a whole-path fnmatch would let those paths escape the check.
-    ``fnmatch`` lets ``*`` cross ``/``, which can only over-block a path
-    GitHub attributes more narrowly — the fail-safe direction.
+    it) — exact paths, ``*``/``?`` wildcards and directory patterns with
+    or without a trailing slash. An unanchored pattern is rejected by
+    ``load_sensitive_patterns`` instead of being mis-evaluated: GitHub
+    would match it in any directory while a whole-path fnmatch would let
+    those paths escape the check.
+
+    A wildcard entry matches the file itself and every ancestor directory
+    of it: GitHub applies ``/src/*/secure`` to ``src/m/secure/a.py``, and
+    matching only the complete filename would let that file pass
+    unchecked. Every prefix runs through ``fnmatch``, so a trailing slash
+    on a wildcard entry is harmless: it names the directory, which the
+    ancestor prefixes already reach. ``fnmatch`` lets ``*`` cross ``/``,
+    which can only over-block a path GitHub attributes more narrowly —
+    the fail-safe direction.
     """
     for pattern in patterns:
         if pattern.startswith("/"):
             pattern = pattern[1:]
         if pattern.endswith("/"):
-            if path.startswith(pattern) or path.startswith(pattern[:-1] + "/"):
-                return True
-        elif "*" in pattern or "?" in pattern:
-            if fnmatch.fnmatchcase(path, pattern):
+            pattern = pattern[:-1]
+        if "*" in pattern or "?" in pattern:
+            parts = path.split("/")
+            if any(fnmatch.fnmatchcase("/".join(parts[:end]), pattern)
+                   for end in range(1, len(parts) + 1)):
                 return True
         elif path == pattern or path.startswith(pattern + "/"):
             # GitHub treats a ``/dir`` entry as covering the directory's
@@ -358,10 +359,19 @@ def evaluate_sha(sha, client, patterns):
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (pr["number"],),
                     "%s/pull/%d" % (_repo_url(), pr["number"]))
+        # A malformed record is a failed read, not a settled one: treating
+        # it as "moved or closed" would skip the write and leave any
+        # recorded success standing.
         fresh_head = fresh.get("head") if isinstance(fresh, dict) else None
-        if (not isinstance(fresh, dict) or fresh.get("state") != "open"
+        if (not isinstance(fresh, dict)
+                or fresh.get("state") not in ("open", "closed")
                 or not isinstance(fresh_head, dict)
-                or fresh_head.get("sha") != sha):
+                or not isinstance(fresh_head.get("sha"), str)
+                or not gate._SHA_RE.fullmatch(fresh_head["sha"])):
+            return ("failure", "failure",
+                    "cannot evaluate: PR %d revalidation failed" % (pr["number"],),
+                    "%s/pull/%d" % (_repo_url(), pr["number"]))
+        if fresh["state"] != "open" or fresh_head["sha"] != sha:
             return ("empty", None, None, None)
     return ("success", "success", "sensitive-path owner review satisfied", None)
 

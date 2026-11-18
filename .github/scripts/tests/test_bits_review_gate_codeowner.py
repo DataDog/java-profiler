@@ -175,6 +175,28 @@ class SensitiveMatchTest(unittest.TestCase):
         self.assertTrue(cogate.is_sensitive("docs/x/y.md", ["docs/*/y.md"]))
         self.assertFalse(cogate.is_sensitive("docs/x/z.md", ["docs/*/y.md"]))
 
+    def test_wildcard_directory_pattern_matches_descendants(self):
+        # GitHub applies /src/*/secure to src/module/secure/publish.py; a
+        # match against the complete filename only would under-block.
+        self.assertTrue(cogate.is_sensitive(
+            "src/module/secure/publish.py", ["src/*/secure"]))
+        self.assertTrue(cogate.is_sensitive(
+            "src/module/secure/publish.py", ["/src/*/secure"]))
+        self.assertFalse(cogate.is_sensitive(
+            "src/module/insecure/publish.py", ["/src/*/secure"]))
+
+    def test_wildcard_directory_pattern_with_trailing_slash_matches_descendants(self):
+        self.assertTrue(cogate.is_sensitive(
+            "src/a/build/x.py", ["/src/*/build/"]))
+        self.assertFalse(cogate.is_sensitive(
+            "src/a/dist/x.py", ["/src/*/build/"]))
+
+    def test_leading_slash_is_dropped_before_matching(self):
+        self.assertTrue(cogate.is_sensitive(
+            ".github/scripts/deploy.sh", ["/.github/scripts/deploy.sh"]))
+        self.assertFalse(cogate.is_sensitive(
+            "docs/deploy.sh", ["/.github/scripts/deploy.sh"]))
+
     def test_unanchored_pattern_is_rejected(self):
         with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
                                          delete=False) as handle:
@@ -218,6 +240,18 @@ class OwnerApprovalTest(unittest.TestCase):
         records = [gate.normalize_review(review("pr-author", "APPROVED",
                                             "2026-01-01T00:00:00Z"))]
         self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+
+    def test_author_in_the_roster_still_cannot_approve_own_pr(self):
+        # The author being a roster member must not defeat the exclusion:
+        # only the head-bound approval of another member counts.
+        records = [gate.normalize_review(review("owner-a", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        self.assertFalse(cogate.owner_approval(
+            records, "owner-a", TEAM_LOGINS, SHA))
+        records.append(gate.normalize_review(
+            review("owner-b", "APPROVED", "2026-01-02T00:00:00Z", 2)))
+        self.assertTrue(cogate.owner_approval(
+            records, "owner-a", TEAM_LOGINS, SHA))
 
     def test_non_member_approval_does_not_count(self):
         records = [gate.normalize_review(review("outsider", "APPROVED",
@@ -395,6 +429,34 @@ class EvaluateShaTest(unittest.TestCase):
         self.assertEqual(state, "failure")
         self.assertIn("malformed PR record", description)
 
+    def test_pr_with_malformed_base_ref_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [testlib.build_pr_record(
+                101, sha=SHA, base={"ref": None})]),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("malformed PR record", description)
+
+    def test_pr_headed_elsewhere_is_skipped(self):
+        # The only open PR at the listing carries a different head SHA: it
+        # is not this evaluation's subject and the SHA yields empty.
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101, head_sha="3" * 40)]),
+        ])
+        self.assertEqual(self.evaluate(transport)[0], "empty")
+
+    def test_roster_member_author_cannot_self_approve_at_sha_level(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101, **{"user": {"login": "owner-a"}})]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, pr(101)),
+        ])
+        self.assertEqual(self.evaluate(transport)[1], "failure")
+
     def test_failed_team_roster_read_fails_closed(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
@@ -446,6 +508,22 @@ class EvaluateShaTest(unittest.TestCase):
             FakeResponse(500, []),
         ])
         self.assertEqual(self.evaluate(transport)[1], "failure")
+
+    def test_malformed_revalidation_record_fails_closed(self):
+        # The approval stands, but the final PR read returns a record with
+        # no usable head: publishing nothing would leave a recorded success
+        # in place, so the outcome is a failure status instead.
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, {"state": "open", "head": None}),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("PR 101 revalidation failed", description)
 
 
 class PublishTest(unittest.TestCase):
@@ -571,6 +649,42 @@ class PublishTest(unittest.TestCase):
             + [FakeResponse(500, []) for _ in range(3)])
         self.assertEqual(self.publish(transport), 1)
 
+    def test_oversized_description_is_truncated(self):
+        with unittest.mock.patch.object(
+                cogate, "load_sensitive_patterns",
+                return_value=["x" * 200]):
+            transport = testlib.FakeTransport([
+                FakeResponse(200, [pr(101)]),
+                FakeResponse(200, compare_page("x" * 200)),
+                FakeResponse(200, reviews_page([])),
+                FakeResponse(200, pr(101)),
+                FakeResponse(200, []),
+                FakeResponse(200, []),
+            ])
+            self.assertEqual(self.publish(transport), 1)
+        payload = json.loads(transport.calls[-1].data)
+        self.assertLessEqual(len(payload["description"]), 140)
+
+    def test_malformed_revalidation_publishes_failure(self):
+        # The suppression skip must not fire on a malformed revalidation
+        # record: the failure status replaces any recorded success.
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(
+                [review("owner-a", "APPROVED", "2026-01-01T00:00:00Z")])),
+            FakeResponse(200, {"state": "open", "head": None}),
+            FakeResponse(200, [self.recorded_status("success")]),
+            FakeResponse(200, []),
+        ])
+        client = make_client(transport)
+        client._team_logins = TEAM_LOGINS
+        self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 1)
+        payload = json.loads(transport.calls[-1].data)
+        self.assertEqual(payload["state"], "failure")
+        self.assertIn("revalidation failed", payload["description"])
+
     def test_unreadable_codeowners_fails_closed(self):
         # A missing CODEOWNERS file is fatal before any evaluation: point
         # the module constant at a path that cannot exist.
@@ -584,6 +698,55 @@ class PublishTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             cogate.main(["publish", "--sha", "not-a-sha"])
 
+
+class SelectedStatusTest(unittest.TestCase):
+    def status(self, status_id, creator=gate.STATUS_CREATOR,
+               context=cogate.STATUS_CONTEXT, state="success",
+               description="d", target_url=None):
+        return {"id": status_id, "context": context, "state": state,
+                "description": description, "target_url": target_url,
+                "creator": {"login": creator}}
+
+    def test_only_own_creator_and_context_are_candidates(self):
+        statuses = [
+            self.status(1, creator="someone-else"),
+            self.status(2, context="other-context"),
+            self.status(3),
+        ]
+        self.assertEqual(cogate._selected_status(statuses)["id"], 3)
+
+    def test_highest_id_wins_regardless_of_order(self):
+        statuses = [self.status(9), self.status(12), self.status(4)]
+        self.assertEqual(cogate._selected_status(statuses)["id"], 12)
+
+    def test_no_candidate_returns_none(self):
+        self.assertIsNone(cogate._selected_status(
+            [self.status(1, creator="someone-else")]))
+
+    def test_every_field_must_match_for_suppression(self):
+        recorded = self.status(
+            1, description="sensitive-path owner review satisfied")
+        payload = {"state": "success", "context": cogate.STATUS_CONTEXT,
+                   "description": "sensitive-path owner review satisfied"}
+        self.assertTrue(cogate._matches_status(recorded, payload))
+        # Same state but a different description is a changed status: the
+        # description comparison is what keeps stale text from suppressing
+        # a fresh write.
+        self.assertFalse(cogate._matches_status(
+            self.status(1, description="other text"), payload))
+        self.assertFalse(cogate._matches_status(
+            self.status(1, state="failure"), payload))
+
+
+class TeamLoginsTest(unittest.TestCase):
+    def test_page_cap_fails_the_read(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [{"login": "owner-a"}],
+                         link="<%s&page=2>; rel=\"next\"" % MEMBERS_URL)
+        ] * (gate.MAX_FETCH_PAGES + 1))
+        client = make_client(transport)
+        with self.assertRaises(gate.ApiError):
+            client.team_logins("DataDog", "profiling-java")
 
 if __name__ == "__main__":
     unittest.main()

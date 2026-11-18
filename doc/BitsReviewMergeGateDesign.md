@@ -313,7 +313,14 @@ attribution and marks the sensitive paths. The gate evaluator publishes the
 `codeowner-review/head` status: a head that changes a sensitive path passes
 only when a `@DataDog/profiling-java` member other than the pull request author
 approves that head; review of ordinary paths stays at the authors' discretion.
-The context is not a required check until activation.
+The evaluator cannot soundly read a fork head's changed files: the fork author
+can swap a sensitive file for a benign one for the duration of the read, so
+`codeowner-review/head` fails closed for every fork pull request — an external
+contribution can only merge through the admin bypass, which a maintainer
+must exercise knowingly. The compare endpoint caps its file list and offers no
+pagination, so a pull request with 300 or more changed files also fails closed
+and can only merge through the bypass; this is an accepted cost. The context
+is not a required check until activation.
 The repository policy file `.github/chainguard/self.bits-review-gate.publish-status.sts.yaml`
 carries exactly these claims:
 
