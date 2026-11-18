@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-18 10:25:44 EST
+**Date:** 2026-11-18 10:28:01 EST
 
 ### Configuration
 | Setting | Value |
@@ -31,43 +31,43 @@ title: glibc-arm64-openj9-jdk17
 | CPU Samples | 88 |
 | Sample Rate | 1.47/sec |
 | Health Score | 92% |
-| Threads | 10 |
-| Allocations | 66 |
+| Threads | 11 |
+| Allocations | 72 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 279 |
-| Sample Rate | 4.65/sec |
-| Health Score | 291% |
-| Threads | 14 |
-| Allocations | 94 |
+| CPU Samples | 316 |
+| Sample Rate | 5.27/sec |
+| Health Score | 329% |
+| Threads | 11 |
+| Allocations | 120 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 33-38 cores)</summary>
 
 ```
-1795015287 33
-1795015292 33
-1795015297 33
-1795015302 33
-1795015307 33
-1795015312 33
-1795015317 33
-1795015322 33
-1795015327 33
-1795015332 33
-1795015337 33
-1795015342 33
-1795015347 33
-1795015352 33
-1795015357 33
-1795015362 38
-1795015367 38
-1795015372 38
-1795015377 38
-1795015382 38
+1795015394 33
+1795015399 33
+1795015404 33
+1795015409 33
+1795015414 33
+1795015419 33
+1795015424 33
+1795015429 38
+1795015434 38
+1795015439 38
+1795015444 38
+1795015449 38
+1795015454 38
+1795015459 38
+1795015464 38
+1795015469 38
+1795015474 38
+1795015479 38
+1795015484 38
+1795015489 38
 ```
 </details>
 
