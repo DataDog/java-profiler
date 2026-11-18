@@ -87,6 +87,8 @@ class SensitivePatternsTest(unittest.TestCase):
         patterns = cogate.load_sensitive_patterns(path)
         self.assertIn("/.github/workflows/", patterns)
         self.assertIn("/.github/scripts/", patterns)
+        self.assertIn("/utils/generate_tracked_files.sh", patterns)
+        self.assertIn("/utils/track_upstream_changes.sh", patterns)
         self.assertNotIn("*", patterns)
 
     def test_comments_blanks_and_default_rule_are_skipped(self):
@@ -287,6 +289,23 @@ class OwnerApprovalTest(unittest.TestCase):
                    "2026-01-02T00:00:00Z", 2)]]
         self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
 
+    def test_comment_after_approval_does_not_cancel_it(self):
+        # A COMMENTED review states no decision: GitHub keeps the approval,
+        # and so must the gate — the latest DECIDING review is the older
+        # APPROVED one, not the comment.
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+            review("owner-a", "COMMENTED", "2026-01-02T00:00:00Z", 2)]]
+        self.assertTrue(cogate.owner_approval(
+            records, "pr-author", TEAM_LOGINS, SHA))
+
+    def test_pending_after_approval_does_not_cancel_it(self):
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+            review("owner-a", "PENDING", "2026-01-02T00:00:00Z", 2)]]
+        self.assertTrue(cogate.owner_approval(
+            records, "pr-author", TEAM_LOGINS, SHA))
+
     def test_approval_on_another_commit_does_not_count(self):
         records = [gate.normalize_review(review(
             "owner-a", "APPROVED", "2026-01-01T00:00:00Z", commit_oid="2" * 40))]
@@ -383,6 +402,37 @@ class EvaluateShaTest(unittest.TestCase):
         self.assertIn("approval from @DataDog/profiling-java required",
                       description)
 
+    def test_review_with_null_submitted_at_fails_closed(self):
+        # A record without a submission time cannot be ordered: a newer
+        # CHANGES_REQUESTED carrying null submitted_at must not silently
+        # lose against an older approval.
+        superseding = review("owner-a", "CHANGES_REQUESTED",
+                             "2026-01-02T00:00:00Z", 2)
+        node = json.loads(json.dumps(superseding))
+        node["submittedAt"] = None
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page([
+                review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+                node])),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("malformed review record", description)
+
+    def test_non_object_review_node_fails_closed(self):
+        transport = testlib.FakeTransport([
+            FakeResponse(200, [pr(101)]),
+            FakeResponse(200, compare_page(
+                ".github/scripts/bits_review_gate.py")),
+            FakeResponse(200, reviews_page(["not-a-review"])),
+        ])
+        kind, state, description, _ = self.evaluate(transport)
+        self.assertEqual(state, "failure")
+        self.assertIn("malformed review record", description)
+
     def test_failed_revalidation_reviews_read_fails_closed(self):
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
@@ -395,7 +445,7 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("PR 101 revalidation failed", description)
+        self.assertIn("cannot evaluate:", description)
 
     def test_self_approval_on_sensitive_path_fails(self):
         transport = testlib.FakeTransport([
@@ -472,7 +522,7 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("reviews read failed", description)
+        self.assertIn("cannot evaluate:", description)
 
     def test_malformed_pr_record_fails_closed(self):
         transport = testlib.FakeTransport([

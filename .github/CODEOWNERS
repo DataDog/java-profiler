@@ -31,6 +31,11 @@
 # and needs the same owner approval. The root GitLab pipeline includes
 # .adms/python/gitlab.yaml, whose jobs merge into the deploy job.
 /utils/compute-version.sh @DataDog/profiling-java
+# The upstream tracker runs these two scripts from main daily with
+# contents: write; a change to either is a change to what gains that
+# write authority.
+/utils/generate_tracked_files.sh @DataDog/profiling-java
+/utils/track_upstream_changes.sh @DataDog/profiling-java
 /.gitlab-ci.yml @DataDog/profiling-java
 /.gitlab/ @DataDog/profiling-java
 /.adms/python/gitlab.yaml @DataDog/profiling-java

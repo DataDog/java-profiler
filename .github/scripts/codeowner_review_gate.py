@@ -230,6 +230,24 @@ def is_sensitive(path, patterns):
     return False
 
 
+def _validated_reviews(nodes, number):
+    """The normalized review records of one PR, fail-closed: a record the
+    approval decision cannot read — no id, a null author login, a missing
+    or non-string ``submitted_at`` — is malformed input, not a review to
+    skip. A dropped record could hide the superseding CHANGES_REQUESTED
+    of an owner approval, so the decision must not be made from it."""
+    records = [gate.normalize_review(node) for node in nodes]
+    for record in records:
+        if (not isinstance(record.get("id"), int)
+                or not isinstance(record.get("author_login"), str)
+                or not record.get("author_login")
+                or not isinstance(record.get("submitted_at"), str)
+                or not record.get("submitted_at")):
+            raise gate.ApiError(
+                "malformed review record on PR %d" % (number,))
+    return records
+
+
 def latest_review_by_login(records):
     """One record per author login: the latest by submission time, with
     the review id as tie-breaker — the same ordering rule the bits gate
@@ -248,6 +266,15 @@ def latest_review_by_login(records):
     return latest
 
 
+def _deciding_reviews(records):
+    """The records that can carry a review decision, in submission order:
+    COMMENTED and PENDING records state no decision, so they never
+    supersede an approval — GitHub likewise keeps an approval when its
+    author later comments."""
+    return [record for record in records
+            if record.get("state") not in ("COMMENTED", "PENDING")]
+
+
 def owner_approval(records, author_login, team_logins, head):
     """True when some team member other than the PR author's latest
     review approves the evaluated head. Self-approval never counts: the
@@ -255,7 +282,8 @@ def owner_approval(records, author_login, team_logins, head):
     bound to the head commit — without ``dismiss stale reviews``, an
     approval left on an earlier commit would otherwise survive a push
     that changes sensitive code."""
-    for login, record in latest_review_by_login(records).items():
+    for login, record in latest_review_by_login(
+            _deciding_reviews(records)).items():
         if login == author_login:
             continue
         if (login in team_logins and record.get("state") == "APPROVED"
@@ -362,11 +390,14 @@ def evaluate_sha(sha, client, patterns):
             decisions.append((number, "pass", None))
             continue
         try:
-            records = [gate.normalize_review(node)
-                       for node in client.fetch_reviews(number)]
-        except (gate.ApiError, gate.RateLimitError):
+            records = _validated_reviews(
+                client.fetch_reviews(number), number)
+        except gate.RateLimitError:
             decisions.append((number, "failure",
                               "cannot evaluate: PR %d reviews read failed" % (number,)))
+            continue
+        except gate.ApiError as error:
+            decisions.append((number, "failure", "cannot evaluate: %s" % (error,)))
             continue
         # The roster is fetched lazily and fail-closed like every other
         # read: only a head with a sensitive-path change and a review read
@@ -425,15 +456,18 @@ def evaluate_sha(sha, client, patterns):
     # approval and require the approval to still hold on the fresh read.
     for number in approved_prs:
         try:
-            fresh_records = [gate.normalize_review(node)
-                             for node in client.fetch_reviews(number)]
+            fresh_records = _validated_reviews(
+                client.fetch_reviews(number), number)
             # The roster is process-cached by now, but the read must stay
             # guarded on its own terms: a cache-less future must fail the
             # publish, not crash it before any status is written.
             team_logins = client.team_logins(OWNER_ORG, OWNER_TEAM_SLUG)
-        except (gate.ApiError, gate.RateLimitError):
+        except gate.RateLimitError:
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (number,),
+                    "%s/pull/%d" % (_repo_url(), number))
+        except gate.ApiError as error:
+            return ("failure", "failure", "cannot evaluate: %s" % (error,),
                     "%s/pull/%d" % (_repo_url(), number))
         if not owner_approval(fresh_records, approved_author[number],
                               team_logins, sha):
