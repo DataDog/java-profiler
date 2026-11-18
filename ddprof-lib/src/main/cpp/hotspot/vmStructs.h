@@ -1109,8 +1109,9 @@ static inline bool startsWith(const char* s, const char (&pattern)[N]) {
 }
 
 DECLARE(VMNMethod)
-    // Without an exported entry BCI, report OSR so callers skip argument-based recovery.
-    bool isOsr() const {
+    // True unless the nmethod is known to be a standard entry: a missing entry BCI
+    // offset counts as possible OSR, so callers skip argument-based recovery.
+    bool mayBeOsr() const {
         if (_nmethod_entry_bci_offset < 0) return true;
         return *(const int*)at(_nmethod_entry_bci_offset) != -1;
     }

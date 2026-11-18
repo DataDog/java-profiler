@@ -801,7 +801,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     continuation_stack_args = const_method != nullptr ? const_method->stackArgWords() : -1;
                     // ConstMethod arguments do not determine an OSR frame's extension.
                     // Unknown selects validated thread-entry recovery at a frozen boundary.
-                    if (continuation_stack_args > 0 && nm->isOsr()) continuation_stack_args = -1;
+                    if (continuation_stack_args > 0 && nm->mayBeOsr()) continuation_stack_args = -1;
                 }
 
                 if (nm->isFrameCompleteAt(walk_pc.raw())) {

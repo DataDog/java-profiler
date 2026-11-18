@@ -55,15 +55,15 @@ TEST_F(ContinuationCarrierFrameTest, RecoversSavedCarrierSlotsWithoutAFramePoint
     EXPECT_EQ((uintptr_t)&_stack[40], ((uintptr_t*)entry_fp)[1]);
 }
 
-TEST_F(ContinuationCarrierFrameTest, TreatsMissingEntryBciOffsetAsOsr) {
+TEST_F(ContinuationCarrierFrameTest, TreatsMissingEntryBciOffsetAsPossibleOsr) {
     int standard_bci = -1;
     int osr_bci = 7;
     VMStructsTestAccessor::setEntryBciOffset(0);
-    EXPECT_FALSE(VMNMethod::cast_raw(&standard_bci)->isOsr());
-    EXPECT_TRUE(VMNMethod::cast_raw(&osr_bci)->isOsr());
+    EXPECT_FALSE(VMNMethod::cast_raw(&standard_bci)->mayBeOsr());
+    EXPECT_TRUE(VMNMethod::cast_raw(&osr_bci)->mayBeOsr());
     // Without the offset, a standard nmethod must not be trusted for argument recovery.
     VMStructsTestAccessor::setEntryBciOffset(-1);
-    EXPECT_TRUE(VMNMethod::cast_raw(&standard_bci)->isOsr());
+    EXPECT_TRUE(VMNMethod::cast_raw(&standard_bci)->mayBeOsr());
 }
 
 TEST_F(ContinuationCarrierFrameTest, AccountsForStackArgumentsAndAlignment) {
