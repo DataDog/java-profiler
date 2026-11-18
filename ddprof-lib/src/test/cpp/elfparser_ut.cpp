@@ -634,7 +634,9 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     app(&sym, sizeof(sym));
     app(strtab, sizeof(strtab));
     // strtab ends at image_size: also exercises inImage() equality case.
-    parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
+    CodeCache cc("regress");
+    ASSERT_NO_FATAL_FAILURE(parseElfBytes(b, &cc, /*use_debug=*/true));
+    EXPECT_EQ(cc.count(), 0);  // strAt() rejects st_name == strtab_size
 }
 
 // Misaligned .symtab and .rela.plt must still resolve symbols and the PLT name.
@@ -653,7 +655,7 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     sym[0].st_name = 1;   // "mis_main"
     sym[0].st_value = 0x20000;
     sym[0].st_size = 4;
-    sym[0].st_shndx = 1;  // defined; SHN_UNDEF symbols are not code addresses
+    sym[0].st_shndx = 1;  // defined; SHN_UNDEF symbols are defined elsewhere
     sym[1].st_name = 10;  // "mis_helper"
     sym[1].st_value = 0x21000;
     sym[1].st_size = 4;
@@ -1159,6 +1161,75 @@ TEST_F(ElfTest, pltRelOverridesRelaent) {
     CodeCache cc("inmem");
     ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
     EXPECT_EQ(cc.peekImport(im_pthread_create), reinterpret_cast<void**>(image + PLT_SLOT));
+    // The fingerprint uses the same stride: moving the GOT slot must change it.
+    const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+    Elf64_Rela rela;
+    memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
+    rela.r_offset = PLT_SLOT + 2 * sizeof(void*);
+    memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+    EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image)), before);
+}
+
+// A DT_RELACOUNT whose byte count wraps size_t (2^61 * 24 == 0 mod 2^64) must skip
+// the whole .rela.dyn, not a wrapped-to-zero prefix, in the parse and the fingerprint.
+TEST_F(ElfTest, relaCountOverflowSkipsWholeTable) {
+#if defined(__x86_64__)
+    const uint32_t glob_dat = R_X86_64_GLOB_DAT;
+#elif defined(__aarch64__)
+    const uint32_t glob_dat = R_AARCH64_GLOB_DAT;
+#else
+    GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
+    const uint32_t glob_dat = 0;
+#endif
+    // The .rela.plt entry of buildPltImage() doubles as a one-entry .rela.dyn.
+    auto build = [&](uint64_t relacount) {
+        auto mem = buildPltImage({
+            {DT_SYMTAB, {DYN_SYM_OFF}},
+            {DT_STRTAB, {DYN_STR_OFF}},
+            {DT_SYMENT, {sizeof(Elf64_Sym)}},
+            {DT_STRSZ, {sizeof("\0pthread_create")}},
+            {DT_RELA, {DYN_JMPREL_OFF}},
+            {DT_RELASZ, {sizeof(Elf64_Rela)}},
+            {DT_RELAENT, {sizeof(Elf64_Rela)}},
+            {DT_RELACOUNT, {relacount}},
+            {DT_NULL, {0}},
+        });
+        if (mem) {
+            char* image = static_cast<char*>(mem.get());
+            Elf64_Rela rela;
+            memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
+            rela.r_info = ELF64_R_INFO(1, glob_dat);
+            memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+        }
+        return mem;
+    };
+    auto parse = [](char* image) {
+        CodeCache cc("inmem");
+        ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+        return cc.peekImport(im_pthread_create);
+    };
+    auto fingerprintMovesWithSlot = [](char* image) {
+        const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+        const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+        Elf64_Rela rela;
+        memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
+        rela.r_offset = PLT_SLOT + 2 * sizeof(void*);
+        memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+        return Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image)) != before;
+    };
+
+    auto control = build(0);  // no relative prefix: the entry is an import
+    ASSERT_THAT(control.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(control.get());
+    EXPECT_EQ(parse(image), reinterpret_cast<void**>(image + PLT_SLOT));
+    EXPECT_TRUE(fingerprintMovesWithSlot(image));
+
+    auto wrapped = build(uint64_t(1) << 61);
+    ASSERT_THAT(wrapped.get(), ::testing::NotNull());
+    image = static_cast<char*>(wrapped.get());
+    EXPECT_EQ(parse(image), nullptr);
+    EXPECT_FALSE(fingerprintMovesWithSlot(image));
 }
 
 // gABI: the dynamic array ends at the first DT_NULL. Slots after it (patchelf and
