@@ -21,6 +21,7 @@
 #include <signal.h>
 
 class ITimer : public Engine {
+  friend class ITimerTestAccessor;
 private:
   static bool _enabled;
   static long _interval;
@@ -52,6 +53,7 @@ public:
 // any thread, nullptr is passed as ucontext so the JVM uses safepoint-based
 // stack walking rather than relying on the signal-frame PC.
 class ITimerJvmti : public Engine {
+  friend class ITimerTestAccessor;
 private:
   static bool _enabled;
   static long _interval;

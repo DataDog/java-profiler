@@ -59,6 +59,17 @@ static void dummyRequestStackTrace() {}
 
 static void test_sigprof_handler(int, siginfo_t *, void *) {}
 
+// Reads and seeds the engines' static _interval, so a test's pre-state does
+// not depend on what earlier tests left behind.
+class ITimerTestAccessor {
+public:
+  static long intervalItimer() { return ITimer::_interval; }
+  static void intervalItimer(long v) { ITimer::_interval = v; }
+  static long intervalJvmti() { return ITimerJvmti::_interval; }
+  static void intervalJvmti(long v) { ITimerJvmti::_interval = v; }
+  static SigAction signalHandler() { return ITimer::signalHandler; }
+};
+
 // Returns the current SIGPROF disposition (sa_handler and sa_sigaction share
 // storage).
 static struct sigaction sigprofDisposition() {
@@ -81,8 +92,9 @@ static bool sameSigmask(const sigset_t &a, const sigset_t &b) {
 }
 
 static bool sameDisposition(const struct sigaction &a, const struct sigaction &b) {
-  // musl reports its internal SA_RESTORER in the read-back sa_flags; that is
-  // libc bookkeeping, not part of the application-level disposition.
+  // glibc strips its internal SA_RESTORER from the read-back sa_flags; musl
+  // leaves it set. The bit is libc bookkeeping, not part of the
+  // application-level disposition, so mask it where the macro is defined.
 #ifdef SA_RESTORER
   constexpr unsigned long kLibcInternal = SA_RESTORER;
 #else
@@ -225,7 +237,8 @@ TEST_F(ITimerTest, JvmtiStartRejectsNonCpuEvent) {
   Arguments args;
   args._event = EVENT_WALL;
   args._cpu = 1000000;
-  long interval_before = engine.interval();
+  ITimerTestAccessor::intervalJvmti(123456);
+  long interval_before = ITimerTestAccessor::intervalJvmti();
   struct sigaction before = sigprofDisposition();
 
   Error error = engine.start(args);
@@ -244,7 +257,8 @@ TEST_F(ITimerTest, StartRejectsNonCpuEvent) {
   Arguments args;
   args._event = EVENT_WALL;
   args._cpu = 1000000;
-  long interval_before = engine.interval();
+  ITimerTestAccessor::intervalItimer(123456);
+  long interval_before = ITimerTestAccessor::intervalItimer();
   struct sigaction before = sigprofDisposition();
 
   Error error = engine.start(args);
@@ -269,6 +283,7 @@ TEST_F(ITimerTest, StartAcceptsCpuOnlyArguments) {
   engine.stop();
   // ITimer::stop() keeps the engine handler installed (drops on _enabled);
   // only the timer is disarmed.
-  EXPECT_NE((void (*)(int))SIG_IGN, sigprofDisposition().sa_handler);
+  EXPECT_EQ(ITimerTestAccessor::signalHandler(),
+            sigprofDisposition().sa_sigaction);
   EXPECT_TRUE(itimerDisarmed());
 }

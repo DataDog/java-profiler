@@ -213,6 +213,7 @@ public:
     return engine.startWithTableSize(args, max_timers);
   }
   static long interval() { return CTimer::_interval; }
+  static void interval(long v) { CTimer::_interval = v; }
   static int registerThread(CTimer &engine, int tid) {
     return engine.registerThread(tid);
   }
@@ -432,6 +433,7 @@ TEST_F(CTimerNativeMemTest, StartRejectsNonCpuEvent) {
   Arguments args;
   args._event = EVENT_WALL;
   args._cpu = 1000000;
+  CTimerTestAccessor::interval(123456);
   long interval_before = CTimerTestAccessor::interval();
   void *handler_before = sigprofHandler();
 
