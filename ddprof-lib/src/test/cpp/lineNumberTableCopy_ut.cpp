@@ -101,10 +101,13 @@ private:
 
 } // namespace
 
-// The child must die from the fault itself, not from a setup failure exit.
-static bool killedByMemoryFault(int status) {
-  return WIFSIGNALED(status) &&
-         (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS);
+constexpr int kDeathTestSetupFailed = 97;
+
+// Rejects the two non-fault outcomes: setup failure and a read that returned.
+// Any other death counts, since ASan/TSan catch the fault and exit non-zero.
+static bool diedFromFault(int status) {
+  return !WIFEXITED(status) || (WEXITSTATUS(status) != 0 &&
+                                WEXITSTATUS(status) != kDeathTestSetupFailed);
 }
 
 // Reading an unreadable table without the validation crashes the process.
@@ -115,19 +118,19 @@ TEST(LineNumberTableCopyRawTest, UnguardedAccessCrashesWhenSourceUnreadable) {
       {
         ScopedPage page;
         if (page.addr() == MAP_FAILED) {
-          _exit(1);
+          _exit(kDeathTestSetupFailed);
         }
         jvmtiLineNumberEntry *line_number_table =
             makeFakeLineNumberTable(page.addr(), 4);
         if (mprotect(page.addr(), page.size(), PROT_NONE) != 0) {
-          _exit(1);
+          _exit(kDeathTestSetupFailed);
         }
 
         volatile jint sink = line_number_table[0].line_number; // faults here
         (void)sink;
         _exit(0);
       },
-      killedByMemoryFault, "");
+      diedFromFault, "");
 }
 
 // The probe rejects a PROT_NONE source and accepts the same pointer once it is
