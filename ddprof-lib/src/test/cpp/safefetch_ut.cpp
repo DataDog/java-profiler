@@ -261,14 +261,46 @@ TEST_F(SafeFetchTest, mprotectedMemory64) {
 // range via the safecopy_impl assembly stub (byte-granular loads guarded by
 // handle_safefetch). Must:
 //   - return true and copy the bytes exactly when src is fully readable,
-//     including when [src, src+len) sits within a few bytes of an unmapped
+//     including when [src, src+len) sits within a few bytes of an unreadable
 //     page boundary (byte-granular reads never over-read past src+len)
 //   - return false (no crash) when the requested range itself crosses into
-//     an unmapped page
+//     an unreadable page
 //   - handle unaligned src (no alignment requirement on src)
 //   - never write past dst[len-1] regardless of len
 //   - copy real data faithfully regardless of its byte values
 // ---------------------------------------------------------------------------
+
+// Owns a readable page followed by a PROT_NONE guard page, unmapped on scope
+// exit. The guard stays mapped, unlike a munmap()ed page that a concurrent
+// mmap may reuse, so a read past the readable page always faults.
+class GuardedPage {
+public:
+  GuardedPage()
+      : _page_size(static_cast<size_t>(sysconf(_SC_PAGESIZE))),
+        _region(mmap(NULL, 2 * _page_size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) {
+    if (_region != MAP_FAILED &&
+        mprotect(guardStart(), _page_size, PROT_NONE) != 0) {
+      munmap(_region, 2 * _page_size);
+      _region = MAP_FAILED;
+    }
+  }
+  ~GuardedPage() {
+    if (_region != MAP_FAILED) {
+      munmap(_region, 2 * _page_size);
+    }
+  }
+  GuardedPage(const GuardedPage&) = delete;
+  GuardedPage& operator=(const GuardedPage&) = delete;
+
+  bool ok() const { return _region != MAP_FAILED; }
+  // One past the last readable byte: the first byte of the guard page.
+  char* guardStart() const { return static_cast<char*>(_region) + _page_size; }
+
+private:
+  size_t _page_size;
+  void* _region;
+};
 
 TEST_F(SafeFetchTest, safeCopy_happyPath) {
   const char src[] = "java/lang/Object";
@@ -297,18 +329,6 @@ TEST_F(SafeFetchTest, safeCopy_shortLength_doesNotOverwriteDst) {
   }
 }
 
-TEST_F(SafeFetchTest, safeCopy_unmappedSource_returnsFalse) {
-  // Map a page, then unmap it: the address is now firmly invalid. safeCopy
-  // must return false rather than SIGSEGV.
-  void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  ASSERT_NE(page, MAP_FAILED);
-  ASSERT_EQ(0, munmap(page, 4096));
-
-  char dst[64] = {0};
-  EXPECT_FALSE(SafeAccess::safeCopy(dst, page, 32));
-}
-
 TEST_F(SafeFetchTest, safeCopy_protNoneSource_returnsFalse) {
   // mprotect-PROT_NONE the page (similar to mprotectedMemory32). safeCopy
   // must return false on the first faulting word, not crash.
@@ -326,20 +346,15 @@ TEST_F(SafeFetchTest, safeCopy_protNoneSource_returnsFalse) {
   munmap(page, 4096);
 }
 
-TEST_F(SafeFetchTest, safeCopy_tailNearUnmappedBoundary_stillSucceeds) {
-  // Map two adjacent pages, unmap only the second. Place src so the bytes
-  // we ask for end inside the mapped page but the (over-read of the) next
-  // 4-byte word would touch the unmapped page. The aligned-load strategy
-  // must keep the load within the mapped page → success, not fault.
-  long page_size = sysconf(_SC_PAGESIZE);
-  ASSERT_GT(page_size, 0);
+TEST_F(SafeFetchTest, safeCopy_tailNearGuardPage_stillSucceeds) {
+  // Place src so the bytes we ask for end inside the readable page but the
+  // (over-read of the) next 4-byte word would touch the guard page. The
+  // aligned-load strategy must keep the load within the readable page →
+  // success, not fault.
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
 
-  void* region = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  ASSERT_NE(region, MAP_FAILED);
-  ASSERT_EQ(0, munmap((char*)region + page_size, page_size));
-
-  char* mapped_end = (char*)region + page_size;
+  char* mapped_end = region.guardStart();
   char* src = mapped_end - 2;  // 2 bytes from page boundary, k = 2
   src[0] = 'X';
   src[1] = 'Y';
@@ -349,49 +364,35 @@ TEST_F(SafeFetchTest, safeCopy_tailNearUnmappedBoundary_stillSucceeds) {
   EXPECT_TRUE(SafeAccess::safeCopy(dst, src, 2));
   EXPECT_EQ('X', dst[0]);
   EXPECT_EQ('Y', dst[1]);
-
-  munmap(region, page_size);
 }
 
-TEST_F(SafeFetchTest, safeCopy_requestedRangeCrossesUnmappedPage_returnsFalse) {
+TEST_F(SafeFetchTest, safeCopy_requestedRangeCrossesGuardPage_returnsFalse) {
   // Distinct from the case above: here the *requested* range itself
-  // crosses into the unmapped page. safeCopy must legitimately fault
+  // crosses into the guard page. safeCopy must legitimately fault
   // when it can't read all the bytes the caller asked for.
-  long page_size = sysconf(_SC_PAGESIZE);
-  ASSERT_GT(page_size, 0);
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
 
-  void* region = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  ASSERT_NE(region, MAP_FAILED);
-  ASSERT_EQ(0, munmap((char*)region + page_size, page_size));
-
-  char* mapped_end = (char*)region + page_size;
+  char* mapped_end = region.guardStart();
   char* src = mapped_end - 2;
   src[0] = 'X';
   src[1] = 'Y';
 
-  // Asking for 8 bytes pushes 6 bytes into the unmapped page → must fault.
+  // Asking for 8 bytes pushes 6 bytes into the guard page → must fault.
   char dst[16] = {0};
   EXPECT_FALSE(SafeAccess::safeCopy(dst, src, 8));
-
-  munmap(region, page_size);
 }
 
 TEST_F(SafeFetchTest, safeCopy_partialPrefixCopiedBeforeFault) {
-  // When the requested range straddles the boundary into an unmapped page,
+  // When the requested range straddles the boundary into the guard page,
   // safeCopy returns false but the byte-granular copy still writes every
   // readable byte before the fault. Verify the readable prefix landed in dst.
-  long page_size = sysconf(_SC_PAGESIZE);
-  ASSERT_GT(page_size, 0);
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
 
-  void* region = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  ASSERT_NE(region, MAP_FAILED);
-  ASSERT_EQ(0, munmap((char*)region + page_size, page_size));
-
-  char* mapped_end = (char*)region + page_size;
+  char* mapped_end = region.guardStart();
   // Place src so exactly `prefix` bytes are readable and the rest fall in
-  // the unmapped page.
+  // the guard page.
   const size_t prefix = 5;
   char* src = mapped_end - prefix;
   static const char kPrefix[] = "HELLO";  // 5 known readable bytes
@@ -407,8 +408,6 @@ TEST_F(SafeFetchTest, safeCopy_partialPrefixCopiedBeforeFault) {
   EXPECT_EQ(0, memcmp(dst, kPrefix, prefix));
   // Bytes past the prefix were never written (fault stopped the copy).
   EXPECT_EQ((char)0x5A, dst[prefix]);
-
-  munmap(region, page_size);
 }
 
 TEST_F(SafeFetchTest, safeCopy_unalignedSource_allMisalignments) {
@@ -430,18 +429,13 @@ TEST_F(SafeFetchTest, safeCopy_unalignedSource_allMisalignments) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_unalignedShortAtPageEnd_stillSucceeds) {
-  // Combine misalignment with proximity to an unmapped boundary: src is
-  // misaligned AND only a few bytes from the end of the mapped page.
+  // Combine misalignment with proximity to the guard page: src is
+  // misaligned AND only a few bytes from the end of the readable page.
   // The front fixup reads backward (into the same page) → success.
-  long page_size = sysconf(_SC_PAGESIZE);
-  ASSERT_GT(page_size, 0);
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
 
-  void* region = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  ASSERT_NE(region, MAP_FAILED);
-  ASSERT_EQ(0, munmap((char*)region + page_size, page_size));
-
-  char* mapped_end = (char*)region + page_size;
+  char* mapped_end = region.guardStart();
   // mapped_end is 4-byte aligned (pages are 4 KiB-aligned). Place src
   // 3 bytes back from the boundary so k = 1 and only 3 bytes are wanted.
   char* src = mapped_end - 3;
@@ -454,8 +448,6 @@ TEST_F(SafeFetchTest, safeCopy_unalignedShortAtPageEnd_stillSucceeds) {
   EXPECT_EQ('P', dst[0]);
   EXPECT_EQ('Q', dst[1]);
   EXPECT_EQ('R', dst[2]);
-
-  munmap(region, page_size);
 }
 
 TEST_F(SafeFetchTest, safeCopy_dataMatchingSingleSentinel_stillSucceeds) {
