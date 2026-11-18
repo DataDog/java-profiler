@@ -494,7 +494,7 @@ void ReferenceChainTracker::stopThread() {
 bool ReferenceChainTracker::applyOomRamp(double seconds_to_oom) {
   bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
   long target_ms = _pause_target_ms;
-  u64 cadence_ns = load(_effective_cadence_ns);
+  u64 cadence_ns;
   if (urgent) {
     double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
     target_ms = std::lround(_pause_target_ms *
