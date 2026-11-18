@@ -19,6 +19,7 @@
 #include "profiler.h"
 #include "samplerPerf.h"
 #include "symbols.h"
+#include "threadExitRegistry.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -89,6 +90,11 @@ volatile u64 MallocTracer::_last_config_update_ts;
 volatile bool MallocTracer::_running = false;
 PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
     31, 511, 3, MallocTracer::CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
+
+#ifdef UNIT_TEST
+void (*MallocTracer::beforeAcquireForTest)() = nullptr;
+void (*MallocTracer::recordSampleForTest)(int, const MallocEvent&) = nullptr;
+#endif
 
 Mutex MallocHooker::_patch_lock;
 int MallocHooker::_patched_libs = 0;
@@ -310,9 +316,12 @@ bool MallocTracer::shouldSample(size_t size) {
 // (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
 // because the window is short.
 void MallocTracer::maybeRecord(void* ret, size_t size) {
-    if (running() && ret && size) {
-        // Even we are not in a signal handler, we cannot malloc or
-        // we may get into indefinite loop
+    if (running() && ret && size && !ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+        // Marked threads bypass crash recovery, so reject teardown allocations before TLS or walks.
+        // The malloc hook must not allocate while acquiring TLS.
+#ifdef UNIT_TEST
+        if (beforeAcquireForTest != nullptr) beforeAcquireForTest();
+#endif
         ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
         if (prof_thread == nullptr) {
             Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
@@ -358,7 +367,14 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
         event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
     }
 
-    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+#ifdef UNIT_TEST
+    if (recordSampleForTest != nullptr) {
+        recordSampleForTest(tid, event);
+    } else
+#endif
+    {
+        Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+    }
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
     if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {

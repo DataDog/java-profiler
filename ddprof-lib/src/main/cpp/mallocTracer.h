@@ -42,6 +42,11 @@ class MallocTracer : public Engine {
 
     static volatile bool _running;
     static PidController _pid;
+#ifdef UNIT_TEST
+    friend class MallocTracerTestAccess;
+    static void (*beforeAcquireForTest)();
+    static void (*recordSampleForTest)(int, const MallocEvent&);
+#endif
 
     static u64 nextPoissonInterval();
     static bool shouldSample(size_t size);
@@ -65,8 +70,7 @@ class MallocTracer : public Engine {
 
     static void recordMalloc(void* address, size_t size, int tid);
 
-    // Entry point for the malloc hooks (mallocTracer.cpp): gates on the
-    // sampling decision before touching thread-local state.
+    // Rejects exiting threads before TLS acquisition; samples under the TLS reentrancy guard.
     static void maybeRecord(void* ret, size_t size);
 };
 
