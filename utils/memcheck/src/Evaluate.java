@@ -291,7 +291,8 @@ public class Evaluate {
                 errors.add("no no-profiler runs for scenario " + scenario + " (budget line " + b.line + ")");
                 return new Row(b, scenario, null, "MISSING", true);
             }
-            long lacking = lacking(Stream.concat(profiled.stream(), noProfiler.stream()), b.metric);
+            // A report-only line cannot fail the check, so a category missing from one arm shows as 0.
+            long lacking = b.limit == null ? 0 : lacking(Stream.concat(profiled.stream(), noProfiler.stream()), b.metric);
             if (lacking > 0) {
                 errors.add(lacking + " run(s) of scenario " + scenario + " lack " + b.metric + " (budget line " + b.line + ")");
                 return new Row(b, scenario, null, "MISSING", true);
@@ -316,18 +317,27 @@ public class Evaluate {
         return new Row(b, scenario, value, over ? "OVER" : "ok", over);
     }
 
-    /** The value of an {@code nmt.} or {@code proc.} metric in one run; call only after {@link #lacking} is 0. */
-    private static java.util.function.ToDoubleFunction<Run> delta(String metric) {
-        boolean nmt = metric.startsWith("nmt.");
-        String key = metric.substring(metric.indexOf('.') + 1);
-        return r -> (nmt ? r.nmt : r.proc).get(key);
+    /** The values an {@code nmt.} or {@code proc.} metric reads from in one run. */
+    private static java.util.function.Function<Run, Map<String, Double>> section(String metric) {
+        return metric.startsWith("nmt.") ? r -> r.nmt : r -> r.proc;
     }
 
-    /** Runs without the {@code nmt.} or {@code proc.} metric. A missing value is an error, never 0: 0 would pass the gate. */
+    private static String key(String metric) {
+        return metric.substring(metric.indexOf('.') + 1);
+    }
+
+    /** The value of an {@code nmt.} or {@code proc.} metric in one run, 0 if the run lacks it. */
+    private static java.util.function.ToDoubleFunction<Run> delta(String metric) {
+        java.util.function.Function<Run, Map<String, Double>> section = section(metric);
+        String key = key(metric);
+        return r -> section.apply(r).getOrDefault(key, 0.0);
+    }
+
+    /** Runs without the metric. A gated line must have none: counting a missing value as 0 would pass the gate. */
     private static long lacking(Stream<Run> runs, String metric) {
-        boolean nmt = metric.startsWith("nmt.");
-        String key = metric.substring(metric.indexOf('.') + 1);
-        return runs.filter(r -> !(nmt ? r.nmt : r.proc).containsKey(key)).count();
+        java.util.function.Function<Run, Map<String, Double>> section = section(metric);
+        String key = key(metric);
+        return runs.filter(r -> !section.apply(r).containsKey(key)).count();
     }
 
     private static double mean(List<Run> runs, java.util.function.ToDoubleFunction<Run> f) {

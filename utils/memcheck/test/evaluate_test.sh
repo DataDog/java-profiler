@@ -91,7 +91,14 @@ cp -r "$R" "$R3"
 record "$R3" alpha nmt 3 '{"native_mem_max_bytes":1048576}' '{"internal":500}'
 RUN="$R3"
 check "nmt value missing in one run" 2 "alpha nmt.class 3MiB -" "1 run(s) of scenario alpha lack nmt.class (budget line 1)"
-check "proc value missing" 2 "beta proc.VmRSS - -" "2 run(s) of scenario beta lack proc.VmRSS"
+check "proc value missing" 2 "beta proc.VmRSS 1GiB -" "2 run(s) of scenario beta lack proc.VmRSS"
+check "report-only value missing" 0 "beta proc.VmRSS - -" "| beta | 0 KiB |"
+RUN="$R"
+R6="$TMP/run6"
+cp -r "$R" "$R6"
+record "$R6" alpha noprof 2 '{}' '{"internal":400}'
+RUN="$R6"
+check "nmt value missing in a no-profiler run" 2 "alpha nmt.class 3MiB -" "1 run(s) of scenario alpha lack nmt.class"
 RUN="$R"
 
 # A truncated record and a record without a scenario: input errors (2), never "over budget" (1).
@@ -102,7 +109,18 @@ RUN="$R4"
 check "truncated record" 2 "alpha native_mem_max_bytes 2MiB -" "incomplete" "truncated.json is not a run record"
 printf '{"arm":"nmt"}\n' > "$R4/runs/truncated.json"
 check "record without a scenario" 2 "alpha native_mem_max_bytes 2MiB -" "truncated.json is not a run record" "no scenario or arm"
+printf '{"scenario":"alpha"}\n' > "$R4/runs/truncated.json"
+check "record without an arm" 2 "alpha native_mem_max_bytes 2MiB -" "truncated.json is not a run record" "no scenario or arm"
 RUN="$R"
+
+# An unreadable budget file is an input error (2), not "over budget" (1).
+java "$EVALUATE" "$TMP/no-such-budget.txt" "$TMP/report.md" "$R" > "$TMP/stdout.txt" 2>&1
+rc=$?
+if [ "$rc" -eq 2 ] && grep -qF "error: $TMP/no-such-budget.txt" "$TMP/stdout.txt"; then
+  echo "ok   unreadable budget file"
+else
+  echo "FAIL unreadable budget file: exit $rc"; cat "$TMP/stdout.txt"; failures=$((failures + 1))
+fi
 
 # memcheck:report passes the dir of a memcheck:x64 job that failed before writing runs/.
 RUN="$TMP/no-such-job"
