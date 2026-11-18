@@ -119,10 +119,11 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
 ## Pi
 
 In Pi, a `cd` does not persist between commands. After step 1, stop and ask the
-engineer to start Pi in the worktree, named by its absolute path, with project trust
-(`pi -a`), then to continue there with step 2. When the Build plan has several
-PRs, do the same for each later PR: create its worktree as step 1 says, then ask the
-engineer to restart Pi in it before that PR's work starts.
+engineer to start Pi in the worktree with project trust, giving the command
+`cd <absolute path> && pi -a`, then to continue there with step 2. When the Build
+plan has several PRs, do the same for each later PR: create its worktree as step 1
+says, then ask the engineer to restart Pi in it with that command before that PR's
+work starts.
 
 In Pi, do not call a subagent tool for any purpose, also when an extension such as
 `pi-subagents` provides one. Say so, then run S1, S2 and S3 one after another in
