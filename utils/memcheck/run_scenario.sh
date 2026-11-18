@@ -72,20 +72,20 @@ esac
   MemCheckMain "$MODE" "${ARGS[0]}" "$STEADY_MS" "$GENDIR" "${ARGS[@]:1}" \
   > "$RUNDIR/stdout.log" 2>&1 &
 PID=$!
+# Every early exit (set -e included) kills the JVM, so it cannot overlap the next run.
+trap 'kill "$PID" 2>/dev/null || true' EXIT
 
 # Wait for the rotation; give up if the JVM dies or it takes far too long.
 deadline=$(( $(date +%s) + 300 ))
 until grep -qE 'MEMCHECK_DUMP_(END|FAILED)' "$RUNDIR/stdout.log" 2>/dev/null; do
   if ! kill -0 "$PID" 2>/dev/null || [ "$(date +%s)" -gt "$deadline" ]; then
     echo "FAIL: $TAG never reached the rotation; see $RUNDIR/stdout.log" >&2
-    kill "$PID" 2>/dev/null || true
     exit 1
   fi
   sleep 0.2
 done
 if grep -q MEMCHECK_DUMP_FAILED "$RUNDIR/stdout.log"; then
   echo "FAIL: $TAG rotation failed: $(grep MEMCHECK_DUMP_FAILED "$RUNDIR/stdout.log")" >&2
-  kill "$PID" 2>/dev/null || true
   exit 1
 fi
 
@@ -99,6 +99,7 @@ if ! wait "$PID"; then
   echo "FAIL: $TAG JVM exited non-zero; see $RUNDIR/stdout.log" >&2
   exit 1
 fi
+trap - EXIT
 
 "$JAVA" -cp "$MEMCHECK_CLASSES" CollectRun scenario="$SCENARIO" arm="$ARM" rep="$REP" \
   jfr="$RUNDIR/final.jfr" middump="$RUNDIR/middump.jfr" nmt="$RUNDIR/nmt.txt" \

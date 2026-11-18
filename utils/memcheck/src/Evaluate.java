@@ -24,8 +24,8 @@ import java.util.stream.Stream;
  *
  * <p>Usage: {@code java Evaluate.java <budget.txt> <report.md> <dir>...}, where each dir holds
  * a {@code runs/} directory of {@link CollectRun} records. Exit status: 0 within budget, 1 over
- * budget or a tripwire hit, 2 bad input (unreadable budget line, no records for a budgeted
- * scenario). The report is written in every case.
+ * budget or a tripwire hit, 2 bad input (unreadable budget line or record, no records or no
+ * value for a budgeted metric). The report is written unless the budget file cannot be read.
  *
  * <p>Budget lines are {@code scenario metric limit measured [key=value...]}, separated by
  * whitespace; {@code #} starts a comment. {@code scenario} may be {@code *}: every scenario that
@@ -143,25 +143,36 @@ public class Evaluate {
         }
     }
 
-    public static void main(String[] args) throws IOException {
-        if (args.length > 0 && args[0].equals("--calibrate")) {
-            System.exit(calibrateMain(args));
+    public static void main(String[] args) {
+        try {
+            System.exit(args.length > 0 && args[0].equals("--calibrate") ? calibrateMain(args) : evaluateMain(args));
+        } catch (IOException e) {
+            // Exit 1 means over budget; unreadable input must not look like that.
+            System.err.println("error: " + e.getMessage());
+            System.exit(2);
         }
+    }
+
+    static int evaluateMain(String[] args) throws IOException {
         if (args.length < 3) {
             System.err.println("usage: java Evaluate.java <budget.txt> <report.md> <dir>...");
-            System.exit(2);
+            return 2;
         }
         List<String> errors = new ArrayList<>();
         List<Budget> budget = parseBudget(Files.readAllLines(Paths.get(args[0]), StandardCharsets.UTF_8), errors);
         List<Run> runs = new ArrayList<>();
         for (int i = 2; i < args.length; i++) {
-            runs.addAll(readRuns(Paths.get(args[i], "runs")));
+            try {
+                runs.addAll(readRuns(Paths.get(args[i], "runs")));
+            } catch (IOException e) {
+                errors.add(e.getMessage());
+            }
         }
         List<Row> rows = evaluate(budget, runs, errors);
         String report = report(rows, errors, Paths.get(args[2]));
         Files.write(Paths.get(args[1]), report.getBytes(StandardCharsets.UTF_8));
         System.out.print(report);
-        System.exit(!errors.isEmpty() ? 2 : rows.stream().anyMatch(r -> r.failed) ? 1 : 0);
+        return !errors.isEmpty() ? 2 : rows.stream().anyMatch(r -> r.failed) ? 1 : 0;
     }
 
     static List<Budget> parseBudget(List<String> lines, List<String> errors) {
@@ -217,7 +228,11 @@ public class Evaluate {
         }
         try (Stream<Path> files = Files.list(dir)) {
             for (Path p : files.filter(f -> f.toString().endsWith(".json")).sorted().collect(Collectors.toList())) {
-                runs.add(toRun(new Json(new String(Files.readAllBytes(p), StandardCharsets.UTF_8)).object()));
+                try {
+                    runs.add(toRun(new Json(new String(Files.readAllBytes(p), StandardCharsets.UTF_8)).object()));
+                } catch (RuntimeException e) {
+                    throw new IOException(p + " is not a run record: " + e, e);
+                }
             }
         }
         return runs;
@@ -225,6 +240,9 @@ public class Evaluate {
 
     @SuppressWarnings("unchecked")
     static Run toRun(Map<String, Object> r) {
+        if (!(r.get("scenario") instanceof String) || !(r.get("arm") instanceof String)) {
+            throw new IllegalArgumentException("no scenario or arm");
+        }
         return new Run((String) r.get("scenario"), (String) r.get("arm"),
                 numbers((Map<String, Object>) r.get("counters"), 1),
                 numbers((Map<String, Object>) r.get("nmt_kb"), KIB),
@@ -273,10 +291,12 @@ public class Evaluate {
                 errors.add("no no-profiler runs for scenario " + scenario + " (budget line " + b.line + ")");
                 return new Row(b, scenario, null, "MISSING", true);
             }
-            boolean nmt = b.metric.startsWith("nmt.");
-            String key = b.metric.substring(b.metric.indexOf('.') + 1);
-            value = mean(profiled, r -> (nmt ? r.nmt : r.proc).getOrDefault(key, 0.0))
-                    - mean(noProfiler, r -> (nmt ? r.nmt : r.proc).getOrDefault(key, 0.0));
+            long lacking = lacking(Stream.concat(profiled.stream(), noProfiler.stream()), b.metric);
+            if (lacking > 0) {
+                errors.add(lacking + " run(s) of scenario " + scenario + " lack " + b.metric + " (budget line " + b.line + ")");
+                return new Row(b, scenario, null, "MISSING", true);
+            }
+            value = mean(profiled, delta(b.metric)) - mean(noProfiler, delta(b.metric));
         } else {
             if (profiled.stream().noneMatch(r -> r.counters.containsKey(b.metric))) {
                 errors.add("no counter " + b.metric + " in scenario " + scenario + " (budget line " + b.line + ")");
@@ -294,6 +314,20 @@ public class Evaluate {
         }
         boolean over = value > b.limit;
         return new Row(b, scenario, value, over ? "OVER" : "ok", over);
+    }
+
+    /** The value of an {@code nmt.} or {@code proc.} metric in one run; call only after {@link #lacking} is 0. */
+    private static java.util.function.ToDoubleFunction<Run> delta(String metric) {
+        boolean nmt = metric.startsWith("nmt.");
+        String key = metric.substring(metric.indexOf('.') + 1);
+        return r -> (nmt ? r.nmt : r.proc).get(key);
+    }
+
+    /** Runs without the {@code nmt.} or {@code proc.} metric. A missing value is an error, never 0: 0 would pass the gate. */
+    private static long lacking(Stream<Run> runs, String metric) {
+        boolean nmt = metric.startsWith("nmt.");
+        String key = metric.substring(metric.indexOf('.') + 1);
+        return runs.filter(r -> !(nmt ? r.nmt : r.proc).containsKey(key)).count();
     }
 
     private static double mean(List<Run> runs, java.util.function.ToDoubleFunction<Run> f) {
@@ -365,9 +399,12 @@ public class Evaluate {
         Long perMethod = null;
         Long refMethods = null;
         if (delta) {
-            boolean nmt = b.metric.startsWith("nmt.");
-            String key = b.metric.substring(b.metric.indexOf('.') + 1);
-            value = r -> (nmt ? r.nmt : r.proc).getOrDefault(key, 0.0);
+            long lacking = lacking(jobs.stream().flatMap(List::stream).filter(r -> r.scenario.equals(b.scenario)
+                    && (r.arm.equals(PROFILED) || r.arm.equals(NO_PROFILER))), b.metric);
+            if (lacking > 0) {
+                throw new IllegalArgumentException(lacking + " run(s) of " + b.scenario + " lack " + b.metric);
+            }
+            value = delta(b.metric);
         } else {
             if (profiled.stream().flatMap(List::stream).anyMatch(r -> !r.counters.containsKey(b.metric))) {
                 throw new IllegalArgumentException("a profiled run of " + b.scenario + " lacks counter " + b.metric);

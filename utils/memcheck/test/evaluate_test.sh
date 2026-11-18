@@ -82,6 +82,71 @@ check "missing measured column" 2 "alpha native_mem_max_bytes 1MiB" "budget line
 check "half of the coverage options" 2 "alpha native_mem_max_bytes 1MiB - per_method=1" "per_method and ref_methods go together"
 check "absent on a counter" 2 "alpha native_mem_max_bytes absent -" "'absent' only applies to nmt.<category>"
 check "comments and blank lines" 0 $'# header\n\nalpha native_mem_max_bytes 2MiB -   # trailing' "| alpha | \`native_mem_max_bytes\` | 1.05 MiB |"
+# (1048576 + 1153434) / 2 = 1101005 B: a value equal to its limit is within budget.
+check "value equal to the limit" 0 "alpha native_mem_max_bytes 1101005B -" "| 1.05 MiB | 0 KiB | ok |"
+
+# An NMT value that is missing from a run must not count as 0, which would pass the gate.
+R3="$TMP/run3"
+cp -r "$R" "$R3"
+record "$R3" alpha nmt 3 '{"native_mem_max_bytes":1048576}' '{"internal":500}'
+RUN="$R3"
+check "nmt value missing in one run" 2 "alpha nmt.class 3MiB -" "1 run(s) of scenario alpha lack nmt.class (budget line 1)"
+check "proc value missing" 2 "beta proc.VmRSS - -" "2 run(s) of scenario beta lack proc.VmRSS"
+RUN="$R"
+
+# A truncated record and a record without a scenario: input errors (2), never "over budget" (1).
+R4="$TMP/run4"
+cp -r "$R" "$R4"
+printf '{"scenario":"alpha","arm":"nmt","counters":{"native_mem' > "$R4/runs/truncated.json"
+RUN="$R4"
+check "truncated record" 2 "alpha native_mem_max_bytes 2MiB -" "incomplete" "truncated.json is not a run record"
+printf '{"arm":"nmt"}\n' > "$R4/runs/truncated.json"
+check "record without a scenario" 2 "alpha native_mem_max_bytes 2MiB -" "truncated.json is not a run record" "no scenario or arm"
+RUN="$R"
+
+# memcheck:report passes the dir of a memcheck:x64 job that failed before writing runs/.
+RUN="$TMP/no-such-job"
+check "job dir without runs" 2 "alpha native_mem_max_bytes 2MiB -" "no profiled runs for scenario alpha (budget line 1)"
+if grep -qF 'no-such-job/runs' "$TMP/report.md"; then
+  echo "FAIL job dir without runs: report shows a file error"; cat "$TMP/report.md"; failures=$((failures + 1))
+fi
+RUN="$R"
+
+# A record without counters_middump and proc_kb: a counter line needs neither.
+R5="$TMP/run5"
+mkdir -p "$R5/runs"
+printf '{"scenario":"alpha","arm":"nmt","rep":1,"counters":{"native_mem_max_bytes":1048576},"nmt_kb":{}}\n' \
+  > "$R5/runs/alpha-nmt-1.json"
+RUN="$R5"
+check "record without proc_kb" 0 "alpha native_mem_max_bytes 2MiB -" "| alpha | \`native_mem_max_bytes\` | 1.00 MiB |"
+RUN="$R"
+
+# CollectRun: last counter value from an existing recording, nothing from a missing one,
+# committed (not reserved) KB per NMT category and for the total, and the /proc fields.
+COLLECT="$TMP/collect"
+mkdir -p "$COLLECT"
+java "$HERE/CounterJfr.java" "$COLLECT/final.jfr"
+cat > "$COLLECT/nmt.txt" <<'NMT'
+Native Memory Tracking:
+
+Total: reserved=2000KB, committed=1000KB
+-                 Java Heap (reserved=500KB, committed=400KB)
+                            (mmap: reserved=500KB, committed=400KB)
+-                     Class (reserved=300KB, committed=200KB)
+NMT
+printf 'Name:\tjava\nVmRSS:\t    1234 kB\nRssAnon:\t    1000 kB\nRssFile:\t     234 kB\n' > "$COLLECT/status.txt"
+if java "$HERE/../src/CollectRun.java" scenario=s arm=nmt rep=1 jfr="$COLLECT/final.jfr" \
+    middump="$COLLECT/missing.jfr" nmt="$COLLECT/nmt.txt" status="$COLLECT/status.txt" \
+    out="$COLLECT/out.json" > "$COLLECT/stdout.txt" 2>&1; then
+  want='{"scenario":"s","arm":"nmt","rep":1,"counters":{"native_mem_live_bytes":200},"counters_middump":{},"nmt_kb":{"total":1000,"java_heap":400,"class":200},"proc_kb":{"VmRSS":1234,"RssAnon":1000,"RssFile":234}}'
+  if [ "$(cat "$COLLECT/out.json")" = "$want" ]; then
+    echo "ok   collect run record"
+  else
+    echo "FAIL collect run record: got $(cat "$COLLECT/out.json")"; failures=$((failures + 1))
+  fi
+else
+  echo "FAIL collect run record: CollectRun failed"; cat "$COLLECT/stdout.txt"; failures=$((failures + 1))
+fi
 
 # calibrate <name> <expected-exit> <budget-text> <grep-pattern>...   (job dirs from $JOBS)
 # Patterns are checked in the written budget on success, in stderr on failure.
@@ -125,7 +190,7 @@ for j in 1 2; do
     noisy=$((10 * MIB + (2 * rep - 3) * 102400 * (2 - j)))
     m=$((980 + 20 * rep))
     record "$dir" flat nmt "$rep" "{\"native_mem_max_bytes\":$((10 * MIB))}" "{\"class\":$class}"
-    record "$dir" noisy nmt "$rep" "{\"native_mem_max_bytes\":$noisy}" '{}'
+    record "$dir" noisy nmt "$rep" "{\"native_mem_max_bytes\":$noisy}" '{"class":3000}'
     record "$dir" cov nmt "$rep" "{\"native_mem_max_bytes\":$((MIB + 500 * (m - 1000))),\"line_number_tables\":$m}" '{}'
     cm=$((900 + 200 * rep))
     record "$dir" cov counters "$rep" "{\"native_mem_max_bytes\":$((MIB + 500 * (cm - 1000))),\"line_number_tables\":$cm}" '{}'
@@ -160,6 +225,7 @@ fi
 calibrate "one profiled run per job" 2 "single native_mem_max_bytes 1MiB 1MiB" \
   "budget line 1: every job needs at least 2 profiled runs of single"
 calibrate "no no-profiler runs" 2 "noisy nmt.class 1MiB 1MiB" "a job has no no-profiler runs of noisy"
+calibrate "nmt value missing" 2 "cov nmt.class 1MiB 1MiB" "4 run(s) of cov lack nmt.class"
 calibrate "missing counter" 2 "flat native_mem_bogus 1MiB 1MiB" "lacks counter native_mem_bogus"
 calibrate "no coverage variation" 2 "flat native_mem_max_bytes 1MiB 1MiB per_method=1 ref_methods=1" \
   "line_number_tables does not vary in flat"

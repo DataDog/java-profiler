@@ -1,11 +1,9 @@
 # Copyright 2026, Datadog, Inc.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Calibration run for utils/memcheck/budget.txt, on the runner type the PR
-# check uses; utils/memcheck/calibrate.py derives the limits from its
-# artifacts. Runs only in a pipeline started from the web UI with
-# RUN_MEMCHECK_CALIBRATION=true. Five parallel jobs show how much the means
-# move between pods, not just the noise within one job.
+# Calibration run for utils/memcheck/budget.txt on the PR check's runner type;
+# `Evaluate.java --calibrate` derives the limits from the five jobs' artifacts.
+# Runs only in a web-started pipeline with RUN_MEMCHECK_CALIBRATION=true.
 memcheck-calibrate:x64:
   stage: benchmarks
   rules:
