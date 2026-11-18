@@ -254,6 +254,11 @@ configure<ProfilerTestExtension> {
   extraJvmArgs.addAll(
     "-Dddprof.disable_unsafe=true",
     "-XX:OnError=/tmp/do_stuff.sh",
+    // Observed on GraalVM: with sampledLeaf inlined into recursiveWorkload's inlined copies, an
+    // interrupted leaf PC resolved to another copy's scope (extra callers). Out of line, callers
+    // resolve from exact return PCs. Needed while walkVM maps interrupted PCs to the next PcDesc.
+    "-XX:CompileCommand=quiet", // no per-JVM CompileCommand echo
+    "-XX:CompileCommand=dontinline,com/datadoghq/profiler/wallclock/FrozenVirtualThreadStackTest.sampledLeaf",
   )
 
   // Optional per-invocation heap override (-PtestMaxHeap=1536m). Appended after

@@ -217,7 +217,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
     int[] counts =
         reduceEvents(
             event,
-            () -> new int[8],
+            () -> new int[9],
             (count, sample) -> {
               JfrStackTrace trace = sample.getStackTrace();
               if (containsMethod(trace, "sampledLeaf")) {
@@ -229,6 +229,7 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
                   if (!getClass().getName().equals(frame.className())) continue;
                   if ("sampledLeaf".equals(frame.methodName())) {
                     if (leafSeen) count[7]++;
+                    if ("Inlined".equals(frame.typeDescription())) count[8]++;
                     leafSeen = true;
                   }
                   if ("nestedWorkload".equals(frame.methodName())) {
@@ -267,6 +268,8 @@ public class FrozenVirtualThreadStackTest extends CStackAwareAbstractProfilerTes
               }
             });
     assertTrue(counts[0] > 0, "No sample captured the leaf workload");
+    assertEquals(
+        0, counts[8], "sampledLeaf must stay out of line: see its dontinline in build.gradle.kts");
     assertEquals(
         0,
         counts[1],
