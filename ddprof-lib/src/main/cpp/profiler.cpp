@@ -565,7 +565,8 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
  * For remote symbolication with build-ID:
  * - Does symbol resolution to check marks (O(log n) binarySearch + O(1) mark check)
  * - Packs mark + lib_index + pc_offset into method_id field
- * - Returns is_marked=true if mark indicates termination (MARK_INTERPRETER, etc.)
+ * - Returns is_marked=true for walk-control marks (MARK_INTERPRETER, etc.);
+ *   MARK_CONT_RUNTIME frames keep their resolution and report only the mark
  *
  * For traditional symbolication:
  * - Does symbol resolution via binarySearch() on the found library
@@ -590,16 +591,16 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     lib->binarySearch(lookup_pc, &method_name);
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
-    if (mark != 0) {
+    if (isWalkControlMark(mark)) {
       return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);  // Marked - caller dispatches on mark
     }
 
     // Pack remote symbolication data using utility struct
     uintptr_t pc_offset = (uintptr_t)lookup_pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
-    unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+    unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
 
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, mark);
   }
 
   // Traditional symbol resolution
@@ -607,11 +608,9 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   if (lib != nullptr) {
     lib->binarySearch(lookup_pc, &method_name);
   }
-  if (method_name != nullptr) {
-    char mark = NativeFunc::read_mark(method_name);
-    if (mark != 0) {
-      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);
-    }
+  char mark = method_name != nullptr ? NativeFunc::read_mark(method_name) : 0;
+  if (isWalkControlMark(mark)) {
+    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);
   }
 
   // No symbol but known library: pack for library-relative identification.
@@ -624,7 +623,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
-  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME);
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, mark);
 }
 
 /**
@@ -661,7 +660,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         lib->binarySearch((void*)pc, &method_name);
         char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
-        if (mark != 0) {
+        if (isWalkControlMark(mark)) {
           if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
             depth = 0;
             skipping = false;
@@ -678,8 +677,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         if (skipping) continue;
 
         // Populate remote frame inline - no allocation needed!
-        // Pass the mark we already retrieved to avoid duplicate binarySearch
-        populateRemoteFrame(&frames[depth], pc, lib, mark);
+        populateRemoteFrame(&frames[depth], pc, lib, 0);
 
         // Use frame address as identifier for duplicate detection
         void* current_identifier = (void*)&frames[depth];
@@ -695,7 +693,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     const char *method_name = findNativeMethod((void*)pc);
     if (method_name != nullptr) {
       char mark = NativeFunc::read_mark(method_name);
-      if (mark != 0) {
+      if (isWalkControlMark(mark)) {
         if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
           depth = 0;
           skipping = false;

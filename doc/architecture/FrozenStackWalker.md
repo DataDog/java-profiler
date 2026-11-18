@@ -30,7 +30,8 @@ runtime is covered too: an in-progress freeze/thaw keeps its runtime frames on
 the stack between the interrupted PC and the continuation boundary, so the walk
 detects the crossing, while a completed transition has already returned past
 them. Freeze/thaw transitions do not always change the thread's Java state, so
-the state check alone is insufficient.
+the state check alone is insufficient. The mark only annotates these frames:
+they keep their symbols, and native stack walks continue through them.
 
 For a native interrupted PC outside that runtime — for example a JNI call made
 from a mounted Java frame — the chunk is quiescent, and recovery is gated on
@@ -101,6 +102,9 @@ older callers were recovered.
 - `originAnchorFrozen_ut.cpp` classifies the freeze/thaw runtime symbols and
   walks with anchor-verified Java frames: an ordinary native call recovers the
   frozen callers, a freeze/thaw-runtime origin keeps the rejection, and without
-  an anchor no Java frames are manufactured.
+  an anchor no Java frames are manufactured. It also drives `append` directly
+  through its state, origin, nesting, geometry, depth and chunk-chain guards.
+- `walkVmAttribution_ut.cpp` checks that freeze/thaw-marked frames keep their
+  symbols in walkVM and in the FP/DWARF native-trace conversion.
 - `NestedContinuationTransitionTest` holds real child-publication and child-return
   intervals open and rejects suspended child frames in sampled parent stacks.
