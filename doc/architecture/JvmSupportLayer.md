@@ -16,7 +16,7 @@ Zing. Code that depends on one implementation lives in a subdirectory of
 
 Shared code must stay independent of the JVM implementation. When it needs
 implementation-specific behavior, it calls one of the abstraction files
-(`AGENTS.md`, "JVM implementation specific code"):
+(`ddprof-lib/src/main/cpp/AGENTS.md`, "JVM abstraction"):
 
 - `jvmSupport.h`, `jvmSupport.inline.h`, `jvmSupport.cpp`: the `JVMSupport` facade
 - `jvmThread.h`, `jvmThread.cpp`: the `JVMThread` native-thread facade
