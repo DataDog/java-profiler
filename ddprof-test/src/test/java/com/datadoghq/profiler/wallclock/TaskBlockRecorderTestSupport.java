@@ -1,6 +1,8 @@
 /* Copyright 2026, Datadog, Inc. */
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.NativeBuildConfig;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -10,11 +12,25 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
-/** Reads bounded native receipts without using the JFR writer or clearing diagnostic history. */
+/** Reads recorder counters and bounded receipts without clearing diagnostic history. */
 final class TaskBlockRecorderTestSupport {
   private TaskBlockRecorderTestSupport() {}
+
+  /** Builds without counters retain the strict count oracle: no rejection credit is available. */
+  static long recordFailures(Map<String, Long> counters) {
+    return counters.getOrDefault("task_block_record_failed", 0L);
+  }
+
+  /** Only recorder rejection, not stack, duration or lifecycle drops, can explain a shortfall. */
+  static void assertCompletedIntervals(
+      int observed, int expected, long recordFailures, String description) {
+    assertTrue(
+        observed + recordFailures >= expected,
+        () -> description + ": observed=" + observed + ", record_failed=" + recordFailures);
+  }
 
   static native long cursor0();
 

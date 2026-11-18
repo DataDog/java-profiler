@@ -24,10 +24,10 @@ public class NettyEpollTaskBlockAssertionsTest {
   @Test
   public void ordinaryEpollFramesCannotReplaceTimedWaits() {
     List<JfrEvent> events = waits("io.netty.", false, 5);
-    NettyEpollTaskBlockTest.assertEpollTaskBlock(events, WORKER, "io.netty.");
+    NettyEpollTaskBlockTest.assertEpollTaskBlock(events, WORKER, "io.netty.", 0);
     assertThrows(
         AssertionError.class,
-        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty."));
+        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
   }
 
   /** Four explicit intervals plus an ordinary loop event still lack the fifth JNI interval. */
@@ -37,7 +37,7 @@ public class NettyEpollTaskBlockAssertionsTest {
     events.add(wait("io.netty.", false, 99));
     assertThrows(
         AssertionError.class,
-        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty."));
+        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
   }
 
   /** Repeating a captured event cannot compensate for a missing explicit wait. */
@@ -47,7 +47,7 @@ public class NettyEpollTaskBlockAssertionsTest {
     events.add(events.get(0));
     assertThrows(
         AssertionError.class,
-        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty."));
+        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
   }
 
   /** Both original and relocated fixture frames identify five distinct explicit intervals. */
@@ -56,7 +56,7 @@ public class NettyEpollTaskBlockAssertionsTest {
     for (String prefix : Arrays.asList("io.netty.", "ddproffixture.io.netty.")) {
       List<JfrEvent> events = waits(prefix, true, 5);
       events.add(wait(prefix, false, 99));
-      NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, prefix);
+      NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, prefix, 0);
     }
   }
 
@@ -77,7 +77,7 @@ public class NettyEpollTaskBlockAssertionsTest {
     }
     assertThrows(
         AssertionError.class,
-        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty."));
+        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
   }
 
   /**
@@ -100,7 +100,7 @@ public class NettyEpollTaskBlockAssertionsTest {
                         "io.netty.channel.epoll.ProfilerEpollFixture", "lambda$timedNativeWaits$3")
                   }));
     }
-    NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.");
+    NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0);
   }
 
   /** An interval without its timestamp cannot participate in a distinct-interval assertion. */
@@ -110,7 +110,7 @@ public class NettyEpollTaskBlockAssertionsTest {
     events.get(0).raw().remove("startTime");
     assertThrows(
         AssertionError.class,
-        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty."));
+        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
   }
 
   /** An extra explicit interval is not evidence for the fixture's exact five-call workload. */
@@ -119,7 +119,7 @@ public class NettyEpollTaskBlockAssertionsTest {
     List<JfrEvent> events = waits("io.netty.", true, 6);
     assertThrows(
         AssertionError.class,
-        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty."));
+        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
   }
 
   /** Missing stacks fail directly rather than silently disappearing from the event oracle. */
@@ -129,7 +129,45 @@ public class NettyEpollTaskBlockAssertionsTest {
     events.get(0).raw().remove("stackTrace");
     assertThrows(
         AssertionError.class,
-        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty."));
+        () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
+  }
+
+  @Test
+  public void recorderRejectionAccountsForMissingTimedAndOrdinaryIntervals() {
+    for (String prefix : Arrays.asList("io.netty.", "ddproffixture.io.netty.")) {
+      List<JfrEvent> events = waits(prefix, true, 4);
+      NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, prefix, 1);
+      NettyEpollTaskBlockTest.assertEpollTaskBlock(events, WORKER, prefix, 1);
+      assertThrows(
+          AssertionError.class,
+          () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, prefix, 0));
+      assertThrows(
+          AssertionError.class,
+          () -> NettyEpollTaskBlockTest.assertEpollTaskBlock(events, WORKER, prefix, 0));
+    }
+  }
+
+  @Test
+  public void recorderRejectionDoesNotExcuseDuplicateExcessOrMalformedEmittedIntervals() {
+    List<JfrEvent> duplicate = waits("io.netty.", true, 3);
+    duplicate.add(duplicate.get(0));
+    assertThrows(
+        AssertionError.class,
+        () ->
+            NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(duplicate, WORKER, "io.netty.", 1));
+    assertThrows(
+        AssertionError.class,
+        () ->
+            NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(
+                waits("io.netty.", true, 6), WORKER, "io.netty.", 1));
+    for (String field :
+        Arrays.asList("stackTrace", "observedBlockingState", "duration", "startTime")) {
+      List<JfrEvent> events = waits("io.netty.", true, 4);
+      events.get(0).raw().remove(field);
+      assertThrows(
+          AssertionError.class,
+          () -> NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 1));
+    }
   }
 
   private static List<JfrEvent> waits(String prefix, boolean timed, int count) {

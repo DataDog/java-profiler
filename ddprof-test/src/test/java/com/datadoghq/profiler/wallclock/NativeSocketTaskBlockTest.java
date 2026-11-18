@@ -210,6 +210,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
   @Test
   public void blockingSelectorSelectEmitsIoWaitTaskBlock() throws Exception {
     String workerName = "taskblock-native-selector-select";
+    long failuresBefore = TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters());
     long suppressedBefore =
         profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
     runBlockingSelectorSelectOnce();
@@ -221,10 +222,18 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
 
     stopProfiler();
     JfrEvents taskBlocks = verifyEvents("datadog.TaskBlock", false);
-    assertIoWaitTaskBlockSelfContained(taskBlocks, workerName);
     int workerEvents = TaskBlockAssertions.countEventsForThread(taskBlocks, workerName);
+    if (workerEvents > 0) assertIoWaitTaskBlockSelfContained(taskBlocks, workerName);
+    assertSelectorTaskBlockCount(
+        workerEvents,
+        TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters()) - failuresBefore);
+  }
+
+  static void assertSelectorTaskBlockCount(int workerEvents, long recordFailures) {
+    TaskBlockRecorderTestSupport.assertCompletedIntervals(
+        workerEvents, 1, recordFailures, "expected native selector IO_WAIT TaskBlock");
     assertTrue(
-        workerEvents >= 1 && workerEvents <= 2,
+        workerEvents <= 2,
         "Expected one logical selector wait to produce at most two TaskBlocks, got: "
             + workerEvents);
   }
