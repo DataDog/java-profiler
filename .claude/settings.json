@@ -45,6 +45,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h=\"$CLAUDE_PROJECT_DIR/.claude/hooks/babysit-pr.py\"; [ -f \"$h\" ] || exit 0; exec python3 \"$h\""
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [
