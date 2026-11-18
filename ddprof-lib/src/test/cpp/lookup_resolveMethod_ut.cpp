@@ -118,8 +118,11 @@ TEST(LookupResolveMethodNativeDemangleTest, MangledCppSymbolIsDemangledCutAndCac
 // reserved signature id: a signature id of UNRESOLVED_ID would be written as a
 // non-descriptor. One frame per fillNativeMethodInfo() branch.
 TEST(LookupResolveMethodNativeDemangleTest, FailedSymbolInsertUsesReservedNameAndSignatureIds) {
-    const char* names[] = {"_Z3fooii", "plain_native", "kernel_fn_[k]"};
-    for (const char* name : names) {
+    struct Case { const char* name; int type; };
+    const Case cases[] = {
+        {"_Z3fooii", FRAME_CPP}, {"plain_native", FRAME_NATIVE}, {"kernel_fn_[k]", FRAME_KERNEL}};
+    for (const Case& c : cases) {
+        const char* name = c.name;
         MethodMap method_map;
         StringDictionary classes;
         Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
@@ -130,6 +133,7 @@ TEST(LookupResolveMethodNativeDemangleTest, FailedSymbolInsertUsesReservedNameAn
         frame.native_function_name = name;
         MethodInfo* mi = lookup.resolveMethod(frame);
         ASSERT_NE(nullptr, mi) << name;
+        EXPECT_EQ(c.type, mi->_type) << name << ": the intended branch was not reached";
         EXPECT_GT(lookup._symbols.keyAllocFailuresForTest(), 0) << name;
         EXPECT_EQ(SymbolDictionary::UNRESOLVED_ID, mi->_name) << name;
         EXPECT_EQ(SymbolDictionary::UNRESOLVED_SIG_ID, mi->_sig) << name;
