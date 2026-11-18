@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk17
 
 ## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-18 09:30:43 EST
+**Date:** 2026-11-18 09:31:53 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
+| CPU Samples | 611 |
+| Sample Rate | 10.18/sec |
+| Health Score | 636% |
 | Threads | 9 |
-| Allocations | 41 |
+| Allocations | 348 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 90 |
-| Sample Rate | 1.50/sec |
-| Health Score | 94% |
-| Threads | 10 |
-| Allocations | 54 |
+| CPU Samples | 111 |
+| Sample Rate | 1.85/sec |
+| Health Score | 116% |
+| Threads | 9 |
+| Allocations | 61 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 46-51 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1795011930 51
-1795011935 46
-1795011940 46
-1795011945 46
-1795011950 46
-1795011956 46
-1795011961 46
-1795011966 46
-1795011971 46
-1795011976 46
-1795011981 46
-1795011986 46
-1795011991 46
-1795011996 46
-1795012001 46
-1795012006 46
-1795012011 46
-1795012016 46
-1795012021 46
-1795012026 51
+1795012056 51
+1795012061 51
+1795012066 51
+1795012071 51
+1795012076 51
+1795012081 51
+1795012086 51
+1795012091 51
+1795012096 51
+1795012101 51
+1795012107 51
+1795012112 51
+1795012117 51
+1795012122 51
+1795012127 51
+1795012132 51
+1795012137 51
+1795012142 51
+1795012147 51
+1795012152 51
 ```
 </details>
 
