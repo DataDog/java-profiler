@@ -122,11 +122,9 @@ public:
   void collect(std::map<unsigned int, const char *> &map);
 };
 
-// A Dictionary whose failed inserts resolve to a reserved id outside the table,
-// so a caller never stores 0 (no entry) as a reference. Names and signatures get
-// separate ids because a signature must stay a valid method descriptor: JFR
-// consumers slice it at ')'. collect() emits a reserved id as an entry once a
-// lookup has failed.
+// A Dictionary whose failed inserts resolve to reserved ids, so a caller never
+// stores 0 (no entry). Signatures get their own id because JFR consumers slice a
+// descriptor at ')'. collect() emits a reserved id once a lookup has failed.
 class SymbolDictionary : public Dictionary {
 private:
   bool _name_failed = false;

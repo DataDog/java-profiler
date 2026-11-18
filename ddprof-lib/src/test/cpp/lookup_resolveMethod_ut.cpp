@@ -114,6 +114,28 @@ TEST(LookupResolveMethodNativeDemangleTest, MangledCppSymbolIsDemangledCutAndCac
     EXPECT_EQ(mi, mi_again);
 }
 
+// A failed symbol insert must give a native frame the reserved name id and the
+// reserved signature id: a signature id of UNRESOLVED_ID would be written as a
+// non-descriptor. One frame per fillNativeMethodInfo() branch.
+TEST(LookupResolveMethodNativeDemangleTest, FailedSymbolInsertUsesReservedNameAndSignatureIds) {
+    const char* names[] = {"_Z3fooii", "plain_native", "kernel_fn_[k]"};
+    for (const char* name : names) {
+        MethodMap method_map;
+        StringDictionary classes;
+        Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+        lookup._symbols.failKeyAllocationForTest(true);
+
+        ASGCT_CallFrame frame{};
+        frame.bci = BCI_ERROR;
+        frame.native_function_name = name;
+        MethodInfo* mi = lookup.resolveMethod(frame);
+        ASSERT_NE(nullptr, mi) << name;
+        EXPECT_GT(lookup._symbols.keyAllocFailuresForTest(), 0) << name;
+        EXPECT_EQ(SymbolDictionary::UNRESOLVED_ID, mi->_name) << name;
+        EXPECT_EQ(SymbolDictionary::UNRESOLVED_SIG_ID, mi->_sig) << name;
+    }
+}
+
 // ===========================================================================
 // B. Java frame -- fillJavaMethodInfo()'s JNI PushLocalFrame/PopLocalFrame
 //    balance, faked entirely without a live JVM.
