@@ -122,34 +122,53 @@ public:
   void collect(std::map<unsigned int, const char *> &map);
 };
 
-// A Dictionary whose failed inserts resolve to UNRESOLVED_ID, an id outside the
-// table, so a caller never stores 0 (no entry) as a reference. collect() emits
-// UNRESOLVED_ID as an entry once a lookup has failed.
+// A Dictionary whose failed inserts resolve to a reserved id outside the table,
+// so a caller never stores 0 (no entry) as a reference. Names and signatures get
+// separate ids because a signature must stay a valid method descriptor: JFR
+// consumers slice it at ')'. collect() emits a reserved id as an entry once a
+// lookup has failed.
 class SymbolDictionary : public Dictionary {
 private:
-  bool _failed = false;
+  bool _name_failed = false;
+  bool _sig_failed = false;
 
 public:
   static constexpr unsigned int UNRESOLVED_ID = 0xFFFFFFFFU;
+  static constexpr unsigned int UNRESOLVED_SIG_ID = 0xFFFFFFFEU;
 
   unsigned int lookup(const char *key, size_t length) {
     unsigned int id = Dictionary::lookup(key, length);
     if (id == 0) {
-      _failed = true;
+      _name_failed = true;
       return UNRESOLVED_ID;
     }
     return id;
   }
   unsigned int lookup(const char *key) { return lookup(key, strlen(key)); }
 
-  bool failed() const { return _failed; }
+  unsigned int lookupSignature(const char *key, size_t length) {
+    unsigned int id = Dictionary::lookup(key, length);
+    if (id == 0) {
+      _sig_failed = true;
+      return UNRESOLVED_SIG_ID;
+    }
+    return id;
+  }
+  unsigned int lookupSignature(const char *key) {
+    return lookupSignature(key, strlen(key));
+  }
 
-  // Hides Dictionary::collect: adds the UNRESOLVED_ID entry once a lookup failed,
+  bool failed() const { return _name_failed || _sig_failed; }
+
+  // Hides Dictionary::collect: adds the reserved entries for the failed kinds,
   // so every reference handed out has a pool entry.
   void collect(std::map<unsigned int, const char *> &map) {
     Dictionary::collect(map);
-    if (_failed) {
+    if (_name_failed) {
       map[UNRESOLVED_ID] = "<unresolved>";
+    }
+    if (_sig_failed) {
+      map[UNRESOLVED_SIG_ID] = "()V";
     }
   }
 };

@@ -145,7 +145,7 @@ Fixed allocation (static arrays):
 - Each is triple-buffered. Each buffer has a 128-row × 3-cell root `SBTable` (~6 KB),
   heap-allocated overflow tables, and a `StringArena` of 512 KB chunks for the key strings
 - A plain `Dictionary` (`_packages`) and a `SymbolDictionary` (`_symbols`, which maps a
-  failed insert to `UNRESOLVED_ID`) live in the per-dump `Lookup` and are freed after each dump
+  failed insert to a reserved name or signature id) live in the per-dump `Lookup` and are freed after each dump
 
 **Memory cost:**
 ```

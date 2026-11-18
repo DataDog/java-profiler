@@ -235,3 +235,40 @@ TEST(DictionaryTest, SymbolDictionaryOneArgLookupMatchesTwoArgLookup) {
     EXPECT_NE(SymbolDictionary::UNRESOLVED_ID, longer);
     EXPECT_NE(id, longer);  // full length, not a prefix match
 }
+
+// A failed signature insert must resolve to a valid method descriptor: JFR
+// consumers slice a descriptor at ')', so "<unresolved>" would crash them. Name
+// and signature failures are tracked apart, so each adds only its own entry.
+TEST(DictionaryTest, SymbolDictionarySignatureFailureResolvesToValidDescriptor) {
+    SymbolDictionary d;
+    d.failKeyAllocationForTest(true);
+    EXPECT_EQ(SymbolDictionary::UNRESOLVED_SIG_ID, d.lookupSignature("(I)V"));
+    d.failKeyAllocationForTest(false);
+    EXPECT_TRUE(d.failed());
+
+    std::map<unsigned int, const char*> m;
+    d.collect(m);
+    ASSERT_EQ(1U, m.count(SymbolDictionary::UNRESOLVED_SIG_ID));
+    const char *descriptor = m[SymbolDictionary::UNRESOLVED_SIG_ID];
+    ASSERT_NE(nullptr, strchr(descriptor, ')'));
+    EXPECT_EQ('(', descriptor[0]);
+    EXPECT_EQ(0U, m.count(SymbolDictionary::UNRESOLVED_ID));  // no name failed
+
+    SymbolDictionary names;
+    names.failKeyAllocationForTest(true);
+    EXPECT_EQ(SymbolDictionary::UNRESOLVED_ID, names.lookup("name"));
+    names.failKeyAllocationForTest(false);
+    std::map<unsigned int, const char*> nm;
+    names.collect(nm);
+    EXPECT_EQ(1U, nm.count(SymbolDictionary::UNRESOLVED_ID));
+    EXPECT_EQ(0U, nm.count(SymbolDictionary::UNRESOLVED_SIG_ID));  // no signature failed
+}
+
+// The signature overloads share ids with the name lookups of the same key.
+TEST(DictionaryTest, SymbolDictionaryLookupSignatureMatchesLookup) {
+    SymbolDictionary d;
+    unsigned int id = mustLookupSymbol(d, "(J)V");
+    ASSERT_NE(SymbolDictionary::UNRESOLVED_ID, id);
+    EXPECT_EQ(id, d.lookupSignature("(J)V"));
+    EXPECT_EQ(id, d.lookupSignature("(J)V", 4));
+}
