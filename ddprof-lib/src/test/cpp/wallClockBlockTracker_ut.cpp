@@ -778,6 +778,17 @@ TEST_F(UnownedContextSidecarTest, ChangingPublicationIsRejected) {
     expectContext(change.replacement, actual);
 }
 
+TEST_F(WallClockBlockTrackerTest, FilteredRestartAllocatesContextForRetainedSlots) {
+    const int id = filter->registerThread(7754);
+    ASSERT_GE(id, 0);
+    ASSERT_FALSE(tracker->canPublishUnownedContext(id)) << "Snapshots were not needed at registration";
+    tracker->setUnownedContextSnapshotsNeeded(true);
+    ASSERT_FALSE(tracker->canPublishUnownedContext(id));
+    filter->init("0");
+    EXPECT_TRUE(tracker->canPublishUnownedContext(id));
+    EXPECT_EQ(id, filter->registerThread(7754));
+}
+
 TEST_F(UnownedContextSidecarTest, NormalColdAllocationBalancesMemory) {
     long long before = NativeMem::live(NM_WALLCLOCK);
     {

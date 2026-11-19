@@ -904,6 +904,13 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
         if (unfiltered_tracking || context_filter) {
             ensureTidIndexLocked();
         }
+        if (context_filter && _block_tracker != nullptr) {
+            // Retained owners reuse slots through ensureOwnerSlot() without registering.
+            const SlotID assigned = std::min<SlotID>(_next_index.load(std::memory_order_acquire), kMaxThreads);
+            for (SlotID first = 0; first < assigned; first += kChunkSize) {
+                _block_tracker->ensureUnownedContextAllocated(first);
+            }
+        }
     }
     RecordingEpoch epoch = 0;
     if (unfiltered_tracking) {
