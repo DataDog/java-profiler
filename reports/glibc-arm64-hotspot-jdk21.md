@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-19 18:10:51 EST
+**Date:** 2026-11-19 18:12:59 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 81 |
-| Sample Rate | 1.35/sec |
-| Health Score | 84% |
-| Threads | 13 |
-| Allocations | 60 |
+| CPU Samples | 561 |
+| Sample Rate | 9.35/sec |
+| Health Score | 584% |
+| Threads | 9 |
+| Allocations | 336 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 76 |
-| Sample Rate | 1.27/sec |
-| Health Score | 79% |
-| Threads | 11 |
-| Allocations | 70 |
+| CPU Samples | 690 |
+| Sample Rate | 11.50/sec |
+| Health Score | 719% |
+| Threads | 10 |
+| Allocations | 488 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 50-50 cores)</summary>
 
 ```
-1795129624 50
-1795129629 50
-1795129634 50
-1795129639 50
-1795129644 50
-1795129649 50
-1795129654 50
-1795129659 50
-1795129665 50
-1795129670 50
-1795129675 50
-1795129680 50
-1795129685 50
-1795129690 50
-1795129695 50
-1795129700 50
-1795129705 50
-1795129710 50
-1795129715 50
-1795129720 50
+1795129706 50
+1795129711 50
+1795129716 50
+1795129721 50
+1795129726 50
+1795129732 50
+1795129737 50
+1795129742 50
+1795129747 50
+1795129752 50
+1795129757 50
+1795129762 50
+1795129767 50
+1795129772 50
+1795129777 50
+1795129782 50
+1795129787 50
+1795129792 50
+1795129797 50
+1795129802 50
 ```
 </details>
 
