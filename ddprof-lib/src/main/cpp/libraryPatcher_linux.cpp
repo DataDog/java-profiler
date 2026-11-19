@@ -659,7 +659,7 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
 #endif
 
   // An entry outlives its library: a reload at the same base keeps its
-  // CodeCache and entry, but its fresh GOT holds the real pthread_create. The
+  // CodeCache and entry, but its fresh GOT holds what the loader resolves. The
   // walk verified it is the same image, so the saved slots are valid.
   PthreadCreateEntry* entry = find_pthread_create_entry(_pthread_create, lib);
   bool reload = entry != nullptr;
@@ -776,7 +776,7 @@ void LibraryPatcher::patch_pthread_create() {
             PthreadCreateEntry& entry = table.entries[index];
             table.sorted[index] = entry.lib;
             if (c.recheck == ALL) {
-              // patch_library_unlocked() sets it again if this walk visits it.
+              // Set again if this walk visits the library and every slot settles.
               entry.mapped = false;
             } else if (c.recheck == NONE || entry.mapped) {
               continue;
@@ -802,9 +802,9 @@ void LibraryPatcher::patch_pthread_create() {
         [](CodeCache* lib, int) { patch_library_unlocked(lib); });
     declined = _pthread_create.declined;  // under _lock, which the walk holds
   }
-  // A library that glibc linked but has not relocated yet holds raw values in
-  // its GOT, which the visit declines. Counting the pass as handled would
-  // skip that library until the next unrelated load or unload.
+  // A patched library reloaded at the same base but not yet relocated holds raw
+  // values in its GOT, which the visit declines. Counting the pass as handled
+  // would skip that entry until the next unrelated load or unload.
   if (recheck != NONE && counts_known && !declined) {
     pthread_create_checked_adds.store(counts.adds, std::memory_order_release);
     if (recheck == ALL) {

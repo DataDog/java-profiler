@@ -43,6 +43,10 @@ public:
   }
 
   static bool declined() { return LibraryPatcher::_pthread_create.declined; }
+  static void setDeclined(bool value) { LibraryPatcher::_pthread_create.declined = value; }
+
+  static void patchPthreadCreate() { LibraryPatcher::patch_pthread_create(); }
+  static void* loaderPthreadCreate() { return LibraryPatcher::_loader_pthread_create; }
 
   // Stands in for a preloaded interposer: the value the loader resolves.
   static void setLoaderPthreadCreate(void* func) { LibraryPatcher::_loader_pthread_create = func; }
@@ -54,6 +58,7 @@ public:
   static void forgetPatchTable() {
     memset(&LibraryPatcher::_pthread_create, 0, sizeof(LibraryPatcher::_pthread_create));
     LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
+    LibraryPatcher::_initialized.store(false);
   }
 };
 
@@ -407,6 +412,28 @@ TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
   EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
   EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryMapped(&lib));
   EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
+}
+
+// The flag describes one pass: a pass that visits nothing must clear what an
+// earlier declining pass left, or the loader counts are never recorded again.
+TEST_F(LibraryPatcherPatching, PassClearsDeclinedFlagOfEarlierPass) {
+  LibraryPatcherTestAccessor::setDeclined(true);
+
+  LibraryPatcherTestAccessor::patchPthreadCreate();
+
+  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
+}
+
+// What the loader resolves is captured once, at initialization, because dlsym()
+// must not run under the patch lock.
+TEST_F(LibraryPatcherPatching, InitializeCapturesLoaderResolvedPthreadCreate) {
+  void* const resolved = dlsym(RTLD_DEFAULT, "pthread_create");
+  ASSERT_NE(nullptr, resolved);
+  LibraryPatcherTestAccessor::setLoaderPthreadCreate((void*)&fake_original_pthread_create);
+
+  LibraryPatcher::initialize_persistent();
+
+  EXPECT_EQ(resolved, LibraryPatcherTestAccessor::loaderPthreadCreate());
 }
 
 #endif // __linux__

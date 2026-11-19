@@ -204,8 +204,10 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    hook a slot only if it holds what the loader resolves `pthread_create` to
    (captured by `initialize_persistent()`, a preloaded interposer included) or
    the library's own lazy-binding stub, as a fresh GOT does; a slot someone else
-   hooked is left alone. A pass that left such a slot alone is not counted as
-   handled, so the next pass looks at the library again. The wrapper passes the routine's
+   hooked is left alone, so threads created through that wrapper are not
+   registered. A pass that left such a slot alone on a library with an entry is
+   not counted as handled, so the next passes look at it again. The wrapper
+   passes the routine's
    return value to `pthread_exit()`, so `pthread_join()` still sees it even
    though the hook outlives every recording. The hook runs without
    `_state_lock`, so both calls are gated:

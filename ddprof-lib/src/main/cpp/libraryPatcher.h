@@ -68,8 +68,8 @@ private:
   // refresher thread, hence release/acquire.
   static std::atomic<bool> _initialized;
   static PthreadCreateTable _pthread_create;
-  // What the loader resolves pthread_create to for every library, a preloaded
-  // interposer included. Set once by initialize_persistent(), before the
+  // What the loader resolves pthread_create to through the global scope, a
+  // preloaded interposer included. Set once by initialize_persistent(), before the
   // patching starts, because dlsym() must not run under _lock.
   static void*       _loader_pthread_create;
   static bool        _patch_pthread_create;
