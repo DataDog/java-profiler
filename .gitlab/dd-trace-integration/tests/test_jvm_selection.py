@@ -17,6 +17,20 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / ".gitlab/dd-trace-integration"
 VERSIONS = {8: "8.0.512.0", 11: "11.0.33.0", 17: "17.0.21.0", 21: "21.0.13.0", 25: "25.0.5.0"}
 
+# Published release assets, independent of the installer's tag/archive selection.
+SEMERU_URLS = {
+    (8, "x64"): "https://github.com/ibmruntimes/semeru8-binaries/releases/download/jdk-8.0.512.0/ibm-semeru-open-jdk_x64_linux_8.0.512.0.tar.gz",
+    (8, "arm64"): "https://github.com/ibmruntimes/semeru8-binaries/releases/download/jdk-8.0.512.0/ibm-semeru-open-jdk_aarch64_linux_8.0.512.0.tar.gz",
+    (11, "x64"): "https://github.com/ibmruntimes/semeru11-binaries/releases/download/jdk-11.0.33.0/ibm-semeru-open-jdk_x64_linux_11.0.33.0.tar.gz",
+    (11, "arm64"): "https://github.com/ibmruntimes/semeru11-binaries/releases/download/jdk-11.0.33.0/ibm-semeru-open-jdk_aarch64_linux_11.0.33.0.tar.gz",
+    (17, "x64"): "https://github.com/ibmruntimes/semeru17-binaries/releases/download/jdk-17.0.21.0/ibm-semeru-open-jdk_x64_linux_17.0.21.0.tar.gz",
+    (17, "arm64"): "https://github.com/ibmruntimes/semeru17-binaries/releases/download/jdk-17.0.21.0/ibm-semeru-open-jdk_aarch64_linux_17.0.21.0.tar.gz",
+    (21, "x64"): "https://github.com/ibmruntimes/semeru21-binaries/releases/download/jdk-21.0.13.0/ibm-semeru-open-jdk_x64_linux_21.0.13.0.tar.gz",
+    (21, "arm64"): "https://github.com/ibmruntimes/semeru21-binaries/releases/download/jdk-21.0.13.0/ibm-semeru-open-jdk_aarch64_linux_21.0.13.0.tar.gz",
+    (25, "x64"): "https://github.com/ibmruntimes/semeru25-binaries/releases/download/jdk-25.0.5.0/ibm-semeru-open-jdk_x64_linux_25.0.5.0.tar.gz",
+    (25, "arm64"): "https://github.com/ibmruntimes/semeru25-binaries/releases/download/jdk-25.0.5.0/ibm-semeru-open-jdk_aarch64_linux_25.0.5.0.tar.gz",
+}
+
 
 def integration_script():
     config = (SCRIPTS / ".gitlab-ci.yml").read_text()
@@ -98,7 +112,7 @@ class JvmSelectionTest(unittest.TestCase):
         self.assertNotIn("Verified integration JVM:", result.stdout)
 
     def test_all_glibc_openj9_cells_download_semeru_not_apt_hotspot(self):
-        for arch, semeru_arch in (("x64", "x64"), ("arm64", "aarch64")):
+        for arch in ("x64", "arm64"):
             for major, version in VERSIONS.items():
                 with self.subTest(arch=arch, major=major):
                     self.calls.write_text("")
@@ -106,11 +120,7 @@ class JvmSelectionTest(unittest.TestCase):
                     result = self.run_cell(ARCH=arch, JAVA_VERSION=str(major), FIXTURE_JAVA_VERSION=runtime_version)
                     self.assertEqual(result.returncode, 0, result.stdout)
                     calls = self.calls.read_text()
-                    url = (
-                        f"https://github.com/ibmruntimes/semeru{major}-binaries/releases/download/"
-                        f"jdk-{version}/ibm-semeru-open-jdk_{semeru_arch}_linux_{version}.tar.gz"
-                    )
-                    self.assertIn(url, calls)
+                    self.assertIn(SEMERU_URLS[major, arch], calls)
                     self.assertNotIn("openjdk-", calls)
                     self.assertIn(f"Using JAVA_HOME: {self.path}/installed/openj9-{major}", result.stdout)
                     self.assertIn("Verified integration JVM:", result.stdout)
