@@ -439,6 +439,19 @@ class PublisherWorkflowTest(unittest.TestCase):
     def test_no_environment_key(self):
         self.assertIsNone(re.search(r"^[ \t]+environment:", self.text, re.M))
 
+    def test_checkout_precedes_the_gate_steps_in_publish(self):
+        # The gate scripts and the owner roster are read from the checkout
+        # the publish job holds: the trusted-main checkout step must run
+        # before either gate script executes, or a PR-head checkout would
+        # let the author read their own roster and self-approve.
+        checkout_at = self.publish.find("uses: " + CHECKOUT_PIN)
+        self.assertGreaterEqual(checkout_at, 0, self.publish)
+        for script in ("bits_review_gate.py", "codeowner_review_gate.py"):
+            run_at = self.publish.find("python3 .github/scripts/" + script)
+            self.assertGreaterEqual(run_at, 0, self.publish)
+            self.assertLess(checkout_at, run_at,
+                            "checkout must precede %s" % (script,))
+
     def test_run_blocks_have_no_expressions(self):
         for block in run_blocks(self.text):
             self.assertNotIn("${{", block)

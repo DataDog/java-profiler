@@ -200,6 +200,19 @@ class SensitivePatternsTest(unittest.TestCase):
             cogate.load_sensitive_patterns(
                 os.path.join(tempfile.gettempdir(), "no-such-codeowners-file"))
 
+    def test_non_utf8_file_is_fatal(self):
+        # readlines() decodes lazily: invalid bytes raise UnicodeDecodeError,
+        # which must be translated like any other unreadable file, or it
+        # escapes the caller's except gate.ApiError and crashes the publish
+        # before any status is written.
+        handle = tempfile.NamedTemporaryFile("wb", suffix="CODEOWNERS",
+                                             delete=False)
+        handle.write(b"/p @DataDog/profiling-java\n\xff\xfe\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        with self.assertRaises(gate.ApiError):
+            cogate.load_sensitive_patterns(handle.name)
+
 
 class SensitiveMatchTest(unittest.TestCase):
     PATTERNS = [".github/workflows/bits-review-gate.yml",
@@ -434,7 +447,8 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         kind, state, description, target_url = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("approval from @DataDog/profiling-java required", description)
+        self.assertIn("approval from @DataDog/profiling-java (listed in "
+                      ".github/scripts/owner_roster.txt) required", description)
         self.assertEqual(target_url, "https://github.com/" + REPO + "/pull/101")
 
     def test_sensitive_path_with_owner_review_passes(self):
@@ -465,7 +479,8 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("approval from @DataDog/profiling-java required",
+        self.assertIn("approval from @DataDog/profiling-java (listed in "
+                      ".github/scripts/owner_roster.txt) required",
                       description)
 
     def test_review_with_null_submitted_at_fails_closed(self):
@@ -962,6 +977,32 @@ class RosterTest(unittest.TestCase):
         with self.assertRaises(gate.ApiError):
             cogate.load_roster(
                 os.path.join(tempfile.gettempdir(), "no-such-roster-file"))
+
+    def test_non_utf8_file_is_fatal(self):
+        # Same contract as CODEOWNERS: a decode error must surface as an
+        # unreadable roster, not escape as UnicodeDecodeError and crash the
+        # publish before any status is written.
+        handle = tempfile.NamedTemporaryFile("wb", suffix="roster",
+                                             delete=False)
+        handle.write(b"owner-a\n\xff\xfe\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        with self.assertRaises(gate.ApiError):
+            cogate.load_roster(handle.name)
+
+    def test_roster_login_case_is_insensitive(self):
+        # GitHub logins are case-insensitive; the review record can report
+        # different casing than the roster line.
+        records = [gate.normalize_review(review("Owner-A", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        roster = cogate.load_roster(self.roster("owner-a\n"))
+        self.assertTrue(cogate.owner_approval(records, "pr-author",
+                                              roster, SHA))
+        records = [gate.normalize_review(review("owner-a", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        roster = cogate.load_roster(self.roster("OWNER-A\n"))
+        self.assertTrue(cogate.owner_approval(records, "pr-author",
+                                              roster, SHA))
 
     def test_repo_roster_parses_and_is_not_empty(self):
         # The shipped roster must stay well-formed: a typo here would fail

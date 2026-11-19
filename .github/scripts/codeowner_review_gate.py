@@ -104,7 +104,7 @@ def load_sensitive_patterns(path):
     try:
         with open(path, encoding="utf-8") as handle:
             lines = handle.readlines()
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise gate.ApiError("unreadable %s: %s" % (path, error)) from error
     if len(lines) > CODEOWNERS_MAX_LINES:
         raise gate.ApiError(
@@ -152,7 +152,7 @@ def load_roster(path):
     try:
         with open(path, encoding="utf-8") as handle:
             lines = handle.readlines()
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise gate.ApiError("unreadable %s: %s" % (path, error)) from error
     if len(lines) > ROSTER_MAX_LINES:
         raise gate.ApiError("%s exceeds %d lines" % (path, ROSTER_MAX_LINES))
@@ -165,7 +165,9 @@ def load_roster(path):
         if len(tokens) != 1:
             raise gate.ApiError(
                 "%s entry %r is not a single login" % (path, entry))
-        logins.add(tokens[0])
+        # GitHub logins are case-insensitive and the review record can
+        # report different casing than the file: store the canonical form.
+        logins.add(tokens[0].lower())
     if not logins:
         raise gate.ApiError("%s lists no login" % (path,))
     return frozenset(logins)
@@ -299,7 +301,9 @@ def owner_approval(records, author_login, roster, head):
             _deciding_reviews(records)).items():
         if login == author_login:
             continue
-        if (login in roster and record.get("state") == "APPROVED"
+        # The comparison is case-insensitive like GitHub logins; the roster
+        # is already stored in the canonical lowercase form.
+        if (login.lower() in roster and record.get("state") == "APPROVED"
                 and record.get("commit_oid") == head):
             return True
     return False
@@ -337,6 +341,14 @@ def evaluate_sha(sha, client, patterns):
         if head.get("sha") != sha:
             continue
         members.append(pr)
+    # The roster is immutable for this evaluation (the publish job reads a
+    # pinned checkout), so it is loaded once for every PR: a load failure
+    # fails each sensitive PR and leaves non-sensitive decisions untouched.
+    roster = None
+    try:
+        roster = load_roster(ROSTER_PATH)
+    except gate.ApiError:
+        pass
     decisions = []
     approved_prs = []
     approved_author = {}
@@ -417,12 +429,9 @@ def evaluate_sha(sha, client, patterns):
         except gate.ApiError as error:
             decisions.append((number, "failure", "cannot evaluate: %s" % (error,)))
             continue
-        # The roster is a local read of the trusted checkout, but it is
-        # guarded like every other read: a malformed or unreadable roster
-        # must fail the PR, not crash the evaluation.
-        try:
-            roster = load_roster(ROSTER_PATH)
-        except gate.ApiError:
+        # The roster is loaded once for the whole evaluation; a failed load
+        # must fail the sensitive PR, not crash the loop.
+        if roster is None:
             decisions.append((number, "failure",
                               "cannot evaluate: owner roster unreadable"))
             continue
@@ -433,7 +442,8 @@ def evaluate_sha(sha, client, patterns):
         else:
             decisions.append((
                 number, "failure",
-                "sensitive paths changed: approval from %s required" % (OWNER_TEAM,),
+                "sensitive paths changed: approval from %s (listed in "
+                ".github/scripts/owner_roster.txt) required" % (OWNER_TEAM,),
             ))
     failures = [decision for decision in decisions if decision[1] != "pass"]
     if failures:
@@ -475,7 +485,6 @@ def evaluate_sha(sha, client, patterns):
         try:
             fresh_records = _validated_reviews(
                 client.fetch_reviews(number), number)
-            roster = load_roster(ROSTER_PATH)
         except gate.RateLimitError:
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (number,),
@@ -486,7 +495,8 @@ def evaluate_sha(sha, client, patterns):
         if not owner_approval(fresh_records, approved_author[number],
                               roster, sha):
             return ("failure", "failure",
-                    "sensitive paths changed: approval from %s required"
+                    "sensitive paths changed: approval from %s (listed in "
+                    ".github/scripts/owner_roster.txt) required"
                     % (OWNER_TEAM,),
                     "%s/pull/%d" % (_repo_url(client), number))
     return ("success", "success", "sensitive-path owner review satisfied", None)
