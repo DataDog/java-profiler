@@ -7,6 +7,7 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
 
 public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
@@ -37,12 +38,9 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
 
     waitForProfilerReady(2000);
 
-    // Event-driven workload sizing: the oracle per dump is "at least one event whose stack
-    // trace matches every declared frame pattern". Batches start at the historical density
-    // and halve after each passing dump; an under-sampled dump (emptiness caused by the
-    // workload being too small, not by the profiler) is re-run at a doubled, bounded batch
-    // instead of being asserted. Every cycle's final dump is still fully verified, so empty
-    // intermediate dumps at a settled batch size still fail the test.
+    // Event-driven sizing: each dump needs an event matching every declared frame pattern.
+    // Under-sampled dumps retry with a doubled batch capped at MAX_BATCH; failure is asserted
+    // when the cap is exhausted. Passing dumps halve the batch for the next cycle.
     int batch = INITIAL_BATCH;
     for (int j = 0; j < dumpCnt; j++) {
       Path recording = Files.createTempFile("dump-", ".jfr");
@@ -53,6 +51,7 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
           if (batch >= MAX_BATCH) {
             // Growth bound exhausted: surface the real failure through the asserting verify.
             verifyStackTraces(recording, eventName, patterns);
+            Assertions.fail("Stack trace verification still failed at MAX_BATCH=" + MAX_BATCH);
           }
           Files.deleteIfExists(recording);
           recording = Files.createTempFile("dump-", ".jfr");

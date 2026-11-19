@@ -9,8 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import java.io.File;
 import java.io.IOException;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
@@ -26,26 +28,32 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
   /** Cached result of the passwordless-sudo probe ({@code null} until first probed). */
   private static volatile Boolean passwordlessSudo;
 
-  /**
-   * JOL's self-attach ({@code -Djol.tryWithSudo=true}) falls back to running {@code sudo} when
-   * direct attach fails; without NOPASSWD credentials sudo blocks forever on the password prompt
-   * and hangs the test JVM indefinitely. Probe with {@code sudo -n} so such environments skip
-   * instead of hanging. CI (passwordless sudo) always runs the test unchanged.
-   */
+  private static final int SUDO_PROBE_TIMEOUT_SECONDS = 10;
+
+  /** Probe without prompting and bound the child wait when passwordless sudo is unavailable. */
   private static boolean canAttachThroughSudo() {
     Boolean cached = passwordlessSudo;
     if (cached != null) {
       return cached;
     }
     boolean ok;
+    Process probe = null;
     try {
-      Process probe = new ProcessBuilder("sudo", "-n", "true").redirectErrorStream(true).start();
-      ok = probe.waitFor() == 0;
+      probe =
+          new ProcessBuilder("sudo", "-n", "true")
+              .redirectOutput(ProcessBuilder.Redirect.to(new File("/dev/null")))
+              .redirectError(ProcessBuilder.Redirect.to(new File("/dev/null")))
+              .start();
+      ok = probe.waitFor(SUDO_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS) && probe.exitValue() == 0;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       ok = false;
     } catch (IOException e) {
       ok = false;
+    } finally {
+      if (probe != null) {
+        probe.destroyForcibly();
+      }
     }
     passwordlessSudo = ok;
     return ok;
