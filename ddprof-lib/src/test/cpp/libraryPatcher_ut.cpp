@@ -9,57 +9,11 @@
 
 #include "codeCache.h"
 #include "libraryPatcher.h"
+#include "libraryPatcherTestAccessor.h"
 
 #include <dlfcn.h>
 #include <pthread.h>
 #include <string.h>
-
-// LibraryPatcherTestAccessor — friend of LibraryPatcher, exposes the internals
-// the self-identification tests need.
-class LibraryPatcherTestAccessor {
-public:
-  static const void* selfAnchor() { return LibraryPatcher::self_anchor(); }
-
-  static bool isProfilerLibrary(CodeCache* lib) {
-    return LibraryPatcher::is_profiler_library(lib);
-  }
-
-  static void patchLibraryUnlocked(CodeCache* lib) {
-    LibraryPatcher::patch_library_unlocked(lib);
-  }
-
-  static int patchedCount() { return LibraryPatcher::_pthread_create.size; }
-  static void setPatchedCount(int count) { LibraryPatcher::_pthread_create.size = count; }
-
-  // Whether the entry's last visit left a slot unhooked, or -1 if the library
-  // has no entry.
-  static int entryPending(CodeCache* lib) {
-    for (int index = 0; index < LibraryPatcher::_pthread_create.size; index++) {
-      if (LibraryPatcher::_pthread_create.entries[index].lib == lib) {
-        return LibraryPatcher::_pthread_create.entries[index].pending;
-      }
-    }
-    return -1;
-  }
-
-  static void* loaderPthreadCreate() { return LibraryPatcher::_loader_pthread_create; }
-  static void* nextPthreadCreate() { return LibraryPatcher::_next_pthread_create; }
-
-  // Stand in for the loader's two bindings (a preloaded interposer, say).
-  static void setLoaderPthreadCreate(void* func) { LibraryPatcher::_loader_pthread_create = func; }
-  static void setNextPthreadCreate(void* func) { LibraryPatcher::_next_pthread_create = func; }
-
-  // Drops the patch table without writing the saved originals back, unlike
-  // unpatch_recording_hooks(). Tests patch GOT slots that live in the test body's
-  // frame, so by the time a fixture could restore them the addresses are dead;
-  // forgetting the entries is what keeps one test from reaching into the next.
-  static void forgetPatchTable() {
-    memset(&LibraryPatcher::_pthread_create, 0, sizeof(LibraryPatcher::_pthread_create));
-    LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
-    LibraryPatcher::_next_pthread_create = reinterpret_cast<void*>(&pthread_create);
-    LibraryPatcher::_initialized.store(false);
-  }
-};
 
 namespace {
 
@@ -480,7 +434,7 @@ TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
 }
 
 // Both bindings are captured once, at initialization, because dlsym() must not
-// run under the patch lock.
+// run under the patch lock; the second only where the executable owns the first.
 TEST_F(LibraryPatcherPatching, InitializeCapturesLoaderBindings) {
   void* const resolved = dlsym(RTLD_DEFAULT, "pthread_create");
   void* const next = dlsym(RTLD_NEXT, "pthread_create");
@@ -492,7 +446,21 @@ TEST_F(LibraryPatcherPatching, InitializeCapturesLoaderBindings) {
   LibraryPatcher::initialize_persistent();
 
   EXPECT_EQ(resolved, LibraryPatcherTestAccessor::loaderPthreadCreate());
-  EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
+  EXPECT_EQ(LibraryPatcherTestAccessor::pltBinding(resolved, next),
+            LibraryPatcherTestAccessor::nextPthreadCreate());
+}
+
+// The second binding is accepted only when the global one lies in the main
+// executable (a non-PIE executable's canonical address). In this gtest binary a
+// test function lies in the executable and libc's pthread_create does not.
+TEST_F(LibraryPatcherPatching, PltBindingOnlyWhenExecutableOwnsGlobalBinding) {
+  void* const next = (void*)&fake_original_pthread_create;
+  void* const in_executable = (void*)&fake_original_pthread_create;
+  void* const in_libc = dlsym(RTLD_NEXT, "pthread_create");
+  ASSERT_NE(nullptr, in_libc);
+
+  EXPECT_EQ(next, LibraryPatcherTestAccessor::pltBinding(in_executable, next));
+  EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::pltBinding(in_libc, next));
 }
 
 #endif // __linux__

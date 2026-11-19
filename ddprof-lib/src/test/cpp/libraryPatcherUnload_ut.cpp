@@ -17,6 +17,7 @@
 #include "codeCache.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
+#include "libraryPatcherTestAccessor.h"
 #include "nativeSocketSampler.h"
 #include "os.h"
 #include "symbols.h"
@@ -778,20 +779,6 @@ TEST_F(LibraryPatcherRecheckTest, PendingEntryDoesNotForceRecheckOfOthers) {
     if (*settled_slot == settled_hooked) _exit(CHILD_RECHECKED_SETTLED);
   });
 }
-
-// Friend of LibraryPatcher: reads an entry's pending flag.
-class LibraryPatcherTestAccessor {
-public:
-  // 1 or 0, or -1 if the library has no entry.
-  static int entryPending(CodeCache* lib) {
-    for (int index = 0; index < LibraryPatcher::_pthread_create.size; index++) {
-      if (LibraryPatcher::_pthread_create.entries[index].lib == lib) {
-        return LibraryPatcher::_pthread_create.entries[index].pending;
-      }
-    }
-    return -1;
-  }
-};
 
 // A full pass clears the pending flag of an entry it does not visit, so the
 // entry of an unloaded library is not walked on every later pass.

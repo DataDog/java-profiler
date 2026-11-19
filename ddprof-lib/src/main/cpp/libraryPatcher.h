@@ -27,7 +27,8 @@ typedef struct _patchEntry {
 // through lib->findImport().
 struct PthreadCreateEntry {
   CodeCache* lib;
-  // The last pass that looked found the library mapped.
+  // Set by every visit and cleared only by a full pass: false means the last full
+  // pass did not find the library loaded.
   bool mapped;
   // Its last visit left a slot unhooked: a GOT not relocated yet, an unresolved
   // weak import or another interposer's wrapper. Visited on every pass while set.
@@ -69,9 +70,12 @@ private:
   static PthreadCreateTable _pthread_create;
   // The loader's pthread_create bindings, set by initialize_persistent() as dlsym()
   // must not run under _lock: the global scope's (a preloaded interposer included)
-  // and the next one, which PLT calls bind to if a non-PIE executable owns &pthread_create.
+  // and, only if the executable owns that address, the one PLT calls bind to.
   static void*       _loader_pthread_create;
   static void*       _next_pthread_create;
+  // `next` when `global` lies in the main executable (a non-PIE executable that
+  // takes &pthread_create), otherwise null.
+  static void* plt_binding(void* global, void* next);
   static bool        _patch_pthread_create;
 
   // Separate tracking for sigaction patches

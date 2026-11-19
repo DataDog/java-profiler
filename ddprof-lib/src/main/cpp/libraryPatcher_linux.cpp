@@ -196,13 +196,40 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
   return 0;
 }
 
+// Whether addr lies in a PT_LOAD segment of the main executable, which is the
+// first object dl_iterate_phdr() reports. Not with _lock held (lock order above).
+static bool in_main_executable(const void* addr) {
+  struct Query { uintptr_t addr; bool found; } query = {reinterpret_cast<uintptr_t>(addr), false};
+  dl_iterate_phdr(
+      [](struct dl_phdr_info* info, size_t, void* data) -> int {
+        Query* q = static_cast<Query*>(data);
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+          const ElfW(Phdr)& phdr = info->dlpi_phdr[i];
+          uintptr_t start = info->dlpi_addr + phdr.p_vaddr;
+          if (phdr.p_type == PT_LOAD && q->addr - start < phdr.p_memsz) {
+            q->found = true;
+          }
+        }
+        return 1;
+      },
+      &query);
+  return query.found;
+}
+
+void* LibraryPatcher::plt_binding(void* global, void* next) {
+  // Otherwise the next definition is what a library loaded with RTLD_DEEPBIND
+  // binds to past a preloaded interposer; hooking it would route its threads
+  // through the interposer it bypassed.
+  return in_main_executable(global) ? next : nullptr;
+}
+
 void LibraryPatcher::initialize_persistent() {
   if (!_initialized.load(std::memory_order_acquire)) {
     _pthread_create.size = 0;
     // dlsym() is not allowed under _lock, and no patch pass has run yet. A null
     // result matches no slot: patch_library_unlocked() never hooks a null slot.
     _loader_pthread_create = dlsym(RTLD_DEFAULT, "pthread_create");
-    _next_pthread_create = dlsym(RTLD_NEXT, "pthread_create");
+    _next_pthread_create = plt_binding(_loader_pthread_create, dlsym(RTLD_NEXT, "pthread_create"));
     // Release so the reset above is visible to any thread that sees the flag.
     // Once set, pthread_create patches are persistent across stop/start cycles.
     _initialized.store(true, std::memory_order_release);
