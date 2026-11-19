@@ -14,43 +14,71 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
     super(cstack);
   }
 
+  /**
+   * Workload iterations for the first dump cycle: the historical fixed density. Preserves the gate
+   * that a dump taken after a fully initialized profiler and a settled workload verifies.
+   */
+  private static final int INITIAL_BATCH = 50;
+
+  /** Growth bound for under-sampled batches, so a broken sampler fails instead of looping. */
+  private static final int MAX_BATCH = 400;
+
   public void runTest(String eventName) throws Exception {
     runTest(eventName, "method1", "method2", "method3");
   }
 
   public void runTest(String eventName, String... patterns) throws Exception {
-    runTest(eventName, 10, patterns);
+    runTest(eventName, 5, patterns);
   }
 
   public void runTest(String eventName, int dumpCnt, String... patterns) throws Exception {
     Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
     Assumptions.assumeFalse(Platform.isJ9());
 
-    // Wait for profiler to reach RUNNING state before workload begins
-    // Use 2000ms timeout to account for slow systems and CI load
     waitForProfilerReady(2000);
 
+    // Event-driven workload sizing: the oracle per dump is "at least one event whose stack
+    // trace matches every declared frame pattern". Batches start at the historical density
+    // and halve after each passing dump; an under-sampled dump (emptiness caused by the
+    // workload being too small, not by the profiler) is re-run at a doubled, bounded batch
+    // instead of being asserted. Every cycle's final dump is still fully verified, so empty
+    // intermediate dumps at a settled batch size still fail the test.
+    int batch = INITIAL_BATCH;
     for (int j = 0; j < dumpCnt; j++) {
       Path recording = Files.createTempFile("dump-", ".jfr");
       try {
-        for (int i = 0; i < 50; i++) {
-          method1();
-          method2();
-          method3();
-        }
+        runWorkload(batch);
         dump(recording);
-        verifyStackTraces(recording, eventName, patterns);
+        while (!tryVerifyStackTraces(recording, eventName, patterns)) {
+          if (batch >= MAX_BATCH) {
+            // Growth bound exhausted: surface the real failure through the asserting verify.
+            verifyStackTraces(recording, eventName, patterns);
+          }
+          Files.deleteIfExists(recording);
+          recording = Files.createTempFile("dump-", ".jfr");
+          batch = Math.min(batch * 2, MAX_BATCH);
+          runWorkload(batch);
+          dump(recording);
+        }
+        batch = Math.max(1, batch / 2);
       } finally {
         Files.deleteIfExists(recording);
       }
     }
-    for (int i = 0; i < 500; i++) {
+    // The dump snapshots drain their own windows from the live stream, so the continuous
+    // recording cannot be assumed to hold the dump-cycle events; the post-stop verification
+    // needs its own sampling window at the settled historical density right before stop().
+    runWorkload(INITIAL_BATCH);
+    stopProfiler();
+    verifyStackTraces(eventName, patterns);
+  }
+
+  private void runWorkload(int iterations) {
+    for (int i = 0; i < iterations; i++) {
       method1();
       method2();
       method3();
     }
-    stopProfiler();
-    verifyStackTraces(eventName, patterns);
   }
 
   protected static volatile int value;

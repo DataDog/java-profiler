@@ -623,25 +623,52 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void verifyStackTraces(Path recording, String eventType, String... patterns) {
-    Set<String> unmatched = new HashSet<>(Arrays.asList(patterns));
+    Set<String> unmatched = unmatchedPatterns(patterns);
     long[] cumulatedEvents = {0};
     try {
       // Stops parsing once every pattern has matched, instead of materializing every event of
       // eventType up front — see JfrEvents.load(Path, Predicate, Predicate).
-      JfrEvents.load(
-          recording,
-          eventType::equals,
-          item -> {
-            cumulatedEvents[0]++;
-            String stackTrace = item.getStackTraceString();
-            unmatched.removeIf(stackTrace::contains);
-            return unmatched.isEmpty();
-          });
+      JfrEvents.load(recording, eventType::equals, stackPatternMatcher(unmatched, cumulatedEvents));
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t, t);
     }
     assertNotEquals(0, cumulatedEvents[0], "no events found for " + eventType);
     assertTrue(unmatched.isEmpty(), "couldn't find " + eventType + " with " + unmatched);
+  }
+
+  /**
+   * Non-failing variant of {@link #verifyStackTraces}: {@code true} iff the recording holds at
+   * least one {@code eventType} event whose stack trace contains every pattern. Lets callers probe
+   * a recording (e.g. to size a workload adaptively) without failing the test; callers that assert
+   * use {@link #verifyStackTraces}.
+   */
+  protected boolean tryVerifyStackTraces(Path recording, String eventType, String... patterns) {
+    Set<String> unmatched = unmatchedPatterns(patterns);
+    long[] cumulatedEvents = {0};
+    try {
+      JfrEvents.load(recording, eventType::equals, stackPatternMatcher(unmatched, cumulatedEvents));
+    } catch (Throwable t) {
+      return false;
+    }
+    return cumulatedEvents[0] > 0 && unmatched.isEmpty();
+  }
+
+  private static Set<String> unmatchedPatterns(String... patterns) {
+    return new HashSet<>(Arrays.asList(patterns));
+  }
+
+  /**
+   * Per-event consumer for {@link JfrEvents#load(Path, Predicate, Predicate)}: resolves the event's
+   * stack trace, drops it from {@code unmatched} when it contains a still-unmatched pattern, counts
+   * processed events, and stops parsing once every pattern has matched.
+   */
+  private static Predicate<JfrEvent> stackPatternMatcher(Set<String> unmatched, long[] eventCount) {
+    return item -> {
+      eventCount[0]++;
+      String stackTrace = item.getStackTraceString();
+      unmatched.removeIf(stackTrace::contains);
+      return unmatched.isEmpty();
+    };
   }
 
   /**
