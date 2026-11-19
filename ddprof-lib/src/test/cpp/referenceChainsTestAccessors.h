@@ -111,7 +111,9 @@ public:
         t->_static_field_sweep_served_gen = 0;
         t->_pending_local_evict_cursor = 0;
         t->_pending_local_evictable_count = 0;
+#ifdef UNIT_TEST
         t->_local_staging_budget_override_for_test = 0;
+#endif
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
         t->_class_shape_cache.clear();
@@ -197,9 +199,11 @@ public:
         ReferenceChainTracker::instance()->setCandidateCountForTest(n);
     }
 
+#ifdef UNIT_TEST
     static void setLocalStagingBudgetOverrideForTest(u32 budget) {
         ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(budget);
     }
+#endif
     static jlong leakTagForTest(u32 index) {
         return ReferenceChainTracker::LEAK_TAG_BASE + index;
     }
@@ -654,8 +658,11 @@ public:
                t->_local_compact_backoff == 0 &&
                t->_durable_anchor_resweep_gen == t->_static_field_sweep_served_gen &&
                t->_pending_local_evict_cursor == 0 &&
-               t->_pending_local_evictable_count == 0 &&
-               t->_local_staging_budget_override_for_test == 0;
+               t->_pending_local_evictable_count == 0
+#ifdef UNIT_TEST
+               && t->_local_staging_budget_override_for_test == 0
+#endif
+               ;
     }
 
     // Local-root anchor seams (see noteLocalRootHolder()/resolvePendingLocalAnchors()).
