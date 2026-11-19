@@ -702,7 +702,7 @@ Paths are relative to `ddprof-lib/src/main/cpp/`.
 - Context strings are stored in `_context_value_map`
 
 **10. Native I/O FD-type caches:**
-- `nativeFdClassifier.{h,cpp}` - `FD_TYPE_CACHE_SIZE = 65536`, `HIGH_FD_TYPE_CACHE_SIZE = 4096`,
+- `nativeFdClassifier.h`, `nativeFdClassifier_linux.cpp` - `FD_TYPE_CACHE_SIZE = 65536`, `HIGH_FD_TYPE_CACHE_SIZE = 4096`,
   `CACHE_BANKS = 2`, `ensureCachesAllocated()`
 - `nativeSocketSampler.h` / `nativeSocketInterposer.h` - the two `_fd_classifier` owners
 
