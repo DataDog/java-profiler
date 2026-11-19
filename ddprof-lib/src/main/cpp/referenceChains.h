@@ -510,18 +510,28 @@ private:
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
 
-  // Index durable roots and local roots with unknown or CONTAINER shape.
-  // Collections remain eligible after reparenting; classified non-collection locals are excluded.
+  // Index durable roots and local roots with unknown or container-shaped classes. Transient-only
+  // entries classified NON_CONTAINER are pruned during anchor compaction; durable roots are retained.
   // Rotation walks this index instead of scanning the full frontier table.
   std::vector<jlong> _static_anchor_index;
 
-  // Runtime class tag per indexed holder, keyed by frontier tag; 0 means the class is not resolved.
-  // A later callback upgrades 0 so isSelectableAnchor() can retain reparented containers.
-  std::unordered_map<jlong, jlong> _static_anchor_index_class_tags;
+  // Runtime class tag and root durability per indexed holder, keyed by frontier tag. A later
+  // callback upgrades an unresolved class tag, while durable observations supersede transient ones.
+  struct StaticAnchorIndexEntry {
+    jlong class_tag;
+    bool transient_root;
+  };
+  std::unordered_map<jlong, StaticAnchorIndexEntry> _static_anchor_index_class_tags;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
-  // java/util/Map (directly or via superclasses/ interfaces)?
-  enum class AnchorClassShape : u8 { UNKNOWN = 0, CONTAINER = 1, NON_CONTAINER = 2 };
+  // java/util/Map (directly or via superclasses/interfaces)? UNKNOWN_TRUNCATED preserves a bounded
+  // hierarchy walk that ended before all distinct classes could be examined.
+  enum class AnchorClassShape : u8 {
+    UNKNOWN = 0,
+    CONTAINER = 1,
+    NON_CONTAINER = 2,
+    UNKNOWN_TRUNCATED = 3
+  };
 
   // class tag -> AnchorClassShape, process-lifetime (class tags are never reused - the shared
   // class-tag allocator is deliberately not reset by restartSearch()).
@@ -1076,17 +1086,17 @@ private:
   // or JNI_GLOBAL).
   void addToStaticAnchorIndex(jlong tag, jlong own_class_tag, u8 root_kind);
   // Shared deduplicated index insertion for durable roots and local holders.
-  void indexAnchorForRotation(jlong tag, jlong own_class_tag);
+  void indexAnchorForRotation(jlong tag, jlong own_class_tag,
+                              bool transient_root);
   // Appends the drained at-risk anchors to the combined static-anchor selection, skipping tags the
   // persistent tiers already selected. Static: no member state, exposed for the dedup test.
   static void mergeAtRiskAnchors(std::vector<jlong> &selection,
                                  const std::vector<AtRiskAnchor> &drained);
 
-  // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
-  // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive
-  // interface diamonds).
-  bool classImplementsContainerOrMap(jvmtiEnv *jvmti, JNIEnv *jni,
-                                     jclass klass);
+  // Classifies whether `klass` implements java/util/Collection or java/util/Map. The bounded walk
+  // returns UNKNOWN_TRUNCATED rather than treating unvisited hierarchy nodes as a completed miss.
+  AnchorClassShape classImplementsContainerOrMap(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                 jclass klass);
 
   // Resolve _collection_iface_class_tag/_map_iface_class_tag once; returns false if the interfaces
   // cannot be resolved yet (leaves them at -1 so the next call retries).

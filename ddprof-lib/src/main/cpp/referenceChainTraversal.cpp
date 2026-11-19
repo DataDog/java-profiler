@@ -147,8 +147,10 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
       *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
     auto shape = ctx->tracker->_class_shape_cache.find(class_tag);
     if (shape == ctx->tracker->_class_shape_cache.end() ||
-        shape->second == (u8)AnchorClassShape::CONTAINER) {
-      ctx->tracker->indexAnchorForRotation(*tag_ptr, class_tag);
+        shape->second == static_cast<u8>(AnchorClassShape::CONTAINER) ||
+        shape->second == static_cast<u8>(
+            ReferenceChainTracker::AnchorClassShape::UNKNOWN_TRUNCATED)) {
+      ctx->tracker->indexAnchorForRotation(*tag_ptr, class_tag, true);
     }
   }
   return JVMTI_ITERATION_CONTINUE;

@@ -548,6 +548,11 @@ public:
         return ReferenceChainTracker::instance()->_static_anchor_index;
     }
 
+    static bool staticAnchorClassTagMapContainsForTest(jlong tag) {
+        return ReferenceChainTracker::instance()
+                   ->_static_anchor_index_class_tags.count(tag) > 0;
+    }
+
     static void mergeAtRiskAnchorsForTest(
             std::vector<jlong> &selection,
             const std::vector<ReferenceChainTracker::AtRiskAnchor> &drained) {
@@ -910,8 +915,35 @@ public:
     static void primeClassShapeForTest(jlong class_tag, bool container) {
         ReferenceChainTracker::instance()->_class_shape_cache[class_tag] =
             container
-                ? (u8)ReferenceChainTracker::AnchorClassShape::CONTAINER
-                : (u8)ReferenceChainTracker::AnchorClassShape::NON_CONTAINER;
+                ? static_cast<u8>(ReferenceChainTracker::AnchorClassShape::CONTAINER)
+                : static_cast<u8>(ReferenceChainTracker::AnchorClassShape::NON_CONTAINER);
+    }
+
+    static void primeTruncatedClassShapeForTest(jlong class_tag) {
+        ReferenceChainTracker::instance()->_class_shape_cache[class_tag] =
+            static_cast<u8>(
+                ReferenceChainTracker::AnchorClassShape::UNKNOWN_TRUNCATED);
+    }
+
+    static u8 classifyAnchorClassForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                         jclass klass,
+                                         jlong collection_class_tag,
+                                         jlong map_class_tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_collection_iface_class_tag = collection_class_tag;
+        t->_map_iface_class_tag = map_class_tag;
+        return static_cast<u8>(
+            t->classImplementsContainerOrMap(jvmti, jni, klass));
+    }
+
+    static bool isUnknownTruncatedClassShapeForTest(u8 shape) {
+        return shape == static_cast<u8>(
+                            ReferenceChainTracker::AnchorClassShape::UNKNOWN_TRUNCATED);
+    }
+
+    static bool isContainerClassShapeForTest(u8 shape) {
+        return shape == static_cast<u8>(
+                            ReferenceChainTracker::AnchorClassShape::CONTAINER);
     }
 
     // At-risk static-anchor FIFO (see _static_anchor_fifo in referenceChains.h).

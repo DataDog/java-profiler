@@ -210,24 +210,26 @@ positive frontier tags for stack/JNI-local holders when their class tag is known
 is unknown or `CONTAINER`; raw leak tags are excluded.
 
 `reconcileAnchorClassShapes()` can classify up to 128 distinct unknown anchor classes
-in a pass that reaches rotation. It checks their class hierarchy and interfaces for
-`Collection` or `Map` with a bounded walk.
+in a pass that reaches rotation. Each class walk checks at most 64 worklist entries for
+`Collection` or `Map`; duplicate interfaces consume entries in this bound.
 
 The shape cache uses process-lifetime class tags and survives search restarts.
 The index and side map are per-search.
 
-If either interface tag is unavailable, unclassified shapes remain unknown.
-A per-class walk can cache `NON_CONTAINER` when a failed lookup or bound leaves no match.
-That label is the walk's result, not proof the class lacks either interface.
+If interface tags are unavailable, shapes remain unknown. A walk with pending hierarchy entries at
+the 64-pop limit caches `UNKNOWN_TRUNCATED`, which remains selectable; only a completed no-match
+walk caches `NON_CONTAINER`.
 
 An indexed root-attached `STATIC_FIELD` or `JNI_GLOBAL` entry can be selected regardless of
 shape when its state is `FRONTIER` or `EXPANDED` and it is not queued.
 
-An indexed local-root holder with unknown shape waits for classification. A local holder
-classified `NON_CONTAINER` is not persistently selected.
+Unknown local-root holders remain indexed but are not selected until classified `CONTAINER` or
+`UNKNOWN_TRUNCATED`. A definitive `NON_CONTAINER` removes transient-only entries from both index and
+side map; durable static/JNI-global roots remain indexed and root-attached entries stay selectable.
 
 An indexed holder classified `CONTAINER` can remain eligible after reparenting because its
-cached shape still matches when its frontier entry has a parent tag.
+cached shape still matches when its frontier entry has a parent tag. A truncated classification
+also remains eligible rather than being mistaken for a completed non-match.
 
 Anchor selection removes entries whose frontier lookup fails or whose state is
 `ABANDONED`. It compacts survivors in admission order and removes pruned class-tag entries.

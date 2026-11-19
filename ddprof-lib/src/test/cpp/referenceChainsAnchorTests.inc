@@ -1193,6 +1193,144 @@ TEST_F(ReferenceChainsBfsTest, IdleLoopTailPollRegistersLaterCandidateOnce) {
     EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateCountForTest());
 }
 
+TEST_F(ReferenceChainsBfsTest, ClassShapeWalkMarksBudgetExhaustionUnknown) {
+    constexpr int kClassCount = 65;
+    constexpr jlong kCollectionTag = -9000;
+    constexpr jlong kMapTag = -9001;
+    std::vector<void *> classes;
+    classes.reserve(kClassCount);
+    for (int i = 0; i < kClassCount; i++) {
+        classes.push_back(reinterpret_cast<void *>(0xA000 + (i * 16)));
+    }
+    for (int i = 0; i < kClassCount; i++) {
+        void *super = i + 1 < kClassCount ? classes[i + 1] : nullptr;
+        field_decode_hierarchy[classes[i]] = {false, super, {}, {}};
+        tags[classes[i]] = -1000 - i;
+    }
+
+    const u8 shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(classes[0]),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
+        shape));
+}
+
+TEST_F(ReferenceChainsBfsTest, DuplicateHierarchyVisitsExhaustBudgetWithoutFalseNegative) {
+    constexpr jlong kCollectionTag = -9100;
+    constexpr jlong kMapTag = -9101;
+    void *root = reinterpret_cast<void *>(0xB000);
+    void *target = reinterpret_cast<void *>(0xB010);
+    void *repeated = reinterpret_cast<void *>(0xB020);
+    std::vector<void *> interfaces = {target};
+    interfaces.insert(interfaces.end(), 70, repeated);
+    field_decode_hierarchy[root] = {false, nullptr, interfaces, {}};
+    field_decode_hierarchy[target] = {true, nullptr, {}, {}};
+    field_decode_hierarchy[repeated] = {true, nullptr, {}, {}};
+    tags[root] = -1100;
+    tags[target] = kCollectionTag;
+    tags[repeated] = -1101;
+
+    const u8 shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(root),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(shape))
+        << "duplicate worklist entries consume the bound but cannot cache a false miss";
+}
+
+TEST_F(ReferenceChainsBfsTest, TransientNonContainerAnchorsArePruned) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+    const int transient_noncontainer = addNode();
+    const int durable_noncontainer = addNode();
+    const int unknown_transient = addNode();
+    const int truncated_transient = addNode();
+    const jlong transient_tag = tracker->nextTag();
+    const jlong durable_tag = tracker->nextTag();
+    const jlong unknown_tag = tracker->nextTag();
+    const jlong truncated_tag = tracker->nextTag();
+    node_tags[transient_noncontainer] = transient_tag;
+    node_tags[durable_noncontainer] = durable_tag;
+    node_tags[unknown_transient] = unknown_tag;
+    node_tags[truncated_transient] = truncated_tag;
+    constexpr jlong transient_class_tag = -501;
+    constexpr jlong durable_class_tag = -502;
+    constexpr jlong unknown_class_tag = -503;
+    constexpr jlong truncated_class_tag = -504;
+
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, transient_tag, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, durable_tag, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, unknown_tag, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, truncated_tag, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+
+    ReferenceChainPassContext ctx{};
+    ctx.tracker = tracker;
+    ctx.frontier = frontier;
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              ReferenceChainsTestAccessor::reportHeapRootForTest(
+                  JVMTI_HEAP_ROOT_STACK_LOCAL, transient_class_tag,
+                  &node_tags[transient_noncontainer], &ctx));
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              ReferenceChainsTestAccessor::reportHeapRootForTest(
+                  JVMTI_HEAP_ROOT_JNI_GLOBAL, durable_class_tag,
+                  &node_tags[durable_noncontainer], &ctx));
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              ReferenceChainsTestAccessor::reportHeapRootForTest(
+                  JVMTI_HEAP_ROOT_STACK_LOCAL, unknown_class_tag,
+                  &node_tags[unknown_transient], &ctx));
+    ASSERT_EQ(JVMTI_ITERATION_CONTINUE,
+              ReferenceChainsTestAccessor::reportHeapRootForTest(
+                  JVMTI_HEAP_ROOT_STACK_LOCAL, truncated_class_tag,
+                  &node_tags[truncated_transient], &ctx));
+
+    // Classification follows indexing: the first root callback admits these as unknown.
+    ReferenceChainsTestAccessor::primeClassShapeForTest(transient_class_tag, false);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(durable_class_tag, false);
+    ReferenceChainsTestAccessor::primeTruncatedClassShapeForTest(truncated_class_tag);
+    auto selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(8);
+    auto has_tag = [&](jlong tag) {
+        return std::find(selected.begin(), selected.end(), tag) != selected.end();
+    };
+    EXPECT_FALSE(has_tag(transient_tag));
+    EXPECT_TRUE(has_tag(durable_tag));
+    EXPECT_FALSE(has_tag(unknown_tag));
+    EXPECT_TRUE(has_tag(truncated_tag));
+
+    // Unknown transient anchors remain indexed for reconciliation but are not walked until a
+    // bounded hierarchy check confirms a container or reports truncation.
+    ReferenceChainsTestAccessor::primeClassShapeForTest(unknown_class_tag, true);
+    selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(8);
+    EXPECT_NE(selected.end(), std::find(selected.begin(), selected.end(), unknown_tag));
+
+    const auto indexed = ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest();
+    EXPECT_EQ(indexed.end(), std::find(indexed.begin(), indexed.end(), transient_tag));
+    EXPECT_NE(indexed.end(), std::find(indexed.begin(), indexed.end(), durable_tag));
+    EXPECT_NE(indexed.end(), std::find(indexed.begin(), indexed.end(), unknown_tag));
+    EXPECT_NE(indexed.end(), std::find(indexed.begin(), indexed.end(), truncated_tag));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::staticAnchorClassTagMapContainsForTest(
+        transient_tag));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorClassTagMapContainsForTest(
+        durable_tag));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorClassTagMapContainsForTest(
+        unknown_tag));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorClassTagMapContainsForTest(
+        truncated_tag));
+}
+
 // Admission appends to a bounded fresh queue; the 1025th eligible anchor evicts the oldest entry.
 TEST_F(ReferenceChainsBfsTest, FreshAnchorQueueDropsOldestPastCap) {
     Arguments args;
