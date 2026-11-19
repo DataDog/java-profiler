@@ -7,9 +7,11 @@ package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.datadoghq.profiler.NativeBuildConfig;
 import com.datadoghq.profiler.Platform;
 import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -23,16 +25,24 @@ public class RealVmThreadClassifierTest extends RealVmProducerTest {
   /** Distinguishes classification from paired admission's separate calling-thread validation. */
   @Test
   public void liveJniNullPlatformAndVirtualClassification() throws Exception {
+    Assumptions.assumeTrue(
+        NativeBuildConfig.isDebugInstrumented(),
+        "classifier probes exist only under javaApi.cpp's #ifdef DEBUG");
     int version = jniVersion0();
     assertTrue(version > 0, "The real JNI GetVersion must succeed");
     System.out.println(
         "REAL_JNI version=0x"
             + Integer.toHexString(version)
             + " branch="
-            + (version < 0x00130000 ? "pre19" : "JNI-IsVirtualThread"));
+            + (version < 0x00130000
+                ? "pre19"
+                : expectsOpenJ9() ? "non-HotSpot-fail-closed" : "JNI-IsVirtualThread"));
+    // Slot 234 is trusted only on HotSpot, so other VMs reject every thread at JNI >= 19.
+    boolean classifies = version < 0x00130000 || !expectsOpenJ9();
     assertFalse(isPlatformThread0(null), "Null is not a platform thread");
-    assertTrue(isPlatformThread0(Thread.currentThread()));
-    assertTrue(
+    assertEquals(classifies, isPlatformThread0(Thread.currentThread()));
+    assertEquals(
+        classifies,
         isPlatformThread0(new Thread(() -> {}, "classifier-other")),
         "A valid other Thread is not invalid classifier input");
 
@@ -63,7 +73,8 @@ public class RealVmThreadClassifierTest extends RealVmProducerTest {
       virtual.join(5_000L);
       assertFalse(virtual.isAlive(), "Virtual classifier worker leaked");
       if (failure.get() != null) throw new AssertionError(failure.get());
-      assertTrue(
+      assertEquals(
+          classifies,
           isPlatformThread0(Thread.currentThread()),
           "Virtual-thread rejection must preserve the subsequent platform control");
       assertFalse(

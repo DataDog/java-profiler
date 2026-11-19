@@ -45,6 +45,9 @@ bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
     jint jni_version = jni->GetVersion();
     if (jni_version <= 0) return false;
     if (jni_version < JNI_VERSION_19_VALUE) return true;
+    // Slot 234 is verified only on HotSpot; other VMs at JNI >= 19 fail closed
+    // without reading it, which keeps every JNI-classified producer inert there.
+    if (!VM::isHotspot()) return false;
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);

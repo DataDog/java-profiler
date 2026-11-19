@@ -5,6 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstring>
+#include <thread>
+
 #include "guards.h"
 #include "javaApi.h"
 #include "profiler.h"
@@ -29,6 +33,21 @@ public:
         VM::_jvmti = jvmti;
         return previous;
     }
+    static bool exchangeHotspot(bool hotspot) {
+        bool previous = VM::_hotspot;
+        VM::_hotspot = hotspot;
+        return previous;
+    }
+};
+
+class HotspotOverride {
+public:
+    explicit HotspotOverride(bool hotspot) : _saved(VMTestAccessor::exchangeHotspot(hotspot)) {}
+    ~HotspotOverride() { VMTestAccessor::exchangeHotspot(_saved); }
+    HotspotOverride(const HotspotOverride&) = delete;
+    HotspotOverride& operator=(const HotspotOverride&) = delete;
+private:
+    bool _saved;
 };
 
 // Exercise the real producer lifecycle and registry with a minimal JNI thread
@@ -214,6 +233,71 @@ TEST_F(TaskBlockProducersTest, InflightMonitorExitCleansUpAfterAdmissionCloses) 
     MonitorWaited(&jvmti, &jni, testThread(), nullptr, JNI_FALSE);
     EXPECT_EQ(0u, current->monitorBlockToken());
     EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+}
+
+static int g_is_virtual_thread_calls;
+
+TEST_F(TaskBlockProducersTest, MonitorProducersAreInertOnNonHotspotJni21) {
+    using JniFunction = void (JNICALL*)();
+    constexpr size_t GET_VERSION_INDEX = 4;
+    constexpr size_t IS_VIRTUAL_THREAD_INDEX = 234;
+    JniFunction table[IS_VIRTUAL_THREAD_INDEX + 1]{};
+    std::memcpy(table, &jni_functions, std::min(sizeof(table), sizeof(jni_functions)));
+    table[GET_VERSION_INDEX] = reinterpret_cast<JniFunction>(
+        +[](JNIEnv*) -> jint { return 0x00150000; });
+    table[IS_VIRTUAL_THREAD_INDEX] = reinterpret_cast<JniFunction>(
+        +[](JNIEnv*, jobject) -> jboolean { g_is_virtual_thread_calls++; return JNI_FALSE; });
+    JNIEnv jni21{};
+    jni21.functions = reinterpret_cast<const JNINativeInterface_*>(table);
+    g_is_virtual_thread_calls = 0;
+    {
+        HotspotOverride non_hotspot(false);
+        MonitorContendedEnter(&jvmti, &jni21, testThread(), nullptr);
+        EXPECT_EQ(0u, current->monitorBlockToken());
+        MonitorWait(&jvmti, &jni21, testThread(), nullptr, 100);
+        EXPECT_EQ(0u, current->monitorBlockToken());
+        EXPECT_EQ(0, g_is_virtual_thread_calls) << "non-HotSpot must not call JNI slot 234";
+    }
+    // Positive control: the same JNI 21 table arms the interval on HotSpot.
+    HotspotOverride hotspot(true);
+    MonitorContendedEnter(&jvmti, &jni21, testThread(), nullptr);
+    EXPECT_NE(0u, current->monitorBlockToken());
+    EXPECT_EQ(1, g_is_virtual_thread_calls);
+    MonitorContendedEntered(&jvmti, &jni21, testThread(), nullptr);
+    EXPECT_EQ(0u, current->monitorBlockToken());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+}
+
+static int g_get_version_calls;
+static bool g_profiled_thread_at_get_version;
+
+TEST_F(TaskBlockProducersTest, MonitorCallbacksAttachProfiledThreadBeforeJni) {
+    JNINativeInterface_ functions = jni_functions;
+    // An invalid version stops classification after the probe records the TLS state.
+    functions.GetVersion = [](JNIEnv*) -> jint {
+        g_get_version_calls++;
+        g_profiled_thread_at_get_version = ProfiledThread::current() != nullptr;
+        return 0;
+    };
+    JNIEnv probe_jni{};
+    probe_jni.functions = &functions;
+    g_get_version_calls = 0;
+    g_profiled_thread_at_get_version = false;
+    bool exit_had_thread = true;
+    bool enter_left_thread = false;
+    std::thread fresh([&] {
+        MonitorContendedEntered(&jvmti, &probe_jni, testThread(), nullptr);
+        exit_had_thread = ProfiledThread::current() != nullptr;
+        MonitorContendedEnter(&jvmti, &probe_jni, testThread(), nullptr);
+        enter_left_thread = ProfiledThread::current() != nullptr;
+        ProfiledThread::release();
+    });
+    fresh.join();
+    EXPECT_FALSE(exit_had_thread) << "an exit must not attach a ProfiledThread";
+    EXPECT_TRUE(enter_left_thread);
+    EXPECT_EQ(1, g_get_version_calls) << "only the entry may reach JNI on a fresh thread";
+    EXPECT_TRUE(g_profiled_thread_at_get_version)
+        << "entry must attach the ProfiledThread before any JNI call";
 }
 
 class MonitorTaskBlockHashTest : public TaskBlockProducersTest,

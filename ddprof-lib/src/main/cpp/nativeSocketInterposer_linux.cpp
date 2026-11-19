@@ -923,8 +923,4 @@ int NativeSocketInterposer::fork_safe_pselect_hook(
   return original(nfds, readfds, writefds, exceptfds, timeout_ts, sigmask);
 }
 
-#else
-
-NativeSocketInterposer* const NativeSocketInterposer::_instance = new NativeSocketInterposer();
-
-#endif
+#endif // __linux__

@@ -158,7 +158,7 @@ TEST_F(NativeIoFreshAdmissionTest, ScopeAndCombinedRecordingPreserveOriginalEntr
   }
 }
 
-TEST_F(NativeIoFreshAdmissionTest, RawDup2ReuseRevalidatesPositiveAndNegativeAdmissionForEveryOwner) {
+TEST_F(NativeIoFreshAdmissionTest, RawDup2ReuseRevalidatesTaskBlockAdmissionWhileSamplerUsesCache) {
   struct rlimit limit;
   ASSERT_EQ(0, getrlimit(RLIMIT_NOFILE, &limit));
   if (limit.rlim_max <= 65536u) {
@@ -212,8 +212,9 @@ TEST_F(NativeIoFreshAdmissionTest, RawDup2ReuseRevalidatesPositiveAndNegativeAdm
         }
         EXPECT_EQ(E2BIG, errno);
         EXPECT_EQ(0, entries) << "raw socket-to-pipe reuse must not enter TaskBlock";
-        EXPECT_EQ(2u, NativeFdClassifier::probeCountForTest())
-            << "exactly one admission probe per hook, even with both owners active";
+        // Sampler-only admission trusts the stale positive; sampled events revalidate.
+        EXPECT_EQ((owners & 1) ? 2u : 0u, NativeFdClassifier::probeCountForTest())
+            << "one TaskBlock admission probe per hook, even with both owners active";
         // Establish ready negative verdicts in both independent caches.
         interposer->clearFdType(fd);
         sampler->clearFdCacheEntry(fd);
@@ -235,8 +236,10 @@ TEST_F(NativeIoFreshAdmissionTest, RawDup2ReuseRevalidatesPositiveAndNegativeAdm
           if (!inbound) ASSERT_EQ(1, ::read(sockets[1], &byte, 1));
         }
         EXPECT_EQ((owners & 1) ? 2 : 0, entries)
-            << "raw pipe-to-stream reuse must repair negative admission";
-        EXPECT_EQ(2u, NativeFdClassifier::probeCountForTest());
+            << "raw pipe-to-stream reuse must repair negative TaskBlock admission";
+        EXPECT_EQ((owners & 1) ? 2u : 0u, NativeFdClassifier::probeCountForTest());
+        EXPECT_FALSE(sampler->isSocketForTest(fd))
+            << "sampler keeps its cached negative until an observed invalidation";
       }
     }
   }
@@ -294,7 +297,8 @@ TEST_F(NativeIoFreshAdmissionTest, RepeatedAdmissionHasBoundedProbeAndDescriptor
         transfer(true);
         ASSERT_FALSE(HasFatalFailure());
         auto hook_end = std::chrono::steady_clock::now();
-        EXPECT_EQ(4u * iterations, NativeFdClassifier::probeCountForTest());
+        // Only TaskBlock admission probes per call; the sampler's warm verdict is reused.
+        EXPECT_EQ((owners & 1) ? 4u * iterations : 0u, NativeFdClassifier::probeCountForTest());
         EXPECT_EQ((owners & 1) ? 4 * iterations : 0, entries);
         auto raw_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(raw_end - start).count();
         auto hook_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - raw_end).count();

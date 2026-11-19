@@ -92,11 +92,15 @@ invalidation advances the incarnation, so a probe spanning the invalidation
 cannot publish the old descriptor's type into its replacement's cache entry.
 ENOTSOCK is a stable non-socket result; EBADF and other transient failures return
 unknown without caching a negative verdict. Direct classifier ready-path cache
-hits do not perform another SO_TYPE probe. **Hook admission is different:** every
-active stream or datagram hook probes SO_TYPE before admitting TaskBlock or byte
-sampling, including after a cached negative. Raw close/dup2 from an unpatched
-library therefore cannot leave admission permanently positive or negative.
-Concurrent replacement between that probe and the underlying syscall remains the
+hits do not perform another SO_TYPE probe. **TaskBlock admission is different:**
+while the interposer is active, every stream or datagram hook probes SO_TYPE
+before it admits TaskBlock, including after a cached negative. Raw close/dup2
+from an unpatched library therefore cannot leave TaskBlock admission permanently
+positive or negative. Sampler-only admission uses the sampler's cached verdict
+and probes only on a cache miss. A stale positive verdict is caught by the
+sampled-event revalidation. A stale negative verdict suppresses byte sampling of
+that descriptor until a patched close/dup or a recording restart invalidates it.
+Concurrent replacement between a probe and the underlying syscall remains the
 normal descriptor-number TOCTOU; these hooks do not acquire ownership of the
 application's open file description.
 
@@ -104,6 +108,8 @@ The packed fields never cycle within a cache bank. Each classifier allocates two
 65536-entry low-FD and 4096-entry high-FD banks on first classification (1,114,112
 bytes of atomic entries total, excluding allocator overhead). Both owners
 therefore retain at most 2,228,224 bytes of entries in four array allocations.
+Both owners are process-lifetime singletons, so the tables stay allocated after
+`stop()` and are never freed. The `native_mem_*` counters do not include them.
 The first active classification may allocate the arrays; lifecycle invalidation
 and subsequent classification do not allocate classifier tables. Banks are never
 reused during that classifier's lifetime. A 17-bit epoch boundary retires the
@@ -126,14 +132,13 @@ Lifecycle invalidation before first classification advances the epoch without
 allocating tables. Both owners inactive means no classification, clocks, scopes,
 or lifecycle-cache allocation, regardless of installed import state.
 
-Recurring syscall cost is explicit: one SO_TYPE probe per entered active hook,
-one additional SO_TYPE revalidation per sampled positive byte result, and one
-getpeername per accepted sample. ENOTSOCK/transient admission adds one probe then
-forwards directly. Combined ownership does not double admission probes. Direct
-classifier calls remain cached until bank exhaustion; uncached fallback has the
-same admission syscall count as the normal hook path. This favors correctness
-under unobserved FD reuse over the previous zero-syscall ready admission path;
-performance qualification must measure this new cost, not assume the old rate.
+Recurring syscall cost is explicit. TaskBlock admission costs one SO_TYPE probe
+per entered hook while the interposer is active. Sampler-only admission costs no
+probe on a cache hit. Each sampled positive byte result costs one additional
+SO_TYPE revalidation, and each accepted sample costs one getpeername. A transient
+admission failure is not cached, so it costs one probe on every call. Combined
+ownership does not double admission probes. Classifier calls remain cached until
+bank exhaustion; the uncached fallback probes on every classification.
 
 Sampled byte events require fresh revalidation. The sampler uses the
 classifier's private forced-probe path: it bypasses a cached verdict but retains
@@ -206,8 +211,9 @@ new hook fault or of successful EFAULT recovery.
   TaskBlock entry, active block kinds, sampler-only/combined forwarding,
   close/dup invalidation and production patch rollback.
 - `nativeSocketSampler_ut.cpp`: low/high-FD transient revalidation and real reuse,
-  forced-probe publication across low/high-FD replacement, stable classification
-  and existing byte-sampler controls.
+  forced-probe publication across low/high-FD replacement, stable classification,
+  probe-free unsampled admission with sampled-event revalidation, and existing
+  byte-sampler controls.
 - `nativeIoQualification_ut.cpp`: packed epoch controls, competing/stale positive
   and negative publication, all four errno-forwarding branches, initial rollback
   and reverse ownership stop order.
@@ -216,8 +222,8 @@ new hook fault or of successful EFAULT recovery.
   combined-recording errno preservation, plus bounded cache exhaustion. Its
   admission cost case reports paired raw/hooked SO_TYPE costs over 40000 actual
   socket operations per owner/FD combination, requires a real limit above 65536,
-  checks exactly one admission probe per hook, and checks all owned descriptors
-  are closed. Timing is diagnostic, not a throughput-threshold pass or a
+  checks one TaskBlock admission probe per hook and none for a warm sampler-only
+  verdict, and checks all owned descriptors are closed. Timing is diagnostic, not a throughput-threshold pass or a
   substitute for a running-profiler workload.
 - `nativeFdClassifier_ut.cpp`: concurrent first-use cache publication, no
   allocation after pre-admission invalidation

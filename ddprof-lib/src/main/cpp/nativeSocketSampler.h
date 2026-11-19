@@ -177,7 +177,7 @@ private:
     std::string resolveAddr(int fd);
 
     // Revalidates that fd is still a SOCK_STREAM socket; updates the type cache on
-    // mismatch. Called for hook admission and again before sampled recording.
+    // mismatch. Called only before recording a sampled event.
     bool revalidateSocket(int fd);
 
     // Inserts or updates fd→addr in the LRU cache, evicting the LRU entry if full.
@@ -212,7 +212,7 @@ public:
 private:
 
     // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
-    // Direct cached lookup for diagnostics/tests; hooks use revalidateSocket().
+    // Cached hook admission: probes SO_TYPE only on a cache miss.
     bool isSocket(int fd);
 
     // Decide whether to sample and compute weight.

@@ -20,8 +20,10 @@
 
 #include "nativeSocketSampler.h"
 #include "libraryPatcher.h"
+#include "profiler.h"
 
 #include <atomic>
+#include <climits>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/resource.h>
@@ -249,6 +251,23 @@ public:
     static void setObserver(void (*observer)(int, u64, u64, ssize_t, u8)) {
         NativeSocketSampler::_record_observer_for_test = observer;
     }
+    static long samplingInterval() {
+        return NativeSocketSampler::instance()->_rate_limiter.interval();
+    }
+    static void setSamplingInterval(long interval) {
+        NativeSocketSampler::instance()->_rate_limiter.start(
+            interval, NativeSocketSampler::TARGET_EVENTS_PER_SECOND,
+            NativeSocketSampler::PID_WINDOW_SECS, NativeSocketSampler::PID_P_GAIN,
+            NativeSocketSampler::PID_I_GAIN, NativeSocketSampler::PID_D_GAIN,
+            NativeSocketSampler::PID_CUTOFF_S);
+    }
+};
+
+class ProfilerTestAccessor {
+public:
+    static State exchangeState(State state) {
+        return Profiler::instance()->_state.exchange(state, std::memory_order_acq_rel);
+    }
 };
 
 static u64 g_io_start;
@@ -401,6 +420,75 @@ TEST_P(NativeSocketSamplerTimingTest, BlockingReceiveIncludesPeerDelay) {
 }
 
 INSTANTIATE_TEST_SUITE_P(AllHooks, NativeSocketSamplerTimingTest, ::testing::Values(0, 1, 2, 3));
+
+static int g_record_observer_calls;
+
+static void count_record(int, u64, u64, ssize_t, u8) {
+    g_record_observer_calls++;
+}
+
+// Spans enough TSC ticks that a 1-tick sampling interval always samples.
+static ssize_t slow_write(int, const void*, size_t) {
+    g_write_calls++;
+    u64 start = TSC::ticks();
+    while (TSC::ticks() - start < 100000) {
+    }
+    return 1;
+}
+
+static ssize_t positive_send(int, const void*, size_t, int) { g_send_calls++; return 1; }
+static ssize_t positive_recv(int, void*, size_t, int) { g_recv_calls++; return 1; }
+static ssize_t positive_write(int, const void*, size_t) { g_write_calls++; return 1; }
+static ssize_t positive_read(int, void*, size_t) { g_read_calls++; return 1; }
+
+/** Unsampled hooks reuse a warm verdict; a sampled event still revalidates it. */
+TEST_F(NativeSocketSamplerHookTest, UnsampledHooksSkipProbeAndSampledEventRevalidates) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    ScopedSamplerProbeOverride override(stub_probe);
+    bool saved_installed = LibraryPatcher::_socket_active.exchange(true, std::memory_order_acq_rel);
+    long saved_interval = NativeSocketSamplerTestAccessor::samplingInterval();
+    State saved_state = ProfilerTestAccessor::exchangeState(RUNNING);
+    NativeSocketSamplerTestAccessor::setObserver(count_record);
+    for (int fd : {64, kSamplerFdTypeCacheSizeForTest + 64}) {
+        SCOPED_TRACE(fd);
+        inst->clearFdCache();
+        g_probe_calls = 0;
+        g_probe_rc = 0;
+        g_probe_errno = 0;
+        g_probe_so_type = SOCK_STREAM;
+        g_record_observer_calls = 0;
+        ASSERT_TRUE(inst->isSocketForTest(fd));
+        ASSERT_EQ(1, g_probe_calls.load());
+
+        NativeSocketSamplerTestAccessor::setSamplingInterval(LONG_MAX);
+        NativeSocketSampler::setOriginalFunctions(positive_send, positive_recv,
+                                                  positive_write, positive_read);
+        char byte = 'x';
+        for (int i = 0; i < 100; i++) {
+            ASSERT_EQ(1, NativeSocketSampler::send_hook(fd, &byte, 1, 0));
+            ASSERT_EQ(1, NativeSocketSampler::recv_hook(fd, &byte, 1, 0));
+            ASSERT_EQ(1, NativeSocketSampler::write_hook(fd, &byte, 1));
+            ASSERT_EQ(1, NativeSocketSampler::read_hook(fd, &byte, 1));
+        }
+        EXPECT_EQ(400, g_record_observer_calls) << "every positive result reached recordEvent";
+        EXPECT_EQ(1, g_probe_calls.load()) << "unsampled admission must not probe SO_TYPE";
+
+        // Raw reuse turned the fd into a datagram socket behind the cached verdict.
+        g_probe_so_type = SOCK_DGRAM;
+        NativeSocketSamplerTestAccessor::setSamplingInterval(1);
+        NativeSocketSampler::setOriginalFunctions(positive_send, positive_recv,
+                                                  slow_write, positive_read);
+        ASSERT_EQ(1, NativeSocketSampler::write_hook(fd, &byte, 1));
+        EXPECT_EQ(2, g_probe_calls.load()) << "the sampled event must revalidate";
+        EXPECT_FALSE(inst->isSocketForTest(fd)) << "revalidation repairs the cached verdict";
+        EXPECT_EQ(2, g_probe_calls.load());
+    }
+    NativeSocketSamplerTestAccessor::setObserver(nullptr);
+    ProfilerTestAccessor::exchangeState(saved_state);
+    NativeSocketSamplerTestAccessor::setSamplingInterval(saved_interval);
+    LibraryPatcher::_socket_active.store(saved_installed, std::memory_order_release);
+    inst->clearFdCache();
+}
 
 #endif // __linux__
 
@@ -906,7 +994,7 @@ TEST(NativeSocketSamplerFdTypeTest, HighFdCacheCollisionReprobesExactFd) {
     inst->clearFdCache();
 }
 
-TEST_F(NativeSocketSamplerHookTest, HighFdWriteHookRevalidatesCachedSocketVerdict) {
+TEST_F(NativeSocketSamplerHookTest, HighFdWriteHookUsesCachedSocketVerdict) {
     NativeSocketSampler* inst = NativeSocketSampler::instance();
     inst->clearFdCache();
     ScopedSamplerProbeOverride override(stub_probe);
@@ -924,8 +1012,7 @@ TEST_F(NativeSocketSamplerHookTest, HighFdWriteHookRevalidatesCachedSocketVerdic
     LibraryPatcher::_socket_active.store(prev, std::memory_order_release);
 
     EXPECT_EQ(g_write_calls.load(), 2);
-    // Unpatched raw close/dup2 can change this fd between consecutive calls.
-    EXPECT_EQ(g_probe_calls.load(), 2);
+    EXPECT_EQ(g_probe_calls.load(), 1) << "only the first admission misses the cache";
     inst->clearFdCache();
 }
 

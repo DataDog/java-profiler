@@ -161,7 +161,7 @@ bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u64 gen
     diagnostic.words[TaskBlockDiagnosticRecord::OPERATION] = 1;
 #endif
     if (!isActiveRun(s, generation TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) return false;
-    // Owned-run fields only; the unowned-blocked tail survives the exit (R-B1).
+    // Owned-run fields only; the unowned-blocked tail survives the exit.
     s->clearActiveBlockRun();
     TASK_BLOCK_DIAGNOSTIC(EXIT_MATCHED_AND_CLEARED, diagnostic_ptr, 0);
     return true;
