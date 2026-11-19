@@ -15,9 +15,11 @@ issuer: https://ticino.identity.local-cluster.local-dc.fabric.dog:8443/v1/issuer
 audience: octo-sts
 
 # Subject: profiling team engineers' sycamore identities (email claim),
-# deliberately enumerated (anchored exact match) to keep the initial grant
-# to named people. The dd-octo-sts fork's CheckToken can match the
-# array-typed groups claim; switch to it if team-wide scope is ever wanted.
+# deliberately enumerated to keep the initial grant to named people. The
+# dd-octo-sts fork's CheckToken can match the array-typed groups claim;
+# switch to it if team-wide scope is ever wanted. dd-octo-sts compiles
+# every pattern anchored (^(?:...)\$, pkg/octosts/pattern.go), so this
+# alternation matches exactly these four emails and nothing else.
 subject_pattern: "(jaroslav\\.bachorik|roman\\.kennke|zhengyu\\.gu|paul\\.fournillon)@datadoghq\\.com"
 
 claim_pattern:
@@ -30,5 +32,8 @@ permissions:
 # Intended flow: the driving engineer reviews and approves the agent's PR.
 # This is process, not enforcement: the pool runs several GitHub Apps and
 # GitHub's self-approval block is per app, so a bot-authored PR is not
-# structurally barred from a bot approval; .github/chainguard/ is guarded
-# by a push ruleset (path restriction) so the token cannot edit this gate.
+# structurally barred from a bot approval. The token cannot edit this gate:
+# a repo push ruleset restricts .github/chainguard/** and
+# .github/workflows/** (the latter also blocks CI tampering), bypassed for
+# the repository write role only, so pool-bot identities cannot push either
+# path.
