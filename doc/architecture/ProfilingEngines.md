@@ -442,18 +442,18 @@ resolved through `Arguments::cpuSamplerInterval()`.
 
 ### `ITimer` / `ITimerJvmti` (`itimer.cpp`, all platforms)
 
-- **Mechanism**: one process-wide `setitimer(ITIMER_PROF, interval)`
-  (`itimer.cpp:92-107`). `registerThread` is not overridden, so the kernel
-  chooses which thread receives each `SIGPROF`.
+- **Mechanism**: one process-wide `setitimer(ITIMER_PROF, interval)`, armed by
+  both `ITimer::start` and `ITimerJvmti::start`. `registerThread` is not
+  overridden, so the kernel chooses which thread receives each `SIGPROF`.
 - **Origin check**: none. `setitimer` signals arrive with no `sival` payload,
   so a foreign `SIGPROF` cannot be told apart from the profiler's own. The
-  code comments call out this exposure (`itimer.cpp:44-49`).
-- `ITimer` does **not** run `tickInitWindowIfNeeded()` (`itimer.cpp:63-65`).
-  `ITimerJvmti` does.
+  code comments call out this exposure (the NOTE in `ITimer::signalHandler`).
+- `ITimer` does **not** run `tickInitWindowIfNeeded()` (see
+  `ITimer::signalHandler`). `ITimerJvmti` does.
 - **`ITimerJvmti`** passes `nullptr` as the ucontext to
-  `recordSampleDelegated()`, because the receiving thread is arbitrary
-  (`itimer.cpp:143-147`). Its `stop()` also resets `SIGPROF` to `SIG_IGN`
-  (`itimer.cpp:190-194`). `ITimer::stop()` only disarms the timer.
+  `recordSampleDelegated()`, because the receiving thread is arbitrary (see
+  `ITimerJvmti::signalHandler`). Its `stop()` also resets `SIGPROF` to
+  `SIG_IGN` (`ITimerJvmti::stop()`). `ITimer::stop()` only disarms the timer.
 
 ### CPU engine comparison
 
