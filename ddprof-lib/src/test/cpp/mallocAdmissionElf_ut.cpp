@@ -633,6 +633,69 @@ TEST(MallocAdmissionElfTest, LoadedImageAddressNormalizationChecksOverflow) {
     EXPECT_FALSE(no_load.dynamicPointer(0x1000, out));
 }
 
+TEST(MallocAdmissionElfTest, LoadedImagePageBaseChecksOverflowAndLowestLoad) {
+    ElfProgramHeader ph[3] = {};
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_vaddr = 0x3000;
+    ph[1].p_type = PT_NULL;
+    ph[1].p_vaddr = 0x100;
+    ph[2].p_type = PT_LOAD;
+    ph[2].p_vaddr = 0x234;
+
+    uintptr_t out = 0;
+    uintptr_t bias = 0x7f0000001f00;
+    LoadedImage image(ph, 3, bias);
+    ASSERT_TRUE(image.pageBase(out));
+    EXPECT_EQ(out, (bias + 0x234) & ~OS::page_mask);
+
+    ElfProgramHeader overflow_ph[1] = {};
+    overflow_ph[0].p_type = PT_LOAD;
+    overflow_ph[0].p_vaddr = 0x2000;
+    LoadedImage near_limit(overflow_ph, 1, UINTPTR_MAX - 0xFFF);
+    EXPECT_FALSE(near_limit.pageBase(out));
+
+    ph[0].p_type = PT_NULL;
+    ph[2].p_type = PT_NULL;
+    LoadedImage no_load(ph, 3, 0);
+    EXPECT_FALSE(no_load.pageBase(out));
+}
+
+TEST(MallocAdmissionElfTest, LoadedImageReadableAcceptsFileBackedBoundary) {
+    ElfProgramHeader ph[1] = {};
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_flags = PF_R;
+    ph[0].p_vaddr = 0x2000;
+    ph[0].p_filesz = 0x40;
+
+    LoadedImage image(ph, 1, 0x1000);
+    uintptr_t start = 0;
+    ASSERT_TRUE(image.address(ph[0].p_vaddr, start));
+
+    EXPECT_TRUE(image.readable(start + 0x10, 0x30));
+    EXPECT_FALSE(image.readable(start + 0x10, 0x31));
+    EXPECT_TRUE(image.readable(start, 0x40));
+    EXPECT_FALSE(image.readable(start, 0x41));
+    EXPECT_TRUE(image.readable(start + 0x40, 0));
+    EXPECT_FALSE(image.readable(start + 0x41, 0));
+}
+
+TEST(MallocAdmissionElfTest, LoadedImageReadableRequiresReadPermission) {
+    ElfProgramHeader ph[1] = {};
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_flags = PF_W;
+    ph[0].p_vaddr = 0x2000;
+    ph[0].p_filesz = 0x40;
+
+    LoadedImage image(ph, 1, 0x1000);
+    uintptr_t start = 0;
+    ASSERT_TRUE(image.address(ph[0].p_vaddr, start));
+    EXPECT_FALSE(image.readable(start, 1));
+
+    ph[0].p_flags = PF_R;
+    LoadedImage readable_image(ph, 1, 0x1000);
+    EXPECT_TRUE(readable_image.readable(start, 1));
+}
+
 // A well-formed synthesized GNU-hash image classifies as DDPROF: recognition
 // does not depend on real loader bytes.
 TEST(MallocAdmissionElfSynthTest, WellFormedGnuHashIsDDProf) {

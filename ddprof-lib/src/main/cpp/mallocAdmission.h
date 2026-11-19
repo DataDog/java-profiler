@@ -62,6 +62,8 @@ struct AdmissionVerdict {
 // forwarding value, so the bound is arithmetic, not a tuning constant; the
 // set cannot overflow by construction.
 constexpr int MALLOC_ADMISSION_MAX_TARGETS = 5 * (NUM_IMPORT_TYPES + 1);
+static_assert(MALLOC_ADMISSION_MAX_TARGETS >= 5 * NUM_IMPORT_TYPES + 5,
+              "malloc admission candidate capacity is too small");
 
 struct MallocAdmissionInput {
     // Current GOT-slot values per operation (binding index order:

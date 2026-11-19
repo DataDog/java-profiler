@@ -175,11 +175,9 @@ void MallocAdmission::evaluate(const MallocAdmissionInput& in, MallocAdmissionRe
         out.targets[out.target_count++] = f;
     }
 
-    // Dedup the whole candidate array in place by stripped address, keeping
-    // the first occurrence of each: the same address may arrive from both
-    // import slots, or from a current value and a forwarding value. The
-    // candidate bound (5 slots + 5 forwarding) cannot exceed the fixed
-    // capacity before this pass, and the pass only shrinks it.
+    // The pre-dedup bound is 5 operations * NUM_IMPORT_TYPES slot values + 5 forwarding values.
+    // This equals MALLOC_ADMISSION_MAX_TARGETS; deduplication only shrinks the set.
+    // Keep the first occurrence of each stripped address.
     int unique = 0;
     for (int i = 0; i < out.target_count; i++) {
         uintptr_t stripped = (uintptr_t)stripPointer(out.targets[i]);

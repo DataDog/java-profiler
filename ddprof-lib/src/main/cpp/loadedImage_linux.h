@@ -26,6 +26,16 @@ class LoadedImage {
     int _phnum;
     uintptr_t _load_bias;
 
+    bool minLoadVaddr(uintptr_t& out) const {
+        uintptr_t min_vaddr = UINTPTR_MAX;
+        for (int i = 0; i < _phnum; i++) {
+            if (_ph[i].p_type == PT_LOAD && _ph[i].p_vaddr < min_vaddr) min_vaddr = _ph[i].p_vaddr;
+        }
+        if (min_vaddr == UINTPTR_MAX) return false;
+        out = min_vaddr;
+        return true;
+    }
+
   public:
     LoadedImage(const ElfProgramHeader* ph, int phnum, uintptr_t load_bias)
         : _ph(ph), _phnum(phnum), _load_bias(load_bias) {}
@@ -34,10 +44,18 @@ class LoadedImage {
         return !__builtin_add_overflow(_load_bias, vaddr, &out);
     }
 
-    // True if [addr, addr + size) lies inside a file-backed PT_LOAD.
+    bool pageBase(uintptr_t& out) const {
+        uintptr_t min_vaddr, addr;
+        if (!minLoadVaddr(min_vaddr) || !address(min_vaddr, addr)) return false;
+        // Add before masking to preserve the loader's page-base calculation.
+        out = addr & ~OS::page_mask;
+        return true;
+    }
+
+    // True if [addr, addr + size) lies inside a readable, file-backed PT_LOAD.
     bool readable(uintptr_t addr, size_t size) const {
         for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type != PT_LOAD) continue;
+            if (_ph[i].p_type != PT_LOAD || (_ph[i].p_flags & PF_R) == 0) continue;
             uintptr_t start;
             if (!address(_ph[i].p_vaddr, start)) continue;
             if (addr >= start && addr - start <= _ph[i].p_filesz
@@ -59,11 +77,8 @@ class LoadedImage {
     // and the vDSO do not; an unrelocated one is a vaddr below the image. The
     // same test as ElfParser::dyn_ptr().
     bool dynamicPointer(uintptr_t d_ptr, uintptr_t& out) const {
-        uintptr_t min_vaddr = UINTPTR_MAX;
-        for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type == PT_LOAD && _ph[i].p_vaddr < min_vaddr) min_vaddr = _ph[i].p_vaddr;
-        }
-        if (min_vaddr == UINTPTR_MAX) return false;
+        uintptr_t min_vaddr;
+        if (!minLoadVaddr(min_vaddr)) return false;
 
         uintptr_t relocation_threshold;
         if (!address(min_vaddr & ~OS::page_mask, relocation_threshold)) return false;
