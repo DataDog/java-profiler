@@ -352,12 +352,17 @@ TEST_F(VtableReceiverCaptureTest, NullReceiverKlassAndSymbolAreNotCaptured) {
 TEST_F(VtableReceiverCaptureTest, InflatedMarkLayoutFollowsUseObjectMonitorTable) {
     using InflatedMark = VMStructsTestAccessor::InflatedMark;
     using BoolFlag = VMStructsTestAccessor::BoolFlag;
-    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::True, 25));
-    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::False, 25));
-    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::NotBool, 25));
-    // Before JDK 24 there is no monitor table; after JDK 25 a missing flag means it is always used.
-    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 21));
-    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 25));
+    for (int version : {21, 24, 25, 26}) {
+        SCOPED_TRACE(version);
+        EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::True, version));
+        EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::False, version));
+        EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::NotBool, version));
+    }
+    // A missing flag predates the table before JDK 24, is a failed lookup on 24 and 25, and
+    // means the table is always used after 25.
+    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 23));
+    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 24));
+    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 25));
     EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 26));
 }
 
