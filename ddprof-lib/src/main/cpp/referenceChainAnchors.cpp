@@ -386,13 +386,13 @@ void ReferenceChainTracker::preparePendingLocalAnchorEvictionCursor() {
 
 bool ReferenceChainTracker::localHolderNeedsObservation(
     jlong tag, jlong own_class_tag) const {
-  if (_static_anchor_index_tags.count(tag) > 0 ||
-      _pending_local_anchor_tags.count(tag) > 0) {
-    return false;
-  }
   auto shape = _class_shape_cache.find(own_class_tag);
   if (shape != _class_shape_cache.end() &&
       shape->second != (u8)AnchorClassShape::CONTAINER) {
+    return false;
+  }
+  if (_static_anchor_index_tags.count(tag) > 0 ||
+      _pending_local_anchor_tags.count(tag) > 0) {
     return false;
   }
   if (shape == _class_shape_cache.end()) {
@@ -407,15 +407,16 @@ bool ReferenceChainTracker::localHolderNeedsObservation(
 
 void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
                                                 jlong own_class_tag) {
+  auto shape = _class_shape_cache.find(own_class_tag);
+  if (shape != _class_shape_cache.end() &&
+      shape->second != (u8)AnchorClassShape::CONTAINER) {
+    return; // classified non-container: never indexed
+  }
   if (_static_anchor_index_tags.count(tag) > 0) {
     return; // already indexed (durable root or earlier local report)
   }
-  auto shape = _class_shape_cache.find(own_class_tag);
   bool confirmed_container = false;
   if (shape != _class_shape_cache.end()) {
-    if (shape->second != (u8)AnchorClassShape::CONTAINER) {
-      return; // classified non-container: never indexed
-    }
     if (_local_anchor_tags.size() < LOCAL_ANCHOR_INDEX_CAP) {
       _local_anchor_tags.emplace(tag, own_class_tag);
       indexAnchorForRotation(tag, own_class_tag);

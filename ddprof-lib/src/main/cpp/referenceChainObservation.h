@@ -155,12 +155,19 @@ public:
     return !owns(lease) || _overflow;
   }
 
-  // Reads the accepted prefix metadata; false unless the token still owns the journal.
-  bool snapshot(const AnchorObservationLease &lease, u32 *count, bool *static_retry) {
+  // Snapshots the accepted prefix; the caller retains the lease until its read finishes.
+  // Returns false and clears the outputs unless the token still owns the journal.
+  bool snapshot(const AnchorObservationLease &lease,
+                const AnchorObservation **records, u32 *count,
+                bool *static_retry) {
     ExclusiveLockGuard guard(&_lock);
+    *records = nullptr;
+    *count = 0;
+    *static_retry = false;
     if (!owns(lease)) {
       return false;
     }
+    *records = _records;
     *count = _count;
     *static_retry = _static_retry;
     return true;
@@ -207,8 +214,6 @@ public:
     ExclusiveLockGuard guard(&_lock);
     return _epoch;
   }
-
-  const AnchorObservation *records() const { return _records; }
 
 private:
   class ActionTagSet {

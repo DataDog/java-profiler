@@ -676,6 +676,15 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return t->_static_anchor_index_tags.size() - t->_local_anchor_tags.size();
     }
+    static bool localAnchorTagsAreIndexedForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        for (const auto &local : t->_local_anchor_tags) {
+            if (t->_static_anchor_index_tags.count(local.first) == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
     static bool anchorIndexContainsForTest(jlong tag) {
         return ReferenceChainTracker::instance()->_static_anchor_index_tags.count(tag) > 0;
     }

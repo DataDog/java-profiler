@@ -3,6 +3,31 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+TEST_F(ReferenceChainsBfsTest, AnchorJournalSnapshotRequiresCurrentLease) {
+    AnchorObservationBuffer buffer;
+    AnchorObservationLease lease = buffer.tryLease();
+    ASSERT_NE(0u, lease.id);
+    ASSERT_TRUE(buffer.reserve(lease));
+    buffer.commit(lease, AnchorObservation{1, 2, 3,
+                                           AnchorObservation::LOCAL,
+                                           (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD});
+
+    const AnchorObservation *records = nullptr;
+    u32 count = 0;
+    bool static_retry = false;
+    ASSERT_TRUE(buffer.snapshot(lease, &records, &count, &static_retry));
+    ASSERT_NE(nullptr, records);
+    ASSERT_EQ(1u, count);
+    EXPECT_EQ(1, records[0].tag);
+    EXPECT_FALSE(static_retry);
+
+    buffer.releaseLease(lease);
+    EXPECT_FALSE(buffer.snapshot(lease, &records, &count, &static_retry));
+    EXPECT_EQ(nullptr, records);
+    EXPECT_EQ(0u, count);
+    EXPECT_FALSE(static_retry);
+}
+
 // Destroying the scope is itself a flush boundary: the early-return paths of the callers never
 // call flush() explicitly.
 TEST_F(ReferenceChainsBfsTest, AnchorScopeDestructionFlushesPendingPrefix) {

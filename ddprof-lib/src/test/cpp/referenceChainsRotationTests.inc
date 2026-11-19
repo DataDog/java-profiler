@@ -1388,3 +1388,123 @@ TEST_F(ReferenceChainsBfsTest, CandidateThreadWalkOverflowRetainsCursorOnCutShor
     EXPECT_EQ(tags_ever_assigned[tlmap], entry.parent_tag)
         << "the retried descent delivers the rejected demotion";
 }
+
+TEST_F(ReferenceChainsBfsTest, LocalAnchorTagsStayIndexedAcrossDurableEviction) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong local_class = -3101;
+    const jlong local_tag = 20001;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(local_class, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, local_tag, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(local_tag,
+                                                             local_class);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::localAnchorTagsAreIndexedForTest());
+
+    const size_t durable_cap =
+        ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const size_t evict_batch =
+        ReferenceChainsTestAccessor::kDurableAnchorEvictBatch;
+    for (size_t i = 0; i < durable_cap + evict_batch + 1; i++) {
+        jlong tag = 30000 + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, -3200, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+        local_tag));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::localAnchorTagsAreIndexedForTest());
+
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        local_tag, local_class, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+        local_tag));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::localAnchorTagsAreIndexedForTest());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationUsesIndexCapacityAfterFreshQueueDrains) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3301;
+    constexpr int anchor_count = 20;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    for (int i = 0; i < anchor_count; i++) {
+        jlong tag = 40000 + i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+
+    for (int i = 0; i < anchor_count - 1; i++) {
+        std::vector<jlong> first_look =
+            ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+                1);
+        ASSERT_EQ(1u, first_look.size());
+    }
+    ASSERT_EQ(1u,
+              ReferenceChainsTestAccessor::freshAnchorQueueSizeForTest());
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    EXPECT_EQ(16u, selected.size());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, FreshBudgetExhaustionKeepsNextTurnForLater) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3302;
+    const jlong first = 41001;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    for (jlong tag = first; tag < first + 3; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+
+    EXPECT_EQ((std::vector<jlong>{first}),
+              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+                  1));
+    EXPECT_EQ((std::vector<jlong>{first + 1, first + 2}),
+              ReferenceChainsTestAccessor::freshQueueTagsForTest());
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            2);
+    ASSERT_EQ(2u, selected.size());
+    EXPECT_NE(std::find(selected.begin(), selected.end(), first + 1),
+              selected.end());
+    EXPECT_NE(std::find(selected.begin(), selected.end(), first),
+              selected.end());
+    EXPECT_EQ((std::vector<jlong>{first + 2}),
+              ReferenceChainsTestAccessor::freshQueueTagsForTest());
+
+    FrontierEntry served{};
+    ASSERT_TRUE(frontier->lookup(first + 1, &served));
+    EXPECT_EQ(0, served.anchor_rotation_flags &
+                     FrontierAnchorRotation::FIRST_LOOK_PENDING);
+    EXPECT_NE(0, served.anchor_rotation_flags &
+                     FrontierAnchorRotation::FIRST_LOOK_SERVED);
+
+    tracker->stop();
+}

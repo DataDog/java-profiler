@@ -102,13 +102,14 @@ public:
 
   // Replays the accepted prefix, then resets count/static-retry/overflow while keeping the lease.
   void flush() {
+    const AnchorObservation *records = nullptr;
     u32 count = 0;
     bool static_retry = false;
-    if (!_buffer->snapshot(_lease, &count, &static_retry)) {
+    if (!_buffer->snapshot(_lease, &records, &count, &static_retry)) {
       return;
     }
     if (count > 0 || static_retry) {
-      _tracker->replayAnchorObservations(_buffer->records(), count, static_retry);
+      _tracker->replayAnchorObservations(records, count, static_retry);
     }
     _buffer->clearPrefix(_lease);
     resetStagingBudgets();
