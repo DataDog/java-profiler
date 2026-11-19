@@ -33,9 +33,11 @@ them. Freeze/thaw transitions do not always change the thread's Java state, so
 the state check alone is insufficient. The mark only annotates these frames:
 they keep their symbols, and native stack walks continue through them.
 
-For a native interrupted PC outside that runtime — for example a JNI call made
-from a mounted Java frame — the chunk is quiescent, and recovery is gated on
-the first mounted Java frame the walk verified instead of the interrupted PC.
+For a native interrupted PC outside that runtime, the chunk is quiescent. An
+example is a native call that leaves the thread in Java, such as compiled
+`System.nanoTime`; JNI calls change the state and stay rejected. Recovery is
+then gated on the first mounted Java frame the walk verified instead of the
+interrupted PC.
 That substitution requires positive proof: every native frame between the
 interrupted PC and that Java frame was walked and resolved (no anchor-mediated
 jump skipped them), and library initialization recognized both executable
