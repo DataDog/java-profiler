@@ -22,19 +22,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * Separate-process end-to-end coverage for the reference-chains target-selection mechanism,
- * complementing {@link ReferenceChainTrackingTest}'s in-process coverage: runs a "leaking Java app"
- * (see {@link LeakingCacheScenario}) in a child JVM and asserts on the child's reported result.
- *
- * <p><b>Why a separate process, not another {@code @Test} in {@code
- * ReferenceChainTrackingTest}:</b> {@code runPass()} (referenceChains.cpp) performs exactly one
- * root-seeded {@code FollowReferences} walk per search's *entire lifetime* ({@code
- * _search_started}); every later pass only expands frontier entries that walk already discovered
- * ({@code expandFrontier()}) - it never re-examines GC roots or revisits an already-{@code
- * EXPANDED} entry for newly-added children. Since {@code ReferenceChainTracker} is a process-wide
- * singleton, only the *first* test to call {@code runPass()} in a given JVM gets a root-seeded
- * walk; later tests' independently-rooted locals are invisible to it. A child JVM per scenario gets
- * its own fresh singleton and therefore its own first root walk.
+ * Runs the leak fixture in a child JVM to test reference-chain selection with a fresh tracker.
+ * Root enumeration repeats only after the adaptive interval, so a fresh process isolates each scenario.
  */
 @Tag("slow")
 public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTest {
@@ -90,7 +79,7 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
               packedCommand,
               Collections.emptyMap(),
               // Generous: a separate JVM's startup/classloading cost on top of the up-to-25-round
-              // growth loop plus grace period (~20s in-process).
+              // growth loop, up to 20 one-second tail waits plus their dumps, and one final flush.
               childTimeoutSeconds(90),
               line -> {
                 if (line.startsWith(LeakingCacheScenario.FOUND_MARKER)
@@ -120,13 +109,8 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
   }
 
   /**
-   * Mirrors {@link #shouldReconstructReferrerChainInSeparateProcess()}, but against {@link
-   * StaticFieldGrowingCollectionScenario} instead of {@link LeakingCacheScenario}: a {@code static
-   * final List<byte[]>} field appended to (never reassigned) after its owning class has already
-   * been swept once by {@code admitStaticFieldRoots()} (referenceChains.cpp), as opposed to {@code
-   * LeakingCacheScenario}'s local-variable (stack-root) cache. Checks that {@code
-   * collectStaleExpandedEntriesForRotation()} re-expands an already-{@code EXPANDED}
-   * static-field-rooted collection to pick up elements added after its one-time sweep.
+   * Verifies that a growing static-field collection exposes elements appended after root admission.
+   * A child JVM keeps the scenario's tracker state isolated from other tests.
    */
   @Test
   void shouldReconstructReferrerChainForGrowingStaticFieldCollection() throws Exception {
@@ -210,7 +194,7 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
           StaticFieldGrowingCollectionScenario.FOUND_MARKER + "byte[]",
           resultLine.get(),
           "Expected a successfully reconstructed chain to a byte[] chunk appended to the static "
-              + "field's list after its one-time admitStaticFieldRoots() sweep - got: "
+              + "field's list after its class was admitted as a static-field root - got: "
               + resultLine.get());
     } finally {
       Files.deleteIfExists(scratchDumpPath);

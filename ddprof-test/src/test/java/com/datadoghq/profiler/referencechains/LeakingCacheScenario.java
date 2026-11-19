@@ -18,22 +18,8 @@ import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 /**
- * The actual "leaking Java app" body run inside a separate child JVM by {@code ExternalLauncher}'s
- * {@code leak-cache} mode, driven by {@code ExternalProcessReferenceChainTest}. Deliberately not a
- * JUnit test itself - no shared-JVM {@code ReferenceChainTracker} singleton with any other test;
- * the whole point is to run alone in its own process so the one-shot root-seeded BFS walk always
- * belongs to this scenario (see {@code ExternalProcessReferenceChainTest}'s comment for why an
- * earlier in-process attempt failed).
- *
- * <p><b>Why {@code cache} is seeded and populated <em>before</em> the profiler is even started:</b>
- * {@code threadLoop()} sleeps one initial cadence *before* its very first {@code shouldRunPass()}
- * check, and that first check always returns {@code true} ({@code !_search_started}) - so the
- * process's one-and-only root-seeded walk fires roughly one second after {@code startThread()}, or
- * earlier if woken by a GC-finish signal (which can race the thread's own startup). An initial
- * in-process attempt created {@code cache} only *after* starting the profiler; against a cold JVM
- * that lost the race essentially every time - the one-shot walk caught {@code cache} still empty,
- * and a frontier entry once marked {@code EXPANDED} is never revisited for new children. Seeding
- * before {@code profiler.execute()} removes the race entirely.
+ * Child-JVM fixture for {@link ExternalProcessReferenceChainTest}; a fresh process isolates tracker state.
+ * Seed {@code cache} before {@code profiler.execute()} so the first root walk cannot see it empty.
  */
 public final class LeakingCacheScenario {
   private LeakingCacheScenario() {}
@@ -47,6 +33,10 @@ public final class LeakingCacheScenario {
   // is the minimum that clears selectLeakCandidates()'s consecutive_positive gate; 15 gives
   // margin. generations=true needs that gate cleared to authorize the BFS thread's first pass.
   private static final int SEED_EPOCHS_FOR_HYSTERESIS = 15;
+
+  // The tracker can cache a chain after the final growth-round dump.
+  private static final int TAIL_POLL_ATTEMPTS = 20;
+  private static final long TAIL_POLL_INTERVAL_MILLIS = 1000;
 
   /**
    * Durable holder for the cache fixture. The discovered-chain gate suppresses chains shallower
@@ -159,18 +149,24 @@ public final class LeakingCacheScenario {
       }
     }
 
-    for (int attempt = 0; match == null && attempt < 5; attempt++) {
-      Thread.sleep(1000);
+    for (int attempt = 0; match == null && attempt < TAIL_POLL_ATTEMPTS; attempt++) {
+      Thread.sleep(TAIL_POLL_INTERVAL_MILLIS);
       profiler.dump(scratchDumpPath);
       match = findMatch(scratchDumpPath);
     }
 
+    if (match == null) {
+      // The tracker may cache a live chain after the last tail dump; serialize it before failing.
+      profiler.dump(scratchDumpPath);
+      match = findMatch(scratchDumpPath);
+    }
     if (match == null) {
       debugDumpAllChainLeaves(scratchDumpPath);
       debugDumpCounters(profiler);
       System.out.println(NOT_FOUND_MARKER);
       return;
     }
+    requireDetectorActivation(profiler, debugBuild);
     boolean sawHashMapInternals = false;
     for (IMCType type : match.chain) {
       if (type.getFullName().startsWith("java.util.HashMap")) {
@@ -220,12 +216,28 @@ public final class LeakingCacheScenario {
   /**
    * Populates {@code cache} with {@code count} entries under a key namespace ("seed-") disjoint
    * from the round loop's own ("leak-") - before the profiler (and its BFS thread) even starts, so
-   * the one-shot root-seeded walk can never catch {@code cache} empty.
+   * the first root-seeded walk can never catch {@code cache} empty.
    */
   private static void seedInitialBatch(Map<String, CachedPayload> cache, int count) {
     for (int i = 0; i < count; i++) {
       String key = "seed-" + i;
       cache.put(key, new CachedPayload(key));
+    }
+  }
+
+  /** Require a candidate when release counters exist; debug logs and no-counter builds skip. */
+  private static void requireDetectorActivation(JavaProfiler profiler, boolean debugBuild) {
+    Long admitted = profiler.getDebugCounters().get("reference_chain_candidate_count");
+    System.out.println(
+        "[debug] detector-activation: reference_chain_candidate_count="
+            + admitted
+            + " debugBuild="
+            + debugBuild);
+    if (!debugBuild && admitted != null && admitted < 1) {
+      throw new IllegalStateException(
+          "chain found but the detector never admitted a leak candidate (candidate_count="
+              + admitted
+              + ")");
     }
   }
 
@@ -303,13 +315,9 @@ public final class LeakingCacheScenario {
   }
 
   /**
-   * Inline padding supplies sampled instances for the detector's eight-survivor per-thread
-   * threshold while preserving the one-shot allocator threads and number of retained objects. With
-   * only 32 longs, a failing release run retained at most six sampled instances per worker: its
-   * one-age cohorts could never qualify, regardless of traversal time. About 1KiB per payload
-   * provides more sampling opportunities within the same rounds at the 256KiB sampling interval.
-   * Plain fields keep that allocation volume on CachedPayload itself; a companion array would
-   * compete for samples without contributing any CachedPayload survivors.
+   * 128 inline longs (~1KiB per payload) add sampling weight against the 256KiB interval floor in
+   * {@code ObjectSampler::check}; the allocator threads stay one-shot. Padding only raises sampling
+   * odds - {@code requireDetectorActivation} proves the detector qualified the class.
    */
   static final class CachedPayload {
     final String key;
