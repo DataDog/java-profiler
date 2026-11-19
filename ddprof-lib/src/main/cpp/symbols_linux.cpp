@@ -1302,22 +1302,43 @@ void* UnloadProtection::release() {
     return handle;
 }
 
+struct ImportIdentityQuery {
+    const CodeCache* cache;
+    bool matches;
+};
+
+static int checkLiveImportIdentity(struct dl_phdr_info* info, size_t, void* data) {
+    ImportIdentityQuery* query = static_cast<ImportIdentityQuery*>(data);
+    uintptr_t min_vaddr = UINTPTR_MAX;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        if (info->dlpi_phdr[i].p_type == PT_LOAD && info->dlpi_phdr[i].p_vaddr < min_vaddr) {
+            min_vaddr = info->dlpi_phdr[i].p_vaddr;
+        }
+    }
+    if (min_vaddr == UINTPTR_MAX
+        || info->dlpi_addr + (min_vaddr & ~OS::page_mask) != reinterpret_cast<uintptr_t>(query->cache->imageBase())) {
+        return 0;
+    }
+    query->matches = query->cache->imageFingerprint()
+        == Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum, info->dlpi_addr);
+    return 1;
+}
+
+#ifdef UNIT_TEST
+void (*UnloadProtection::beforeImportWalkForTest)() = nullptr;
+#endif
+
 bool UnloadProtection::importsAreCurrent(const CodeCache* cc) const {
     if (!_valid || cc->imageFingerprint() == 0) return false;
 
-    // The pin keeps the live ELF header and program headers mapped, including
-    // when a replacement image occupies the cached base. Do not use cached offsets.
-    const ElfHeader* header = reinterpret_cast<const ElfHeader*>(cc->imageBase());
-    const ElfProgramHeader* phdrs = reinterpret_cast<const ElfProgramHeader*>(cc->imageBase() + header->e_phoff);
-    uintptr_t min_vaddr = UINTPTR_MAX;
-    for (int i = 0; i < header->e_phnum; i++) {
-        if (phdrs[i].p_type == PT_LOAD && phdrs[i].p_vaddr < min_vaddr) {
-            min_vaddr = phdrs[i].p_vaddr;
-        }
-    }
-    if (min_vaddr == UINTPTR_MAX) return false;
-    uintptr_t load_bias = reinterpret_cast<uintptr_t>(cc->imageBase()) - (min_vaddr & ~OS::page_mask);
-    return cc->imageFingerprint() == Symbols::imageFingerprint(phdrs, header->e_phnum, load_bias);
+    // A pin prevents unloading, but e_phoff is a file offset and need not address mapped headers.
+    // The loader supplies live headers and load bias, even for a file-only program-header table.
+    ImportIdentityQuery query = {cc, false};
+#ifdef UNIT_TEST
+    if (beforeImportWalkForTest != nullptr) beforeImportWalkForTest();
+#endif
+    dl_iterate_phdr(checkLiveImportIdentity, &query);
+    return query.matches;
 }
 
 static u64 fnv1a(const void* data, size_t size, u64 hash) {

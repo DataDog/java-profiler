@@ -9,22 +9,61 @@ if [ "${LIBC_VARIANT}" != glibc ]; then
 fi
 
 case "${ARCH}" in
-  x64) JDK_ARCH=x64 ;;
-  arm64) JDK_ARCH=aarch64 ;;
+  x64|arm64) ;;
   *) echo "ERROR: Unsupported OpenJ9 architecture: ${ARCH}" >&2; exit 1 ;;
 esac
 
 case "${JAVA_VERSION}" in
-  8) SEMERU_VERSION=8.0.512.0 ;;
-  11) SEMERU_VERSION=11.0.33.0 ;;
-  17) SEMERU_VERSION=17.0.21.0 ;;
-  21) SEMERU_VERSION=21.0.13.0 ;;
-  25) SEMERU_VERSION=25.0.5.0 ;;
+  8|11|17|21|25) ;;
   *) echo "ERROR: Unsupported OpenJ9 JDK version: ${JAVA_VERSION}" >&2; exit 1 ;;
 esac
 
+# Tags and archive names are separate upstream identifiers, not a version template.
+case "${JAVA_VERSION}-${ARCH}" in
+  8-x64)
+    SEMERU_TAG=jdk-8.0.512.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_x64_linux_8.0.512.0.tar.gz
+    ;;
+  8-arm64)
+    SEMERU_TAG=jdk-8.0.512.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_aarch64_linux_8.0.512.0.tar.gz
+    ;;
+  11-x64)
+    SEMERU_TAG=jdk-11.0.33.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_x64_linux_11.0.33.0.tar.gz
+    ;;
+  11-arm64)
+    SEMERU_TAG=jdk-11.0.33.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_aarch64_linux_11.0.33.0.tar.gz
+    ;;
+  17-x64)
+    SEMERU_TAG=jdk-17.0.21.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_x64_linux_17.0.21.0.tar.gz
+    ;;
+  17-arm64)
+    SEMERU_TAG=jdk-17.0.21.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_aarch64_linux_17.0.21.0.tar.gz
+    ;;
+  21-x64)
+    SEMERU_TAG=jdk-21.0.13.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_x64_linux_21.0.13.0.tar.gz
+    ;;
+  21-arm64)
+    SEMERU_TAG=jdk-21.0.13.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_aarch64_linux_21.0.13.0.tar.gz
+    ;;
+  25-x64)
+    SEMERU_TAG=jdk-25.0.5.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_x64_linux_25.0.5.0.tar.gz
+    ;;
+  25-arm64)
+    SEMERU_TAG=jdk-25.0.5.0
+    SEMERU_ARCHIVE=ibm-semeru-open-jdk_aarch64_linux_25.0.5.0.tar.gz
+    ;;
+esac
+
 export JAVA_HOME="${1:?installation root required}/openj9-${JAVA_VERSION}"
-DOWNLOAD_URL="https://github.com/ibmruntimes/semeru${JAVA_VERSION}-binaries/releases/download/jdk-${SEMERU_VERSION}/ibm-semeru-open-jdk_${JDK_ARCH}_linux_${SEMERU_VERSION}.tar.gz"
+DOWNLOAD_URL="https://github.com/ibmruntimes/semeru${JAVA_VERSION}-binaries/releases/download/${SEMERU_TAG}/${SEMERU_ARCHIVE}"
 mkdir -p "${JAVA_HOME}"
 curl --fail --location --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" \
   | tar xzf - -C "${JAVA_HOME}" --strip-components=1
