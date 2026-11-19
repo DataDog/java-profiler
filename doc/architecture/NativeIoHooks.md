@@ -27,6 +27,10 @@ the wrappers use its existing hooks. With both active, the underlying I/O call
 runs once and bytes recording follows the TaskBlock scope. Hook forwarding
 preserves arguments, return values and errno.
 
+The JDK 8 libnet poll-to-ppoll adapter remains the forwarding target when a
+shared hook displaces it. Both owners preserve that policy, including sampler-only
+operation. Other poll imports keep their globally resolved original.
+
 ## Interval and patch domains
 
 Native scopes project the current thread's registry identity lazily. They use the
@@ -176,6 +180,8 @@ new hook fault or of successful EFAULT recovery.
 - `LibraryPatcherSocketTransactionTest.OwnerRestartMakesReloadedFullRelroImportsWritable`:
   production owner start/stop, actual unmap/reload at the same base, read-only GOT
   precondition, restarted installation/forwarding and restored originals.
+- `LibraryPatcherSocketTransactionTest.OwnersPreserveDisplacedJdk8PollAdapterForwardingAndRestoration`:
+  both owner modes retain the ppoll adapter, without redirecting ordinary poll calls.
 - `libraryPatcherUnload_ut.cpp`: pin/restore socket safety, pthread live-walk
   fingerprint identity, foreign-loader-lock order and same-layout replacement.
 

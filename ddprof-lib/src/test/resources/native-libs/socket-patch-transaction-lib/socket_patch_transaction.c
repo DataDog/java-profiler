@@ -4,6 +4,9 @@
  */
 
 #include <stddef.h>
+#ifdef FIXTURE_POLL_ADAPTER
+#include <poll.h>
+#endif
 #include <pthread.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -14,6 +17,12 @@ int socket_patch_directory_anchor(void) {
     return 1;
 }
 #else
+#ifdef FIXTURE_POLL_ADAPTER
+int socket_patch_poll(struct pollfd* fds, nfds_t count, int timeout) {
+    return poll(fds, count, timeout);
+}
+#endif
+
 int socket_patch_thread(pthread_t* thread, void* (*routine)(void*), void* arg) {
     return pthread_create(thread, NULL, routine, arg);
 }

@@ -171,14 +171,9 @@ static bool pc_in_range(uintptr_t pc, const Range* r) {
     return range_valid(r) && pc >= r->start && pc < r->end;
 }
 
-#ifdef __x86_64__
-
-#include <poll.h>
-#include "vmEntry.h"
-
 // Workaround for JDK-8312065 on JDK 8:
 // replace poll() implementation with ppoll() which is restartable
-static int poll_hook(struct pollfd* fds, nfds_t nfds, int timeout) {
+int Symbols::restartablePoll(struct pollfd* fds, nfds_t nfds, int timeout) {
     if (timeout >= 0) {
         struct timespec ts;
         ts.tv_sec = timeout / 1000;
@@ -189,6 +184,10 @@ static int poll_hook(struct pollfd* fds, nfds_t nfds, int timeout) {
     }
 }
 
+#ifdef __x86_64__
+
+#include "vmEntry.h"
+
 static void applyPatch(CodeCache* cc) {
     static bool patch_libnet = VM::hotspot_version() == 8;
 
@@ -197,7 +196,7 @@ static void applyPatch(CodeCache* cc) {
         if (len >= 10 && strcmp(cc->name() + len - 10, "/libnet.so") == 0) {
             UnloadProtection handle(cc);
             if (handle.isValid()) {
-                cc->patchImport(im_poll, (void*)poll_hook);
+                cc->patchImport(im_poll, reinterpret_cast<void*>(Symbols::restartablePoll));
                 patch_libnet = false;
             }
         }

@@ -1169,6 +1169,11 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
             _socket_entries.push_back({location, original});
             void* hook = socket_hook_for_target(candidate._target,
                                                 hooks[hook_index]);
+            // Compose above the JDK 8 libnet adapter without changing other poll imports.
+            if (import_id == im_poll &&
+                original == reinterpret_cast<void*>(Symbols::restartablePoll)) {
+              hook = reinterpret_cast<void*>(NativeSocketInterposer::restartable_poll_hook);
+            }
             __atomic_store_n(location, hook, __ATOMIC_RELEASE);
             if (candidate._target == SOCKET_PATCH_IBM_JCL_BRIDGE) {
               ibm_bridge_slots_patched++;
