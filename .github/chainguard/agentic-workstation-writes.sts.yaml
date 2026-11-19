@@ -10,8 +10,6 @@
 # field (that is org-level-policy syntax).
 issuer: https://ticino.identity.local-cluster.local-dc.fabric.dog:8443/v1/issuer/sycamore
 
-# ddtool sycamore tokens carry aud=octo-sts; pinning it makes the match
-# explicit instead of relying on the pool's default audience.
 audience: octo-sts
 
 # ddtool sycamore tokens carry aud=octo-sts; the pin is required — without
