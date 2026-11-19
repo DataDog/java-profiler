@@ -14,31 +14,32 @@ import java.util.Queue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import org.junit.jupiter.api.Test;
+import java.util.stream.Stream;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 public class ShutdownTest {
 
-  @Test
-  public void testShutdownCpu() throws IOException {
-    System.out.println("=== testShutdownCpu()");
-    JavaProfiler profiler = JavaProfiler.getInstance();
-    runTest(profiler, "start,cpu=10us,filter=0");
+  /**
+   * Engine-mix parameter points for {@link #testShutdown(String)}. Wall-clock-based commands need
+   * the current thread registered ({@code addThread()}); cpu-only does not.
+   */
+  static Stream<String> engineCommands() {
+    return Stream.of(
+        "start,cpu=10us,filter=0",
+        "start,wall=10us,filter=0",
+        "start,cpu=10us,wall=~10us,filter=0");
   }
 
-  @Test
-  public void testShutdownWall() throws IOException {
-    System.out.println("=== testShutdownWall()");
+  @ParameterizedTest
+  @MethodSource("engineCommands")
+  public void testShutdown(String command) throws IOException {
+    System.out.println("=== testShutdown(" + command + ")");
     JavaProfiler profiler = JavaProfiler.getInstance();
-    profiler.addThread();
-    runTest(profiler, "start,wall=10us,filter=0");
-  }
-
-  @Test
-  public void testShutdownCpuAndWall() throws IOException {
-    System.out.println("=== testShutdownCpuAndWall()");
-    JavaProfiler profiler = JavaProfiler.getInstance();
-    profiler.addThread();
-    runTest(profiler, "start,cpu=10us,wall=~10us,filter=0");
+    if (command.contains("wall")) {
+      profiler.addThread();
+    }
+    runTest(profiler, command);
   }
 
   /**
