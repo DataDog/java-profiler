@@ -288,11 +288,12 @@ private:
                                      const char *name, u64 count);
 #endif
 
-  // Encodes the stack-pool record header. A Java entry root can establish
-  // completeness only when the walker has not already reported missing frames.
+  // A zero event->_sample_ticks timestamps the sample with the current TSC.
   static void writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
                                 u64 correlation_id, ExecutionEvent *event);
 
+  // Encodes the stack-pool record header. A Java entry root can establish
+  // completeness only when the walker has not already reported missing frames.
   static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
                                    const MethodInfo *root);
 
