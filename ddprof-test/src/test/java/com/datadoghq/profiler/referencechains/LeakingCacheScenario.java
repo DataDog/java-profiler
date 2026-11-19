@@ -18,8 +18,9 @@ import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 /**
- * Child-JVM fixture for {@link ExternalProcessReferenceChainTest}; a fresh process isolates tracker state.
- * Seed {@code cache} before {@code profiler.execute()} so the first root walk cannot see it empty.
+ * Child-JVM fixture for {@link ExternalProcessReferenceChainTest}; a fresh process isolates tracker
+ * state. Seed {@code cache} before {@code profiler.execute()} so the first root walk cannot see it
+ * empty.
  */
 public final class LeakingCacheScenario {
   private LeakingCacheScenario() {}

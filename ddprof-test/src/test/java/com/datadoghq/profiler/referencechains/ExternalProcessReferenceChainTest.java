@@ -22,8 +22,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * Runs the leak fixture in a child JVM to test reference-chain selection with a fresh tracker.
- * Root enumeration repeats only after the adaptive interval, so a fresh process isolates each scenario.
+ * Runs the leak fixture in a child JVM to test reference-chain selection with a fresh tracker. Root
+ * enumeration repeats only after the adaptive interval, so a fresh process isolates each scenario.
  */
 @Tag("slow")
 public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTest {
