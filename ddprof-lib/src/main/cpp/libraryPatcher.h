@@ -27,9 +27,11 @@ typedef struct _patchEntry {
 // through lib->findImport().
 struct PthreadCreateEntry {
   CodeCache* lib;
-  // The last pass that visited the library found it mapped, with every
-  // pthread_create slot holding the hook or a value the loader resolves.
+  // The last pass that visited the library found it mapped, and no slot held a
+  // foreign value the visit before had not seen.
   bool mapped;
+  // The foreign value each slot held at the last visit, or null.
+  void* foreign[NUM_IMPORT_TYPES];
 };
 
 // The pthread_create entries, guarded by LibraryPatcher::_lock. All-zero is the
@@ -39,8 +41,9 @@ struct PthreadCreateTable {
   // The entries' libraries, sorted, for patch_pthread_create()'s collector.
   CodeCache* sorted[MAX_NATIVE_LIBS];
   int size;
-  // Set by a pass when an entry's slot held a value it left alone, so the pass
-  // must not be counted as having handled the loader's adds and subs.
+  // Set by a pass when an entry's slot held a foreign value that the visit
+  // before had not seen: the pass must not be counted as having handled the
+  // loader's adds and subs. A foreign value that stays does not set it.
   bool declined;
 };
 

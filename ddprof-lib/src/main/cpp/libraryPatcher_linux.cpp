@@ -664,10 +664,12 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   PthreadCreateEntry* entry = find_pthread_create_entry(_pthread_create, lib);
   bool reload = entry != nullptr;
   bool patch[NUM_IMPORT_TYPES] = {};
+  void* foreign[NUM_IMPORT_TYPES] = {};
   bool any_patch = false;
-  // False when a slot holds a value that was not left by the loader: the same
-  // rule on the first patch and on a reload.
-  bool settled = true;
+  // True when a slot holds a foreign value that the visit before had not seen,
+  // so a value that stays is not looked at again: the same rule on the first
+  // patch and on a reload.
+  bool changed = false;
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
     if (slots[ty] == nullptr) {
       continue;
@@ -682,12 +684,16 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
     // interception away.
     patch[ty] = current == _loader_pthread_create || lib->contains(current);
     any_patch |= patch[ty];
-    settled &= patch[ty];
+    if (!patch[ty]) {
+      foreign[ty] = current;
+      changed |= !reload || entry->foreign[ty] != current;
+    }
   }
   if (reload) {
-    entry->mapped = settled;
+    entry->mapped = !changed;
+    memcpy(entry->foreign, foreign, sizeof(foreign));
     // A library without an entry is a candidate on every pass anyway.
-    _pthread_create.declined |= !settled;
+    _pthread_create.declined |= changed;
   }
   if (!any_patch) {
     return;
@@ -697,8 +703,11 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
       TEST_LOG("Patching: entry table full, %s is not routed through the hook", lib->name());
       return;
     }
-    _pthread_create.entries[_pthread_create.size++] = {lib, settled};
-    _pthread_create.declined |= !settled;
+    PthreadCreateEntry& added = _pthread_create.entries[_pthread_create.size++];
+    added.lib = lib;
+    added.mapped = !changed;
+    memcpy(added.foreign, foreign, sizeof(foreign));
+    _pthread_create.declined |= changed;
   }
   TEST_LOG("Patching: %s", lib->name());
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {

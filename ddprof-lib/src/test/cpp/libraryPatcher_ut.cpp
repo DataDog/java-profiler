@@ -390,15 +390,59 @@ TEST_F(LibraryPatcherRehook, RehooksSlotHoldingPreloadedInterposer) {
   EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
 }
 
-// A slot a pass left alone leaves the entry unsettled, so that a pass can tell
-// the library still needs another look; a slot it hooked again settles it.
-TEST_F(LibraryPatcherRehook, ForeignHookLeavesEntryUnsettled) {
+// A foreign value the visit before had not seen leaves the entry unsettled, so
+// that a pass can tell the library still needs another look.
+TEST_F(LibraryPatcherRehook, NewForeignHookLeavesEntryUnsettled) {
   ASSERT_EQ(1, LibraryPatcherTestAccessor::entryMapped(&lib));
   slot = (void*)&fake_original_pthread_create;
 
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
 
   EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
+  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
+}
+
+// A wrapper that stays is not a pending relocation: once a visit has seen the
+// value, it no longer keeps the loader counts from being recorded.
+TEST_F(LibraryPatcherRehook, ForeignHookSeenBeforeIsSettled) {
+  slot = (void*)&fake_original_pthread_create;
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  ASSERT_TRUE(LibraryPatcherTestAccessor::declined());
+  LibraryPatcherTestAccessor::setDeclined(false);
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryMapped(&lib));
+  EXPECT_EQ((void*)&fake_original_pthread_create, slot);
+}
+
+// A different foreign value is a new situation, so it is declined again.
+TEST_F(LibraryPatcherRehook, ChangedForeignHookIsDeclinedAgain) {
+  slot = (void*)&fake_original_pthread_create;
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  LibraryPatcherTestAccessor::setDeclined(false);
+  slot = (void*)&return_argument;
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
+}
+
+// The record is dropped once the slot holds the loader's binding again, so the
+// same wrapper installed later is new.
+TEST_F(LibraryPatcherRehook, ForeignHookAfterRehookIsDeclinedAgain) {
+  slot = (void*)&fake_original_pthread_create;
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  slot = real_pthread_create();
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  ASSERT_EQ(hooked, slot);
+  LibraryPatcherTestAccessor::setDeclined(false);
+  slot = (void*)&fake_original_pthread_create;
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
   EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
 }
 

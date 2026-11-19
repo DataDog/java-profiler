@@ -62,6 +62,7 @@ enum ChildExit {
   CHILD_UNHOOKED_BY_STOP = 21,  // a persistent hook was undone by the recording unpatch
   CHILD_FOREIGN_TAKEN = 22,     // a slot holding a foreign value was overwritten
   CHILD_NOT_RECHECKED = 23,     // a declined library was not looked at again
+  CHILD_RECHECKED_STABLE = 24,  // a wrapper that stays kept forcing re-checks
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -230,6 +231,7 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_UNHOOKED_BY_STOP) << "a persistent hook was undone by the recording unpatch";
   ASSERT_NE(code, CHILD_FOREIGN_TAKEN) << "a slot holding a foreign value was overwritten";
   ASSERT_NE(code, CHILD_NOT_RECHECKED) << "a pass that declined a slot was counted as handled";
+  ASSERT_NE(code, CHILD_RECHECKED_STABLE) << "a foreign wrapper that stays kept forcing re-checks";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
   ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "two different builds have the same fingerprint";
   ASSERT_NE(code, CHILD_DEADLOCK) << "patching deadlocked against the loader's dl_load_write_lock";
@@ -738,6 +740,35 @@ TEST_F(LibraryPatcherRecheckTest, DeclinedSlotIsCheckedAgainWithoutLoaderChange)
     *lib.slot = reinterpret_cast<void*>(&pthread_create);
     PTHREAD_CREATE.patch();
     if (*lib.slot != hooked) _exit(CHILD_NOT_RECHECKED);
+  });
+}
+
+// A wrapper that stays is not a pending relocation: after one pass has seen it,
+// the loader counts are recorded again, and a later pass without a load or
+// unload leaves the library alone instead of re-walking it on every refresh.
+TEST_F(LibraryPatcherRecheckTest, StableForeignWrapperStopsForcingRechecks) {
+  runInChild([]() {
+    if (OS::isMusl()) _exit(CHILD_SKIP);  // musl does not report load counts
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    patchAndVerify(PTHREAD_CREATE, lib);
+    void* hooked = *lib.slot;
+
+    void* foreign = reinterpret_cast<void*>(&foreignWrapper);
+    *lib.slot = foreign;
+    char other[PATH_MAX];
+    testLibPath(other, sizeof(other), "/libbuildid-a.so");
+    void* handle = dlopen(other, RTLD_NOW);
+    if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
+    dlclose(handle);
+    if (dlopen(other, RTLD_NOLOAD | RTLD_LAZY) != nullptr) _exit(CHILD_SKIP);
+
+    PTHREAD_CREATE.patch();  // sees the wrapper for the first time: not counted
+    PTHREAD_CREATE.patch();  // sees it again: settled, counted
+    if (*lib.slot != foreign) _exit(CHILD_FOREIGN_TAKEN);
+
+    *lib.slot = reinterpret_cast<void*>(&pthread_create);
+    PTHREAD_CREATE.patch();  // no load or unload since the count was recorded
+    if (*lib.slot == hooked) _exit(CHILD_RECHECKED_STABLE);
   });
 }
 
