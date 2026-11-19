@@ -307,6 +307,20 @@ gate therefore depends on change control for these files. Candidate-controlled
 workflows must not obtain the publisher token. The app installation must cover
 only this repository. The installation permission, the installation scope, the
 pool allow list, and exact policy claims must be tested before activation.
+
+`.github/CODEOWNERS` keeps the repository-wide default rule for change
+attribution and marks the sensitive paths. The gate evaluator publishes the
+`codeowner-review/head` status: a head that changes a sensitive path passes
+only when a `@DataDog/profiling-java` member other than the pull request author
+approves that head; review of ordinary paths stays at the authors' discretion.
+The evaluator cannot soundly read a fork head's changed files: the fork author
+can swap a sensitive file for a benign one for the duration of the read, so
+`codeowner-review/head` fails closed for every fork pull request — an external
+contribution can only merge through the admin bypass, which a maintainer
+must exercise knowingly. The compare endpoint caps its file list and offers no
+pagination, so a pull request with 300 or more changed files also fails closed
+and can only merge through the bypass; this is an accepted cost. The context
+is not a required check until activation.
 The repository policy file `.github/chainguard/self.bits-review-gate.publish-status.sts.yaml`
 carries exactly these claims:
 
@@ -320,7 +334,12 @@ claim_pattern:
   job_workflow_ref: DataDog/java-profiler/\.github/workflows/bits-review-gate\.yml@refs/heads/main
 permissions:
   statuses: write
+  members: read
 ```
+
+The `members: read` claim authorizes the codeowner-review evaluator's team
+roster read (`/orgs/DataDog/teams/profiling-java/members`); the bits gate
+itself never reads membership.
 
 Octo-STS matches every pattern against the entire claim or subject value: it
 compiles `subject_pattern` and each `claim_pattern` entry as `^(?:<pattern>)$`
@@ -384,6 +403,15 @@ Bits rollout settings. A PR that never gets a result remains blocked by policy.
 
 Do not add a numerical freshness or delivery-latency promise without measurement
 and approval. Stronger guarantees need a separate lifecycle or merge-path design.
+
+The same window applies to the codeowner-review approval: an owner approval
+dismissed after the evaluator's final review re-read but before the status POST
+lands leaves a success standing until a dismissal-triggered re-evaluation
+publishes failure. The receiver workflow drives that re-evaluation; the residual
+is the dispatch-to-publish delay, accepted here as part of the asynchronous
+model above. A team-membership change does not trigger any workflow: the roster
+is process-cached per evaluation and refreshed only by the next run (the 30-minute
+sweep bounds the staleness for scheduled heads).
 
 ## Alternatives not selected
 

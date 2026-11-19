@@ -70,6 +70,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout trusted publisher
+        id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/heads/main
@@ -89,3 +90,15 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           STATUS_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: python3 .github/scripts/bits_review_gate.py publish --sha "$SHA"
+
+      - name: Publish the codeowner-review status for the resolved head
+        # The bits publish step exits 1 on a FAIL verdict; this step must
+        # still publish so both statuses always exist for the head. A
+        # failed checkout or token mint cannot publish anything, so the
+        # step is skipped in those cases instead of failing noisily.
+        if: always() && steps.checkout.outcome == 'success' && steps.octo-sts.outcome == 'success'
+        env:
+          SHA: ${{ matrix.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          STATUS_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: python3 .github/scripts/codeowner_review_gate.py publish --sha "$SHA"

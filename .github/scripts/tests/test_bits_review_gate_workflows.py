@@ -65,6 +65,7 @@ AGENTS_FILE = os.path.join(REPO_ROOT, "AGENTS.md")
 DISCOVER_PATTERN = "test_bits_review_gate_*.py"
 FAMILY_MODULES = {
     "test_bits_review_gate_api.py",
+    "test_bits_review_gate_codeowner.py",
     "test_bits_review_gate_policy.py",
     "test_bits_review_gate_publish.py",
     "test_bits_review_gate_workflows.py",
@@ -445,7 +446,8 @@ class PublisherWorkflowTest(unittest.TestCase):
     def test_publish_targets_explicit_matrix_sha(self):
         self.assertEqual(
             run_blocks(self.publish),
-            ['python3 .github/scripts/bits_review_gate.py publish --sha "$SHA"'],
+            ['python3 .github/scripts/bits_review_gate.py publish --sha "$SHA"',
+             'python3 .github/scripts/codeowner_review_gate.py publish --sha "$SHA"'],
         )
         for line in (
             "SHA: ${{ matrix.sha }}",
@@ -517,7 +519,7 @@ class PublisherOctoStsPolicyTest(unittest.TestCase):
         for line in block.group(1).splitlines():
             key, _, value = line.strip().partition(": ")
             entries[key] = value
-        self.assertEqual(entries, {"statuses": "write"})
+        self.assertEqual(entries, {"statuses": "write", "members": "read"})
 
 
 class CiScriptTestsWiringTest(unittest.TestCase):
