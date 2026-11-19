@@ -548,6 +548,26 @@ public:
     ScopedUnownedContextAllocationFailure& operator=(const ScopedUnownedContextAllocationFailure&) = delete;
 };
 
+TEST_F(UnownedContextSidecarTest, EpochStartsSkipSegmentsWithoutCachedRoot) {
+    const int rootless = filter->registerThread(7810);
+    const int rooted = filter->registerThread(7811);
+    ASSERT_GE(rootless, 0);
+    ASSERT_GE(rooted, 0);
+    constexpr u64 kRootlessEpoch = 0x1000;
+    constexpr u64 kRootedEpoch = 0x2000;
+    tracker->publishUnownedTrace(rootless, 0x7810, OSThreadState::SLEEPING);
+    tracker->publishUnownedTrace(rooted, 0x7811, OSThreadState::SLEEPING);
+    ASSERT_TRUE(tracker->deferUnownedWeight(rootless, kRootlessEpoch));
+    ASSERT_TRUE(tracker->deferUnownedWeight(rooted, kRootedEpoch));
+    // The root bit and segments stay while the cached root id is cleared.
+    tracker->slotForId(rootless)->unowned_blocked_call_trace_id.store(0, std::memory_order_release);
+    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+    ASSERT_EQ(1U, tracker->copyUnownedWeightSegments(rootless, segments));
+    std::unordered_set<u64> epochs;
+    tracker->collectUnownedEpochStarts(epochs);
+    EXPECT_EQ((std::unordered_set<u64>{kRootedEpoch}), epochs);
+}
+
 TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFields) {
     for (int transition = 0; transition < 3; ++transition) {
         SCOPED_TRACE(transition);

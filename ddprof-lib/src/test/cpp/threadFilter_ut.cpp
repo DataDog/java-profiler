@@ -1833,6 +1833,27 @@ TEST_F(ThreadRegistryTest, OwnerReuseStartsOutsideWindow) {
     EXPECT_EQ(OSThreadState::SLEEPING, tracker.slotForId(id)->activeBlockState());
 }
 
+TEST_F(ThreadRegistryTest, StaleOwnerExitLeavesReassignedSlotUntouched) {
+    auto first = registryOwner(6212);
+    auto second = registryOwner(6213);
+    registry.onContextWindowEnter(*first);
+    const int old_id = first->filterSlotId();
+    ASSERT_GE(old_id, 0);
+    registry.unregisterThread(old_id, first->tid());
+    ASSERT_EQ(old_id, first->filterSlotId()) << "Retirement must leave the owner's stale projection";
+    const int id = registry.ensureOwnerSlot(*second);
+    ASSERT_EQ(old_id, id) << "The retired slot must be reassigned to the second owner";
+    auto* slot = registry.slotForId(id);
+    ASSERT_EQ(second->tid(), slot->nativeTid());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, run.token());
+    const u64 window_state = slot->rawContextWindowState();
+    registry.onContextWindowExit(*first);
+    EXPECT_EQ(4u, first->logicalContextWindowState());
+    EXPECT_EQ(window_state, slot->rawContextWindowState());
+    EXPECT_EQ(OSThreadState::SLEEPING, tracker.slotForId(id)->activeBlockState());
+}
+
 TEST_F(ThreadRegistryTest, NearWrapLogicalVersionDoesNotReviveOldToken) {
     auto owner = registryOwner(6208);
     int id = registry.ensureOwnerSlot(*owner);
