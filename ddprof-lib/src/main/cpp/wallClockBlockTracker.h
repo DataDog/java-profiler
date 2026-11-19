@@ -323,6 +323,9 @@ public:
     void resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state);
     void resetAll();
     void clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state);
+    // Drops every pending unowned tail (trace id, weight and epoch segments);
+    // owned runs keep their state. Callers exclude signal handlers.
+    void resetUnownedBlockedTails();
     // Reads the complete timer-side suppression payload and rejects it if slot
     // identity or block lifecycle changes before final validation.
     bool shouldSuppressOwnedBlock(ThreadFilter* registry, const ThreadEntry& entry) const;

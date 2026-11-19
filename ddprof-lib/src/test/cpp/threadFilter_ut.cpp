@@ -1869,6 +1869,7 @@ TEST_F(ThreadRegistryTest, ContextEntryPreservesResolvableTailAndCadence) {
     auto* block = tracker.slotForId(id);
     ASSERT_NE(nullptr, block);
     CallTraceStorage storage;
+    ASSERT_TRUE(storage.acquire());
     ASGCT_CallFrame frame;
     frame.bci = 39;
     frame.method_id = reinterpret_cast<jmethodID>(0x7747);

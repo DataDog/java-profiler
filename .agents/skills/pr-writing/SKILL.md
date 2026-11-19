@@ -23,6 +23,14 @@ or say they are from an earlier commit.
   different structure.
 - **Write from the actual diff.** Re-check the title and description after the scope
   changes. Describe crash or bug mechanisms only as far as the code and tests confirm.
+- **Keep the description current as the branch evolves.** Whenever commits are added
+  to a branch with an open PR (review fixes, a rebase replay, a scope change),
+  re-verify the title and description against the new diff and update what no longer
+  holds — sections, accepted costs, measured numbers, the human-review assessment and
+  its label.
+- **Trigger the agentic cloud review on open.** Immediately after opening a PR, post
+  the comment `@datadog review` on it. One comment per PR open — do not repeat it on
+  later pushes.
 - **Professional typesetting and layout.** Structure the description for scanning:
   short sections with meaningful headings, bullets for enumerations, tables for
   comparisons, `code spans` for identifiers and commands, fenced blocks for code/logs.
@@ -40,6 +48,12 @@ or say they are from an earlier commit.
   scopes) or accepts a recurring per-call or footprint cost, state the decision and
   the accepted cost explicitly and flag it for reviewer acknowledgment — never leave
   it implicit in code, a test rename, or a leftover template marker.
+- **Human review** (descriptions only). Under Additional Notes, state whether human
+  review is required or recommended, and why, as the ticket's design records it. If the
+  ticket records none, state your own assessment. Express the same assessment as a PR
+  label — `human_review:mandatory` or `human_review:recommended`; no label when review
+  is not needed. Set the label when the PR opens and swap it whenever the assessment
+  changes; the label and the Additional Notes statement must always agree.
 - **Only the final state matters.** Never include ephemeral working knowledge —
   investigation detours, dead-end hypotheses, intermediate states, tool runs,
   session history. If a detail did not survive into the final change, it does not

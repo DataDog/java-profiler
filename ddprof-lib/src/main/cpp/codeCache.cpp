@@ -150,21 +150,6 @@ CodeCache::CodeCache(const CodeCache &other) {
   copyFrom(other);
 }
 
-CodeCache &CodeCache::operator=(const CodeCache &other) {
-  if (&other == this) {
-    return *this;
-  }
-
-  NativeFunc::destroy(_name);
-  free(_dwarf_table);
-  delete[] _blobs;
-  free(_build_id);
-
-  copyFrom(other);
-
-  return *this;
-}
-
 CodeCache::~CodeCache() {
   for (int i = 0; i < _count; i++) {
     NativeFunc::destroy(_blobs[i]._name);
@@ -456,11 +441,15 @@ void CodeCache::addImport(void **entry, const char *name) {
 }
 
 void **CodeCache::findImport(ImportId id) {
+  return findImport(id, PRIMARY);
+}
+
+void **CodeCache::findImport(ImportId id, ImportType type) {
   if (!_imports_patchable) {
     makeImportsPatchable();
     _imports_patchable = true;
   }
-  return _imports[id][PRIMARY];
+  return _imports[id][type];
 }
 
 void CodeCache::patchImport(ImportId id, void *hook_func) {
