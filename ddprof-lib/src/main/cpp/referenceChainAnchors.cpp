@@ -490,12 +490,17 @@ void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
     }
     PendingLocalAnchor &victim = _pending_local_anchors[_pending_local_evict_cursor++];
     _pending_local_anchor_tags.erase(victim.tag);
+    assert(_pending_local_evictable_count > 0);
+    _pending_local_evictable_count--;
     victim = PendingLocalAnchor{tag, own_class_tag};
     _pending_local_anchor_tags.insert(tag);
     return;
   }
   if (!_pending_local_anchor_tags.insert(tag).second) {
     return;
+  }
+  if (shape == _class_shape_cache.end()) {
+    _pending_local_evictable_count++;
   }
   _pending_local_anchors.push_back(PendingLocalAnchor{tag, own_class_tag});
 }
@@ -539,6 +544,7 @@ void ReferenceChainTracker::resolvePendingLocalAnchors() {
   _pending_local_anchors.clear();
   _pending_local_anchor_tags.clear();
   _pending_local_evict_cursor = 0;
+  _pending_local_evictable_count = 0;
 }
 
 size_t ReferenceChainTracker::compactLocalAnchors() {

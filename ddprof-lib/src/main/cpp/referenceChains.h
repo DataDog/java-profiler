@@ -591,6 +591,10 @@ private:
   // noteLocalRootHolder() eviction cursor (forward-only): every _pending_local_anchors slot below it
   // holds a confirmed container. Reset together with the buffer.
   size_t _pending_local_evict_cursor = 0;
+  // Counts entries not confirmed as containers; each can be displaced by a confirmed container.
+  // Keep the count in sync with pending-buffer insertions, replacements and clears.
+  // Scope budgets use it to cap LOCAL records at replayable capacity.
+  size_t _pending_local_evictable_count = 0;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
   // java/util/Map (directly or via superclasses/ interfaces)?
@@ -1196,8 +1200,8 @@ private:
   bool localHolderNeedsObservation(jlong tag, jlong own_class_tag) const;
   // Mirrors pushAtRiskStaticAnchor() so callbacks do not stage known queue no-ops.
   bool atRiskAnchorNeedsObservation(jlong tag, u32 klass_id) const;
-  // Bounds LOCAL records by available index and pending-buffer capacity for this scope.
-  // Only replay mutates these capacities, after the same-thread traversal completes.
+  // Bounds LOCAL records by free index slots, pending slots, and displaceable pending entries.
+  // Only replay mutates these counts, after the same-thread traversal completes.
   // The test override lets journal-overflow tests deliberately stage a larger prefix.
   u32 localStagingAbsorbable() const {
 #ifdef UNIT_TEST
@@ -1209,7 +1213,7 @@ private:
                             ? LOCAL_ANCHOR_INDEX_CAP - _local_anchor_tags.size()
                             : 0;
     size_t buffer_room = PENDING_LOCAL_ANCHOR_CAP - _pending_local_anchors.size();
-    return (u32)(index_room + buffer_room + _pending_local_unresolved_count);
+    return (u32)(index_room + buffer_room + _pending_local_evictable_count);
   }
   // At-risk anchor push: deduped, capped, and quota-limited per klass.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);

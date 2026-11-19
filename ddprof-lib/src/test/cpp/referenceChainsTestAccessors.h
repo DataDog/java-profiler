@@ -107,6 +107,7 @@ public:
         t->_static_field_sweep_lap_request_gen = 0;
         t->_static_field_sweep_served_gen = 0;
         t->_pending_local_evict_cursor = 0;
+        t->_pending_local_evictable_count = 0;
         t->_local_staging_budget_override_for_test = 0;
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
@@ -646,6 +647,7 @@ public:
                t->_local_compact_backoff == 0 &&
                t->_durable_anchor_resweep_gen == t->_static_field_sweep_served_gen &&
                t->_pending_local_evict_cursor == 0 &&
+               t->_pending_local_evictable_count == 0 &&
                t->_local_staging_budget_override_for_test == 0;
     }
 
@@ -735,6 +737,9 @@ public:
     }
     static size_t pendingLocalEvictCursorForTest() {
         return ReferenceChainTracker::instance()->_pending_local_evict_cursor;
+    }
+    static u32 localStagingAbsorbableForTest() {
+        return ReferenceChainTracker::instance()->localStagingAbsorbable();
     }
     static void preparePendingLocalAnchorEvictionCursorForTest() {
         ReferenceChainTracker::instance()->preparePendingLocalAnchorEvictionCursor();

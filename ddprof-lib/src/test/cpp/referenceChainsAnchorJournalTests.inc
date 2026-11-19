@@ -420,6 +420,53 @@ TEST_F(ReferenceChainsBfsTest, LocalStagingBoundStopsRecordsReplayWouldRefuse) {
     tracker->stop();
 }
 
+// The budget includes all entries the eviction cursor can skip to, without scanning the buffer.
+TEST_F(ReferenceChainsBfsTest, LocalStagingBudgetCountsDisplaceablePendingEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const jlong kContainer = -3156;
+    const jlong kUnclassified = -3157;
+    const jlong kUnclassifiedTag = 50000;
+    AnchorAcc::primeClassShapeForTest(kContainer, true);
+    for (size_t i = 0; i < AnchorAcc::kLocalAnchorIndexCap; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(10000 + (jlong)i, kContainer);
+    }
+    ASSERT_EQ(AnchorAcc::kLocalAnchorIndexCap, AnchorAcc::localAnchorCountForTest());
+    AnchorAcc::noteLocalRootHolderForTest(kUnclassifiedTag, kUnclassified);
+    for (size_t i = 0; i < AnchorAcc::kPendingLocalAnchorCap - 1; i++) {
+        AnchorAcc::noteLocalRootHolderForTest(60000 + (jlong)i, kContainer);
+    }
+    ASSERT_EQ(AnchorAcc::kPendingLocalAnchorCap,
+              AnchorAcc::pendingLocalAnchorCountForTest());
+    AnchorAcc::preparePendingLocalAnchorEvictionCursorForTest();
+    EXPECT_EQ(1u, AnchorAcc::localStagingAbsorbableForTest());
+
+    AnchorScopedPass pass(tracker, frontier);
+    jlong accepted_tag = 0;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kContainer, &accepted_tag));
+    ASSERT_GT(accepted_tag, 0);
+    EXPECT_EQ(1u, AnchorAcc::journalCountForTest());
+
+    jlong unstaged_tag = 0;
+    EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
+              pass.root(JVMTI_HEAP_ROOT_STACK_LOCAL, kContainer, &unstaged_tag));
+    ASSERT_GT(unstaged_tag, 0);
+    EXPECT_EQ(1u, AnchorAcc::journalCountForTest());
+
+    pass.scope.flush();
+    EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(kUnclassifiedTag));
+    EXPECT_TRUE(AnchorAcc::pendingLocalAnchorContainsForTest(accepted_tag));
+    EXPECT_FALSE(AnchorAcc::pendingLocalAnchorContainsForTest(unstaged_tag));
+    EXPECT_EQ(0u, AnchorAcc::localStagingAbsorbableForTest());
+
+    tracker->stop();
+}
+
 // A local holder whose class is already classified non-container replays as a pure no-op
 // (noteLocalRootHolder() returns before any state change): the LOCAL gate must not stage it, so
 // a stable non-container local population never occupies journal slots.
