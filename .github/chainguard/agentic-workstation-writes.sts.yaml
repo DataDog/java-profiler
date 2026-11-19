@@ -6,8 +6,9 @@
 # requests write, so agent-authored work is pushed and opened as PRs under
 # the dd-octo-sts pool bot identity instead of the engineer's personal
 # account. The engineer then reviews and approves the agent's PR as the
-# second party (GitHub forbids author self-approval, so human review is
-# guaranteed by construction).
+# second party (GitHub forbids author self-approval, so a bot-authored PR
+# needs a human approver; the token is not limited to the PR flow —
+# direct pushes stay subject to branch protection).
 # Repo-level policy: scoped to this repository only; no `repositories:`
 # field (that is org-level-policy syntax).
 issuer: https://ticino.identity.local-cluster.local-dc.fabric.dog:8443/v1/issuer/sycamore
