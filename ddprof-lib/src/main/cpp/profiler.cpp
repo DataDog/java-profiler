@@ -2618,7 +2618,14 @@ Error Profiler::stop() {
     return Error("task-block rotation did not drain; teardown skipped, retry stop()");
   }
 
-  if (!_thread_filter.flushUnownedTails()) {
+  bool tails_flushed = _thread_filter.flushUnownedTails();
+  // Reuse full tables without losing old event references; bound retries against concurrent refills.
+  constexpr int max_capacity_retries = 1 + ThreadFilter::kMaxThreads / ThreadIdTable::capacity();
+  for (int retry = 0; !tails_flushed && retry < max_capacity_retries; ++retry) {
+    if (!_jfr.recoverThreadTableCapacity()) break;
+    tails_flushed = _thread_filter.flushUnownedTails();
+  }
+  if (!tails_flushed) {
     endTaskBlockRotation();
     return Error("pending wall-clock tails could not be written; teardown skipped");
   }

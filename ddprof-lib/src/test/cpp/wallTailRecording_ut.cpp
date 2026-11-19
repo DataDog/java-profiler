@@ -362,6 +362,45 @@ TEST_F(WallTailRecordingTest, StopFailureDoesNotTearDownEnginesOrLeaveRotationCl
   expectOriginRetained();
 }
 
+TEST_F(WallTailRecordingTest, StopCapacityRecoveryBudgetKeepsUnwrittenTailRetryable) {
+  Engine engine;
+  FlightRecorder& recorder = ProfilerTestAccessor::recorder(*profiler);
+  ScopedTailRecording output(recorder);
+  constexpr int max_retries = 1 + ThreadFilter::kMaxThreads / ThreadIdTable::capacity();
+  struct Saturation {
+    FlightRecorder& recorder;
+    int tid;
+    unsigned calls = 0;
+  } saturation{recorder, request.tid};
+  profiler->sampleWriteHookArgForTest = &saturation;
+  profiler->sampleWriteHookForTest = [](u32 stripe, u64 trace, Event* event,
+                                       const Context* context, void* arg) {
+    auto& state = *static_cast<Saturation*>(arg);
+    // Stop generating capacity failures after the budget, so removing the bound fails, not hangs.
+    if (++state.calls > max_retries + 1) return false;
+    TaskBlockEvent block{};
+    block._start = 1;
+    block._end = 2;
+    for (int tid = 1; tid <= ThreadIdTable::capacity(); ++tid) {
+      EXPECT_TRUE(state.recorder.recordTaskBlock(stripe, tid, &block));
+    }
+    EXPECT_FALSE(state.recorder.recordWallSample(
+        stripe, state.tid, trace, static_cast<ExecutionEvent*>(event), *context));
+    return false;
+  };
+  ProfilerTestAccessor::prepareStop(*profiler, &engine);
+  Error error = profiler->stop();
+  ASSERT_TRUE(error);
+  EXPECT_EQ(max_retries + 1, saturation.calls);
+  EXPECT_TRUE(ProfilerTestAccessor::running(*profiler));
+  EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
+  expectOriginRetained();
+  captureWrites();
+  EXPECT_TRUE(profiler->threadFilter()->flushUnownedTails());
+  ASSERT_EQ(1U, writes.size());
+  expectWrite(writes[0], request.sampling_epoch_start, 1);
+}
+
 TEST_F(WallTailRecordingTest, ConcurrentRetirementAndStopFlushDoNotDuplicateTail) {
   std::promise<void> entered;
   std::promise<void> release;
