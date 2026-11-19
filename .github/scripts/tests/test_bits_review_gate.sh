@@ -17,7 +17,8 @@ unset GITHUB_TOKEN STATUS_TOKEN
 # Byte-compile first: a missing or syntactically broken gate script fails
 # before any test runs.
 python3 -m py_compile "$SCRIPT_DIR/../bits_review_gate.py" \
-  "$SCRIPT_DIR/../bits_review_gate_policy.py"
+  "$SCRIPT_DIR/../bits_review_gate_policy.py" \
+  "$SCRIPT_DIR/../codeowner_review_gate.py"
 
 # The discover pattern runs only this gate's family; the shared helper
 # bits_review_gate_testlib.py is its one allowed non-family import.
