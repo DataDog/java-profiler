@@ -299,7 +299,9 @@ def owner_approval(records, author_login, roster, head):
     that changes sensitive code."""
     for login, record in latest_review_by_login(
             _deciding_reviews(records)).items():
-        if login == author_login:
+        # The self-approval exclusion is case-insensitive like GitHub
+        # logins: a casing mismatch must not let the author approve alone.
+        if login.lower() == author_login.lower():
             continue
         # The comparison is case-insensitive like GitHub logins; the roster
         # is already stored in the canonical lowercase form.

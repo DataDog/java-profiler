@@ -342,6 +342,14 @@ class OwnerApprovalTest(unittest.TestCase):
                                             "2026-01-01T00:00:00Z"))]
         self.assertFalse(cogate.owner_approval(records, "pr-author", ROSTER_LOGINS, SHA))
 
+    def test_self_approval_survives_a_casing_mismatch(self):
+        # GitHub logins are case-insensitive: an approval recorded with
+        # different casing than the PR author's login must still be
+        # rejected as self-approval, or the author could approve alone.
+        records = [gate.normalize_review(review("PR-Author", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        self.assertFalse(cogate.owner_approval(records, "pr-author", ROSTER_LOGINS, SHA))
+
     def test_author_in_the_roster_still_cannot_approve_own_pr(self):
         # The author being a roster member must not defeat the exclusion:
         # only the head-bound approval of another member counts.
