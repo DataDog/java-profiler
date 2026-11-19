@@ -258,7 +258,7 @@ public class CStackInjectorPolicyTest {
     Parameter constructor =
         ExcludedFixture.class.getDeclaredConstructor(String.class).getParameters()[0];
     Parameter[] method =
-        CStackInjectorPolicyTest.class
+        ParameterFixture.class
             .getDeclaredMethod("parameters", String.class, String.class, int.class)
             .getParameters();
     for (Parameter parameter : new Parameter[] {constructor, method[0]}) {
@@ -282,8 +282,9 @@ public class CStackInjectorPolicyTest {
   }
 
   /** Signature fixture: only its parameter metadata is read via reflection. */
-  private void parameters(
-      @CStack String unusedMode, String unusedUnannotated, @CStack int unusedWrongType) {}
+  private interface ParameterFixture {
+    void parameters(@CStack String mode, String unannotated, @CStack int wrongType);
+  }
 
   private static void resetLifecycle() {
     setupEntries = callbacks = before = body = after = 0;
