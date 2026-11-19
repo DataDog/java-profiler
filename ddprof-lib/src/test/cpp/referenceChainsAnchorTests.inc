@@ -1296,6 +1296,15 @@ TEST_F(ReferenceChainsBfsTest, ClassShapeWalkKeepsLookupFailuresUnknown) {
         kCollectionTag, kMapTag);
     EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
         shape)) << "a missing interface array cannot prove a completed non-match";
+
+    void *null_iface_root = reinterpret_cast<void *>(0xC070);
+    tags[null_iface_root] = -1205;
+    field_decode_hierarchy[null_iface_root] = {false, nullptr, {nullptr}, {}};
+    shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(null_iface_root),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
+        shape)) << "a null interface element hides an unexamined interface";
 }
 
 TEST_F(ReferenceChainsBfsTest, TransientNonContainerAnchorsArePruned) {

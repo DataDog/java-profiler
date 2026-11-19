@@ -485,7 +485,6 @@ ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
     jclass super = jni->GetSuperclass(cur);
     if (jniExceptionCheck(jni)) {
       incomplete = true;
-      jni->ExceptionClear();
       if (super != nullptr) {
         jni->DeleteLocalRef(super);
       }
@@ -501,7 +500,10 @@ ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
         incomplete = true;
       } else if (ifaces != nullptr) {
         for (jint i = 0; i < iface_count; i++) {
-          if (ifaces[i] != nullptr) {
+          if (ifaces[i] == nullptr) {
+            // A null element hides an unexamined interface, like a lookup error does.
+            incomplete = true;
+          } else {
             work.push_back(ifaces[i]);
           }
         }
