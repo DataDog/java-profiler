@@ -9,7 +9,6 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 RELEASE_SCRIPT="$ROOT/.github/scripts/release.sh"
-TRIVIAL_VALIDATOR="$ROOT/.github/scripts/validate-trivial-approval.sh"
 COMPUTE_VERSION="$ROOT/utils/compute-version.sh"
 TEMP_DIR=$(mktemp -d)
 TESTS=0
@@ -43,61 +42,6 @@ pass() {
   TESTS=$((TESTS + 1))
 }
 
-# --- Trivial approval authorization tests (kept from old suite) -------------
-
-write_labeler_fixture() {
-  local path=$1
-  local actor=$2
-  local permission=$3
-  local actor_type=$4
-  jq -n --arg actor "$actor" --arg permission "$permission" \
-    --arg actor_type "$actor_type" \
-    '{actor: $actor, permission: $permission, actor_type: $actor_type}' > "$path"
-}
-
-expect_trivial_success() {
-  local actor=$1
-  local permission=$2
-  local fixture="$TEMP_DIR/trivial-$actor.json"
-  local actor_type=${3:-User}
-  write_labeler_fixture "$fixture" "$actor" "$permission" "$actor_type"
-  "$TRIVIAL_VALIDATOR" --actor "$actor" --actor-type "$actor_type" \
-    --fixture "$fixture" >/dev/null ||
-    fail "expected trivial approval authorization for $actor/$permission"
-  pass
-}
-
-expect_trivial_failure() {
-  local actor=$1
-  local permission=$2
-  local fixture="$TEMP_DIR/trivial-$actor.json"
-  local actor_type=${3:-User}
-  write_labeler_fixture "$fixture" "$actor" "$permission" "$actor_type"
-  if "$TRIVIAL_VALIDATOR" --actor "$actor" --actor-type "$actor_type" \
-    --fixture "$fixture" >/dev/null 2>&1; then
-    fail "expected trivial approval rejection for $actor/$permission"
-  fi
-  pass
-}
-
-expect_trivial_success release-engineer write
-expect_trivial_success release-maintainer maintain
-expect_trivial_success repository-admin admin
-expect_trivial_success 'dependabot[bot]' read Bot
-expect_trivial_success 'dd-octo-sts[bot]' read Bot
-expect_trivial_failure contributor triage
-expect_trivial_failure unknown-user read
-expect_trivial_failure 'unknown[bot]' admin Bot
-
-if PERMISSION_ERROR=$("$TRIVIAL_VALIDATOR" \
-    --actor unavailable-user --actor-type User 2>&1); then
-  fail "trivial validator accepted an actor after permission lookup failure"
-fi
-[ "$PERMISSION_ERROR" = \
-  "trivial approval validation failed: unable to determine repository permission for label actor unavailable-user" ] ||
-  fail "trivial validator did not normalize permission lookup failure"
-pass
-
 # --- Script content assertions ----------------------------------------------
 
 RELEASE_SCRIPT_CONTENT=$(<"$RELEASE_SCRIPT")
@@ -125,19 +69,12 @@ pass
   fail "obsolete wait-release-bump.sh still exists"
 [ ! -e "$ROOT/.github/chainguard/self.release-bump.label-pr.sts.yaml" ] ||
   fail "obsolete release-bump label STS policy still exists"
-pass
-
-APPROVAL_WORKFLOW=$(<"$ROOT/.github/workflows/approve-trivial.yml")
-[[ "$APPROVAL_WORKFLOW" != *"release_bump"* ]] ||
-  fail "approval workflow still classifies release bumps"
-[[ "$APPROVAL_WORKFLOW" != *"validate-release-bump"* ]] ||
-  fail "approval workflow still validates release bumps"
-[[ "$APPROVAL_WORKFLOW" == *"github.event.label.name == 'trivial'"* ]] ||
-  fail "approval workflow does not trigger on trivial"
-[[ "$APPROVAL_WORKFLOW" == *"github.event.sender.login"* ]] ||
-  fail "approval workflow does not use the label event sender"
-[[ "$APPROVAL_WORKFLOW" == *"commit_id: process.env.EXPECTED_HEAD_SHA"* ]] ||
-  fail "approval is not pinned to the validated SHA"
+[ ! -e "$ROOT/.github/scripts/validate-trivial-approval.sh" ] ||
+  fail "obsolete trivial-approval validator still exists"
+[ ! -e "$ROOT/.github/workflows/approve-trivial.yml" ] ||
+  fail "obsolete trivial-approval workflow still exists"
+[ ! -e "$ROOT/.github/chainguard/self.approve-trivial.approve-pr.sts.yaml" ] ||
+  fail "obsolete trivial-approval STS policy still exists"
 pass
 
 CI_WORKFLOW=$(<"$ROOT/.github/workflows/ci.yml")
@@ -145,6 +82,8 @@ CI_WORKFLOW=$(<"$ROOT/.github/workflows/ci.yml")
   fail "CI workflow still has release-bump-ci job"
 [[ "$CI_WORKFLOW" != *"validate-release-bump"* ]] ||
   fail "CI workflow still references validate-release-bump"
+[[ "$CI_WORKFLOW" != *"validate-trivial-approval"* ]] ||
+  fail "CI workflow still references validate-trivial-approval"
 pass
 
 RELEASE_WORKFLOW=$(<"$ROOT/.github/workflows/release-validated.yml")
