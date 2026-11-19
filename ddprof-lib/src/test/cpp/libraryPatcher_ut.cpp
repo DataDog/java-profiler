@@ -154,6 +154,8 @@ TEST(LibraryPatcherSelfCheck, TreatsNullLibraryAsForeign) {
 class LibraryPatcherPatching : public ::testing::Test {
 protected:
   void SetUp() override { LibraryPatcherTestAccessor::forgetPatchTable(); }
+  // Leaves no loader value, patch state or initialization behind for other suites.
+  void TearDown() override { LibraryPatcherTestAccessor::forgetPatchTable(); }
 };
 
 // End to end through the patcher: given a cache that looks like the profiler's
