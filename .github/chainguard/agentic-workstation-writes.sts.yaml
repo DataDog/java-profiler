@@ -34,9 +34,9 @@ permissions:
   metadata: read       # required for repository info
 # Intended flow: the driving engineer reviews and approves the agent's PR —
 # process, not enforcement (the pool runs several GitHub Apps; GitHub's
-# self-approval block is per app). main is guarded by the branch ruleset
-# require-approval-for-bot-actors-on-main: merges need one approval that
-# must come from a code owner (@DataDog/profiling-java covers every path)
+# self-approval block is per app). main and release/* branches are guarded
+# by the branch ruleset require-approval-for-bot-actors-on-main: merges
+# need one approval that must come from a code owner (@DataDog/profiling-java covers every path)
 # and the most recent push must itself be approved, so bot approvals do
 # not count. Its bypass entries are repository roles (user identities);
 # the pool apps authenticate as app installations and match no bypass
