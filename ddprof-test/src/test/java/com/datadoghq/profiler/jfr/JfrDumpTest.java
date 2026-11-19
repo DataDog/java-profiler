@@ -5,23 +5,12 @@ package com.datadoghq.profiler.jfr;
 import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import org.junit.jupiter.api.Assumptions;
 
 public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
   public JfrDumpTest(@CStack String cstack) {
     super(cstack);
   }
-
-  /**
-   * Workload iterations for the first dump cycle: the historical fixed density. Preserves the gate
-   * that a dump taken after a fully initialized profiler and a settled workload verifies.
-   */
-  private static final int INITIAL_BATCH = 50;
-
-  /** Growth bound for under-sampled batches, so a broken sampler fails instead of looping. */
-  private static final int MAX_BATCH = 400;
 
   public void runTest(String eventName) throws Exception {
     runTest(eventName, "method1", "method2", "method3");
@@ -37,41 +26,16 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
 
     waitForProfilerReady(2000);
 
-    // Event-driven sizing: each dump needs an event matching every declared frame pattern.
-    // Under-sampled dumps retry with a doubled batch capped at MAX_BATCH; failure is asserted
-    // when the cap is exhausted. A cycle that passed without growth halves the batch for the
-    // next cycle; one that needed growth keeps its batch (halving a marginal batch just
-    // re-triggers the growth path on every cycle).
-    int batch = INITIAL_BATCH;
-    for (int j = 0; j < dumpCnt; j++) {
-      Path recording = Files.createTempFile("dump-", ".jfr");
-      try {
-        boolean grew = false;
-        runWorkload(batch);
-        dump(recording);
-        while (!tryVerifyStackTraces(recording, eventName, patterns)) {
-          if (batch >= MAX_BATCH) {
-            // Growth bound exhausted: surface the real failure through the asserting verify.
-            verifyStackTraces(recording, eventName, patterns);
-          }
-          Files.deleteIfExists(recording);
-          recording = Files.createTempFile("dump-", ".jfr");
-          batch = Math.min(batch * 2, MAX_BATCH);
-          grew = true;
-          runWorkload(batch);
-          dump(recording);
-        }
-        if (!grew) {
-          batch = Math.max(1, batch / 2);
-        }
-      } finally {
-        Files.deleteIfExists(recording);
-      }
-    }
+    AdaptiveDumpCycles.run(
+        dumpCnt,
+        this::runWorkload,
+        this::dump,
+        recording -> tryVerifyStackTraces(recording, eventName, patterns),
+        recording -> verifyStackTraces(recording, eventName, patterns));
     // The dump snapshots drain their own windows from the live stream, so the continuous
     // recording cannot be assumed to hold the dump-cycle events; the post-stop verification
     // needs its own sampling window at the settled historical density right before stop().
-    runWorkload(INITIAL_BATCH);
+    runWorkload(AdaptiveDumpCycles.INITIAL_BATCH);
     stopProfiler();
     verifyStackTraces(eventName, patterns);
   }
