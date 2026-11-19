@@ -200,6 +200,8 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
       if (fresh_room <= 0) {
         // Budget exhausted before the queue drained: everything remaining spends its first look now
         // and falls back to the fair tiers at its index position (covered, not urgent).
+        Counters::increment(REFERENCE_CHAIN_STATIC_FRESH_DROPPED,
+                            (long long)_static_anchor_fresh_queue.size());
         _static_anchor_fresh_queue.clear();
         break;
       }

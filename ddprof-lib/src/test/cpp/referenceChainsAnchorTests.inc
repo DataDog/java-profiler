@@ -1412,6 +1412,7 @@ TEST_F(ReferenceChainsBfsTest, FreshAnchorQueueDropsOldestPastCap) {
     constexpr int kCap = 1024;
     constexpr jlong kFirstTag = 5000, kClassTag = 940000;
     ReferenceChainsTestAccessor::primeClassShapeForTest(kClassTag, true);
+    long long droppedBefore = Counters::getCounter(REFERENCE_CHAIN_STATIC_FRESH_DROPPED);
     for (int i = 0; i <= kCap; i++) {
         ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
             frontier, kFirstTag + i, 0, 0, FrontierEntryState::FRONTIER,
@@ -1425,9 +1426,16 @@ TEST_F(ReferenceChainsBfsTest, FreshAnchorQueueDropsOldestPastCap) {
     EXPECT_EQ(1024u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest())
         << "the 1025th admission must evict, not grow the queue";
     ASSERT_EQ(1025u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+    EXPECT_EQ(droppedBefore + 1,
+              Counters::getCounter(REFERENCE_CHAIN_STATIC_FRESH_DROPPED))
+        << "the cap eviction must count the anchor that lost its fresh-lane first look";
 
     std::vector<jlong> first =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(1);
     ASSERT_EQ(1u, first.size());
     EXPECT_EQ(kFirstTag + 1, first[0]) << "the evicted oldest anchor must not ride the fresh lane";
+    // max_count=1 spends the one fresh look on the queue head; the remaining kCap-1 entries lose
+    // their prioritized first look to the budget-exhausted drain clear and fall back to the tiers.
+    EXPECT_EQ(droppedBefore + kCap,
+              Counters::getCounter(REFERENCE_CHAIN_STATIC_FRESH_DROPPED));
 }
