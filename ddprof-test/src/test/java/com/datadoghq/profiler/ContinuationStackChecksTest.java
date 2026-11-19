@@ -25,6 +25,7 @@ import org.opentest4j.MultipleFailuresError;
 public class ContinuationStackChecksTest {
   private static final String WORKLOAD = VirtualThreadRemountAntagonist.class.getName();
   private static final String CARRIER = "java.util.concurrent.ForkJoinWorkerThread#run";
+  private static final int MIN_SAMPLES = 10;
 
   private static Map<String, Object> fields(Object... pairs) {
     if ((pairs.length & 1) != 0) {
@@ -367,7 +368,20 @@ public class ContinuationStackChecksTest {
     assertTrue(failure.getMessage().contains("successful boundary walks for layout 1"));
   }
 
-  /** Fully thawed samples cannot satisfy the required coverage of omitted outer callers. */
+  /** Recorded frozen-caller recoveries satisfy partial-thaw coverage without truncated samples. */
+  @Test
+  public void frozenRecoveriesSatisfyPartialThawCoverage() {
+    ContinuationStackChecks checks =
+        new ContinuationStackChecks(true, Collections.singleton(7L), MIN_SAMPLES);
+    for (int i = 0; i < 10; i++) {
+      checks.accept(sample(7, true, WORKLOAD + "#registerFrames", CARRIER));
+      checks.accept(
+          sample(7, false, WORKLOAD + "#stackFrames", WORKLOAD + "#stackWorkload", CARRIER));
+    }
+    checks.assertValid("cpu");
+  }
+
+  /** Zero recoveries keep demanding truncated partial-thaw samples (the pre-recovery oracle). */
   @Test
   public void requiresPartialThawCoverageForEachLayout() {
     ContinuationStackChecks checks = new ContinuationStackChecks(true, Collections.singleton(7L));

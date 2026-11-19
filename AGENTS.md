@@ -75,6 +75,8 @@ dependency-free leak-demo app; not published).
 
 **Supported JVMs:** HotSpot, J9, Zing; HotSpot continuation recovery uses instruction phases (compiled/interpreted entries and x64/arm64 exception exits, including recognized resolver returns), validated metadata for return-barrier entries and interiors (positive-argument OSR layouts use validated entries, not guessed padding), and retires consumed Java anchors — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
+Frozen virtual-thread caller recovery uses bounded, read-only heap chunk traversal
+on supported HotSpot layouts and collectors; see [doc/architecture/FrozenStackWalker.md](doc/architecture/FrozenStackWalker.md).
 
 ## Operating Rules for Agent Sessions
 
