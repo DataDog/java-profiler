@@ -170,14 +170,17 @@ public abstract class AbstractProfilerTest {
 
   private static List<Path> getSanitizerLogPaths() {
     List<Path> paths = new ArrayList<>();
-    String pid = String.valueOf(getPid());
     for (String envVar : new String[] {"ASAN_OPTIONS", "UBSAN_OPTIONS"}) {
       String options = System.getenv(envVar);
       if (options == null) continue;
       for (String opt : options.split(":")) {
         if (opt.startsWith("log_path=")) {
           String template = opt.substring("log_path=".length());
-          String path = template.replace("%p", pid);
+          // Resolve the pid lazily, only for a log_path template: ManagementFactory's first
+          // use initializes InetAddress.getLocalHost(), which pays a full DNS timeout on
+          // hosts whose hostname does not resolve (observed ~5s per uncached call, and the
+          // Gradle test worker's security manager defeats the lookup cache).
+          String path = template.replace("%p", String.valueOf(getPid()));
           paths.add(Paths.get(path));
         }
       }
