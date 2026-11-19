@@ -194,6 +194,9 @@
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
+  /* Sampled native allocations not recorded: the thread was exit-marked or  \
+   * already inside a CriticalSection (the profiler's own allocation). */     \
+  X(MALLOC_SAMPLES_DROPPED, "malloc_samples_dropped")                         \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(SAFESTORE_FAILED, "safestore_failed")                                     \
