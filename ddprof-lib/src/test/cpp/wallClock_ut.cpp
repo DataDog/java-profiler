@@ -902,6 +902,74 @@ private:
     }
 };
 
+// Pool sizes stay within the reservoir so every candidate is selected each pass.
+class SingleCloseWallClock : public BaseWallClock {
+public:
+    std::atomic<bool> completed{false};
+    std::vector<WallClockEpochEvent> closed;
+    const char* name() override { return "Single close test timer"; }
+
+private:
+    void observeClosedEpochForTest(const WallClockEpochEvent& epoch) override {
+        closed.push_back(epoch);
+    }
+    void timerLoop() override {
+        int pass = 0;
+        auto collect = [&](std::vector<int>& entries) {
+            int population = pass < 10 ? 8 : 16;
+            for (int tid = 0; tid < population; ++tid) entries.push_back(tid);
+        };
+        auto sample = [&](int tid, int& failures, int&, int&, int&, bool) {
+            if (pass >= 20 && tid == 0) {
+                failures++;
+                return WallClockCandidateOutcome::SIGNAL_FAILED;
+            }
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        };
+        auto clean = [&] {
+            if (++pass > 30) completed.store(true, std::memory_order_release);
+        };
+        timerLoopCommon<int>(collect, sample, clean, 16, 1000000);
+    }
+};
+
+TEST(WallClockSamplingEpochTest, EachStatisticsChangeClosesOneEpoch) {
+    auto previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
+    SingleCloseWallClock clock;
+    clock.enableEvents(true);
+    Arguments args;
+    args._wall = 1000000;
+    bool started = !clock.start(args);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (started && !clock.completed.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    clock.stop();
+    clock.enableEvents(false);
+    std::signal(WAKEUP_SIGNAL, previous_handler);
+    ASSERT_TRUE(started);
+    ASSERT_TRUE(clock.completed.load());
+    auto same_stats = [](const WallClockEpochEvent& a, const WallClockEpochEvent& b) {
+        return a._num_samplable_threads == b._num_samplable_threads &&
+               a._num_successful_samples == b._num_successful_samples &&
+               a._num_failed_samples == b._num_failed_samples;
+    };
+    ASSERT_GE(clock.closed.size(), 3u) << "Pool and outcome changes must each close an epoch";
+    int pool_changes = 0;
+    int outcome_changes = 0;
+    for (size_t i = 0; i + 1 < clock.closed.size(); ++i) {
+        const auto& current = clock.closed[i];
+        const auto& next = clock.closed[i + 1];
+        if (same_stats(current, next)) {
+            // Only the one-second cap may split unchanged statistics.
+            EXPECT_GE(current._duration_millis, 1000u) << "Duplicate epoch at index " << i;
+        }
+        pool_changes += current._num_samplable_threads == 8 && next._num_samplable_threads == 16;
+        outcome_changes += current._num_failed_samples == 0 && next._num_failed_samples == 1;
+    }
+    EXPECT_EQ(1, pool_changes);
+    EXPECT_EQ(1, outcome_changes);
+}
+
 TEST(WallClockSamplingEpochTest, PopulationBoundaryClosesWithPriorScaleInBothDirections) {
     auto previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
     for (const auto& pools : {std::pair<int, int>{16, 160}, {160, 16}}) {

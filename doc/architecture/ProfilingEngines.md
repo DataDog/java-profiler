@@ -533,6 +533,7 @@ Timer exit settles the final window. Signals never access this mutex or timer st
 
 A changed population closes the preceding window before dispatch. Changed send
 results close it with its prior statistics before installing the new counts.
+The new counts open the next window. They do not close it in the same pass.
 With unchanged population, failures discovered later in a pass can leave
 pass-straddling units coalesced under the prior success ratio. For example,
 16/16 to 16/14 gives the straddling units about 12.5% attribution error. The writer
