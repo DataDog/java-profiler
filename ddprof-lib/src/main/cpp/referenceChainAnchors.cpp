@@ -145,8 +145,8 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   const size_t fresh_queue_len = _static_anchor_fresh_queue.size();
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
     // Drop dead/ABANDONED entries and compact survivors in admission order before tier selection.
-    // Released tags are re-minted, so a later observation can index the holder under its fresh tag.
-    // The cursors below use the compacted positions.
+    // Released tags are re-minted, so a later observation can re-index the holder under its fresh
+    // tag. Cursors are not shifted on compaction: survivors left of a cursor may wait one lap.
     size_t kept = 0;
     for (size_t i = 0; i < _static_anchor_index.size(); i++) {
       jlong tag = _static_anchor_index[i];
@@ -389,6 +389,7 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
   _static_anchor_fresh_queue.push_back(tag);
   if (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
     _static_anchor_fresh_queue.pop_front();
+    Counters::increment(REFERENCE_CHAIN_STATIC_FRESH_DROPPED);
   }
 }
 
