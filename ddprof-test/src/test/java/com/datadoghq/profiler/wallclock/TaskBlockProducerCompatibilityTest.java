@@ -32,6 +32,9 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
   @ValueSource(strings = {"paired", "block", "park"})
   public void abandonedIntervalDoesNotPreventRecordingAfterRestart(String producer)
       throws Exception {
+    Assumptions.assumeTrue(
+        !"paired".equals(producer) || TaskBlockAssertions.platformThreadClassificationSupported(),
+        "paired API classification fails closed on non-HotSpot JDK 19+");
     ExecutorService worker = Executors.newSingleThreadExecutor();
     Path recording = Files.createTempFile("taskblock-producer-restart-", ".jfr");
     boolean started = false;

@@ -26,6 +26,11 @@ public class UnownedTailBeforeTaskBlockTest extends AbstractProfilerTest {
   @ValueSource(ints = {0, 1, 2, 3})
   public void ownedBlockPreservesUnownedTailAcrossDump(int producer) throws Exception {
     Assumptions.assumeTrue(isDebugBuild(), "Requires synchronous debug sampling driver");
+    // Producers 0 (paired API) and 3 (monitor) classify through JNI.
+    Assumptions.assumeTrue(
+        (producer != 0 && producer != 3)
+            || TaskBlockAssertions.platformThreadClassificationSupported(),
+        "JNI classification fails closed on non-HotSpot JDK 19+");
     long threadId = Thread.currentThread().getId();
     Path snapshot = Files.createTempFile("unowned-before-taskblock-", ".jfr");
     try {
