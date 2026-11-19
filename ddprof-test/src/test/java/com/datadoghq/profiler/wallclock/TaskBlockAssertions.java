@@ -13,6 +13,7 @@ import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
+import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -80,7 +81,29 @@ final class TaskBlockAssertions {
    */
   static final int OSTHREAD_STATE_SLEEPING = 7;
 
+  /** {@code java.vm.name} substrings that native {@code VM::init()} treats as HotSpot. */
+  private static final String[] HOTSPOT_VM_NAME_MARKERS = {
+    "OpenJDK", "HotSpot", "GraalVM", "Dynamic Code Evolution"
+  };
+
   private TaskBlockAssertions() {}
+
+  /**
+   * Whether native {@code JVMSupport::isPlatformThread()} can accept a thread on this JVM: it fails
+   * closed on non-HotSpot JVMs at JDK 19+, and any unrecognized VM name counts as non-HotSpot.
+   */
+  static boolean platformThreadClassificationSupported() {
+    return !Platform.isJavaVersionAtLeast(19)
+        || isHotspotVmName(System.getProperty("java.vm.name"));
+  }
+
+  private static boolean isHotspotVmName(String vmName) {
+    if (vmName == null) return false;
+    for (String marker : HOTSPOT_VM_NAME_MARKERS) {
+      if (vmName.contains(marker)) return true;
+    }
+    return false;
+  }
 
   static boolean containsBlocker(JfrEvents events, long blocker) {
     for (JfrEvent item : events) {
