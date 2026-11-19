@@ -666,9 +666,9 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   bool patch[NUM_IMPORT_TYPES] = {};
   void* foreign[NUM_IMPORT_TYPES] = {};
   bool any_patch = false;
-  // True when a slot holds a foreign value that the visit before had not seen,
-  // so a value that stays is not looked at again: the same rule on the first
-  // patch and on a reload.
+  // True when a slot holds a foreign value that the visit before had not seen:
+  // a value that stays is not pending. The same rule on the first patch and on
+  // a reload.
   bool changed = false;
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
     if (slots[ty] == nullptr) {
@@ -686,7 +686,9 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
     any_patch |= patch[ty];
     if (!patch[ty]) {
       foreign[ty] = current;
-      changed |= !reload || entry->foreign[ty] != current;
+      // Null is the "no record" value and an unrelocated GOT slot can hold it,
+      // so it never counts as seen.
+      changed |= !reload || current == nullptr || entry->foreign[ty] != current;
     }
   }
   if (reload) {
@@ -812,8 +814,8 @@ void LibraryPatcher::patch_pthread_create() {
     declined = _pthread_create.declined;  // under _lock, which the walk holds
   }
   // A patched library reloaded at the same base but not yet relocated holds raw
-  // values in its GOT, which the visit declines. Counting the pass as handled
-  // would skip that entry until the next unrelated load or unload.
+  // values in its GOT, which the visit declines as new foreign values. Counting
+  // the pass as handled would skip that entry until the next load or unload.
   if (recheck != NONE && counts_known && !declined) {
     pthread_create_checked_adds.store(counts.adds, std::memory_order_release);
     if (recheck == ALL) {

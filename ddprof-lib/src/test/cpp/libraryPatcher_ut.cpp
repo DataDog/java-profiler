@@ -430,6 +430,21 @@ TEST_F(LibraryPatcherRehook, ChangedForeignHookIsDeclinedAgain) {
   EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
 }
 
+// An unrelocated GOT slot can hold null, which is also the "no record" value:
+// it must never count as a foreign value the visit before had seen.
+TEST_F(LibraryPatcherRehook, NullSlotIsAlwaysDeclined) {
+  slot = nullptr;
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  ASSERT_TRUE(LibraryPatcherTestAccessor::declined());
+  LibraryPatcherTestAccessor::setDeclined(false);
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
+  EXPECT_EQ(nullptr, slot);
+}
+
 // The record is dropped once the slot holds the loader's binding again, so the
 // same wrapper installed later is new.
 TEST_F(LibraryPatcherRehook, ForeignHookAfterRehookIsDeclinedAgain) {
