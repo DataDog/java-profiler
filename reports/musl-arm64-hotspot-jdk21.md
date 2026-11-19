@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk21
 
 ## musl-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-19 08:32:31 EST
+**Date:** 2026-11-19 08:48:43 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 99 |
-| Sample Rate | 1.65/sec |
-| Health Score | 103% |
-| Threads | 8 |
-| Allocations | 54 |
+| CPU Samples | 82 |
+| Sample Rate | 1.37/sec |
+| Health Score | 86% |
+| Threads | 9 |
+| Allocations | 57 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 89 |
-| Sample Rate | 1.48/sec |
-| Health Score | 92% |
-| Threads | 14 |
-| Allocations | 58 |
+| CPU Samples | 790 |
+| Sample Rate | 13.17/sec |
+| Health Score | 823% |
+| Threads | 11 |
+| Allocations | 494 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 29-29 cores)</summary>
 
 ```
-1795094862 29
-1795094867 29
-1795094872 29
-1795094877 29
-1795094882 29
-1795094887 29
-1795094892 29
-1795094897 29
-1795094902 29
-1795094907 29
-1795094912 29
-1795094917 29
-1795094922 29
-1795094927 29
-1795094932 29
-1795094937 29
-1795094942 29
-1795094947 29
-1795094952 29
-1795094957 29
+1795095806 29
+1795095811 29
+1795095816 29
+1795095821 29
+1795095826 29
+1795095831 29
+1795095836 29
+1795095841 29
+1795095846 29
+1795095851 29
+1795095856 29
+1795095861 29
+1795095866 29
+1795095871 29
+1795095876 29
+1795095881 29
+1795095886 29
+1795095891 29
+1795095896 29
+1795095901 29
 ```
 </details>
 
