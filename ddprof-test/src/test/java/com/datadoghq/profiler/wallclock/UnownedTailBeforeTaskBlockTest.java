@@ -55,6 +55,9 @@ public class UnownedTailBeforeTaskBlockTest extends AbstractProfilerTest {
   @Test
   public void reusedTestThreadClearsPreviousContextWindow() throws Exception {
     Assumptions.assumeTrue(isDebugBuild(), "Requires synchronous debug sampling driver");
+    Assumptions.assumeTrue(
+        TaskBlockAssertions.platformThreadClassificationSupported(),
+        "paired API classification fails closed on non-HotSpot JDK 19+");
     Path snapshot = Files.createTempFile("unowned-reused-thread-", ".jfr");
     try {
       profiler.addThread();

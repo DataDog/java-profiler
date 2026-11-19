@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -77,6 +78,9 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
   /** Context entry retires a generic hook without poisoning a subsequent public API interval. */
   @Test
   public void pairedApiRecoversAfterAbandonedGenericHookCrossesContextWindow() throws Exception {
+    Assumptions.assumeTrue(
+        TaskBlockAssertions.platformThreadClassificationSupported(),
+        "paired API classification fails closed on non-HotSpot JDK 19+");
     ExecutorService worker = Executors.newSingleThreadExecutor();
     try {
       worker
