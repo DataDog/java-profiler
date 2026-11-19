@@ -66,6 +66,7 @@ TEST(ContFreezeThawSymbolTest, FreezeThawRuntimeSymbolsAreClassified) {
     EXPECT_TRUE(isContFreezeThawEntry("_Z6freezeI6ConfigIL8oop_kind0E12G1BarrierSetEEiP10JavaThreadPl"));
     EXPECT_TRUE(isContFreezeThawEntry("_Z4thawI6ConfigIL8oop_kind0E12G1BarrierSetEEPlP10JavaThreadi"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN8ThawBase9thaw_slowEP17stackChunkOopDescb"));
+    EXPECT_TRUE(isContFreezeThawEntry("_ZN6FreezeI6ConfigIL8oop_kind0E12G1BarrierSetEE15try_freeze_fastEv"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN4ThawI6ConfigIL8oop_kind0E12G1BarrierSetEE9thaw_fastEP17stackChunkOopDesc"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN12Continuation12freeze_entryEv"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN12Continuation10thaw_entryEv"));
