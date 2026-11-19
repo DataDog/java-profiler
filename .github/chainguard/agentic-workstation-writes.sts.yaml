@@ -18,7 +18,7 @@ audience: octo-sts
 # deliberately enumerated to keep the initial grant to named people. The
 # dd-octo-sts fork's CheckToken can match the array-typed groups claim;
 # switch to it if team-wide scope is ever wanted. dd-octo-sts compiles
-# every pattern anchored (^(?:...)\$, pkg/octosts/pattern.go), so this
+# every pattern anchored (^(?:...)$, pkg/octosts/pattern.go), so this
 # alternation matches exactly these four emails and nothing else.
 subject_pattern: "(jaroslav\\.bachorik|roman\\.kennke|zhengyu\\.gu|paul\\.fournillon)@datadoghq\\.com"
 
@@ -29,11 +29,11 @@ permissions:
   contents: write      # push agent-authored branches
   pull_requests: write # open agent-authored PRs
   metadata: read       # required for repository info
-# Intended flow: the driving engineer reviews and approves the agent's PR.
-# This is process, not enforcement: the pool runs several GitHub Apps and
-# GitHub's self-approval block is per app, so a bot-authored PR is not
-# structurally barred from a bot approval. The token cannot edit this gate:
-# a repo push ruleset restricts .github/chainguard/** and
-# .github/workflows/** (the latter also blocks CI tampering), bypassed for
-# the repository write role only, so pool-bot identities cannot push either
-# path.
+# Intended flow: the driving engineer reviews and approves the agent's PR —
+# process, not enforcement (the pool runs several GitHub Apps; GitHub's
+# self-approval block is per app). main is guarded by the branch ruleset
+# require-approval-for-bot-actors-on-main: merges need one approval, and
+# repository write/maintain/admin roles bypass it, so the pool-bot app
+# identities cannot direct-push to main or merge their own PR unapproved;
+# the trivial-approval automation must not count pool-bot label actions
+# (PROF-16767).
