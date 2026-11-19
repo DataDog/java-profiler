@@ -260,14 +260,16 @@ A skipped image has no patch, and its pin is released before the transaction
 returns. Other libraries keep their patches, and both owners stay active. Each
 skip increments `native_io_netty_images_skipped`.
 
-The patcher remembers a skipped image until the socket patches are removed.
+The patcher remembers a skipped image by base and fingerprint until the socket
+patches are removed. This also skips other cached descriptions of the same image.
 Library refreshes and a second owner start do not retry it. The next
 installation, normally the next recording, retries it once. An unmapped image or
 a fingerprint mismatch is not a failure: discovery ignores it without a skip.
 
 These failures still disable both owners and restore every image: a missing libc
 original, a candidate-table or transaction allocation failure, any JDK image
-failure and a missing slot found after writes started. A stale generation still
+failure, a full table of 64 skipped images and a missing slot found after
+writes started. A stale generation still
 abandons the transaction without changing a newer owner.
 A NULL weak `epoll_pwait2` import stays NULL; supported imports use the same
 errno-preserving scope as the other epoll waits.

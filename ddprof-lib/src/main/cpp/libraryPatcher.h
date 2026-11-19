@@ -47,8 +47,14 @@ enum SocketPatchTarget : u8 {
 };
 
 const int SOCKET_BASE_TABLE_SIZE = MAX_NATIVE_LIBS * 2;
-// Bounds the linear skip-set scan; a skip beyond it is retried on the next refresh.
+// Bounds the linear skip-set scan; a skip beyond it fails the installation closed.
 const int SOCKET_SKIPPED_IMAGE_CAPACITY = 64;
+
+// Several append-only caches can describe one live image; base and layout identify it.
+typedef struct _socketSkippedImage {
+  const void* _image_base;
+  u64 _fingerprint;
+} SocketSkippedImage;
 // A library to visit with a LibraryPatcher::LiveLibraryWalk
 typedef struct _libraryRef {
   uintptr_t  _base;  // lib->imageBase(), the sort key
@@ -93,7 +99,7 @@ private:
   static const void* _socket_bases[SOCKET_BASE_TABLE_SIZE];
   // Netty images rejected by an image-local failure. Guarded by _lock and cleared
   // with the socket patches, so they are retried by the next installation only.
-  static CodeCache* _socket_skipped_images[SOCKET_SKIPPED_IMAGE_CAPACITY];
+  static SocketSkippedImage _socket_skipped_images[SOCKET_SKIPPED_IMAGE_CAPACITY];
   static int _socket_skipped_image_count;
 
   // Candidates of the current LiveLibraryWalk, filled by add_live_candidate().
@@ -136,8 +142,9 @@ private:
   static bool socket_library_patched_unlocked(const void* image_base);
   static void remember_socket_library_unlocked(const void* image_base);
   static bool socket_image_skipped_unlocked(const CodeCache* lib);
-  static void skip_socket_image_unlocked(CodeCache* lib, const char* reason);
-  static void skip_socket_image(CodeCache* lib, u64 generation, bool require_active,
+  // Both return false only when the skip table is full.
+  static bool skip_socket_image_unlocked(CodeCache* lib, const char* reason);
+  static bool skip_socket_image(CodeCache* lib, u64 generation, bool require_active,
                                 const char* reason);
   static void unpatch_socket_functions_unlocked(
       std::vector<SocketPatchedLibrary>& libraries_to_release);

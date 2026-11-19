@@ -42,7 +42,7 @@ u64 LibraryPatcher::_socket_generation = 0;
 std::vector<SocketPatchEntry> LibraryPatcher::_socket_entries;
 std::vector<SocketPatchedLibrary> LibraryPatcher::_socket_libraries;
 const void* LibraryPatcher::_socket_bases[SOCKET_BASE_TABLE_SIZE] = {};
-CodeCache* LibraryPatcher::_socket_skipped_images[SOCKET_SKIPPED_IMAGE_CAPACITY] = {};
+SocketSkippedImage LibraryPatcher::_socket_skipped_images[SOCKET_SKIPPED_IMAGE_CAPACITY] = {};
 int LibraryPatcher::_socket_skipped_image_count = 0;
 std::atomic<bool> LibraryPatcher::_socket_active{false};
 LibraryRef LibraryPatcher::_live_refs[MAX_NATIVE_LIBS];
@@ -326,29 +326,36 @@ void LibraryPatcher::remember_socket_library_unlocked(const void* image_base) {
 
 bool LibraryPatcher::socket_image_skipped_unlocked(const CodeCache* lib) {
   for (int index = 0; index < _socket_skipped_image_count; index++) {
-    if (_socket_skipped_images[index] == lib) return true;
+    if (_socket_skipped_images[index]._image_base == lib->imageBase() &&
+        _socket_skipped_images[index]._fingerprint == lib->imageFingerprint()) {
+      return true;
+    }
   }
   return false;
 }
 
-void LibraryPatcher::skip_socket_image_unlocked(CodeCache* lib, const char* reason) {
+bool LibraryPatcher::skip_socket_image_unlocked(CodeCache* lib, const char* reason) {
+  if (socket_image_skipped_unlocked(lib)) return true;
+  if (_socket_skipped_image_count == SOCKET_SKIPPED_IMAGE_CAPACITY) {
+    Log::warn("native I/O hooks disabled: too many skipped Netty epoll images");
+    return false;
+  }
   Log::warn("native I/O hooks skipped Netty epoll image %s: %s", lib->name(), reason);
   Counters::increment(NATIVE_IO_NETTY_IMAGES_SKIPPED);
-  if (!socket_image_skipped_unlocked(lib) &&
-      _socket_skipped_image_count < SOCKET_SKIPPED_IMAGE_CAPACITY) {
-    _socket_skipped_images[_socket_skipped_image_count++] = lib;
-  }
+  _socket_skipped_images[_socket_skipped_image_count++] = {lib->imageBase(),
+                                                           lib->imageFingerprint()};
+  return true;
 }
 
-void LibraryPatcher::skip_socket_image(CodeCache* lib, u64 generation, bool require_active,
+bool LibraryPatcher::skip_socket_image(CodeCache* lib, u64 generation, bool require_active,
                                        const char* reason) {
   ExclusiveLockGuard locker(&_lock);
   // A stale discovery must not record a skip into a newer installation.
   if (_socket_generation != generation ||
       (require_active && !_socket_active.load(std::memory_order_relaxed))) {
-    return;
+    return true;
   }
-  skip_socket_image_unlocked(lib, reason);
+  return skip_socket_image_unlocked(lib, reason);
 }
 
 void LibraryPatcher::initialize() {
@@ -905,7 +912,6 @@ public:
   UnloadProtection _protection;
   size_t _patch_count;
   SocketPatchTarget _target;
-  bool _skipped = false;
 
   SocketPatchCandidate(CodeCache* lib, UnloadProtection&& protection,
                        size_t patch_count, SocketPatchTarget target)
@@ -1151,7 +1157,9 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
       if (!protection.isValid()) {
         if (!mappingMatches(lib)) continue;
         if (netty_image) {
-          skip_socket_image(lib, generation, require_active, "cannot retain mapped DSO");
+          if (!skip_socket_image(lib, generation, require_active, "cannot retain mapped DSO")) {
+            return disable_and_unpatch();
+          }
           continue;
         }
         Log::warn("native I/O hooks disabled: cannot retain mapped DSO %s",
@@ -1196,7 +1204,9 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
       patch_count += count;
     }
     if (imports_incomplete) {
-      skip_socket_image(lib, generation, require_active, "incomplete imports");
+      if (!skip_socket_image(lib, generation, require_active, "incomplete imports")) {
+        return disable_and_unpatch();
+      }
       continue;
     }
     if (patch_count == 0) continue;
@@ -1227,14 +1237,14 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
 
     // Validate every new image before any write, so a skipped Netty image has no
     // partial patch. Its pin is released with the candidate table.
+    auto skipped = [](const SocketPatchCandidate& candidate) {
+      return candidate._target == SOCKET_PATCH_NETTY_NATIVE_EPOLL &&
+             socket_image_skipped_unlocked(candidate._lib);
+    };
     for (SocketPatchCandidate& candidate : candidates) {
       CodeCache* lib = candidate._lib;
-      if (socket_library_patched_unlocked(lib->imageBase())) continue;
+      if (socket_library_patched_unlocked(lib->imageBase()) || skipped(candidate)) continue;
       bool netty_image = candidate._target == SOCKET_PATCH_NETTY_NATIVE_EPOLL;
-      if (netty_image && socket_image_skipped_unlocked(lib)) {
-        candidate._skipped = true;
-        continue;
-      }
       const char* failure = nullptr;
       // A released pin permits an identical-base reload whose full-RELRO GOT
       // is read-only again, even though this append-only cache says writable.
@@ -1244,11 +1254,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
         failure = "missing import slot";
       }
       if (failure == nullptr) continue;
-      if (netty_image) {
-        skip_socket_image_unlocked(lib, failure);
-        candidate._skipped = true;
-        continue;
-      }
+      if (netty_image && skip_socket_image_unlocked(lib, failure)) continue;
       Log::warn("native I/O hooks disabled: %s in %s", failure, lib->name());
       success = false;
       break;
@@ -1257,7 +1263,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     size_t additional_patches = 0;
     size_t additional_libraries = 0;
     for (SocketPatchCandidate& candidate : candidates) {
-      if (!candidate._skipped && !socket_library_patched_unlocked(candidate._lib->imageBase())) {
+      if (!skipped(candidate) && !socket_library_patched_unlocked(candidate._lib->imageBase())) {
         additional_patches += candidate._patch_count;
         additional_libraries++;
       }
@@ -1276,7 +1282,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     if (success) {
       for (SocketPatchCandidate& candidate : candidates) {
         CodeCache* lib = candidate._lib;
-        if (candidate._skipped || socket_library_patched_unlocked(lib->imageBase())) {
+        if (skipped(candidate) || socket_library_patched_unlocked(lib->imageBase())) {
           continue;
         }
         size_t first_patch = _socket_entries.size();

@@ -491,7 +491,7 @@ TEST_P(NettyEpollAliasDiscoveryTest, SkipsImageUnloadedBeforeLoaderAliasPin) {
   EXPECT_EQ(existing_patches, LibraryPatcher::socket_patch_count_for_test());
 }
 
-// Fails the Netty read slot on the selected consultation: the first is the
+// Fails the Netty read slot from the selected consultation on: the first is the
 // pre-write validation, the second is the write loop after it passed.
 class NettyReadSlotFailure {
 public:
@@ -514,7 +514,7 @@ private:
     if (_current == nullptr || lib != _current->_target || id != im_read || index != 0) {
       return false;
     }
-    return ++_current->calls == _current->_failing_call;
+    return ++_current->calls >= _current->_failing_call;
   }
 
   static NettyReadSlotFailure* _current;
@@ -546,6 +546,14 @@ protected:
     netty = loadedCache();
     ASSERT_NE(nullptr, netty);
     const CodeCacheArray& libraries = Libraries::instance()->native_libs();
+    // Earlier cases' caches can describe this identical copy; only this one may validate it.
+    for (int index = 0; index < libraries.count(); index++) {
+      CodeCache* cached = libraries.at(index);
+      if (cached != nullptr && cached != netty && cached->imageBase() == netty->imageBase() &&
+          cached->imageFingerprint() == netty->imageFingerprint()) {
+        cached->setImageFingerprint(0);
+      }
+    }
     for (int index = libraries.count() - 1; index >= 0 && jdk == nullptr; index--) {
       CodeCache* library = libraries.at(index);
       if (library != nullptr && library->imageBase() == info.dli_fbase) jdk = library;
@@ -570,6 +578,8 @@ protected:
       NativeSocketSampler::setActiveForTest(saved_sampler);
     }
     if (jdk_handle != nullptr) EXPECT_EQ(0, dlclose(jdk_handle));
+    // Retire this cache, which may carry a test-only incomplete-import mark.
+    if (netty != nullptr) netty->setImageFingerprint(0);
     NettyEpollDiscoveryTest::TearDown();
   }
 
