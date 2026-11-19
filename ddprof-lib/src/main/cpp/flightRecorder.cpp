@@ -20,6 +20,7 @@
 #include "jfrMetadata.h"
 #include "jniHelper.h"
 #include "jvmSupport.inline.h"
+#include "mallocArenaEvents.h"
 #include "mallocInfo.h"
 #include "os.h"
 #include "profiler.h"
@@ -950,7 +951,9 @@ char *Recording::_jvm_flags = NULL;
 char *Recording::_java_command = NULL;
 
 Recording::Recording(int fd, Arguments &args)
-    : _fd(fd), _method_map(), _has_post_flush(false) {
+    : _fd(fd), _method_map(), _arena_inputs(), _arena_reemit(false),
+      _has_malloc_free_held(false), _malloc_free_held(0),
+      _has_post_flush(false) {
 
   memset(_post_flush_live, 0, sizeof(_post_flush_live));
   memset(_post_flush_max, 0, sizeof(_post_flush_max));
@@ -962,6 +965,10 @@ Recording::Recording(int fd, Arguments &args)
   _recording_start_time = _start_time;
   _recording_start_ticks = _start_ticks;
   _bytes_written = 0;
+
+#if defined(__linux__) && defined(__GLIBC__)
+  _arena_inputs = MallocArenaInputs::capture();
+#endif
 
   _tid = OS::threadId();
   _active_index.store(0, std::memory_order_relaxed);
@@ -1075,6 +1082,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   updateNativeMemStats();
   writeCounters(_buf);
   writeNativeMem(_buf);
+  writeMallocArenaEvents(_buf);
 
   // Keep a simple stats for where we failed to unwind
   // For the sakes of simplicity we are not keeping the count of failed unwinds which would also be
@@ -1172,6 +1180,7 @@ void Recording::switchChunk(int fd) {
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
   _bytes_written = 0;
+  _arena_reemit = true;
 
   // move the chunk to the external file and reset the continuous recording file
   OS::copyFile(_fd, fd, 0, _chunk_start);
@@ -2174,6 +2183,7 @@ bool Recording::glibcMallocActive() {
 // symbol is resolved at runtime, so a build made against old headers still
 // picks it up from a newer runtime glibc (see mallocInfo.cpp).
 void Recording::updateMallocArenaStats() {
+  _has_malloc_free_held = false;
   if (!glibcMallocActive()) {
     return;
   }
@@ -2197,6 +2207,117 @@ void Recording::updateMallocArenaStats() {
   Counters::set(MALLOC_FREE_HELD_BYTES, (long long)mi.fordblks);
   Counters::set(MALLOC_TRIMMABLE_BYTES, (long long)mi.keepcost);
   Counters::set(MALLOC_MMAP_BYTES, (long long)mi.hblkhd);
+  // The arena warning rule reads the same fordblks value, so the chunk makes
+  // only one mallinfo2() call.
+  _malloc_free_held = (u64)mi.fordblks;
+  _has_malloc_free_held = true;
+}
+
+ArenaWalkStatus Recording::gateStatus(bool fault_recovery, bool glibc_active,
+                                      bool hugetlb) {
+  if (!fault_recovery) {
+    return ARENA_WALK_UNSUPPORTED_JVM;
+  }
+  if (!glibc_active) {
+    return ARENA_WALK_REPLACED_ALLOCATOR;
+  }
+  if (hugetlb) {
+    return ARENA_WALK_HUGETLB_TUNABLE;
+  }
+  return ARENA_WALK_OK;
+}
+
+// Runs once per chunk on the flush path. The walk reads arena memory only
+// through SafeAccess, which needs the SIGSEGV handler that
+// Profiler::setupSignalHandlers() installs on HotSpot and OpenJ9.
+void Recording::writeMallocArenaEvents(Buffer *buf) {
+#if defined(__linux__) && defined(__GLIBC__)
+  const bool reemit = _arena_reemit;
+
+  ArenaWalkResult res;
+  memset(&res, 0, sizeof(res));
+  res.layoutIndex = -1;
+  res.threadPrivateArenas = -1;
+  res.status = gateStatus(VM::isHotspot() || VM::isOpenJ9(),
+                          glibcMallocActive(), _arena_inputs.hugetlbHeaps);
+  if (res.status == ARENA_WALK_OK) {
+    // mallopt() and glibc tunables can make the live arena limit differ from
+    // the environment estimate, so only an absolute cap bounds the walk.
+    MallocArenaWalker::walk(&res, 65536 + 64);
+  }
+
+  const long long max_heap = JVMSupport::maxHeapBytes();
+
+  MallocArenaRuleInput in;
+  in.walkOk = res.status == ARENA_WALK_OK;
+  if (in.walkOk) {
+    _arena_reemit = false;  // a failed walk keeps the re-emit armed for the next chunk
+  }
+  in.arenaCount = res.arenaCount;
+  in.nonMainArenaBytes = res.nonMainBytes;
+  in.hasFreeHeld = _has_malloc_free_held;
+  in.freeHeldBytes = _malloc_free_held;
+  in.cpuQuotaMilli = _arena_inputs.cpuQuotaMilli;
+  in.memoryLimit = _arena_inputs.memoryLimit;
+  in.maxHeap = max_heap;
+  in.thresholdPercent = _args._arena_warn_percent;
+  MallocArenaEvaluation eval = evaluateMallocArenaRule(in);
+
+  const long long free_held =
+      _has_malloc_free_held ? (long long)_malloc_free_held : -1;
+  const char *status_name = arenaWalkStatusName(res.status);
+  // _stop_ticks is already fixed here, so a fresh timestamp would fall outside the chunk.
+  const u64 ticks = _start_ticks;
+
+  MallocArenaStatsRecord stats;
+  stats.arenaCount = res.arenaCount;
+  stats.nonMainArenaBytes = (long long)res.nonMainBytes;
+  stats.freeHeldBytes = free_held;
+  stats.largestArenaBytes = (long long)res.largestBytes;
+  stats.cpuQuotaMilli = (int)_arena_inputs.cpuQuotaMilli;
+  stats.memoryLimit = _arena_inputs.memoryLimit;
+  stats.maxHeap = max_heap;
+  stats.walkStatus = status_name;
+  MallocArenaEvents::writeStats(buf, ticks, stats);
+  flushIfNeeded(buf);
+
+  MallocArenaWarningState::Transition transition =
+      _arena_warning.step(in.walkOk, eval.active, eval.measureBytes);
+  if (transition == MallocArenaWarningState::NONE && reemit && in.walkOk &&
+      _arena_warning.active()) {
+    transition = _arena_warning.current();
+  }
+  if (transition == MallocArenaWarningState::NONE) {
+    return;
+  }
+
+  const ArenaLayout *layout =
+      res.layoutIndex >= 0 ? arenaLayoutAt(res.layoutIndex) : nullptr;
+  MallocArenaWarningRecord warn;
+  warn.arenaCount = res.arenaCount;
+  warn.arenaLimit = (int)_arena_inputs.arenaLimit;
+  warn.arenaLimitSource = _arena_inputs.arenaLimitSource;
+  warn.onlineCpus = _arena_inputs.onlineCpus;
+  warn.cpuQuotaMilli = (int)_arena_inputs.cpuQuotaMilli;
+  warn.memoryLimit = _arena_inputs.memoryLimit;
+  warn.memoryLimitSource = _arena_inputs.memoryLimitSource;
+  warn.maxHeap = max_heap;
+  warn.freeHeldBytes = free_held;
+  warn.nonMainArenaBytes = (long long)res.nonMainBytes;
+  warn.thresholdPercent = _args._arena_warn_percent;
+  warn.threadPrivateArenas = res.threadPrivateArenas;
+  warn.largestArenaBytes = (long long)res.largestBytes;
+  warn.largestArenaMaxBytes = (long long)res.largestMaxBytes;
+  warn.glibcVersion = _arena_inputs.glibcVersion;
+  warn.layout = layout != nullptr ? layout->name : "";
+  warn.walkStatus = status_name;
+  warn.evaluation = eval;
+  MallocArenaEvents::writeWarning(buf, ticks,
+                                  MallocArenaWarningState::name(transition), warn);
+  flushIfNeeded(buf);
+#else
+  (void)buf;
+#endif
 }
 
 void Recording::capturePostFlushNativeMem() {
