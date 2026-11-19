@@ -201,13 +201,15 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    (`dlpi_adds`) since then while any unload has ever happened (the unload of a
    reload can fall in an earlier pass than its load). Otherwise only unpatched
    libraries enter the identity-checking walk. The first patch and a re-check
-   hook a slot only if it holds what the loader resolves `pthread_create` to
-   (captured by `initialize_persistent()`, a preloaded interposer included) or
-   the library's own lazy-binding stub, as a fresh GOT does; a slot someone else
-   hooked is left alone, so threads created through that wrapper are not
-   registered. A pass that finds a new foreign value in such a slot of a library
-   with an entry is not counted as handled, so the next pass looks again; a
-   value seen at the previous visit is not. The wrapper passes the routine's
+   hook a slot only if it holds one of the loader's bindings, captured by
+   `initialize_persistent()`: `dlsym(RTLD_DEFAULT)` (a preloaded interposer
+   included) or `dlsym(RTLD_NEXT)` (what PLT calls reach when a non-PIE
+   executable owns the canonical address); or the library's own lazy-binding
+   stub. Any other value is left alone: another interposer's wrapper, whose
+   threads are then not registered, an unresolved weak import, or a GOT the
+   loader has not relocated yet. An entry left with such a slot is pending and
+   is visited on every pass until a visit hooks it, because the counters move
+   when a library is mapped, not when its relocation finishes. The wrapper passes the routine's
    return value to `pthread_exit()`, so `pthread_join()` still sees it even
    though the hook outlives every recording. The hook runs without
    `_state_lock`, so both calls are gated:

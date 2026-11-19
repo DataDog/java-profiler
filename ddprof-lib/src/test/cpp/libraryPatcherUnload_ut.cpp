@@ -61,8 +61,9 @@ enum ChildExit {
   CHILD_THREAD_FAILED = 19,
   CHILD_UNHOOKED_BY_STOP = 21,  // a persistent hook was undone by the recording unpatch
   CHILD_FOREIGN_TAKEN = 22,     // a slot holding a foreign value was overwritten
-  CHILD_NOT_RECHECKED = 23,     // a declined library was not looked at again
-  CHILD_RECHECKED_STABLE = 24,  // a wrapper that stays kept forcing re-checks
+  CHILD_NOT_RECHECKED = 23,     // a pending library was not looked at again
+  CHILD_RECHECKED_SETTLED = 24, // a pending entry made a settled one be re-checked
+  CHILD_STILL_PENDING = 25,     // an unloaded library's entry stayed pending
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -230,8 +231,9 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_SLOT_NOT_HOOKED) << "patching did not hook the loaded DSO";
   ASSERT_NE(code, CHILD_UNHOOKED_BY_STOP) << "a persistent hook was undone by the recording unpatch";
   ASSERT_NE(code, CHILD_FOREIGN_TAKEN) << "a slot holding a foreign value was overwritten";
-  ASSERT_NE(code, CHILD_NOT_RECHECKED) << "a pass that declined a slot was counted as handled";
-  ASSERT_NE(code, CHILD_RECHECKED_STABLE) << "a foreign wrapper that stays kept forcing re-checks";
+  ASSERT_NE(code, CHILD_NOT_RECHECKED) << "a pending library was not looked at again";
+  ASSERT_NE(code, CHILD_RECHECKED_SETTLED) << "a pending entry made a settled one be re-checked";
+  ASSERT_NE(code, CHILD_STILL_PENDING) << "an unloaded library's entry stayed pending";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
   ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "two different builds have the same fingerprint";
   ASSERT_NE(code, CHILD_DEADLOCK) << "patching deadlocked against the loader's dl_load_write_lock";
@@ -713,10 +715,18 @@ namespace {
 void* foreignWrapper(void*) { return nullptr; }
 }  // namespace
 
-// A pass that declines a slot (a library glibc linked but has not relocated looks
-// the same) must not be counted as handled, or the library is skipped until an
-// unrelated load or unload.
-TEST_F(LibraryPatcherRecheckTest, DeclinedSlotIsCheckedAgainWithoutLoaderChange) {
+// Unloads a test DSO that nothing else holds, so the next pass re-checks every
+// patched library.
+static void bumpLoaderSubs(const char* suffix) {
+  char path[PATH_MAX];
+  testLibPath(path, sizeof(path), suffix);
+  requireUnloadableEnvironment(path);
+}
+
+// A pass that leaves a slot unhooked keeps the entry pending, and later passes
+// visit it even though no library was loaded or unloaded, including after the
+// same value at two passes: that is how a GOT not relocated yet looks.
+TEST_F(LibraryPatcherRecheckTest, PendingSlotIsCheckedAgainWithoutLoaderChange) {
   runInChild([]() {
     if (OS::isMusl()) _exit(CHILD_SKIP);  // musl does not report load counts
     LoadedLib lib = loadLib(PTHREAD_CREATE);
@@ -725,14 +735,8 @@ TEST_F(LibraryPatcherRecheckTest, DeclinedSlotIsCheckedAgainWithoutLoaderChange)
 
     void* foreign = reinterpret_cast<void*>(&foreignWrapper);
     *lib.slot = foreign;
-    // Any unload makes the next pass re-check every patched library.
-    char other[PATH_MAX];
-    testLibPath(other, sizeof(other), "/libbuildid-a.so");
-    void* handle = dlopen(other, RTLD_NOW);
-    if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
-    dlclose(handle);
-    if (dlopen(other, RTLD_NOLOAD | RTLD_LAZY) != nullptr) _exit(CHILD_SKIP);
-
+    bumpLoaderSubs("/libbuildid-a.so");
+    PTHREAD_CREATE.patch();
     PTHREAD_CREATE.patch();
     if (*lib.slot != foreign) _exit(CHILD_FOREIGN_TAKEN);
 
@@ -743,32 +747,69 @@ TEST_F(LibraryPatcherRecheckTest, DeclinedSlotIsCheckedAgainWithoutLoaderChange)
   });
 }
 
-// A wrapper that stays is not a pending relocation: after one pass has seen it,
-// the loader counts are recorded again, and a later pass without a load or
-// unload leaves the library alone instead of re-walking it on every refresh.
-TEST_F(LibraryPatcherRecheckTest, StableForeignWrapperStopsForcingRechecks) {
+// Only the pending entry is visited on a pass without a load or unload: a settled
+// library is left alone, so a wrapper that stays costs one entry per pass, not a
+// re-walk of every patched library.
+TEST_F(LibraryPatcherRecheckTest, PendingEntryDoesNotForceRecheckOfOthers) {
   runInChild([]() {
     if (OS::isMusl()) _exit(CHILD_SKIP);  // musl does not report load counts
     LoadedLib lib = loadLib(PTHREAD_CREATE);
+    char settled_path[PATH_MAX];
+    testLibPath(settled_path, sizeof(settled_path), "/libbuildid-a.so");
+    if (dlopen(settled_path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
+    Libraries::instance()->updateSymbols(false);
+    CodeCache* settled = Libraries::instance()->findLibraryByName("libbuildid-a");
+    if (settled == nullptr) _exit(CHILD_LIB_NOT_FOUND);
+    void** settled_slot = settled->findImport(im_pthread_create);
+    if (settled_slot == nullptr) _exit(CHILD_NO_IMPORT);
+    void* settled_orig = *settled_slot;
     patchAndVerify(PTHREAD_CREATE, lib);
-    void* hooked = *lib.slot;
+    if (*settled_slot == settled_orig) _exit(CHILD_SLOT_NOT_HOOKED);
+    void* settled_hooked = *settled_slot;
 
     void* foreign = reinterpret_cast<void*>(&foreignWrapper);
     *lib.slot = foreign;
-    char other[PATH_MAX];
-    testLibPath(other, sizeof(other), "/libbuildid-a.so");
-    void* handle = dlopen(other, RTLD_NOW);
-    if (handle == nullptr) _exit(CHILD_DLOPEN_FAILED);
-    dlclose(handle);
-    if (dlopen(other, RTLD_NOLOAD | RTLD_LAZY) != nullptr) _exit(CHILD_SKIP);
-
-    PTHREAD_CREATE.patch();  // sees the wrapper for the first time: not counted
-    PTHREAD_CREATE.patch();  // sees it again: settled, counted
+    bumpLoaderSubs("/libbuildid-b.so");
+    PTHREAD_CREATE.patch();  // re-checks both: one pending, one settled
     if (*lib.slot != foreign) _exit(CHILD_FOREIGN_TAKEN);
 
-    *lib.slot = reinterpret_cast<void*>(&pthread_create);
-    PTHREAD_CREATE.patch();  // no load or unload since the count was recorded
-    if (*lib.slot == hooked) _exit(CHILD_RECHECKED_STABLE);
+    *settled_slot = reinterpret_cast<void*>(&pthread_create);
+    PTHREAD_CREATE.patch();  // no load or unload since: only the pending entry
+    if (*settled_slot == settled_hooked) _exit(CHILD_RECHECKED_SETTLED);
+  });
+}
+
+// Friend of LibraryPatcher: reads an entry's pending flag.
+class LibraryPatcherTestAccessor {
+public:
+  // 1 or 0, or -1 if the library has no entry.
+  static int entryPending(CodeCache* lib) {
+    for (int index = 0; index < LibraryPatcher::_pthread_create.size; index++) {
+      if (LibraryPatcher::_pthread_create.entries[index].lib == lib) {
+        return LibraryPatcher::_pthread_create.entries[index].pending;
+      }
+    }
+    return -1;
+  }
+};
+
+// A full pass clears the pending flag of an entry it does not visit, so the
+// entry of an unloaded library is not walked on every later pass.
+TEST_F(LibraryPatcherRecheckTest, FullPassClearsPendingOfUnloadedLibrary) {
+  runInChild([]() {
+    if (OS::isMusl()) _exit(CHILD_SKIP);  // musl never unmaps
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    patchAndVerify(PTHREAD_CREATE, lib);
+    CodeCache* cc = Libraries::instance()->findLibraryByName("libpatchtarget");
+    if (cc == nullptr) _exit(CHILD_LIB_NOT_FOUND);
+    *lib.slot = reinterpret_cast<void*>(&foreignWrapper);
+    bumpLoaderSubs("/libbuildid-a.so");
+    PTHREAD_CREATE.patch();
+    if (LibraryPatcherTestAccessor::entryPending(cc) != 1) _exit(CHILD_NOT_RECHECKED);
+
+    if (!unload(lib.handle, lib.slot)) _exit(CHILD_SKIP);
+    PTHREAD_CREATE.patch();  // the unload makes this a full pass
+    if (LibraryPatcherTestAccessor::entryPending(cc) != 0) _exit(CHILD_STILL_PENDING);
   });
 }
 

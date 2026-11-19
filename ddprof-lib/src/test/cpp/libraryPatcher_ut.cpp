@@ -31,25 +31,23 @@ public:
   static int patchedCount() { return LibraryPatcher::_pthread_create.size; }
   static void setPatchedCount(int count) { LibraryPatcher::_pthread_create.size = count; }
 
-  // Whether the entry's last visit found its library mapped and settled, or -1
-  // if the library has no entry.
-  static int entryMapped(CodeCache* lib) {
+  // Whether the entry's last visit left a slot unhooked, or -1 if the library
+  // has no entry.
+  static int entryPending(CodeCache* lib) {
     for (int index = 0; index < LibraryPatcher::_pthread_create.size; index++) {
       if (LibraryPatcher::_pthread_create.entries[index].lib == lib) {
-        return LibraryPatcher::_pthread_create.entries[index].mapped;
+        return LibraryPatcher::_pthread_create.entries[index].pending;
       }
     }
     return -1;
   }
 
-  static bool declined() { return LibraryPatcher::_pthread_create.declined; }
-  static void setDeclined(bool value) { LibraryPatcher::_pthread_create.declined = value; }
-
-  static void patchPthreadCreate() { LibraryPatcher::patch_pthread_create(); }
   static void* loaderPthreadCreate() { return LibraryPatcher::_loader_pthread_create; }
+  static void* nextPthreadCreate() { return LibraryPatcher::_next_pthread_create; }
 
-  // Stands in for a preloaded interposer: the value the loader resolves.
+  // Stand in for the loader's two bindings (a preloaded interposer, say).
   static void setLoaderPthreadCreate(void* func) { LibraryPatcher::_loader_pthread_create = func; }
+  static void setNextPthreadCreate(void* func) { LibraryPatcher::_next_pthread_create = func; }
 
   // Drops the patch table without writing the saved originals back, unlike
   // unpatch_recording_hooks(). Tests patch GOT slots that live in the test body's
@@ -58,6 +56,7 @@ public:
   static void forgetPatchTable() {
     memset(&LibraryPatcher::_pthread_create, 0, sizeof(LibraryPatcher::_pthread_create));
     LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
+    LibraryPatcher::_next_pthread_create = reinterpret_cast<void*>(&pthread_create);
     LibraryPatcher::_initialized.store(false);
   }
 };
@@ -329,8 +328,6 @@ TEST_F(LibraryPatcherPatching, LeavesForeignWrapperInPlaceOnFirstPatch) {
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
   EXPECT_EQ(foreign, slot);
   EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
-  // No entry, so nothing a later pass needs the loader counts to revisit.
-  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
 
   LibraryPatcher::unpatch_recording_hooks();  // stop
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);  // start
@@ -339,7 +336,7 @@ TEST_F(LibraryPatcherPatching, LeavesForeignWrapperInPlaceOnFirstPatch) {
 }
 
 // The rule is per slot: the slot that holds the loader's binding is hooked, the
-// one that holds a wrapper is not, and the library stays unsettled.
+// one that holds a wrapper is not, and the entry stays pending.
 TEST_F(LibraryPatcherPatching, HooksOnlySlotsHoldingLoaderBinding) {
   void* const foreign = (void*)&fake_original_pthread_create;
   void* jump_slot = real_pthread_create();
@@ -354,8 +351,7 @@ TEST_F(LibraryPatcherPatching, HooksOnlySlotsHoldingLoaderBinding) {
   EXPECT_NE(real_pthread_create(), jump_slot);
   EXPECT_EQ(foreign, glob_dat);
   EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
-  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
 // A preloaded interposer is what the loader resolves, so a slot holding it is
@@ -372,8 +368,42 @@ TEST_F(LibraryPatcherPatching, PatchesSlotHoldingPreloadedInterposerOnFirstPatch
 
   EXPECT_NE(interposer, slot);
   EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
-  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryMapped(&lib));
-  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
+}
+
+// A non-PIE executable that takes &pthread_create owns the canonical address,
+// which dlsym(RTLD_DEFAULT) returns, while PLT calls bind to the definition
+// after it. A slot holding that second binding is hooked too.
+TEST_F(LibraryPatcherPatching, PatchesSlotHoldingPltBindingOnFirstPatch) {
+  void* const plt_binding = (void*)&fake_original_pthread_create;
+  LibraryPatcherTestAccessor::setNextPthreadCreate(plt_binding);
+  ASSERT_NE(plt_binding, LibraryPatcherTestAccessor::loaderPthreadCreate());
+  void* slot = plt_binding;
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(&slot, "pthread_create");
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_NE(plt_binding, slot);
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
+}
+
+// A binding the loader could not resolve is null and must not match a null
+// slot, an unresolved weak import: hooking it would make it look resolved.
+TEST_F(LibraryPatcherPatching, NeverHooksNullSlotEvenIfABindingIsNull) {
+  LibraryPatcherTestAccessor::setLoaderPthreadCreate(nullptr);
+  LibraryPatcherTestAccessor::setNextPthreadCreate(nullptr);
+  void* slot = nullptr;
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(&slot, "pthread_create");
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(nullptr, slot);
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
 }
 
 // A reload resolved into a preloaded interposer (the sanitizer runtime, say) is
@@ -386,115 +416,83 @@ TEST_F(LibraryPatcherRehook, RehooksSlotHoldingPreloadedInterposer) {
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
 
   EXPECT_EQ(hooked, slot);
-  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryMapped(&lib));
-  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
-// A foreign value the visit before had not seen leaves the entry unsettled, so
-// that a pass can tell the library still needs another look.
-TEST_F(LibraryPatcherRehook, NewForeignHookLeavesEntryUnsettled) {
-  ASSERT_EQ(1, LibraryPatcherTestAccessor::entryMapped(&lib));
-  slot = (void*)&fake_original_pthread_create;
-
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
-  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
-}
-
-// A wrapper that stays is not a pending relocation: once a visit has seen the
-// value, it no longer keeps the loader counts from being recorded.
-TEST_F(LibraryPatcherRehook, ForeignHookSeenBeforeIsSettled) {
+// A slot left alone marks the entry pending; the visit that hooks it again
+// clears the flag.
+TEST_F(LibraryPatcherRehook, ForeignHookMarksEntryPendingUntilRehooked) {
+  ASSERT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
   slot = (void*)&fake_original_pthread_create;
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-  ASSERT_TRUE(LibraryPatcherTestAccessor::declined());
-  LibraryPatcherTestAccessor::setDeclined(false);
+  ASSERT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-
-  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
-  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryMapped(&lib));
-  EXPECT_EQ((void*)&fake_original_pthread_create, slot);
-}
-
-// A different foreign value is a new situation, so it is declined again.
-TEST_F(LibraryPatcherRehook, ChangedForeignHookIsDeclinedAgain) {
-  slot = (void*)&fake_original_pthread_create;
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-  LibraryPatcherTestAccessor::setDeclined(false);
-  slot = (void*)&return_argument;
-
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-
-  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
-}
-
-// An unrelocated GOT slot can hold null, which is also the "no record" value:
-// it must never count as a foreign value the visit before had seen.
-TEST_F(LibraryPatcherRehook, NullSlotIsAlwaysDeclined) {
-  slot = nullptr;
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-  ASSERT_TRUE(LibraryPatcherTestAccessor::declined());
-  LibraryPatcherTestAccessor::setDeclined(false);
-
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-
-  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryMapped(&lib));
-  EXPECT_EQ(nullptr, slot);
-}
-
-// The record is dropped once the slot holds the loader's binding again, so the
-// same wrapper installed later is new.
-TEST_F(LibraryPatcherRehook, ForeignHookAfterRehookIsDeclinedAgain) {
-  slot = (void*)&fake_original_pthread_create;
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
   slot = real_pthread_create();
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-  ASSERT_EQ(hooked, slot);
-  LibraryPatcherTestAccessor::setDeclined(false);
-  slot = (void*)&fake_original_pthread_create;
 
-  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-
-  EXPECT_TRUE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(hooked, slot);
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
-// forgetPatchTable() resets the whole table, flags included, so one test's
+// A GOT the loader has not relocated holds a raw link-time offset, which lies
+// below a real library's mapping. The same raw value at two visits is still
+// pending, so the visit after relocation hooks it.
+TEST_F(LibraryPatcherRehook, RepeatedUnrelocatedValueStaysPending) {
+  void* const raw = reinterpret_cast<void*>(static_cast<uintptr_t>(0x3036));
+  ASSERT_FALSE(lib.contains(raw));
+  slot = raw;
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  EXPECT_EQ(raw, slot);
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
+
+  slot = real_pthread_create();
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(hooked, slot);
+}
+
+// A null slot (not relocated yet, or an unresolved weak import) is left alone
+// and keeps the entry pending.
+TEST_F(LibraryPatcherRehook, NullSlotStaysUnhookedAndPending) {
+  slot = nullptr;
+
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(nullptr, slot);
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
+}
+
+// forgetPatchTable() resets the whole table and both bindings, so one test's
 // leftovers cannot reach the next.
 TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
   slot = (void*)&fake_original_pthread_create;
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
-  ASSERT_TRUE(LibraryPatcherTestAccessor::declined());
+  ASSERT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
+  LibraryPatcherTestAccessor::setNextPthreadCreate(nullptr);
 
   LibraryPatcherTestAccessor::forgetPatchTable();
 
   EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
-  EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryMapped(&lib));
-  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
+  EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(&lib));
+  EXPECT_EQ(real_pthread_create(), LibraryPatcherTestAccessor::nextPthreadCreate());
 }
 
-// The flag describes one pass: a pass that visits nothing must clear what an
-// earlier declining pass left, or the loader counts are never recorded again.
-TEST_F(LibraryPatcherPatching, PassClearsDeclinedFlagOfEarlierPass) {
-  LibraryPatcherTestAccessor::setDeclined(true);
-
-  LibraryPatcherTestAccessor::patchPthreadCreate();
-
-  EXPECT_FALSE(LibraryPatcherTestAccessor::declined());
-}
-
-// What the loader resolves is captured once, at initialization, because dlsym()
-// must not run under the patch lock.
-TEST_F(LibraryPatcherPatching, InitializeCapturesLoaderResolvedPthreadCreate) {
+// Both bindings are captured once, at initialization, because dlsym() must not
+// run under the patch lock.
+TEST_F(LibraryPatcherPatching, InitializeCapturesLoaderBindings) {
   void* const resolved = dlsym(RTLD_DEFAULT, "pthread_create");
+  void* const next = dlsym(RTLD_NEXT, "pthread_create");
   ASSERT_NE(nullptr, resolved);
+  ASSERT_NE(nullptr, next);
   LibraryPatcherTestAccessor::setLoaderPthreadCreate((void*)&fake_original_pthread_create);
+  LibraryPatcherTestAccessor::setNextPthreadCreate((void*)&fake_original_pthread_create);
 
   LibraryPatcher::initialize_persistent();
 
   EXPECT_EQ(resolved, LibraryPatcherTestAccessor::loaderPthreadCreate());
+  EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
 }
 
 #endif // __linux__

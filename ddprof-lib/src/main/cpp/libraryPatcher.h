@@ -27,11 +27,11 @@ typedef struct _patchEntry {
 // through lib->findImport().
 struct PthreadCreateEntry {
   CodeCache* lib;
-  // The last pass that visited the library found it mapped, and no slot held a
-  // foreign value the visit before had not seen.
+  // The last pass that looked found the library mapped.
   bool mapped;
-  // The foreign value each slot held at the last visit, or null.
-  void* foreign[NUM_IMPORT_TYPES];
+  // Its last visit left a slot unhooked: a GOT not relocated yet, an unresolved
+  // weak import or another interposer's wrapper. Visited on every pass while set.
+  bool pending;
 };
 
 // The pthread_create entries, guarded by LibraryPatcher::_lock. All-zero is the
@@ -41,10 +41,6 @@ struct PthreadCreateTable {
   // The entries' libraries, sorted, for patch_pthread_create()'s collector.
   CodeCache* sorted[MAX_NATIVE_LIBS];
   int size;
-  // Set by a pass when an entry's slot held a foreign value that the visit
-  // before had not seen: the pass must not be counted as having handled the
-  // loader's adds and subs. A foreign value that stays does not set it.
-  bool declined;
 };
 
 // A library to visit with a LibraryPatcher::LiveLibraryWalk
@@ -71,10 +67,11 @@ private:
   // refresher thread, hence release/acquire.
   static std::atomic<bool> _initialized;
   static PthreadCreateTable _pthread_create;
-  // What the loader resolves pthread_create to through the global scope, a
-  // preloaded interposer included. Set once by initialize_persistent(), before the
-  // patching starts, because dlsym() must not run under _lock.
+  // The loader's pthread_create bindings, set by initialize_persistent() as dlsym()
+  // must not run under _lock: the global scope's (a preloaded interposer included)
+  // and the next one, which PLT calls bind to if a non-PIE executable owns &pthread_create.
   static void*       _loader_pthread_create;
+  static void*       _next_pthread_create;
   static bool        _patch_pthread_create;
 
   // Separate tracking for sigaction patches
