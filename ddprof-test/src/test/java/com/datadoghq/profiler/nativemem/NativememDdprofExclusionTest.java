@@ -39,6 +39,8 @@ public class NativememDdprofExclusionTest extends AbstractProcessProfilerTest {
 
   private static native int checkMalformedMetadata(int scenario);
 
+  private static native int checkSlotCapacityOverflow();
+
   @BeforeAll
   static void requireSupportedPlatform() {
     // Linux-only child-JVM scenarios: the stand-in's GOT rewrite is
@@ -109,6 +111,12 @@ public class NativememDdprofExclusionTest extends AbstractProcessProfilerTest {
   @Test
   void locateOperationSlotsRejectsUnterminatedStringTableName() {
     assertEquals(-3, malformedMetadataResult(2), "symbol names must terminate within DT_STRSZ");
+  }
+
+  @Test
+  void locateOperationSlotsRejectsExcessRelocations() {
+    DdprofStandin.startMarkerCalls();
+    assertEquals(0, checkSlotCapacityOverflow(), "slot capacity overflow must fail without storing the excess slot");
   }
 
   @Test

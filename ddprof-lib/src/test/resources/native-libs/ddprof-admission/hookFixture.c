@@ -81,6 +81,18 @@ __attribute__((visibility("default"))) void* fixture_malloc_hook(size_t size) {
     return malloc(size);
 }
 
+__attribute__((visibility("default"))) void* fixture_calloc_hook(size_t count, size_t size) {
+    return calloc(count, size);
+}
+
+__attribute__((visibility("default"))) void* fixture_realloc_hook(void* address, size_t size) {
+    return realloc(address, size);
+}
+
+__attribute__((visibility("default"))) int fixture_posix_memalign_hook(void** memptr, size_t alignment, size_t size) {
+    return posix_memalign(memptr, alignment, size);
+}
+
 __attribute__((visibility("default"))) void* fixture_aligned_alloc_hook(size_t alignment,
                                                                         size_t size) {
     return aligned_alloc(alignment, size);

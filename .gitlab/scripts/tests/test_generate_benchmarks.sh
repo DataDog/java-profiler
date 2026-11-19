@@ -101,6 +101,12 @@ generator_diagnostics() {
     "$GENERATOR_STATUS" "$RESULT" "$stderr"
 }
 
+diagnostics_match() {
+  local captured="$1" status="$2" stdout="$3" stderr="$4" expected
+  expected=$(printf 'generator status: %s\nstdout:\n%s\nstderr:\n%s' "$status" "$stdout" "$stderr")
+  [[ "$captured" == *"$expected" ]]
+}
+
 expect_result() {
   local desc="$1" expected="$2" actual count
   if [ "$GENERATOR_STATUS" -ne 0 ]; then
@@ -164,8 +170,7 @@ assert_result_rejected_with_diagnostics() {
     expect_result "$desc" true
     [ "$FAILED" -eq 1 ]
   ) 2>&1; then
-    if [[ "$captured" == *"generator status: $status"* && \
-          "$captured" == *"$output"* && "$captured" == *"$stderr"* ]]; then
+    if diagnostics_match "$captured" "$status" "$output" "$stderr"; then
       pass "$desc rejects output and reports complete diagnostics"
     else
       fail "$desc did not report status, full stdout, and stderr"
@@ -190,9 +195,7 @@ STUB
     expect_result "nonzero process exit" true
     [ "$GENERATOR_STATUS" -eq 17 ] && [ "$FAILED" -eq 1 ]
   ) 2>&1; then
-    if [[ "$captured" == *'generator status: 17'* && \
-          "$captured" == *'RUN_BENCHMARKS=true'* && \
-          "$captured" == *'nonzero-process-stderr'* ]]; then
+    if diagnostics_match "$captured" 17 'RUN_BENCHMARKS=true' 'nonzero-process-stderr'; then
       pass "run_generator captures nonzero exit status and diagnostics"
     else
       fail "run_generator did not report the nonzero process status and diagnostics"
@@ -214,9 +217,7 @@ assert_child_rejected_with_diagnostics() {
     expect_child 'controlled child failure' noop
     [ "$FAILED" -eq 1 ]
   ) 2>&1; then
-    if [[ "$captured" == *'generator status: 17'* && \
-          "$captured" == *'child stdout marker'* && \
-          "$captured" == *'child-stderr-marker'* ]]; then
+    if diagnostics_match "$captured" 17 'child stdout marker' 'child-stderr-marker'; then
       pass "child failure reports status, full stdout, and stderr"
     else
       fail "child failure did not report complete generator diagnostics"

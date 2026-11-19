@@ -71,6 +71,13 @@ static void* operation_saved[5][MAX_SLOTS_PER_OP];
 static int operation_slot_count[5];
 static int installed;
 
+static int appendOperationSlot(void*** slots, int* count, int capacity, void** slot) {
+  if (*count >= capacity) return -1;
+  slots[*count] = slot;
+  (*count)++;
+  return 0;
+}
+
 struct ProfilerImage {
   uintptr_t bias;
   const ElfW(Phdr)* phdr;
@@ -259,13 +266,14 @@ static int locateOperationSlots(struct ProfilerImage* image) {
       int op = operationIndex(symtab, nsyms, strtab, strsz, sym_index);
       if (op == OPERATION_LOOKUP_NO_MATCH) continue;
       if (op < 0) return -1;
-      if (operation_slot_count[op] >= MAX_SLOTS_PER_OP) continue;
       uintptr_t slot_addr;
       if (imageAddress(image, entry->r_offset, &slot_addr) != 0 || !readableRange(image, slot_addr, sizeof(void*))) {
         return -1;
       }
       void** slot = (void**)slot_addr;
-      operation_slots[op][operation_slot_count[op]++] = slot;
+      if (appendOperationSlot(operation_slots[op], &operation_slot_count[op], MAX_SLOTS_PER_OP, slot) != 0) {
+        return -1;
+      }
     }
   }
   for (int op = 0; op < 5; op++) {
@@ -439,6 +447,20 @@ Java_com_datadoghq_profiler_nativemem_NativememDdprofExclusionTest_checkMalforme
     default:
       return OPERATION_LOOKUP_INVALID_TABLE;
   }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_datadoghq_profiler_nativemem_NativememDdprofExclusionTest_checkSlotCapacityOverflow(
+    JNIEnv* env, jclass clazz) {
+  (void)env;
+  (void)clazz;
+  void* first_value = NULL;
+  void* second_value = NULL;
+  void** slots[2] = {NULL, NULL};
+  int count = 0;
+  if (appendOperationSlot(slots, &count, 1, &first_value) != 0) return -1;
+  if (appendOperationSlot(slots, &count, 1, &second_value) != -1) return -2;
+  return count == 1 && slots[0] == &first_value && slots[1] == NULL ? 0 : -3;
 }
 
 #endif /* __linux__ */
