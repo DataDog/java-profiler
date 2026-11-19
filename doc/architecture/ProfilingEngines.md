@@ -655,11 +655,14 @@ In summary:
   removed. Libraries loaded later are patched by `Libraries::refresh()`
   (`libraries.cpp:90-91`).
 - **Signals**: none. Hooks run synchronously on the allocating thread.
-- **Sampling**: `maybeRecord()` (`mallocTracer.cpp:312`) acquires the
-  thread's `ProfiledThread` (if there is none, it increments
-  `SAMPLES_DROPPED_THREAD_LOCAL`), enters a `CriticalSection` to block
-  re-entry from the profiler's own allocations, then calls `shouldSample()`.
-  That function is a lock-free CAS on a shared `_bytes_until_sample`, with
+- **Sampling**: `maybeRecord()` first calls `shouldSample()`, so an unsampled
+  allocation touches no TLS and makes no syscall. A sampled allocation is then
+  dropped if the raw thread identity is exit-marked. Otherwise `maybeRecord()`
+  acquires the thread's `ProfiledThread` (if there is none, it increments
+  `SAMPLES_DROPPED_THREAD_LOCAL`) and enters a `CriticalSection` to block re-entry
+  from the profiler's own allocations. Exit-marked and re-entrant samples increment
+  `MALLOC_SAMPLES_DROPPED`. `shouldSample()` is a lock-free CAS on a shared
+  `_bytes_until_sample`, with
   Poisson-distributed intervals from a shared xoroshiro128+ state.
   `recordMalloc()` records `BCI_NATIVE_MALLOC` through `recordSample(NULL,
   ...)`. A `PidController` retunes `_interval` about once per second.

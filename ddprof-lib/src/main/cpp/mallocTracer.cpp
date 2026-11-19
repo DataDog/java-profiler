@@ -92,6 +92,7 @@ PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
     31, 511, 3, MallocTracer::CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
 
 #ifdef UNIT_TEST
+void (*MallocTracer::beforeExitCheckForTest)() = nullptr;
 void (*MallocTracer::beforeAcquireForTest)() = nullptr;
 void (*MallocTracer::recordSampleForTest)(int, const MallocEvent&) = nullptr;
 #endif
@@ -312,25 +313,34 @@ bool MallocTracer::shouldSample(size_t size) {
     }
 }
 
-// Exit-marked threads are rejected before TLS acquisition or sampling; their faults bypass recovery.
-// Other admitted allocations may claim a priming slot even when shouldSample() rejects them.
+// shouldSample() reads no TLS, so unsampled allocations skip the identity syscall and TLS.
+// Exit-marked threads are rejected before TLS acquisition; their faults bypass recovery.
 // CriticalSection excludes recursive malloc recording and same-thread profiling samples.
 void MallocTracer::maybeRecord(void* ret, size_t size) {
-    if (running() && ret && size && !ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
-        // Marked threads bypass crash recovery, so reject teardown allocations before TLS or walks.
-        // The malloc hook must not allocate while acquiring TLS.
+    if (!running() || ret == nullptr || size == 0 || !shouldSample(size)) {
+        return;
+    }
 #ifdef UNIT_TEST
-        if (beforeAcquireForTest != nullptr) beforeAcquireForTest();
+    if (beforeExitCheckForTest != nullptr) beforeExitCheckForTest();
 #endif
-        ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
-        if (prof_thread == nullptr) {
-            Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-            return;
-        }
-        CriticalSection cs(prof_thread);
-        if (cs.entered() && shouldSample(size)) {
-            recordMalloc(ret, size, prof_thread->tid());
-        }
+    if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+        Counters::increment(MALLOC_SAMPLES_DROPPED);
+        return;
+    }
+    // The malloc hook must not allocate while acquiring TLS.
+#ifdef UNIT_TEST
+    if (beforeAcquireForTest != nullptr) beforeAcquireForTest();
+#endif
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return;
+    }
+    CriticalSection cs(prof_thread);
+    if (cs.entered()) {
+        recordMalloc(ret, size, prof_thread->tid());
+    } else {
+        Counters::increment(MALLOC_SAMPLES_DROPPED);
     }
 }
 
