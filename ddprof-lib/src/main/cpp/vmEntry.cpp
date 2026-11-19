@@ -94,6 +94,7 @@ bool isContFreezeThawEntry(const char* blob_name) {
         || starts_with(blob_name, "_Z4thawI")      // thaw<Config<...>>(long, JavaThread*, int)
         || starts_with(blob_name, "_ZN10FreezeBase")
         || starts_with(blob_name, "_ZN8ThawBase")
+        || starts_with(blob_name, "_ZN6FreezeI")
         || starts_with(blob_name, "_ZN4ThawI")
         || starts_with(blob_name, "_ZN12Continuation10thaw_entry")
         || starts_with(blob_name, "_ZN12Continuation12freeze_entry")
