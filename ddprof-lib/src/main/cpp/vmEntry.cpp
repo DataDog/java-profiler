@@ -41,6 +41,7 @@ static Arguments _agent_args(true);
 
 JavaVM *VM::_vm;
 jvmtiEnv *VM::_jvmti = NULL;
+bool VM::_cont_runtime_classifiable = false;
 
 int VM::_java_version = 0;
 int VM::_java_update_version = 0;
@@ -81,6 +82,36 @@ static bool isVmRuntimeEntry(const char* blob_name) {
 static bool isZingRuntimeEntry(const char* blob_name) {
     return strncmp(blob_name, "_ZN14DolphinRuntime", 19) == 0
         || strncmp(blob_name, "_ZN37JvmtiSampledObjectAllocEventCollector", 42) == 0;
+}
+
+// Prefix match helper: marking runs once at library init over libjvm symbols.
+static bool starts_with(const char* name, const char* prefix) {
+    return strncmp(name, prefix, strlen(prefix)) == 0;
+}
+
+bool isContFreezeThawEntry(const char* blob_name) {
+    return starts_with(blob_name, "_Z6freezeI")   // freeze<Config<...>>(JavaThread*, long)
+        || starts_with(blob_name, "_Z4thawI")      // thaw<Config<...>>(long, JavaThread*, int)
+        || starts_with(blob_name, "_ZN10FreezeBase")
+        || starts_with(blob_name, "_ZN8ThawBase")
+        || starts_with(blob_name, "_ZN4ThawI")
+        || starts_with(blob_name, "_ZN12Continuation10thaw_entry")
+        || starts_with(blob_name, "_ZN12Continuation12freeze_entry")
+        || starts_with(blob_name, "_ZN12Continuation12prepare_thaw")
+        || starts_with(blob_name, "_ZN12Continuation30set_cont_fastpath")
+        || starts_with(blob_name, "_ZL13freeze_epilog");
+}
+
+bool VM::markContRuntimeAndClassify(CodeCache* lib) {
+    // Substitution needs positive proof that the executing freeze and thaw
+    // entry families were recognized; data-pointer symbols and address
+    // getters the ELF reader also names prove nothing about them.
+    int freeze_entries = lib->mark([](const char* n) { return starts_with(n, "_Z6freezeI"); },
+                                  MARK_CONT_RUNTIME);
+    int thaw_entries = lib->mark([](const char* n) { return starts_with(n, "_Z4thawI"); },
+                                 MARK_CONT_RUNTIME);
+    lib->mark(isContFreezeThawEntry, MARK_CONT_RUNTIME);
+    return freeze_entries > 0 && thaw_entries > 0;
 }
 
 static bool isZeroInterpreterMethod(const char *blob_name) {
@@ -375,6 +406,11 @@ bool VM::initShared(JavaVM* vm) {
       }
   } else {
       lib->mark(isVmRuntimeEntry, MARK_VM_RUNTIME);
+      // Recognizing both executable freeze/thaw entry families is a
+      // precondition for the frozen-recovery origin substitution; stripped or
+      // renamed symbol tables leave it false and recovery keeps the rejection.
+      __atomic_store_n(&_cont_runtime_classifiable, VM::markContRuntimeAndClassify(lib),
+                       __ATOMIC_RELEASE);
       if (isZing()) {
           lib->mark(isZingRuntimeEntry, MARK_VM_RUNTIME);
       } else if (is_zero_vm) {

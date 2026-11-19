@@ -76,6 +76,8 @@ dependency-free leak-demo app; not published).
 **Supported JVMs:** HotSpot, J9, Zing — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
 Linux OpenJ9 requires glibc; see the [runtime matrix](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
+Frozen virtual-thread caller recovery uses bounded, read-only heap chunk traversal
+on supported HotSpot layouts and collectors; see [doc/architecture/FrozenStackWalker.md](doc/architecture/FrozenStackWalker.md).
 
 ## Operating Rules for Agent Sessions
 

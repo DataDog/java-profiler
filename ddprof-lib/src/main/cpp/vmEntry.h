@@ -116,6 +116,11 @@ typedef struct {
 
 typedef VMManagement *(*JVM_GetManagement)(jint);
 
+// Matches mangled libjvm symbols of the continuation freeze/thaw runtime
+// (verified against Oracle Graal 21.0.8). Walks crossing this region can see
+// frames on the carrier and in the StackChunk at once.
+bool isContFreezeThawEntry(const char* blob_name);
+
 typedef struct {
   void *unused1[86];
   jvmtiError(JNICALL *RedefineClasses)(jvmtiEnv *, jint,
@@ -172,8 +177,8 @@ private:
 
   static bool initShared(JavaVM *vm);
   static void probeJFRRequestStackTrace();
-
   static CodeCache* openJvmLibrary();
+  static bool _cont_runtime_classifiable;
 
 public:
   static inline CodeCache* libjvm() {
@@ -187,6 +192,16 @@ public:
 
   static bool initLibrary(JavaVM *vm);
   static bool initProfilerBridge(JavaVM *vm, bool attach);
+
+  // Marks the freeze/thaw runtime symbols and reports whether both executable
+  // entry families were recognized (see initLibrary).
+  static bool markContRuntimeAndClassify(CodeCache *lib);
+
+  // True when the freeze/thaw runtime symbols were recognized in libjvm;
+  // frozen recovery's origin substitution fails closed when it is false.
+  static bool contRuntimeClassifiable() {
+    return __atomic_load_n(&_cont_runtime_classifiable, __ATOMIC_ACQUIRE);
+  }
 
   static jvmtiEnv *jvmti() { return _jvmti; }
 

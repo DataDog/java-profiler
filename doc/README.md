@@ -18,6 +18,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ## Quick Navigation
 
 ### Architecture
+- [FrozenStackWalker](architecture/FrozenStackWalker.md) - Supported HotSpot heap stack-chunk recovery, safety gates, deoptimization and truncation fallback
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces; recording-scoped (release/acquire)
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools

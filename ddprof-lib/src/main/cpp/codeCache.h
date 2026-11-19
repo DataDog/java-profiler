@@ -60,6 +60,7 @@ enum Mark {
     MARK_COMPILER_ENTRY = 3,
     MARK_JAVA_PROFILER = 4, // java-profiler internals such as native hooks.
     MARK_THREAD_ENTRY = 5,   // Thread entry points (thread_native_entry, JavaThread::, etc.)
+    MARK_CONT_RUNTIME = 6,   // Continuation freeze/thaw runtime (FreezeBase/ThawBase/entries)
 };
 
 class NativeFunc {
@@ -328,17 +329,20 @@ public:
   void sort();
 
   /**
-   * Mark symbols matching the predicate with the given mark value.
+   * Mark symbols matching the predicate with the given mark value,
+   * returning how many symbols matched (callers may ignore it).
    *
    * This is called during profiler initialization to mark JVM internal functions
    * (MARK_VM_RUNTIME, MARK_INTERPRETER, MARK_COMPILER_ENTRY, MARK_JAVA_PROFILER).
    */
   template <typename NamePredicate>
-  inline void mark(NamePredicate predicate, char value) {
+  inline int mark(NamePredicate predicate, char value) {
+      int marked = 0;
       for (int i = 0; i < _count; i++) {
           const char* blob_name = _blobs[i]._name;
           if (blob_name != NULL && predicate(blob_name)) {
               NativeFunc::set_mark(blob_name, value);
+              marked++;
           }
       }
 
@@ -346,6 +350,7 @@ public:
           // In case a library has no debug symbols
           NativeFunc::set_mark(_name, value);
       }
+      return marked;
   }
 
   void addImport(void **entry, const char *name);

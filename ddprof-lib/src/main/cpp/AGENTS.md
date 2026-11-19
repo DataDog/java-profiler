@@ -9,6 +9,7 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
+| Frozen virtual-thread callers (bounded HotSpot heap chunk traversal, inline scopes and deoptimization) | [doc/architecture/FrozenStackWalker.md](/doc/architecture/FrozenStackWalker.md) |
 | Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, freed on stop) | [doc/architecture/CallTraceStorage.md](/doc/architecture/CallTraceStorage.md) |
 | String dictionary (lazily allocated arena chunks, rotation/clear/release protocols) | [doc/architecture/StringDictionary.md](/doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](/doc/architecture/RefCountGuard.md) |
