@@ -292,6 +292,12 @@ bool lookupGnu(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, u
         fail = BAD_HASH_TABLE;
         return false;
     }
+    // A zero bloom size is malformed: the bucket array would alias the bloom
+    // filter, and a zero word there reads as an absent marker.
+    if (bloom_size == 0) {
+        fail = BAD_HASH_TABLE;
+        return false;
+    }
     uintptr_t offset, buckets;
     if (__builtin_mul_overflow((uintptr_t)bloom_size, sizeof(ElfW(Addr)), &offset) ||
         !addChecked(bloom_base, offset, buckets)) {

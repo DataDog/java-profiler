@@ -1000,6 +1000,18 @@ TEST(MallocAdmissionElfSynthTest, GnuHugeBloomSizeIsBadHashTable) {
     EXPECT_EQ(v.reason, BAD_HASH_TABLE);
 }
 
+// A zero bloom_size misplaces the bucket array over the bloom filter, where a
+// zero word reads as an absent marker: malformed, not a clean miss.
+TEST(MallocAdmissionElfSynthTest, GnuZeroBloomSizeIsBadHashTable) {
+    SynthDefaults d = SynthDefaults::markers();
+    d.finish();
+    d.img.pokeU32(d.gnu.header + 8, 0);  // bloom_size = 0: buckets alias the bloom word
+    d.img.pokeU64(d.gnu.header + 16, 0);  // and the bloom word reads as an absent marker
+    AdmissionVerdict v = d.img.classify();
+    EXPECT_EQ(v.outcome, INDETERMINATE);
+    EXPECT_EQ(v.reason, BAD_HASH_TABLE);
+}
+
 // A matched symbol whose index lands beyond the readable symbol table.
 TEST(MallocAdmissionElfSynthTest, GnuOutOfRangeSymbolIndexIsBadSymbol) {
     SynthDefaults d = SynthDefaults::markers();
