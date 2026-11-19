@@ -18,7 +18,6 @@ import com.datadoghq.profiler.ReferenceChainTestHooks;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -1013,23 +1012,14 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   }
 
   /**
-   * Failure-only diagnostics for a success-path test's {@code assertNotNull(match, ...)} message:
-   * call it only once the round and grace loops have ended without a match, so a passing run does
-   * no extra work. In a debug-instrumented build it reports the current leak candidates ({@code
-   * selectLeakCandidateKlassIds0()}), the representative's frontier state ({@code
-   * getReferenceChainFrontierStateForTest0()}, -1 = not in the frontier) and resolved target tag
-   * ({@code getReferenceChainResolvedTargetTagForTest0()}), and how many rounds ran. In a release
-   * build the seams do not exist, so it returns {@code ""}.
+   * Adds the resolved target tag and round count to the shared failure fingerprint after a miss.
+   * Release builds have no test seams, so this returns {@code ""} there.
    */
   private static String referenceChainDiagnostics(Object representative, int roundsRun) {
     if (!ReferenceChainAssertions.isDebugInstrumentedBuild()) {
       return "";
     }
-    return " [diagnostics: candidates="
-        + Arrays.toString(ReferenceChainTestHooks.selectLeakCandidateKlassIds0())
-        + " repFrontierState="
-        + ReferenceChainTestHooks.getReferenceChainFrontierStateForTest0(representative)
-        + " repResolvedTargetTag="
+    return " [additional diagnostics: repResolvedTargetTag="
         + ReferenceChainTestHooks.getReferenceChainResolvedTargetTagForTest0(representative)
         + " roundsRun="
         + roundsRun
