@@ -1237,6 +1237,67 @@ TEST_F(ReferenceChainsBfsTest, DuplicateHierarchyVisitsExhaustBudgetWithoutFalse
         << "duplicate worklist entries consume the bound but cannot cache a false miss";
 }
 
+TEST_F(ReferenceChainsBfsTest, ClassShapeWalkKeepsLookupFailuresUnknown) {
+    constexpr jlong kCollectionTag = -9200;
+    constexpr jlong kMapTag = -9201;
+    void *missing_tag_root = reinterpret_cast<void *>(0xC000);
+    void *untagged_interface = reinterpret_cast<void *>(0xC010);
+    void *collection_interface = reinterpret_cast<void *>(0xC020);
+    tags[missing_tag_root] = -1200;
+    tags[collection_interface] = kCollectionTag;
+    field_decode_hierarchy[missing_tag_root] =
+        {false, nullptr, {untagged_interface}, {}};
+    field_decode_hierarchy[untagged_interface] =
+        {true, nullptr, {collection_interface}, {}};
+    field_decode_hierarchy[collection_interface] = {true, nullptr, {}, {}};
+
+    u8 shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(missing_tag_root),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
+        shape)) << "an untagged hierarchy node hides an unexamined interface";
+
+    void *tag_error_root = reinterpret_cast<void *>(0xC030);
+    tags[tag_error_root] = -1201;
+    fail_get_tag.insert(tag_error_root);
+    shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(tag_error_root),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
+        shape)) << "a failed GetTag cannot prove a completed non-match";
+    fail_get_tag.clear();
+
+    void *super_error_root = reinterpret_cast<void *>(0xC040);
+    tags[super_error_root] = -1202;
+    field_decode_hierarchy[super_error_root] = {false, nullptr, {}, {}};
+    fail_get_superclass.insert(super_error_root);
+    shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(super_error_root),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
+        shape)) << "a superclass exception cannot prove a completed non-match";
+    EXPECT_FALSE(pending_exception);
+    fail_get_superclass.clear();
+
+    void *interface_error_root = reinterpret_cast<void *>(0xC050);
+    tags[interface_error_root] = -1203;
+    shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(interface_error_root),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
+        shape)) << "a JVMTI interface lookup error cannot prove a completed non-match";
+
+    void *malformed_root = reinterpret_cast<void *>(0xC060);
+    tags[malformed_root] = -1204;
+    field_decode_hierarchy[malformed_root] = {false, nullptr, {}, {}};
+    malformed_interfaces.insert(malformed_root);
+    shape = ReferenceChainsTestAccessor::classifyAnchorClassForTest(
+        &mock_jvmti, &mock_jni, reinterpret_cast<jclass>(malformed_root),
+        kCollectionTag, kMapTag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isUnknownTruncatedClassShapeForTest(
+        shape)) << "a missing interface array cannot prove a completed non-match";
+}
+
 TEST_F(ReferenceChainsBfsTest, TransientNonContainerAnchorsArePruned) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));

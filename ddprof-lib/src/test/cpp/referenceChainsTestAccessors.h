@@ -941,11 +941,6 @@ public:
                             ReferenceChainTracker::AnchorClassShape::UNKNOWN_TRUNCATED);
     }
 
-    static bool isContainerClassShapeForTest(u8 shape) {
-        return shape == static_cast<u8>(
-                            ReferenceChainTracker::AnchorClassShape::CONTAINER);
-    }
-
     // At-risk static-anchor FIFO (see _static_anchor_fifo in referenceChains.h).
     using AtRiskAnchor = ReferenceChainTracker::AtRiskAnchor;
     static constexpr u32 kAtRiskPerKlassCap =

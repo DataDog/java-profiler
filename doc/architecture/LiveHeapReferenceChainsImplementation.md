@@ -216,9 +216,9 @@ in a pass that reaches rotation. Each class walk checks at most 64 worklist entr
 The shape cache uses process-lifetime class tags and survives search restarts.
 The index and side map are per-search.
 
-If interface tags are unavailable, shapes remain unknown. A walk with pending hierarchy entries at
-the 64-pop limit caches `UNKNOWN_TRUNCATED`, which remains selectable; only a completed no-match
-walk caches `NON_CONTAINER`.
+If interface tags are unavailable, shapes remain unknown. A walk with missing class metadata,
+failed hierarchy lookup, or pending entries at the 64-pop limit caches `UNKNOWN_TRUNCATED`; only a
+complete no-match walk caches `NON_CONTAINER`.
 
 An indexed root-attached `STATIC_FIELD` or `JNI_GLOBAL` entry can be selected regardless of
 shape when its state is `FRONTIER` or `EXPANDED` and it is not queued.

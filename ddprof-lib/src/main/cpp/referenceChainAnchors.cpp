@@ -448,12 +448,14 @@ ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
   std::unordered_set<jlong> visited;
   work.push_back(klass);
   bool found = false;
+  bool incomplete = false;
   int hops = 0;
   while (!found && !work.empty() && hops++ < 64) {
     jclass cur = work.back();
     work.pop_back();
     jlong cur_tag = 0;
     if (jvmti->GetTag(cur, &cur_tag) != JVMTI_ERROR_NONE || cur_tag == 0) {
+      incomplete = true;
       // Early exit: the popped ref is this walk's own (GetSuperclass/ GetImplementedInterfaces
       // local, or the caller's klass) - delete it like the loop bottom does, or the long-lived
       // engine thread leaks a JNI local ref per untagged hop.
@@ -481,21 +483,33 @@ ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
       break;
     }
     jclass super = jni->GetSuperclass(cur);
-    if (!jniExceptionCheck(jni) && super != nullptr) {
-      work.push_back(super);
-    } else {
+    if (jniExceptionCheck(jni)) {
+      incomplete = true;
       jni->ExceptionClear();
+      if (super != nullptr) {
+        jni->DeleteLocalRef(super);
+      }
+    } else if (super != nullptr) {
+      work.push_back(super);
     }
     jint iface_count = 0;
     jclass *ifaces = nullptr;
-    if (jvmti->GetImplementedInterfaces(cur, &iface_count, &ifaces) ==
-            JVMTI_ERROR_NONE &&
-        ifaces != nullptr) {
-      for (jint i = 0; i < iface_count; i++) {
-        if (ifaces[i] != nullptr) {
-          work.push_back(ifaces[i]);
+    jvmtiError interfaces_error =
+        jvmti->GetImplementedInterfaces(cur, &iface_count, &ifaces);
+    if (interfaces_error == JVMTI_ERROR_NONE) {
+      if (iface_count > 0 && ifaces == nullptr) {
+        incomplete = true;
+      } else if (ifaces != nullptr) {
+        for (jint i = 0; i < iface_count; i++) {
+          if (ifaces[i] != nullptr) {
+            work.push_back(ifaces[i]);
+          }
         }
       }
+    } else {
+      incomplete = true;
+    }
+    if (ifaces != nullptr) {
       jvmti->Deallocate(reinterpret_cast<unsigned char *>(ifaces));
     }
     // `cur` is either the caller-provided klass (caller-managed ref - NOT deleted here) or a ref
@@ -508,7 +522,7 @@ ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
   // Single exit: every remaining ref minted into `work` (budget exhaustion or the found-break)
   // is deleted here rather than leaking locals for the process lifetime (the engine thread never
   // detaches).
-  bool truncated = !found && !work.empty();
+  bool truncated = incomplete || (!found && !work.empty());
   for (jclass r : work) {
     if (r != nullptr && r != klass) {
       jni->DeleteLocalRef(r);
