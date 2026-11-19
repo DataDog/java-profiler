@@ -1454,9 +1454,8 @@ public:
 
 #ifdef DEBUG
   /**
-   * Seeds the JNI traversal fixture's class history and protects it from real
-   * GC updates. Clear protection while recording another explicit seed so it
-   * updates the same ring and qualification counters as ordinary samples.
+   * Protects explicit fixture class history from real GC updates.
+   * Later explicit seeds update the same ring and qualification counters.
    */
   void seedKlassPopulationSampleForTest(
       u32 klass_id, u32 count, u64 epoch, jweak *out_evicted = nullptr,

@@ -140,10 +140,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     ctx->tracker->addToStaticAnchorIndex(*tag_ptr, class_tag,
                                          translated_root_kind);
   }
-  // Remember local holders before expansion can reparent them into a deeper
-  // chain. Known collections still need bounded descend walks after that change
-  // to observe replacement backing storage. Classification runs outside this
-  // callback; unknown types are indexed but do not qualify for a walk yet.
+  // Record local holders before expansion can reparent them into a deeper chain.
+  // Known collections need bounded revisits after reparenting to observe replaced storage.
+  // Classification runs later; unknown types are indexed but cannot be walked yet.
   if (isTransientRootKind(translated_root_kind) && class_tag != 0 &&
       *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
     auto shape = ctx->tracker->_class_shape_cache.find(class_tag);
@@ -402,10 +401,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   std::vector<jlong> leak_accumulation_tags =
       collectLeakAccumulationCandidatesForRotation(
           LEAK_ACCUMULATION_ROTATION_BUDGET);
-  // Also re-walk a bounded, rotating subset of EXPANDED entries regardless of root attribution: a
-  // mutable field reassigned since an object's one-time expansion - e.g. HashMap.table on resize -
-  // is otherwise never observed again, silently orphaning everything only reachable through the
-  // field's current value.
+  // Revisit a bounded, rotating subset of EXPANDED entries: their one-time expansion cannot observe
+  // later mutable-field replacements (e.g. HashMap.table resize) without this rotation.
   std::vector<jlong> stale_expanded_tags =
       collectStaleExpandedEntriesForRotation(STALE_EXPANDED_ROTATION_BUDGET);
   // Candidate-scoped reach, prong 2: root-attached static holders are descend-walked directly (see

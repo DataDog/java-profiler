@@ -144,11 +144,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   std::unordered_set<jlong> fresh_kept_tags;
   const size_t fresh_queue_len = _static_anchor_fresh_queue.size();
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
-    // Fused prune-and-partition pass: an indexed holder whose frontier entry died is dropped from
-    // the index here - dead entries would otherwise accumulate for the tracker's lifetime (the
-    // only other removals are the stop/reset clears), and released tags get re-minted, so the
-    // same holder re-indexes under its fresh tag. Survivors compact down, keeping admission
-    // order; the tier positions below are the compacted ones the cursors consume.
+    // Drop dead/ABANDONED entries and compact survivors in admission order before tier selection.
+    // Released tags are re-minted, so a later observation can index the holder under its fresh tag.
+    // The cursors below use the compacted positions.
     size_t kept = 0;
     for (size_t i = 0; i < _static_anchor_index.size(); i++) {
       jlong tag = _static_anchor_index[i];
@@ -365,10 +363,8 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
   auto inserted =
       _static_anchor_index_class_tags.try_emplace(tag, own_class_tag);
   if (!inserted.second) {
-    // First sight may have seen the holder before its class was tagged
-    // (JVMTI reports class_tag == 0 for such roots); the callback that
-    // delivers the resolved tag must upgrade the stored value, or the
-    // container-shape fallback in isSelectableAnchor() stays dead forever.
+    // First sight may report class_tag == 0; a later resolved-tag callback must upgrade it
+    // or the container-shape fallback stays unavailable for this holder.
     if (own_class_tag != 0 && inserted.first->second == 0) {
       inserted.first->second = own_class_tag;
     }

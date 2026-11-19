@@ -1524,10 +1524,8 @@ TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsFirstMinimalSlot) {
     EXPECT_FALSE(contains_tid(1));
 }
 
-// The victim scan must consider slot 0 a candidate: the global minimum (thread 1, the only count
-// that clears the bar here) sits at slot 0, and the scan evicts it on every overflow arrival, so
-// its history never reaches the fold. (Pins the scan's min-selection; comparing slot 0 with
-// itself at a loop start of 0 is a no-op, so no mutation of the start index is observable.)
+// The unique minimum sits in slot 0 and is evicted on every overflow arrival, so its qualifying
+// history never reaches the fold. This pins slot-0 eligibility in the victim scan.
 TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsTheGlobalMinimumThread) {
     LivenessTracker *tracker = LivenessTracker::instance();
     std::vector<std::pair<jint, u32>> cohorts;

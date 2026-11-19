@@ -510,17 +510,13 @@ private:
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
 
-  // Index of holders observed at durable root edges or local roots. Known collections remain
-  // eligible after reparenting, so replacing their storage is still observed.
-  // Non-collection local holders are excluded after classification.
-  // collectStaticFieldAnchorsForRotation() iterates these anchors rather than
-  // scanning the full frontier table.
+  // Index durable roots and local roots with unknown or CONTAINER shape.
+  // Collections remain eligible after reparenting; classified non-collection locals are excluded.
+  // Rotation walks this index instead of scanning the full frontier table.
   std::vector<jlong> _static_anchor_index;
 
-  // Own class tag per indexed holder (the runtime class tag of the holder), keyed by the holder's
-  // frontier tag. A holder first seen before its class was tagged is stored with 0 and refreshed
-  // by the next callback reporting the resolved class tag - the value is the sole input of the
-  // container-shape fallback in isSelectableAnchor() for reparented holders.
+  // Runtime class tag per indexed holder, keyed by frontier tag; 0 means the class is not resolved.
+  // A later callback upgrades 0 so isSelectableAnchor() can retain reparented containers.
   std::unordered_map<jlong, jlong> _static_anchor_index_class_tags;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
@@ -1045,13 +1041,8 @@ private:
   // attribution.
   std::vector<jlong> collectStaleRootKindEntriesForRotation(int max_count);
 
-  // Bounded rotating re-expansion for stale mutable fields: expandFrontier() observes an object's
-  // outgoing references exactly once (on the FollowReferences call that marks it EXPANDED) and
-  // never revisits it, so a field that is later reassigned to point at a different object - e.g.
-  // HashMap.table on resize - has its new value permanently unobserved once the map itself is
-  // EXPANDED; the old table array's own frontier entry eventually resolves to a dead object via
-  // GetObjectsWithTags and gets silently cleared with zero children, orphaning everything only
-  // reachable through the *current* table.
+  // Bounded rotating re-expansion for stale mutable fields. expandFrontier() marks each entry
+  // EXPANDED once, so this rotation is needed to observe replacements such as HashMap.table resize.
   std::vector<jlong> collectStaleExpandedEntriesForRotation(int max_count);
 
   // Bounded rotating re-expansion targeting the accumulation point of a klass LivenessTracker has
@@ -1101,10 +1092,8 @@ private:
   // cannot be resolved yet (leaves them at -1 so the next call retries).
   bool resolveContainerInterfaceTags(jvmtiEnv *jvmti, JNIEnv *jni);
 
-  // Lazy shape reconciliation for the anchor index: scans the anchor index's class tags
-  // (_static_anchor_index_class_tags) for class tags not yet in _class_shape_cache, resolves up to
-  // ANCHOR_SHAPE_RECONCILE_BUDGET of them per pass via one GetObjectsWithTags call (class objects
-  // are tagged with their class tags) and classifies each.
+  // Reconcile up to ANCHOR_SHAPE_RECONCILE_BUDGET unknown anchor classes per pass.
+  // One GetObjectsWithTags call resolves their class objects before classification.
   void reconcileAnchorClassShapes(jvmtiEnv *jvmti, JNIEnv *jni);
   // Pops up to max_count AtRiskAnchor entries off _static_anchor_fifo's front into `out`
   // (appending), decrementing each popped entry's class occupancy in
