@@ -76,6 +76,9 @@ private:
 class WallClockAccountingTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        ASSERT_TRUE(tracker.ensureAllocated());
+        tracker_bytes = NativeMem::live(NM_WALL_BLOCK_TRACKER);
+        ASSERT_GT(tracker_bytes, 0);
         original = NativeMem::live(NM_WALLCLOCK);
         // A foreign contributor: delta accounting keeps it, a gauge overwrite would drop it.
         NativeMem::record(NM_WALLCLOCK, kForeignBytes);
@@ -89,15 +92,17 @@ protected:
         second.stop();
         first.enableEvents(false);
         std::signal(WAKEUP_SIGNAL, previous_handler);
-        // Preserve the process-global gauge even in the unfixed reproduction.
+        // Restore the process-global gauge whatever the test left in it.
         NativeMem::setLive(NM_WALLCLOCK, original);
     }
 
     static constexpr long long kForeignBytes = 4096;
     Arguments args;
+    WallClockBlockTracker tracker;
     AccountingWallClock first;
     AccountingWallClock second;
     long long original = 0;
+    long long tracker_bytes = 0;
     long long baseline = 0;
     using SignalHandler = void (*)(int);
     SignalHandler previous_handler = SIG_DFL;
@@ -112,6 +117,7 @@ TEST_F(WallClockAccountingTest, TimerPreservesForeignBytesAcrossStopAndRestart) 
         EXPECT_EQ(baseline + first.buffer_bytes.load(), NativeMem::live(NM_WALLCLOCK));
         first.stop();
         EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(tracker_bytes, NativeMem::live(NM_WALL_BLOCK_TRACKER));
     }
 }
 
@@ -137,6 +143,7 @@ TEST_F(WallClockAccountingTest, IndependentTimersBalanceGrowthAndShrink) {
     EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
     second.stop();
     EXPECT_EQ(baseline, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(tracker_bytes, NativeMem::live(NM_WALL_BLOCK_TRACKER));
 }
 
 static volatile sig_atomic_t sampling_signal_received = 0;

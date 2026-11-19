@@ -178,8 +178,8 @@ class BaseWallClock : public Engine {
                            ((_interval * 2) - 1)));
       }
 
-      // Retract only this timer's backing allocation. The tracker and any other
-      // timers account for their own storage in the same category.
+      // Retract only this timer's backing allocation; other timers account for
+      // their own storage in the same category.
       NativeMem::record(NM_WALLCLOCK,
                         -static_cast<long long>(accounted_capacity * sizeof(ThreadType)));
     }

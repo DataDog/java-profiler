@@ -531,9 +531,9 @@ unowned deferred tails: original context attributes are not retained with them.
 
 Timer backing capacity is accounted with allocation deltas and retracted on exit,
 not by replacing the shared `NM_WALLCLOCK` gauge. The tracker allocates its backing
-on first registry registration and keeps it until destruction. It is charged to its own
-`NM_WALL_BLOCK_TRACKER` category, not to the recording-scoped `NM_WALLCLOCK`, because
-in-flight owner hooks can carry slot IDs across `stop()`.
+on first registry registration and keeps it until destruction. In-flight owner hooks can
+carry slot IDs across `stop()`, so the backing outlives the recording; it is charged
+to its own `NM_WALL_BLOCK_TRACKER` category because `NM_WALLCLOCK` reads 0 when idle.
 Allocation failure leaves suppression inactive; a later registration retries.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
@@ -794,8 +794,9 @@ The engines above feed it: `PerfEvents` reports its tid-indexed event table
 (up to `pid_max × sizeof(PerfEvent)` bytes, two cache lines per slot; address
 space) and the per-thread ring pages (resident) as `NM_PERF`, `CTimer` reports
 its tid-indexed timer table (up to `pid_max × 4` bytes, `pid_max × sizeof(int)`;
-address space) as `NM_CTIMER`, `timerLoopCommon()` reports `NM_WALLCLOCK`, and
-`LivenessTracker` reports `NM_LIVENESS`.
+address space) as `NM_CTIMER`, `timerLoopCommon()` reports `NM_WALLCLOCK`,
+`WallClockBlockTracker` reports `NM_WALL_BLOCK_TRACKER`, and `LivenessTracker`
+reports `NM_LIVENESS`.
 
 Unlike the other categories, the two tid-indexed tables are allocated address
 space, not resident memory: each is `calloc`ed at `pid_max` slots, but only the
