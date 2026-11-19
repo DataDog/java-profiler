@@ -25,13 +25,13 @@ WallClockBlockTracker::~WallClockBlockTracker() {
     SlotStorage* storage = _storage.exchange(nullptr, std::memory_order_acq_rel);
     if (storage != nullptr) {
         delete storage;
-        NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(SlotStorage)));
+        NativeMem::record(NM_WALL_BLOCK_TRACKER, -static_cast<long long>(sizeof(SlotStorage)));
     }
     for (auto& pointer : _context_chunks) {
         UnownedContextChunk* chunk = pointer.exchange(nullptr, std::memory_order_acq_rel);
         if (chunk != nullptr) {
             delete chunk;
-            NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(UnownedContextChunk)));
+            NativeMem::record(NM_WALL_BLOCK_TRACKER, -static_cast<long long>(sizeof(UnownedContextChunk)));
         }
     }
 }
@@ -60,7 +60,7 @@ bool WallClockBlockTracker::ensureAllocated() {
     if (_storage.compare_exchange_strong(expected, fresh.get(), std::memory_order_acq_rel,
                                          std::memory_order_acquire)) {
         fresh.release();
-        NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(SlotStorage)));
+        NativeMem::record(NM_WALL_BLOCK_TRACKER, static_cast<long long>(sizeof(SlotStorage)));
     }
     return true;
 }
@@ -231,7 +231,7 @@ bool WallClockBlockTracker::ensureUnownedContextAllocated(ThreadFilter::SlotID s
     // No competing allocator or fallible operation follows allocation, so no
     // rejected allocation needs freeing inside the registry critical section.
     pointer.store(fresh.release(), std::memory_order_release);
-    NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(UnownedContextChunk)));
+    NativeMem::record(NM_WALL_BLOCK_TRACKER, static_cast<long long>(sizeof(UnownedContextChunk)));
     return true;
 }
 

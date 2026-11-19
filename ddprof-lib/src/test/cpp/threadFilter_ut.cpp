@@ -1687,7 +1687,7 @@ TEST(ThreadOwnerRegistryTest, ContextEnterWhileInactiveRetainsLogicalSourceWitho
     registry.setBlockTracker(&tracker);
     auto owner = registryOwner(6201);
     const auto registry_bytes = NativeMem::live(NM_THREAD_FILTER);
-    const auto wall_bytes = NativeMem::live(NM_WALLCLOCK);
+    const auto wall_bytes = NativeMem::live(NM_WALL_BLOCK_TRACKER);
     ASSERT_FALSE(registry.registryActive());
     ASSERT_EQ(nullptr, tracker.slotForId(0));
     registry.onContextWindowEnter(*owner);
@@ -1696,7 +1696,7 @@ TEST(ThreadOwnerRegistryTest, ContextEnterWhileInactiveRetainsLogicalSourceWitho
     EXPECT_EQ(nullptr, registry.lookupByTid(owner->tid()));
     EXPECT_EQ(nullptr, tracker.slotForId(0));
     EXPECT_EQ(registry_bytes, NativeMem::live(NM_THREAD_FILTER));
-    EXPECT_EQ(wall_bytes, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(wall_bytes, NativeMem::live(NM_WALL_BLOCK_TRACKER));
     registry.init("", true);
     int id = registry.ensureOwnerSlot(*owner);
     ASSERT_GE(id, 0);

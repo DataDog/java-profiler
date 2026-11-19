@@ -565,7 +565,9 @@ original fields; see [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 Timer backing capacity is accounted with allocation deltas and retracted on exit,
 not by replacing the shared `NM_WALLCLOCK` gauge. The tracker's slots and context sidecars
-are allocated lazily and accounted independently until tracker destruction.
+are allocated lazily and kept until tracker destruction. In-flight owner hooks can carry
+slot IDs across `stop()`, so this backing outlives the recording; it is charged to its own
+`NM_WALL_BLOCK_TRACKER` category because `NM_WALLCLOCK` reads 0 when idle.
 Block-slot allocation failure leaves suppression inactive; a later registration retries.
 Context boundaries skip clean owned-run writes and retain unowned context and epoch segments.
 
@@ -806,9 +808,9 @@ In summary:
 ## Profiler Self-Accounting (`NativeMem`, `nativeMem.{h,cpp}`)
 
 `nativeMem.{h,cpp}` is **not** a profiling engine and does not observe
-application allocations. It tracks the profiler's **own** native memory in 14
+application allocations. It tracks the profiler's **own** native memory in 15
 categories, defined in `nativeMem.h`: `NM_CALLTRACE`, `NM_DICTIONARY`, ...,
-`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_CTIMER`, `NM_MISC`.
+`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_WALL_BLOCK_TRACKER`, `NM_CTIMER`, `NM_MISC`.
 
 - `record(cat, delta)` is a relaxed atomic add plus a lock-free CAS on the
   per-category peak. It is async-signal-safe, which matters because the
@@ -827,9 +829,9 @@ The engines above feed it: `PerfEvents` reports its tid-indexed event table
 (up to `pid_max × sizeof(PerfEvent)` bytes, two cache lines per slot; address
 space) and the per-thread ring pages (resident) as `NM_PERF`, `CTimer` reports
 its tid-indexed timer table (up to `pid_max × 4` bytes, `pid_max × sizeof(int)`;
-address space) as `NM_CTIMER`, `timerLoopCommon()` accounts its candidate-vector capacity under `NM_WALLCLOCK`, and
-`LivenessTracker` reports `NM_LIVENESS`. Lazy wall-tracker slots and retained-context
-chunks are separately charged to `NM_WALLCLOCK`; see
+address space) as `NM_CTIMER`, `timerLoopCommon()` accounts its candidate-vector capacity under `NM_WALLCLOCK`,
+`WallClockBlockTracker` reports its lazy slots and retained-context chunks as
+`NM_WALL_BLOCK_TRACKER`, and `LivenessTracker` reports `NM_LIVENESS`; see
 [ProfilerMemoryRequirements](../reference/ProfilerMemoryRequirements.md#9-native-owners-and-retained-context-storage).
 
 Unlike the other categories, the two tid-indexed tables are allocated address
