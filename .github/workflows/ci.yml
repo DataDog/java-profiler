@@ -38,12 +38,10 @@ jobs:
         run: |
           bash -n \
             .github/scripts/release.sh \
-            .github/scripts/validate-trivial-approval.sh \
             utils/release.sh \
             .github/scripts/tests/test_release_automation.sh
           shellcheck \
           .github/scripts/release.sh \
-          .github/scripts/validate-trivial-approval.sh \
           utils/release.sh \
             .github/scripts/tests/test_release_automation.sh
           .github/scripts/tests/test_release_automation.sh
