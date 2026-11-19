@@ -411,12 +411,24 @@ class VMStructs {
     static bool _has_native_thread_id;
     static bool _can_dereference_jmethod_id;
     static bool _compact_object_headers;
-    // What an inflated compact mark holds; Unknown when UseObjectMonitorTable is not a bool flag.
+    // What an inflated compact mark holds, derived from the UseObjectMonitorTable flag.
     enum class InflatedMark { Unknown, MonitorPointer, Header };
+    enum class BoolFlag { Absent, NotBool, False, True };
     static InflatedMark _inflated_mark;
-    static InflatedMark inflatedMarkFor(bool flag_found, bool object_monitor_table) {
-        if (!flag_found) return InflatedMark::Unknown;
-        return object_monitor_table ? InflatedMark::Header : InflatedMark::MonitorPointer;
+    static BoolFlag readBoolFlag(const char* name);
+    // A compact-header JVM without the flag always uses the monitor table, so its inflated
+    // marks keep their header. A flag that cannot be read as a bool leaves the layout Unknown.
+    static InflatedMark inflatedMarkFor(BoolFlag object_monitor_table) {
+        switch (object_monitor_table) {
+        case BoolFlag::Absent:
+        case BoolFlag::True:
+            return InflatedMark::Header;
+        case BoolFlag::False:
+            return InflatedMark::MonitorPointer;
+        case BoolFlag::NotBool:
+            break;
+        }
+        return InflatedMark::Unknown;
     }
     
     static int _narrow_klass_shift;

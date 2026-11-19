@@ -169,8 +169,9 @@ public:
     void useInflatedMarkHeader() { set(VMStructs::_inflated_mark, VMStructs::InflatedMark::Header); }
     void useUnknownInflatedMark() { set(VMStructs::_inflated_mark, VMStructs::InflatedMark::Unknown); }
     using InflatedMark = VMStructs::InflatedMark;
-    static InflatedMark inflatedMarkFor(bool flag_found, bool object_monitor_table) {
-        return VMStructs::inflatedMarkFor(flag_found, object_monitor_table);
+    using BoolFlag = VMStructs::BoolFlag;
+    static InflatedMark inflatedMarkFor(BoolFlag object_monitor_table) {
+        return VMStructs::inflatedMarkFor(object_monitor_table);
     }
     static uintptr_t monitorBit() { return VMStructs::MONITOR_BIT; }
     static uintptr_t lockMask() { return VMStructs::LOCK_MASK; }
@@ -350,10 +351,11 @@ TEST_F(VtableReceiverCaptureTest, NullReceiverKlassAndSymbolAreNotCaptured) {
 
 TEST_F(VtableReceiverCaptureTest, InflatedMarkLayoutFollowsUseObjectMonitorTable) {
     using InflatedMark = VMStructsTestAccessor::InflatedMark;
-    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(true, true));
-    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(true, false));
-    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(false, true));
-    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(false, false));
+    using BoolFlag = VMStructsTestAccessor::BoolFlag;
+    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::True));
+    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::False));
+    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent));
+    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::NotBool));
 }
 
 TEST_F(VtableReceiverCaptureTest, InflatedHeaderMarkKeepsItsKlassBits) {

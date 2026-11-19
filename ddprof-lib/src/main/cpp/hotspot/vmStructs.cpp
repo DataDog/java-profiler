@@ -361,10 +361,8 @@ void VMStructs::resolveOffsets() {
         _compact_object_headers = true;
     }
 
-    // fromOop uses this only with compact headers. A missing or non-bool flag leaves the
-    // inflated mark layout Unknown.
-    VMFlag* omt = VMFlag::find("UseObjectMonitorTable", {VMFlag::Type::Bool});
-    _inflated_mark = inflatedMarkFor(omt != NULL, omt != NULL && omt->get());
+    // fromOop reads this only with compact headers.
+    _inflated_mark = inflatedMarkFor(readBoolFlag("UseObjectMonitorTable"));
 
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)
@@ -810,6 +808,17 @@ int ScopeDesc::readInt() {
         }
     }
     return n;
+}
+
+VMStructs::BoolFlag VMStructs::readBoolFlag(const char* name) {
+    if (VMFlag::find(name) == NULL) {
+        return BoolFlag::Absent;
+    }
+    VMFlag* flag = VMFlag::find(name, {VMFlag::Type::Bool});
+    if (flag == NULL) {
+        return BoolFlag::NotBool;
+    }
+    return flag->get() ? BoolFlag::True : BoolFlag::False;
 }
 
 VMFlag* VMFlag::find(const char* name) {
