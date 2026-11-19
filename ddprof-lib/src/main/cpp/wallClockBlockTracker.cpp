@@ -90,7 +90,7 @@ bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u32 gen
     if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
         return false;
     }
-    // Owned-run fields only; the unowned-blocked tail survives the exit (R-B1).
+    // Owned-run fields only; the unowned-blocked tail survives the exit.
     s->clearActiveBlockRun(OSThreadState::RUNNABLE);
     return true;
 }

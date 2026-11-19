@@ -411,10 +411,9 @@ Error BaseWallClock::start(Arguments &args) {
     return Error("Forced wall engine start failure (unit test)");
   }
 #endif
-  // Defensive (R-C1): a previous stop() whose join failed kept the handle. That
-  // thread was already told to exit; retry the join before reusing _thread. A
-  // join failure on a thread we created signals a programming error, so the
-  // rejection is sticky (logged by the caller).
+  // A previous stop() whose join failed kept the handle; that thread was already
+  // told to exit, so retry the join before reusing _thread. Start is refused for
+  // as long as the join keeps failing (logged by the caller).
   if (_thread != 0) {
     if (pthread_join(_thread, NULL) == 0) {
       _thread = 0;
@@ -439,7 +438,7 @@ Error BaseWallClock::start(Arguments &args) {
   _running = true;
 
   if (pthread_create(&_thread, NULL, threadEntry, this) != 0) {
-    _thread = 0;  // *thread is undefined on error (R-C1)
+    _thread = 0;  // *thread is undefined on error
     return Error("Unable to create timer thread");
   }
 
@@ -449,7 +448,7 @@ Error BaseWallClock::start(Arguments &args) {
 void BaseWallClock::stop() {
   _running.store(false);
   // _thread is non-zero only between a successful pthread_create() and a
-  // successful pthread_join() (R-C1): start() resets it to 0 when
+  // successful pthread_join(): start() resets it to 0 when
   // pthread_create() fails, and the forced-failure test hook returns before
   // any create, so 0 means "no thread owned". Profiler::stop() only reaches this call when
   // start() actually activated the wall engine, but this guard is kept as
@@ -467,7 +466,7 @@ void BaseWallClock::stop() {
   pthread_kill(_thread, WAKEUP_SIGNAL);
   int res = pthread_join(_thread, NULL);
   if (res != 0) {
-    // Keep the handle: the next start() retries the join (R-C1).
+    // Keep the handle: the next start() retries the join.
     Log::warn("Unable to join WallClock thread on stop %d; keeping handle for retry", res);
     return;
   }
