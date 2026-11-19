@@ -16,6 +16,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.stream.Stream;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 public class ShutdownTest {
@@ -24,19 +25,19 @@ public class ShutdownTest {
    * Engine-mix parameter points for {@link #testShutdown(String)}. Wall-clock-based commands need
    * the current thread registered ({@code addThread()}); cpu-only does not.
    */
-  static Stream<String> engineCommands() {
+  static Stream<Arguments> engineCommands() {
     return Stream.of(
-        "start,cpu=10us,filter=0",
-        "start,wall=10us,filter=0",
-        "start,cpu=10us,wall=~10us,filter=0");
+        Arguments.of("start,cpu=10us,filter=0", false),
+        Arguments.of("start,wall=10us,filter=0", true),
+        Arguments.of("start,cpu=10us,wall=~10us,filter=0", true));
   }
 
   @ParameterizedTest
   @MethodSource("engineCommands")
-  public void testShutdown(String command) throws IOException {
+  public void testShutdown(String command, boolean registerThread) throws IOException {
     System.out.println("=== testShutdown(" + command + ")");
     JavaProfiler profiler = JavaProfiler.getInstance();
-    if (command.contains("wall")) {
+    if (registerThread) {
       profiler.addThread();
     }
     runTest(profiler, command);

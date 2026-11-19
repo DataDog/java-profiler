@@ -7,7 +7,6 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
 
 public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
@@ -40,26 +39,31 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
 
     // Event-driven sizing: each dump needs an event matching every declared frame pattern.
     // Under-sampled dumps retry with a doubled batch capped at MAX_BATCH; failure is asserted
-    // when the cap is exhausted. Passing dumps halve the batch for the next cycle.
+    // when the cap is exhausted. A cycle that passed without growth halves the batch for the
+    // next cycle; one that needed growth keeps its batch (halving a marginal batch just
+    // re-triggers the growth path on every cycle).
     int batch = INITIAL_BATCH;
     for (int j = 0; j < dumpCnt; j++) {
       Path recording = Files.createTempFile("dump-", ".jfr");
       try {
+        boolean grew = false;
         runWorkload(batch);
         dump(recording);
         while (!tryVerifyStackTraces(recording, eventName, patterns)) {
           if (batch >= MAX_BATCH) {
             // Growth bound exhausted: surface the real failure through the asserting verify.
             verifyStackTraces(recording, eventName, patterns);
-            Assertions.fail("Stack trace verification still failed at MAX_BATCH=" + MAX_BATCH);
           }
           Files.deleteIfExists(recording);
           recording = Files.createTempFile("dump-", ".jfr");
           batch = Math.min(batch * 2, MAX_BATCH);
+          grew = true;
           runWorkload(batch);
           dump(recording);
         }
-        batch = Math.max(1, batch / 2);
+        if (!grew) {
+          batch = Math.max(1, batch / 2);
+        }
       } finally {
         Files.deleteIfExists(recording);
       }

@@ -55,7 +55,11 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
         probe.destroyForcibly();
       }
     }
-    passwordlessSudo = ok;
+    // Only successes are cached: a transient sudo failure (fork pressure, a slow PAM
+    // lookup that hit the wait bound) must not pin the skip for the whole worker JVM.
+    if (ok) {
+      passwordlessSudo = true;
+    }
     return ok;
   }
 

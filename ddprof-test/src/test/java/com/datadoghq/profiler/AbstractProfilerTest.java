@@ -647,8 +647,12 @@ public abstract class AbstractProfilerTest {
     long[] cumulatedEvents = {0};
     try {
       JfrEvents.load(recording, eventType::equals, stackPatternMatcher(unmatched, cumulatedEvents));
+    } catch (Error e) {
+      throw e;
     } catch (Throwable t) {
-      return false;
+      // A parse/IO failure is not an under-sampled dump: propagate it so the caller fails
+      // with the real cause instead of retrying a broken recording as if it were empty.
+      throw new RuntimeException("Failed to read recording " + recording, t);
     }
     return cumulatedEvents[0] > 0 && unmatched.isEmpty();
   }
