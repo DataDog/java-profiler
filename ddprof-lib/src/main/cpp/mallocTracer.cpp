@@ -19,6 +19,7 @@
 #include "profiler.h"
 #include "samplerPerf.h"
 #include "symbols.h"
+#include "threadExitRegistry.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -89,6 +90,11 @@ volatile u64 MallocTracer::_last_config_update_ts;
 volatile bool MallocTracer::_running = false;
 PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
     31, 511, 3, MallocTracer::CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
+
+#ifdef UNIT_TEST
+void (*MallocTracer::beforeAcquireForTest)() = nullptr;
+void (*MallocTracer::recordSampleForTest)(int, const MallocEvent&) = nullptr;
+#endif
 
 Mutex MallocHooker::_patch_lock;
 int MallocHooker::_patched_libs = 0;
@@ -231,21 +237,27 @@ void MallocHooker::patchLibraries() {
     // Guards against stale or unexpected direct calls.
     if (_orig_malloc == NULL) return;
 
-    MutexLocker ml(_patch_lock);
-
     const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
-    int native_lib_count = native_libs.count();
+    const int native_lib_count = native_libs.count();
 
-    // _patched_libs is intentionally monotonic: hooks are permanent and cannot be
-    // uninstalled safely (library unloading races). On profiler restart, only
-    // newly-loaded libraries need patching.
-    TEST_LOG("MallocHooker::patchLibraries: _patched_libs=%d native_lib_count=%d _orig_malloc=%p",
-             _patched_libs, native_lib_count, (void*)_orig_malloc);
-    while (_patched_libs < native_lib_count) {
-        CodeCache* cc = native_libs[_patched_libs++];
-
+    // Hooks are permanent; the cursor advances once per published cache, including rejected images.
+    for (;;) {
+        int index;
+        CodeCache* cc;
+        {
+            MutexLocker ml(_patch_lock);
+            if (_patched_libs >= native_lib_count) return;
+            index = _patched_libs;
+            cc = native_libs[index];
+            if (cc == nullptr) return; // Do not advance past an unpublished pointer.
+        }
+        // Foreign loader callbacks can patch too; enter no loader function under _patch_lock.
         UnloadProtection handle(cc);
-        if (!handle.importsAreCurrent(cc)) {
+        bool imports_current = handle.importsAreCurrent(cc);
+        MutexLocker ml(_patch_lock);
+        if (_patched_libs != index) continue;
+        ++_patched_libs;
+        if (!imports_current) {
             TEST_LOG("MallocHooker::patchLibraries: skipping (stale or unavailable image) %s", cc->name());
             continue;
         }
@@ -300,19 +312,16 @@ bool MallocTracer::shouldSample(size_t size) {
     }
 }
 
-// acquireCurrent() runs before shouldSample() is checked, so every allocation
-// that passes the running()/ret/size gate claims a thread-local slot from the
-// fixed-size priming pool on first touch, even if shouldSample() then rejects it.
-// CriticalSection prevents reentrancy: profiler-internal allocations triggered
-// inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
-// the patched GOT; without the guard they would be double-counted.
-// Acquiring the CS here also blocks concurrent same-thread timer samples
-// (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
-// because the window is short.
+// Exit-marked threads are rejected before TLS acquisition or sampling; their faults bypass recovery.
+// Other admitted allocations may claim a priming slot even when shouldSample() rejects them.
+// CriticalSection excludes recursive malloc recording and same-thread profiling samples.
 void MallocTracer::maybeRecord(void* ret, size_t size) {
-    if (running() && ret && size) {
-        // Even we are not in a signal handler, we cannot malloc or
-        // we may get into indefinite loop
+    if (running() && ret && size && !ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+        // Marked threads bypass crash recovery, so reject teardown allocations before TLS or walks.
+        // The malloc hook must not allocate while acquiring TLS.
+#ifdef UNIT_TEST
+        if (beforeAcquireForTest != nullptr) beforeAcquireForTest();
+#endif
         ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
         if (prof_thread == nullptr) {
             Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
@@ -358,7 +367,14 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
         event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
     }
 
-    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+#ifdef UNIT_TEST
+    if (recordSampleForTest != nullptr) {
+        recordSampleForTest(tid, event);
+    } else
+#endif
+    {
+        Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+    }
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
     if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {

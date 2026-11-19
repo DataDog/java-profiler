@@ -68,7 +68,7 @@ located via `CodeCache::findImport()`.
 
 Each hook calls the saved original function first, then hands the result to
 `MallocTracer::maybeRecord(ret, size)`. `maybeRecord` is the common gate: it does nothing
-unless `running() && ret != NULL && size != 0`.
+unless running, given a non-null, nonempty allocation, and the raw thread identity is not exit-marked.
 
 | Hook | Calls | Passes to `maybeRecord` |
 |------|-------|---------|
@@ -123,14 +123,16 @@ The GOT-patching state lives in `MallocHooker` (`_patch_lock`, `_patched_libs`,
    `patchLibraries()` already sees `running() == true` and patches the new library
    itself.
 
-4. **`MallocHooker::patchLibraries()`** — under `_patch_lock`, walks the native
-   libraries not yet patched and writes the hook addresses into each library's GOT.
-   `_patched_libs` is a monotonic index, so already-patched libraries are skipped on
-   subsequent calls.
+4. **`MallocHooker::patchLibraries()`** selects the next cache under `_patch_lock`,
+   then pins and validates it outside that mutex. It reacquires the mutex to recheck
+   the monotonic cursor and patch; a concurrent patcher's cursor advance causes a retry.
+
+   The patch mutex is released before the pin closes. No loader function runs while
+   that mutex is held, so a foreign loader callback can patch without lock inversion.
 
    On Linux, each pinned image must match the cached fingerprint before any import access.
-   The fingerprint covers relocation slots and symbol names.
-   Missing fingerprints and replacement images are skipped.
+   The loader supplies the live program headers and load bias; file offsets need not be mapped.
+   The fingerprint covers relocation slots and symbol names; missing or mismatched identities are skipped.
 
 `patchLibraries()` is called again on every `start()` to pick up any libraries
 loaded between profiler sessions.
@@ -211,7 +213,7 @@ passed since the last update. The interval is clamped to
 
 ```cpp
 void MallocTracer::maybeRecord(void* ret, size_t size) {
-    if (running() && ret && size) {
+    if (running() && ret && size && !ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
         ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
         if (prof_thread == nullptr) {
             Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
@@ -228,7 +230,7 @@ void MallocTracer::maybeRecord(void* ret, size_t size) {
 The `ProfiledThread` is obtained with `acquireCurrent()` (the allocation-adjacent-hook
 variant, which may claim a slot from the priming pool and never mallocs). Because that
 happens before `shouldSample()`, every allocation that passes the
-`running()`/`ret`/`size` gate claims a thread-local slot on first touch, even when it is
+running/allocation/exit gate claims a thread-local slot on first touch, even when it is
 then not sampled. The `CriticalSection` is the reentrancy guard: allocations made by
 the profiler while it records a sample re-enter the hooks through the patched GOT, fail
 to enter the critical section, and are not recorded.

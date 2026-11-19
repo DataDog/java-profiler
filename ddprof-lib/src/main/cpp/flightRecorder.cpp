@@ -1977,7 +1977,9 @@ void Recording::writeThreads(Buffer *buf) {
   // After flip: new samples go into the new active set
   // We flush from old_index (the previous active set)
 
-  std::unordered_set<int> threads;
+  std::unordered_set<int> threads(_archived_thread_ids.begin(), _archived_thread_ids.end());
+  _archived_thread_ids.clear();
+  _thread_table_overflow.store(0, std::memory_order_release);
   threads.insert(_tid);  // always present: the recording thread itself
 
   for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
@@ -2841,7 +2843,33 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 // assumption is that we hold the lock (with lock_index)
 bool Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    return _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
+    if (_thread_ids[lock_index][active].insert(tid)) return true;
+    if (tid != 0) _thread_table_overflow.fetch_or(1U << lock_index, std::memory_order_release);
+    return false;
+}
+
+bool Recording::recoverThreadTableCapacity() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  u32 overflow = _thread_table_overflow.load(std::memory_order_acquire);
+  if (overflow == 0) return false;
+  int active = _active_index.load(std::memory_order_acquire);
+  std::unordered_set<int> threads;
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
+    if (overflow & (1U << i)) _thread_ids[i][active].collect(threads);
+  }
+  // Allocation completes before any table is cleared, preserving every existing event reference.
+  _archived_thread_ids.insert(_archived_thread_ids.end(), threads.begin(), threads.end());
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
+    if (overflow & (1U << i)) _thread_ids[i][active].clear();
+  }
+  _thread_table_overflow.store(0, std::memory_order_release);
+  return true;
+}
+
+bool FlightRecorder::recoverThreadTableCapacity() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  ExclusiveLockGuard locker(&_rec_lock);
+  return _rec != nullptr && _rec->recoverThreadTableCapacity();
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {

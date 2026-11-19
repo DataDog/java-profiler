@@ -39,6 +39,8 @@ private:
     }
     
 public:
+    static constexpr int capacity() { return TABLE_SIZE; }
+
     ThreadIdTable() {
         clear();
     }

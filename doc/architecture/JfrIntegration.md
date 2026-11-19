@@ -88,6 +88,14 @@ Ordinary and deferred writes return independent success results. A failed tail w
 must not consume its retained ID, context, state or weight. The explicit wall serializer
 rejects a thread-pool insertion failure before it appends event bytes.
 
+Stop retries full thread tables without a dump while output is healthy. Under exclusive
+`_rec_lock`, it archives IDs before clearing full table slots. Bounded retries admit
+retained tails; `writeThreads()` unions archived and current IDs without duplicates.
+
+The archive vector is allocated only during recovery and charged to `NM_JFR_BUFFERS`.
+Serialization clears its IDs; recording destruction frees its capacity before the next start.
+Signal-side admission failures only set an atomic stripe bit and do not allocate.
+
 ### Buffer layout and thresholds
 
 | Constant | Value | Source |
@@ -253,9 +261,10 @@ Write, patch and close failures quarantine the output. Stop shuts down producers
 and latches the profiler's non-restartable `ERROR` state. Recording buffers,
 dictionary roots and uncommitted wall tails stay owned.
 
-`FlightRecorder::outputQuarantined()` checks this terminal condition under the
-shared recorder lock on normal threads. Stop checks it after a failed tail flush,
-including failures first observed during that flush. Lock contention is not quarantine.
+`FlightRecorder::outputQuarantined()` checks terminal state under its shared lock on normal threads.
+Stop checks after tail flush failures and before capacity retries, including failures raised by the flush.
+Lock contention is not quarantine.
+
 A failed close is not retried because descriptor ownership is platform-dependent.
 
 ### `finishChunk()`
@@ -379,7 +388,7 @@ the pool count is not known up front. A 1-byte placeholder is written and
 | `jdk.types.ThreadState` | `writeThreadStates()` | fixed list of 11 | yes |
 | `datadog.types.ExecutionMode` | `writeExecutionModes()` | fixed list of 6 | yes |
 | `profiler.types.LogLevel` | `writeLogLevels()` | fixed list | yes |
-| `java.lang.Thread` | `writeThreads()` | `_thread_ids` + `ThreadInfo` | yes (contains the recording thread) |
+| `java.lang.Thread` | `writeThreads()` | `_thread_ids` + stop-time archived IDs + `ThreadInfo` | yes (contains the recording thread) |
 | `jdk.types.StackTrace` | `writeStackTraces()` | `CallTraceStorage` | no |
 | `jdk.types.Method` | `writeMethods()` | `MethodMap` rows marked this chunk | no |
 | `java.lang.Class` | `writeClasses()` | `Profiler::classMap()->standby()` | no |

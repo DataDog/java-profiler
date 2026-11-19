@@ -20,6 +20,9 @@ class RecordingTestAccessor {
 public:
   // Match post-start hot writes: real flush failures retain bytes instead of throwing.
   static void activateHotWrites(Recording* recording) { recording->_cold_io = false; }
+  static u32 threadTableOverflow(const Recording* recording) {
+    return recording->_thread_table_overflow.load(std::memory_order_acquire);
+  }
 };
 
 class FlightRecorderTestAccessor {
@@ -340,7 +343,7 @@ TEST_F(WallTailRecordingTest, ActiveOutputFlushFailureRetainsEpochUnitsContextAn
 }
 
 class QuarantinedWallTailStopTest : public WallTailRecordingTest,
-                                    public ::testing::WithParamInterface<std::tuple<bool, bool>> {};
+                                    public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {};
 
 TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRejectsRestart) {
   class StopObserver : public Engine {
@@ -352,6 +355,7 @@ TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustod
   } cpu, wall, alloc;
   const bool quarantine_before_stop = std::get<0>(GetParam());
   const bool pending_tail = std::get<1>(GetParam());
+  const bool pending_capacity = std::get<2>(GetParam());
   VMTestAccessor vm;
   RecordingWriteFailureFixture output;
   ASSERT_TRUE(output.valid());
@@ -369,6 +373,22 @@ TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustod
   } else {
     ASSERT_TRUE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
   }
+  u32 overflow_stripe = (ProfilerTestAccessor::stripe(profiler.get(), request.tid) + 1) % CONCURRENCY_LEVEL;
+  if (pending_capacity) {
+    TaskBlockEvent block{};
+    block._start = 1;
+    block._end = 2;
+    for (int tid = 1; tid <= ThreadIdTable::capacity(); ++tid) {
+      ASSERT_TRUE(recorder->recordTaskBlock(overflow_stripe, tid, &block));
+    }
+    ExecutionEvent event;
+    event._thread_state = OSThreadState::SLEEPING;
+    ASSERT_FALSE(recorder->recordWallSample(
+        overflow_stripe, ThreadIdTable::capacity() + 1, origin, &event, request.context));
+    ASSERT_TRUE(recording->outputGood());
+  }
+  const u32 expected_overflow = pending_capacity ? 1U << overflow_stripe : 0;
+  ASSERT_EQ(expected_overflow, RecordingTestAccessor::threadTableOverflow(recording.get()));
   buffer->skip(JFR_EVENT_FLUSH_THRESHOLD - 1 - buffer->offset());
   std::array<StringDictionary*, 3> dictionaries{{
       profiler->classMap(), profiler->stringLabelMap(), profiler->contextValueMap()}};
@@ -398,6 +418,7 @@ TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustod
   ASSERT_TRUE(error);
   EXPECT_STREQ("Incomplete recording output retained; restart refused", error.message());
   EXPECT_TRUE(recorder->outputQuarantined());
+  EXPECT_EQ(expected_overflow, RecordingTestAccessor::threadTableOverflow(recording.get()));
   EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler.get()));
   EXPECT_EQ(1U, cpu.stops);
   EXPECT_EQ(1U, wall.stops);
@@ -451,11 +472,13 @@ TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustod
 
 INSTANTIATE_TEST_SUITE_P(
     OutputFailureTiming, QuarantinedWallTailStopTest,
-    ::testing::Values(std::make_tuple(true, true), std::make_tuple(false, true),
-                      std::make_tuple(true, false)),
-    [](const ::testing::TestParamInfo<std::tuple<bool, bool>>& info) {
+    ::testing::Values(std::make_tuple(true, true, false), std::make_tuple(false, true, false),
+                      std::make_tuple(true, false, false), std::make_tuple(true, true, true),
+                      std::make_tuple(false, true, true)),
+    [](const ::testing::TestParamInfo<std::tuple<bool, bool, bool>>& info) {
       return std::string(std::get<0>(info.param) ? "BeforeStop" : "DuringTailFlush") +
-             (std::get<1>(info.param) ? "PendingTail" : "NoTail");
+             (std::get<1>(info.param) ? "PendingTail" : "NoTail") +
+             (std::get<2>(info.param) ? "FullThreadTable" : "");
     });
 
 TEST_F(WallTailRecordingTest, ProducerFlushRetriesOnlyFailedEpochWithOriginalContext) {
@@ -626,6 +649,45 @@ TEST_F(WallTailRecordingTest, StopFailureDoesNotTearDownEnginesOrLeaveRotationCl
   EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
   EXPECT_EQ(0U, engine.stops);
   expectOriginRetained();
+}
+
+TEST_F(WallTailRecordingTest, StopCapacityRecoveryBudgetKeepsUnwrittenTailRetryable) {
+  Engine engine;
+  FlightRecorder& recorder = ProfilerTestAccessor::recorder(*profiler);
+  ScopedTailRecording output(recorder);
+  constexpr int max_retries = 1 + ThreadFilter::kMaxThreads / ThreadIdTable::capacity();
+  struct Saturation {
+    FlightRecorder& recorder;
+    int tid;
+    unsigned calls = 0;
+  } saturation{recorder, request.tid};
+  profiler->sampleWriteHookArgForTest = &saturation;
+  profiler->sampleWriteHookForTest = [](u32 stripe, u64 trace, Event* event,
+                                       const Context* context, void* arg) {
+    auto& state = *static_cast<Saturation*>(arg);
+    // Stop generating capacity failures after the budget, so removing the bound fails, not hangs.
+    if (++state.calls > max_retries + 1) return false;
+    TaskBlockEvent block{};
+    block._start = 1;
+    block._end = 2;
+    for (int tid = 1; tid <= ThreadIdTable::capacity(); ++tid) {
+      EXPECT_TRUE(state.recorder.recordTaskBlock(stripe, tid, &block));
+    }
+    EXPECT_FALSE(state.recorder.recordWallSample(
+        stripe, state.tid, trace, static_cast<ExecutionEvent*>(event), *context));
+    return false;
+  };
+  ProfilerTestAccessor::prepareStop(*profiler, &engine);
+  Error error = profiler->stop();
+  ASSERT_TRUE(error);
+  EXPECT_EQ(max_retries + 1, saturation.calls);
+  EXPECT_TRUE(ProfilerTestAccessor::running(*profiler));
+  EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
+  expectOriginRetained();
+  captureWrites();
+  EXPECT_TRUE(profiler->threadFilter()->flushUnownedTails());
+  ASSERT_EQ(1U, writes.size());
+  expectWrite(writes[0], request.sampling_epoch_start, 1);
 }
 
 TEST_F(WallTailRecordingTest, ConcurrentRetirementAndStopFlushDoNotDuplicateTail) {
