@@ -47,6 +47,7 @@ class MallocTracer : public Engine {
     static PidController _pid;
 #ifdef UNIT_TEST
     friend class MallocTracerTestAccess;
+    static void (*beforeExitCheckForTest)();
     static void (*beforeAcquireForTest)();
     static void (*recordSampleForTest)(int, const MallocEvent&);
 #endif
