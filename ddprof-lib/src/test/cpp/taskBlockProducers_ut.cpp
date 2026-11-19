@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <thread>
 
 #include "guards.h"
 #include "javaApi.h"
@@ -264,6 +265,38 @@ TEST_F(TaskBlockProducersTest, MonitorProducersAreInertOnNonHotspotJni21) {
     MonitorContendedEntered(&jvmti, &jni21, testThread(), nullptr);
     EXPECT_EQ(0u, current->monitorBlockToken());
     EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+}
+
+static int g_get_version_calls;
+static bool g_profiled_thread_at_get_version;
+
+TEST_F(TaskBlockProducersTest, MonitorCallbacksAttachProfiledThreadBeforeJni) {
+    JNINativeInterface_ functions = jni_functions;
+    // An invalid version stops classification after the probe records the TLS state.
+    functions.GetVersion = [](JNIEnv*) -> jint {
+        g_get_version_calls++;
+        g_profiled_thread_at_get_version = ProfiledThread::current() != nullptr;
+        return 0;
+    };
+    JNIEnv probe_jni{};
+    probe_jni.functions = &functions;
+    g_get_version_calls = 0;
+    g_profiled_thread_at_get_version = false;
+    bool exit_had_thread = true;
+    bool enter_left_thread = false;
+    std::thread fresh([&] {
+        MonitorContendedEntered(&jvmti, &probe_jni, testThread(), nullptr);
+        exit_had_thread = ProfiledThread::current() != nullptr;
+        MonitorContendedEnter(&jvmti, &probe_jni, testThread(), nullptr);
+        enter_left_thread = ProfiledThread::current() != nullptr;
+        ProfiledThread::release();
+    });
+    fresh.join();
+    EXPECT_FALSE(exit_had_thread) << "an exit must not attach a ProfiledThread";
+    EXPECT_TRUE(enter_left_thread);
+    EXPECT_EQ(1, g_get_version_calls) << "only the entry may reach JNI on a fresh thread";
+    EXPECT_TRUE(g_profiled_thread_at_get_version)
+        << "entry must attach the ProfiledThread before any JNI call";
 }
 
 class MonitorTaskBlockHashTest : public TaskBlockProducersTest,
