@@ -128,8 +128,10 @@ The fence is explicitly disarmed before safefetch, `checkFault` or chaining.
 Crash-depth admission is cached under the fence; safefetch precedes rejection
 and undoes successful admission. `checkFault` resets depth before `siglongjmp`.
 
-The fence adds two mask syscalls per crash-handler entry, not per profiling
-signal. The empty `SIGIO` wakeup handler only interrupts sleep and does not
+Each crash-handler entry makes one raw identity syscall for the exit-registry
+lookup. On Linux the fence adds two mask syscalls, so an unmarked entry costs at
+least three; recovery and chaining add their own. This is per crash-handler
+entry, not per profiling signal. The empty `SIGIO` wakeup handler only interrupts sleep and does not
 look up TLS or change signal depth.
 
 These handlers use the interrupted stack, not `sigaltstack`. An unusable
