@@ -732,16 +732,25 @@ Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
 }
 
 // Qualification probes use the live VM's JNI table without changing classifier semantics.
+// Release builds keep inert stubs; RealVmThreadClassifierTest skips outside DEBUG.
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_wallclock_RealVmThreadClassifierTest_jniVersion0(
     JNIEnv *env, jclass unused) {
+#ifdef DEBUG
   return env->GetVersion();
+#else
+  return 0;
+#endif
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_wallclock_RealVmThreadClassifierTest_isPlatformThread0(
     JNIEnv *env, jclass unused, jthread thread) {
+#ifdef DEBUG
   return JVMSupport::isPlatformThread(env, thread) ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
