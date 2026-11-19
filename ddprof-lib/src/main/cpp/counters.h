@@ -286,6 +286,9 @@
    * release is retried on a later call rather than proceeding, but this     \
    * counts how often that retry path is taken. */                           \
   X(REFERENCE_CHAIN_TAG_RELEASE_FAILED, "reference_chain_tag_release_failed") \
+  /* Counts failed root-enumeration attempts, not abandoned searches.         \
+   * Includes failures injected by debug tests. */                            \
+  X(REFERENCE_CHAIN_ROOT_ENUM_ERRORS, "reference_chain_root_enum_errors")      \
   /* The profiler-side reference-chain writer could not acquire a            \
    * sample-record lock within its bounded retry budget and dropped the      \
    * already-dequeued datadog.ReferenceChain event for this dump - not       \

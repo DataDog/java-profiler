@@ -1516,3 +1516,4 @@ TEST(ThreadFilterTidIndexStorageTest, DestructionBalancesIndexAndProbeCountStora
     }
     EXPECT_EQ(baseline, NativeMem::live(NM_THREAD_FILTER));
 }
+

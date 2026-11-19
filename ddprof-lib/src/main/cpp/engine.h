@@ -67,6 +67,10 @@ public:
   // True when the per-thread state outlives stop(), so a registration call
   // still inside the engine may use it after stop() returns.
   virtual bool keepsThreadStateAcrossStop() const { return false; }
+  // True when start() rejects a non-positive resolved CPU interval
+  // (cpuSamplerInterval()); false when the engine falls back to its own
+  // default for 0 (perf_events, the J9 JVMTI sampler).
+  virtual bool enforcesCpuSamplerInterval() const { return false; }
 
   virtual void enableEvents(bool enabled) {
     // do nothing

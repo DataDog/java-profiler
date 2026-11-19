@@ -245,6 +245,8 @@ public:
     // ThreadFilter at its own registry-lifecycle decision points.
     void resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state);
     void resetAll();
+    // Clears only pending unowned tails; owned runs keep their state.
+    void resetUnownedBlockedTails();
     void resetAtContextBoundary(ThreadFilter::SlotID slot_id);
     // Reads the complete timer-side suppression payload and rejects it if slot
     // identity or block lifecycle changes before final validation.

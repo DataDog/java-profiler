@@ -30,6 +30,11 @@ class PerfEventType;
 class StackContext;
 
 class PerfEvents : public Engine {
+  // Test-only friend accessor, defined (like CTimerTestAccessor) in
+  // perfEvents_ut.cpp: lets the table tests place the private statics in
+  // states start()'s resize window produces without starting the engine.
+  friend class PerfEventsTestAccessor;
+
 private:
   static bool _enabled;
   static int _max_events;

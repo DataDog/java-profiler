@@ -26,6 +26,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 template <typename T, typename = void>
 struct HasUncheckedExit : std::false_type {};
@@ -468,4 +469,52 @@ TEST_F(WallClockBlockTrackerTest, SameIdentityExitAndReentryInvalidatesFinalVali
     EXPECT_NE(token, reentry.token);
     EXPECT_EQ(identity->lifecycleGeneration(), entry.lifecycle_generation);
     EXPECT_TRUE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+}
+
+namespace {
+// Leaves a flushable tail on the tracker slot: a recorded stack plus pending weight.
+void buildUnownedBlockedTail(WallClockBlockTracker::BlockState* slot) {
+    ASSERT_NE(nullptr, slot);
+    ASSERT_TRUE(slot->shouldRecordUnownedBlockedSample());
+    slot->consumeUnownedBlockedWeight();
+    slot->recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
+    ASSERT_FALSE(slot->shouldRecordUnownedBlockedSample());
+}
+
+// Slots span more than one registry chunk, so the reset must cover every slot.
+void expectResetDropsTails(ThreadFilter* filter, WallClockBlockTracker* tracker,
+                           bool disable_first) {
+    ASSERT_TRUE(tracker->ensureAllocated());
+    std::vector<ThreadFilter::SlotID> ids;
+    for (int i = 0; i < ThreadFilter::kChunkSize + 2; i++) {
+        ThreadFilter::SlotID id = filter->registerThread(5000 + i);
+        ASSERT_GE(id, 0);
+        ids.push_back(id);
+        buildUnownedBlockedTail(tracker->slotForId(id));
+    }
+    ASSERT_GT(ids.back() >> ThreadFilter::kChunkShift, ids.front() >> ThreadFilter::kChunkShift);
+    if (disable_first) {
+        filter->init("");
+        ASSERT_FALSE(filter->enabled());
+    }
+
+    filter->resetUnownedBlockedTails();
+
+    for (ThreadFilter::SlotID id : ids) {
+        u64 trace_id, weight;
+        OSThreadState state;
+        EXPECT_FALSE(tracker->slotForId(id)->flushUnownedBlockedTail(trace_id, weight, state))
+            << "slot " << id;
+        EXPECT_EQ(0u, trace_id) << "slot " << id;
+    }
+}
+} // namespace
+
+TEST_F(WallClockBlockTrackerTest, ResetUnownedBlockedTailsDropsTailsInEveryChunk) {
+    expectResetDropsTails(filter.get(), tracker.get(), false);
+}
+
+// The reset runs at stop() even when the thread filter is disabled.
+TEST_F(WallClockBlockTrackerTest, ResetUnownedBlockedTailsDropsTailsWhenFilterDisabled) {
+    expectResetDropsTails(filter.get(), tracker.get(), true);
 }

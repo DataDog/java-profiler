@@ -16,7 +16,7 @@ Zing. Code that depends on one implementation lives in a subdirectory of
 
 Shared code must stay independent of the JVM implementation. When it needs
 implementation-specific behavior, it calls one of the abstraction files
-(`AGENTS.md`, "JVM implementation specific code"):
+(`ddprof-lib/src/main/cpp/AGENTS.md`, "JVM abstraction"):
 
 - `jvmSupport.h`, `jvmSupport.inline.h`, `jvmSupport.cpp`: the `JVMSupport` facade
 - `jvmThread.h`, `jvmThread.cpp`: the `JVMThread` native-thread facade
@@ -80,6 +80,18 @@ predicates. More detection-dependent setup:
 - `VM::ready()` initializes `VMStructs` only on HotSpot (`vmEntry.cpp:605-612`).
   It can be called more than once. A static flag ensures that the signal
   handlers are installed only once.
+- JVMTI event enabling is split. `VM::initProfilerBridge()` enables only
+  `VM_DEATH` and `NATIVE_METHOD_BIND` (a native binds once and bindings cannot be
+  replayed, so `getMemoryUsage0`'s binding must be seen from agent load). The
+  metadata events (`CLASS_LOAD`, `CLASS_PREPARE`, `DYNAMIC_CODE_GENERATED`, and
+  `COMPILED_METHOD_LOAD` when CodeHeap is unavailable) are enabled on the first
+  `start()` by `Profiler::enablePersistentJvmtiEvents()`, before
+  `JVMSupport::initExecution()` snapshots the loaded classes, and stay enabled
+  for the life of the process. It replays the code generated before then with
+  `GenerateEvents()` in every load mode, not just attach. Because the replay cannot
+  add debug info to code compiled before then, `initProfilerBridge()` sets the
+  `DebugNonSafepoints` flag itself at agent load on every HotSpot, rather than relying
+  on `COMPILED_METHOD_LOAD` to turn it on.
 - `can_retransform_any_class` is disabled on J9 (`vmEntry.cpp:502`).
 - The JFR `RequestStackTrace` extension is probed only on HotSpot (`vmEntry.cpp:519-521`).
 - The profiler installs its SIGSEGV/SIGBUS handlers only on HotSpot and J9
@@ -109,6 +121,7 @@ If either step fails, profiling is disabled.
 | `enterRedefinitionCall` / `exitRedefinitionCall` / `beforeClassRedefinition` / `afterClassRedefinition` | forwarded to `HotspotSupport` | no-op, except that `afterClassRedefinition` reloads the class's jmethodIDs after a successful redefinition |
 | `beginDump` / `endDump` | forwarded to `HotspotSupport` | no-op |
 | `resolve(method, bci, result)` (inline) | `HotspotSupport::resolve` (raw `Method*` frames) | `assert(false)` and returns `false`. Raw frames come only from HotSpot `walkVM` |
+| `maxHeapBytes()` | `Runtime.maxMemory()` through JNI, resolved once in `initExecution()`. `-1` until resolved | same |
 | `isHidden(modifiers)` (inline) | shared modifier-mask test | shared |
 
 `jvmSupport.inline.h` includes `hotspot/hotspotSupport.h` directly

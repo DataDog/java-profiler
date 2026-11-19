@@ -1144,6 +1144,46 @@ public:
         return it != t->_leak_parent_fanout.end() ? it->second.fanout : 0;
     }
 
+    // Full fanout entry copy; outputs stay untouched on a miss so callers can
+    // distinguish "absent" from "present with zeroed fields".
+    static bool leakParentFanoutEntry(jlong parent_tag, u64 *signature_key,
+                                       u32 *fanout,
+                                       bool *ancestors_recorded) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        auto it = t->_leak_parent_fanout.find(parent_tag);
+        if (it == t->_leak_parent_fanout.end()) {
+            return false;
+        }
+        *signature_key = it->second.signature_key;
+        *fanout = it->second.fanout;
+        *ancestors_recorded = it->second.ancestors_recorded;
+        return true;
+    }
+
+    // Exposes the production signature-key packing for tests that must
+    // precompute exact keys without duplicating the bit layout.
+    static u64 leakSignatureKeyForTest(u32 leaf_klass_id, u32 parent_class_id) {
+        return ReferenceChainTracker::instance()->leakSignatureKey(
+            leaf_klass_id, parent_class_id);
+    }
+
+    // Direct admitStaticFieldRoots() drive with a caller-chosen admission budget, like
+    // expandFrontierWithBudgetForTest(). *truncated is reset to false before the drive, and
+    // admitStaticFieldRoots() resets it again at its own entry, so a caller preset never survives.
+    static void admitStaticFieldRootsForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                              int budget,
+                                              int *edges_admitted,
+                                              bool *truncated) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        bool cap_hit = false;
+        bool cycle_complete = false;
+        u64 safepoint_ns = 0;
+        *truncated = false;
+        t->admitStaticFieldRoots(jvmti, jni, t->_hop_cap, budget,
+                                  edges_admitted, truncated, &cap_hit,
+                                  &cycle_complete, &safepoint_ns);
+    }
+
     static void eraseLeakParentFanout(jlong parent_tag) {
         ReferenceChainTracker::instance()->_leak_parent_fanout.erase(parent_tag);
     }

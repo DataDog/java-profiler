@@ -150,6 +150,9 @@ public:
     // refreshSlotForRecording/clearActive) also clear the tracker's
     // parallel per-slot state. See wallClockBlockTracker.h.
     void setBlockTracker(WallClockBlockTracker* tracker) { _block_tracker = tracker; }
+    // Drops every slot's pending unowned-blocked tail, whether or not the filter
+    // is enabled: its cached call trace id is meaningless once the storage is released.
+    void resetUnownedBlockedTails();
 
 #ifdef UNIT_TEST
     // Expose published bucket state for reclamation tests without timing assertions.

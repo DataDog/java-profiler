@@ -22,11 +22,22 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 pass() { TESTS=$((TESTS + 1)); }
 fail() { TESTS=$((TESTS + 1)); FAILED=$((FAILED + 1)); echo "FAIL: $*" >&2; }
 
+# gq <lastEdited> <headOid> <committed> -> raw GraphQL JSON for the description probe;
+# pass an empty lastEdited to exercise the createdAt fallback.
+gq() {
+  le=null
+  [ -n "$1" ] && le="\"$1\""
+  printf '{"data":{"node":{"lastEditedAt":%s,"createdAt":"2018-01-01T00:00:00Z","headRefOid":"%s","commits":{"nodes":[{"commit":{"committedDate":"%s"}}]}}}}' "$le" "$2" "$3"
+}
+
 # gh stub, logging each call to $GH_LOG: `pr list --head B` reports an open PR when
-# B is in $OPEN_PRS; `pr view <sel>` prints "$VIEW_HEAD $VIEW_OID $VIEW_BASE" unless
-# <sel> looks like a repo (or $VIEW_REPO is set and not passed as -R); `repo view`
-# prints $DEFAULT_BRANCH; `api repos/<name>` prints the fork-network root, <name> unless
-# $NETWORK_ROOTS maps it ("name=root ..."), failing for $NAME_FAIL; $GH_FAIL fails all.
+# B is in $OPEN_PRS; `pr view <sel>` prints "$VIEW_ID $VIEW_NUMBER $VIEW_HEAD $VIEW_OID
+# $VIEW_BASE" (VIEW_ID defaults to PRR_stub) unless <sel> looks like a repo (or $VIEW_REPO
+# is set and not passed as -R); `repo view` prints $DEFAULT_BRANCH, or $OWNER_NAME for
+# nameWithOwner; `api graphql` pipes $VIEW_GRAPHQL (raw JSON) through the command's --jq
+# expression, only when -f i= matches $GRAPHQL_ID when that is set; `api repos/<name>`
+# prints the fork-network root, <name> unless $NETWORK_ROOTS maps it ("name=root ..."),
+# failing for $NAME_FAIL; $GH_FAIL fails all.
 mkdir -p "$TEMP_DIR/bin" "$TEMP_DIR/oldgit" "$TEMP_DIR/nogh"
 cat > "$TEMP_DIR/bin/gh" <<'EOF'
 #!/bin/sh
@@ -35,14 +46,37 @@ echo "$*" >> "$GH_LOG"
 case "$1 $2" in
   "pr list") for b in $OPEN_PRS; do [ "$b" = "$4" ] && { echo 1; exit 0; }; done
              echo 0; exit 0 ;;
-  "pr view") case "$3" in */*) exit 1 ;; esac
-             [ -z "$VIEW_REPO" ] || case " $* " in *" -R $VIEW_REPO "*) ;; *) exit 1 ;; esac
-             [ -n "$VIEW_HEAD" ] && echo "$VIEW_HEAD $VIEW_OID $VIEW_BASE" && exit 0; exit 1 ;;
+  "pr view") url_repo=""
+             case "$3" in
+               https://github.com/*) url_repo=${3#https://github.com/}; url_repo=${url_repo%%/pull*} ;;
+               */*) exit 1 ;;
+             esac
+             if [ -n "$VIEW_REPO" ]; then
+               if [ -n "$url_repo" ]; then
+                 [ "$url_repo" = "$VIEW_REPO" ] || exit 1
+               else
+                 case " $* " in *" -R $VIEW_REPO "*) ;; *) exit 1 ;; esac
+               fi
+             fi
+             [ -n "$VIEW_ID" ] || VIEW_ID=PRR_stub
+             [ -n "$VIEW_HEAD" ] && echo "$VIEW_ID $VIEW_NUMBER $VIEW_HEAD $VIEW_OID $VIEW_BASE" && exit 0; exit 1 ;;
+  "api graphql") [ -n "$VIEW_GRAPHQL" ] || exit 1
+                 if [ -n "$GRAPHQL_ID" ]; then
+                   case "$*" in *"-f i=$GRAPHQL_ID"*) ;; *) exit 1 ;; esac
+                 fi
+                 jexpr="" prev=""
+                 for a in "$@"; do [ "$prev" = "--jq" ] && { jexpr=$a; break; }; prev=$a; done
+                 if [ -n "$jexpr" ]; then printf '%s' "$VIEW_GRAPHQL" | jq -r "$jexpr"
+                 else echo "$VIEW_GRAPHQL"; fi
+                 exit 0 ;;
+  "repo view") case "$*" in
+                 *nameWithOwner*) [ -n "$OWNER_NAME" ] && echo "$OWNER_NAME" && exit 0; exit 1 ;;
+                 *) [ -n "$DEFAULT_BRANCH" ] && echo "$DEFAULT_BRANCH" && exit 0; exit 1 ;;
+               esac ;;
   "api repos/"*) name=${2#repos/}
                  [ "$name" = "$NAME_FAIL" ] && exit 1
                  for pair in $NETWORK_ROOTS; do [ "${pair%%=*}" = "$name" ] && name=${pair#*=}; done
                  echo "$name"; exit 0 ;;
-  "repo view") [ -n "$DEFAULT_BRANCH" ] && echo "$DEFAULT_BRANCH" && exit 0; exit 1 ;;
 esac
 exit 1
 EOF
@@ -58,7 +92,8 @@ done
 # gh that cannot be executed, for the pre-push OSError fail-open path.
 printf '#!/bin/sh\n' > "$TEMP_DIR/nogh/gh" && chmod -x "$TEMP_DIR/nogh/gh"
 export PATH="$TEMP_DIR/bin:$PATH" GH_LOG="$TEMP_DIR/gh.log"
-export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH="" NAME_FAIL="" NETWORK_ROOTS=""
+export OPEN_PRS="" VIEW_HEAD="" VIEW_OID="" VIEW_BASE="" VIEW_REPO="" GH_FAIL="" DEFAULT_BRANCH="" NAME_FAIL="" NETWORK_ROOTS="" GRAPHQL_ID=""
+export VIEW_NUMBER="" VIEW_ID="" VIEW_GRAPHQL="" OWNER_NAME=""
 
 # Repo whose origin/main carries the gate scripts (in a second commit, $PRE_GATE being
 # the first) and a feature branch holding one commit.
@@ -215,11 +250,14 @@ git config --unset core.hooksPath
 # --- .githooks/pre-push (stdin: <local ref> <local sha> <remote ref> <remote sha>) ---
 new_repo p
 prepush() { printf '%s\n' "$1" | python3 .githooks/pre-push origin "$TEMP_DIR/p-origin.git"; }
+# R: a nonzero stand-in for an existing remote ref's sha; the all-zero id means the
+# push creates the remote ref, which pre-push treats as having no open PR.
+R=1111111111111111111111111111111111111111
 TIP=$(git rev-parse HEAD)
 Z=0000000000000000000000000000000000000000
 export OPEN_PRS="feature"
 expect "pre-push blocks open-PR branch without marker" 1 "Run the pre-pr-review skill" \
-  prepush "refs/heads/feature $TIP refs/heads/feature $Z"
+  prepush "refs/heads/feature $TIP refs/heads/feature $R"
 expect "pre-push allows deletion" 0 "" prepush "(delete) $Z refs/heads/feature $TIP"
 expect "pre-push allows a SHA-256 deletion" 0 "" \
   prepush "(delete) ${Z}${Z:0:24} refs/heads/feature $TIP"
@@ -227,64 +265,103 @@ expect "pre-push allows a SHA-256 deletion" 0 "" \
 expect "pre-push allows tags" 0 "" prepush "refs/tags/v1 $TIP refs/tags/v1 $Z"
 if grep -q "pr list" "$GH_LOG"; then fail "pre-push gated a tag push (asked gh about it)"; else pass; fi
 OPEN_PRS="" expect "pre-push allows branch without open PR" 0 "" \
-  prepush "refs/heads/feature $TIP refs/heads/feature $Z"
+  prepush "refs/heads/feature $TIP refs/heads/feature $R"
 GH_FAIL=1 expect "pre-push fails open when gh fails" 0 "" \
-  prepush "refs/heads/feature $TIP refs/heads/feature $Z"
+  prepush "refs/heads/feature $TIP refs/heads/feature $R"
 PATH="$TEMP_DIR/nogh:/usr/bin:/bin" expect "pre-push fails open when gh cannot run" 0 "" \
-  sh -c "printf '%s\n' 'refs/heads/feature $TIP refs/heads/feature $Z' | $PY .githooks/pre-push"
+  sh -c "printf '%s\n' 'refs/heads/feature $TIP refs/heads/feature $R' | $PY .githooks/pre-push"
 marker write --tool t >/dev/null
 : > "$GH_LOG"
-expect "pre-push allows reviewed commits" 0 "" prepush "refs/heads/feature $TIP refs/heads/feature $Z"
-if [ -s "$GH_LOG" ]; then fail "pre-push with a fresh marker called gh: $(cat "$GH_LOG")"; else pass; fi
+expect "pre-push warns to re-verify the description on an open-PR push" 0 \
+  "re-verify its title and description" prepush "refs/heads/feature $TIP refs/heads/feature $R"
+if grep -q "pr list" "$GH_LOG"; then pass; else fail "pre-push did not probe the open PR: $(cat "$GH_LOG")"; fi
+OPEN_PRS="" expect "pre-push stays silent without an open PR" 0 "" \
+  prepush "refs/heads/feature $TIP refs/heads/feature $R"
+: > "$GH_LOG"
+OPEN_PRS="feature" expect "pre-push skips the probe for a remote ref being created" 0 "" \
+  prepush "refs/heads/newbr $TIP refs/heads/newbr $Z"
+if grep -q "pr list" "$GH_LOG"; then fail "pre-push probed a created remote ref: $(cat "$GH_LOG")"; else pass; fi
+git checkout -qb feature2
+marker write --tool t >/dev/null
+git checkout -q feature
+OPEN_PRS="feature feature2"
+expect "pre-push defers the warning until the push is decided" 0 "re-verify its title and description" \
+  prepush "refs/heads/feature $TIP refs/heads/feature $R
+refs/heads/feature2 $TIP refs/heads/feature2 $R"
 echo more >> b.txt && git commit -qam more
 STALE=$(git rev-parse HEAD)
 expect "pre-push blocks unreviewed tip" 1 "is stale" \
-  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+  prepush "refs/heads/feature $STALE refs/heads/feature $R"
+OPEN_PRS=""
+if prepush "refs/heads/feature $STALE refs/heads/feature $R" 2>"$TEMP_DIR/err2"; then
+  pass
+else
+  fail "pre-push blocked a failing check without an open PR: $(cat "$TEMP_DIR/err2")"
+fi
+if grep -qF "has an open PR" "$TEMP_DIR/err2"; then
+  fail "pre-push blamed an open PR for a plain check failure: $(cat "$TEMP_DIR/err2")"
+else
+  pass
+fi
+OPEN_PRS="feature feature2"
+if prepush "refs/heads/feature $STALE refs/heads/feature $R
+refs/heads/feature2 $TIP refs/heads/feature2 $R" 2>"$TEMP_DIR/err3"; then
+  fail "pre-push allowed a push with a blocked ref"
+else
+  pass
+fi
+if grep -qF "re-verify its title" "$TEMP_DIR/err3"; then
+  fail "pre-push warned about a ref it blocked anyway: $(cat "$TEMP_DIR/err3")"
+else
+  pass
+fi
+export OPEN_PRS="feature"
 printf '%s' "$PAYLOAD" > utils/review-marker.py
 expect "pre-push uses origin/main's marker script" 1 "is stale" \
-  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+  prepush "refs/heads/feature $STALE refs/heads/feature $R"
 not_run "pre-push with a tampered utils/review-marker.py"
 git checkout -q utils/review-marker.py
 GATE=$(git rev-parse origin/main) && git update-ref refs/remotes/origin/main "$PRE_GATE"
 expect "pre-push allows while origin/main has no gate" 0 "" \
-  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+  prepush "refs/heads/feature $STALE refs/heads/feature $R"
 git update-ref refs/remotes/origin/main "$GATE"
 plant
 expect "pre-push ignores stdlib-named files in the checkout" 1 "is stale" \
-  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+  prepush "refs/heads/feature $STALE refs/heads/feature $R"
 not_run "pre-push with planted argparse.py/subprocess.py"
 unplant
 git tag origin/main "$PRE_GATE"
 expect "pre-push ignores a tag named origin/main" 1 "is stale" \
-  prepush "refs/heads/feature $STALE refs/heads/feature $Z"
+  prepush "refs/heads/feature $STALE refs/heads/feature $R"
 git tag -d origin/main >/dev/null
 expect "pre-push gates \`git push origin HEAD\`" 1 "is stale" \
-  prepush "HEAD $STALE refs/heads/feature $Z"
+  prepush "HEAD $STALE refs/heads/feature $R"
 git tag feature HEAD
 expect "pre-push HEAD refspec beside a same-named tag" 1 "is stale" \
-  prepush "HEAD $STALE refs/heads/feature $Z"
+  prepush "HEAD $STALE refs/heads/feature $R"
 git tag -d feature >/dev/null
 expect "pre-push gates \`git push origin <sha>:feature\`" 1 "is stale" \
-  prepush "$STALE $STALE refs/heads/feature $Z"
+  prepush "$STALE $STALE refs/heads/feature $R"
 git checkout -q --detach "$TIP"
 expect "pre-push on detached HEAD uses the remote branch's marker" 0 "" \
-  prepush "HEAD $TIP refs/heads/feature $Z"
+  prepush "HEAD $TIP refs/heads/feature $R"
 git checkout -q feature
 
 # The current branch (side) has no marker; only feature's marker can make this pass.
 git checkout -qb side
 expect "pre-push checks the pushed branch, not the current one" 0 "" \
-  prepush "refs/heads/feature $TIP refs/heads/feature $Z"
+  prepush "refs/heads/feature $TIP refs/heads/feature $R"
 git checkout -q feature
 
 git update-ref refs/remotes/origin/tmp origin/main
 git reset -q --hard "$TIP" && marker write --tool t --base origin/tmp >/dev/null
 git update-ref -d refs/remotes/origin/tmp
 expect "pre-push env error says how to proceed" 1 "push with --no-verify" \
-  prepush "refs/heads/feature $TIP refs/heads/feature $Z"
+  prepush "refs/heads/feature $TIP refs/heads/feature $R"
 marker write --tool t >/dev/null
 
 marker install-hook >/dev/null
+git push -q origin feature  # create the remote ref: the next push updates it, with a real remote sha
 echo more >> b.txt && git commit -qam more
 expect "real git push through the shim refuses unreviewed commits" 1 "is stale" git push -q origin feature
 printf '%s' "$PAYLOAD" > .githooks/pre-push
@@ -473,20 +550,51 @@ git tag origin/main "$PRE_GATE"
 expect "hook ignores a tag named origin/main" 2 "$STALE_MSG" hook "gh pr create --fill"
 git tag -d origin/main >/dev/null
 
-VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows ready of a reviewed PR head" 0 "" \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook allows ready of a reviewed PR head" 0 "" \
   hook "gh pr ready 12"
-VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main expect "hook checks the PR's remote head" 2 "is stale" \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main expect "hook checks the PR's remote head" 2 "is stale" \
   hook "gh pr ready 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past -R" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past -R" 0 "" \
   hook "gh pr ready -R DataDog/java-profiler 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past --repo" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook resolves ready selector past --repo" 0 "" \
   hook "gh pr ready --repo DataDog/java-profiler 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps -R given before pr" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps -R given before pr" 0 "" \
   hook "gh -R DataDog/java-profiler pr ready 12"
-VIEW_REPO=DataDog/java-profiler VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps --repo=" 0 "" \
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main expect "hook keeps --repo=" 0 "" \
   hook "gh pr ready 12 --repo=DataDog/java-profiler"
-VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=1234567890123456789012345678901234567890 VIEW_BASE=main \
   expect "hook reports an unfetched PR head" 2 "Rerunning the review will not help" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq 2019-06-01T00:00:00Z $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook blocks ready when the description predates the head commit" 2 "last edited before" \
+  hook "gh pr ready 12"
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_ID=PRR_url GRAPHQL_ID=PRR_url VIEW_GRAPHQL="$(gq 2019-06-01T00:00:00Z $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook probes the PR gh resolved, not -R's repository" 2 "last edited before" \
+  hook "gh -R DataDog/speedlab pr ready https://github.com/DataDog/java-profiler/pull/12"
+VIEW_REPO=DataDog/java-profiler VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_ID=PRR_url GRAPHQL_ID=PRR_url VIEW_GRAPHQL="$(gq 2019-06-01T00:00:00Z $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook probes the PR gh resolved past a URL path fragment" 2 "last edited before" \
+  hook "gh -R DataDog/speedlab pr ready https://github.com/DataDog/java-profiler/pull/12/files"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_STALE VIEW_BASE=main VIEW_GRAPHQL="$(gq 2019-06-01T00:00:00Z $WT_STALE 2020-01-01T00:00:00Z)" \
+  expect "hook reports the stale marker, not the description, when the check fails" 2 "$STALE_MSG" \
+  hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq 2020-01-01T00:00:00Z $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook allows ready when the description is as fresh as the head commit" 0 "" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq 2021-06-01T00:00:00Z $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook allows ready when the description postdates the head commit" 0 "" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq "" $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook blocks via createdAt when the body was never edited" 2 "last edited before" \
+  hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq 2019-06-01T00:00:00Z $WT_STALE 2020-01-01T00:00:00Z)" \
+  expect "hook fails open when the PR moved between the two gh calls" 0 "" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq 2019-06-01T00:00:00Z $WT_TIP 2030-01-01T00:00:00Z)" \
+  expect "hook fails open when the head commit is dated in the future" 0 "" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq 2019-06-01T00:00:00 $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook fails open when the description timestamp lacks a UTC designator" 0 "" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main \
+  expect "hook fails open when the description probe fails" 0 "" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="$(gq not-a-date $WT_TIP 2020-01-01T00:00:00Z)" \
+  expect "hook fails open when the description timestamp is unparseable" 0 "" hook "gh pr ready 12"
+VIEW_NUMBER=12 VIEW_HEAD=wt VIEW_OID=$WT_TIP VIEW_BASE=main VIEW_GRAPHQL="{\"data\":{\"node\":{\"lastEditedAt\":\"2019-06-01T00:00:00Z\",\"createdAt\":\"2018-01-01T00:00:00Z\",\"headRefOid\":\"$WT_TIP\",\"commits\":{\"nodes\":[]}}}}" \
+  expect "hook fails open when the PR has no commits" 0 "" hook "gh pr ready 12"
 GH_FAIL=1 expect "hook blocks ready of a PR it cannot resolve" 2 "cannot resolve the PR" \
   hook "gh pr ready 12"
 GH_FAIL=1 expect "hook checks the current branch for a bare ready" 2 "no review marker for branch feature" \
@@ -533,7 +641,7 @@ new_repo s
 export OPEN_PRS=""
 printf 'int x;\n' > bad.cpp && git add bad.cpp && git commit -qm bad
 expect "pre-push skips source checks while origin/main lacks them" 0 "" \
-  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $R"
 git checkout -q main
 mkdir -p .github/scripts
 cp "$ROOT/utils/check-copyright.py" "$ROOT/utils/check-claude-md.py" utils/
@@ -542,17 +650,17 @@ python3 utils/check-claude-md.py --root . --write >/dev/null
 git add . && git commit -qm "source checks" && git push -q origin main
 git checkout -q feature && git rebase -q main
 expect "pre-push blocks a new file without a copyright line" 1 "bad.cpp: new file has no" \
-  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $R"
 printf '// Copyright 2026, Datadog, Inc.\nint x;\n' > bad.cpp && git commit -qam header
 expect "pre-push allows a clean push" 0 "" \
-  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $R"
 echo "## Build" >> CLAUDE.md && git commit -qam drift
 expect "pre-push blocks a drifted CLAUDE.md" 1 "differs from the canonical stub" \
-  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $R"
 git reset -q --hard HEAD~1
 printf 'int y;\n' > dirty.cpp
 expect "pre-push checks the pushed commit, not untracked files" 0 "" \
-  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $Z"
+  prepush "refs/heads/feature $(git rev-parse HEAD) refs/heads/feature $R"
 rm dirty.cpp
 
 # The copyright base follows the branch the push forks from, as CI follows the PR base.
@@ -562,29 +670,29 @@ git add stale.cpp && git commit -qm "earlier cherry-pick, stale header" && git p
 git checkout -qb backport release/1.0
 printf '// Copyright 2026, Datadog, Inc.\nint b;\n' > backport.cpp && git add . && git commit -qm backport
 expect "pre-push compares a backport with its release branch" 0 "" \
-  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $R"
 printf 'int n;\n' > nohdr.cpp && git add . && git commit -qm "no header"
 expect "pre-push still blocks a violation in a backport's own commit" 1 "nohdr.cpp: new file has no" \
-  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $R"
 expect "pre-push names the detected base and its override" 1 \
   "against origin/release/1.0 (set branch.backport.gh-merge-base to change)" \
-  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $R"
 git config branch.backport.gh-merge-base release/9.9
 expect "pre-push ignores an unfetched gh-merge-base and says so" 1 \
   "against origin/release/1.0 (gh-merge-base origin/release/9.9 is not fetched" \
-  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $R"
 git reset -q --hard HEAD~1
 git config branch.backport.gh-merge-base main
 expect "pre-push honours the branch's gh-merge-base" 1 "stale.cpp: Datadog copyright ends in 2025" \
-  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $R"
 git config branch.backport.gh-merge-base origin/main
 expect "pre-push names a configured base" 1 "against origin/main (from branch.backport.gh-merge-base)" \
-  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $R"
 git update-ref refs/remotes/origin/orphan "$(git commit-tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -m orphan)"
 git config branch.backport.gh-merge-base orphan
 expect "pre-push names the base when the check is skipped" 0 \
   "check-copyright.py against origin/orphan (from branch.backport.gh-merge-base) skipped" \
-  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $Z"
+  prepush "refs/heads/backport $(git rev-parse HEAD) refs/heads/backport $R"
 git update-ref -d refs/remotes/origin/orphan
 git config --unset branch.backport.gh-merge-base
 git checkout -q main
@@ -593,7 +701,7 @@ git add mainstale.cpp && git commit -qm "stale header on main" && git push -q or
 git checkout -qb feature2 main
 printf '// Copyright 2026, Datadog, Inc.\nint f;\n' > f2.cpp && git add . && git commit -qm f2
 expect "pre-push compares a branch off main with main, not a release branch" 0 "" \
-  prepush "refs/heads/feature2 $(git rev-parse HEAD) refs/heads/feature2 $Z"
+  prepush "refs/heads/feature2 $(git rev-parse HEAD) refs/heads/feature2 $R"
 # Forward port: release/1.1 has more own commits than main gained since its cut.
 git checkout -qb release/1.1 main
 for i in 1 2; do echo "fix $i" >> b.txt && git commit -qam "release fix $i"; done
@@ -603,7 +711,7 @@ printf '// Copyright 2025, Datadog, Inc.\nint m2;\n' > mainstale2.cpp
 git add mainstale2.cpp && git commit -qm "stale header after the cut" && git push -q origin main
 git checkout -qb forward main && git merge -q --no-ff -m "forward-port release/1.1" origin/release/1.1
 expect "pre-push compares a forward port with main" 0 "" \
-  prepush "refs/heads/forward $(git rev-parse HEAD) refs/heads/forward $Z"
+  prepush "refs/heads/forward $(git rev-parse HEAD) refs/heads/forward $R"
 git checkout -q feature
 
 marker write --tool t >/dev/null

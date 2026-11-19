@@ -108,6 +108,15 @@ void WallClockBlockTracker::resetAll() {
     }
 }
 
+void WallClockBlockTracker::resetUnownedBlockedTails() {
+    SlotStorage* storage = _storage.load(std::memory_order_acquire);
+    if (storage != nullptr) {
+        for (auto& s : storage->slots) {
+            s.resetUnownedBlockedSampling();
+        }
+    }
+}
+
 bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
                                                      const ThreadEntry& entry) const {
     ThreadFilter::Slot* identity_slot = entry.slot;
