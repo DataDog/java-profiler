@@ -116,12 +116,16 @@ public class NativememDdprofExclusionTest extends AbstractProcessProfilerTest {
   @Test
   void locateOperationSlotsRejectsExcessRelocations() {
     DdprofStandin.startMarkerCalls();
-    assertEquals(0, checkSlotCapacityOverflow(), "slot capacity overflow must fail without storing the excess slot");
+    assertEquals(
+        0,
+        checkSlotCapacityOverflow(),
+        "slot capacity overflow must fail without storing the excess slot");
   }
 
   @Test
   void dynamicPointerRejectsAddressOverflow() {
-    assertEquals(-1, malformedMetadataResult(3), "image-relative pointers must not wrap on addition");
+    assertEquals(
+        -1, malformedMetadataResult(3), "image-relative pointers must not wrap on addition");
   }
 
   @Test
@@ -136,7 +140,8 @@ public class NativememDdprofExclusionTest extends AbstractProcessProfilerTest {
 
   @Test
   void readableRangeRejectsFileBackedOverrun() {
-    assertEquals(0, malformedMetadataResult(6), "the full requested range must fit within p_filesz");
+    assertEquals(
+        0, malformedMetadataResult(6), "the full requested range must fit within p_filesz");
   }
 
   @Test
