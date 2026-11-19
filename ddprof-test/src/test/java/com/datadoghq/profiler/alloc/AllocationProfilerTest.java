@@ -36,11 +36,25 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     if (cached != null) {
       return cached;
     }
+    boolean ok = runBoundedProbe("sudo", "-n", "true");
+    // Only successes are cached: a transient sudo failure (fork pressure, a slow PAM
+    // lookup that hit the wait bound) must not pin the skip for the whole worker JVM.
+    if (ok) {
+      passwordlessSudo = true;
+    }
+    return ok;
+  }
+
+  /**
+   * Runs one probe command under the bounded wait; visible for tests so the bound itself is
+   * covered.
+   */
+  static boolean runBoundedProbe(String... command) {
     boolean ok;
     Process probe = null;
     try {
       probe =
-          new ProcessBuilder("sudo", "-n", "true")
+          new ProcessBuilder(command)
               .redirectOutput(ProcessBuilder.Redirect.to(new File("/dev/null")))
               .redirectError(ProcessBuilder.Redirect.to(new File("/dev/null")))
               .start();
@@ -54,11 +68,6 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
       if (probe != null) {
         probe.destroyForcibly();
       }
-    }
-    // Only successes are cached: a transient sudo failure (fork pressure, a slow PAM
-    // lookup that hit the wait bound) must not pin the skip for the whole worker JVM.
-    if (ok) {
-      passwordlessSudo = true;
     }
     return ok;
   }
