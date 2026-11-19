@@ -263,6 +263,18 @@ void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
     }
 }
 
+void WallClockBlockTracker::resetUnownedBlockedTails() {
+    SlotStorage* storage = _storage.load(std::memory_order_acquire);
+    if (storage == nullptr) {
+        return;
+    }
+    for (ThreadFilter::SlotID id = 0; id < ThreadFilter::kMaxThreads; ++id) {
+        storage->slots[id].resetUnownedBlockedSampling();
+        // Segments outlive a reset tail; their epochs belong to the released recording.
+        clearUnownedWeightSegments(id);
+    }
+}
+
 bool WallClockBlockTracker::hasActiveBlockRun(ThreadFilter::SlotID slot_id) const {
     const BlockState* s = slotForId(slot_id);
     return s != nullptr && s->activeBlockOwner() != BlockRunOwner::NONE;

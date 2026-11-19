@@ -1,0 +1,16 @@
+# The logins this gate accepts approving reviews from, one per line: the
+# gate reads this file from the trusted refs/heads/main checkout, never
+# from a pull request head.
+#
+# The file sits under /.github/scripts/ in CODEOWNERS, so an edit to it is
+# a sensitive-path change and needs an approval from a login listed below.
+# To add or remove a member, edit this file in a pull request.
+#
+# Drift is fail-closed: a team member missing from this list has their
+# approval rejected until their login lands here.
+
+jbachorik
+kaahos
+rkennke
+thegreystone
+zhengyu123

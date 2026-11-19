@@ -395,8 +395,11 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
 bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
                                                           JNIEnv *jni,
                                                           jclass klass) {
-  // BFS over the superclass chain + every visited class's interfaces, comparing GetTag() against
-  // the two cached interface class tags.
+  // LIFO (depth-first) walk over the superclass chain + every visited class's interfaces, not BFS:
+  // interfaces are pushed after the superclass, so under LIFO every interface subtree is explored
+  // before the superclass chain - the only path to an inherited Collection/Map. The 64-pop budget
+  // counts duplicate pops too (already-visited classes burn hops). GetTag() is compared against the
+  // two cached interface class tags.
   std::vector<jclass> work;
   std::unordered_set<jlong> visited;
   work.push_back(klass);

@@ -18,6 +18,16 @@ import org.junit.jupiter.api.Test;
 
 public class JavaProfilerApiSurfaceTest {
   @Test
+  public void nativeMemSeamsAreNotPublicApi() throws Exception {
+    for (String name : new String[] {"describeNativeMemCategories0", "getNativeMemLive0"}) {
+      Method m = JavaProfiler.class.getDeclaredMethod(name);
+      assertFalse(
+          Modifier.isPublic(m.getModifiers()),
+          name + " is a test seam; tests reach it via NativeMemTestHooks");
+    }
+  }
+
+  @Test
   public void taskBlockApiIsPublicButInternalHooksRemainPackageScoped() throws Exception {
     Method parkEnter = JavaProfiler.class.getDeclaredMethod("parkEnter");
     assertNotPublic(parkEnter);

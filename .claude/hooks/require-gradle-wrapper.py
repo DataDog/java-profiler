@@ -10,7 +10,8 @@ import sys
 
 TRUSTED_REF = "refs/remotes/origin/main"  # qualified: a tag named origin/main must not win
 # git_out and the trusted-ref loading are copied in require-fresh-review.py,
-# require-gradle-wrapper.py and protect-knowledgebase.py; change all three together.
+# require-gradle-wrapper.py, protect-knowledgebase.py and babysit-pr.py
+# (babysit-pr.py copies git_out only); change all four together.
 
 
 def git_out(args, cwd):
