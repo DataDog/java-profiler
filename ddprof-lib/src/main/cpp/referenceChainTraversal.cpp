@@ -75,27 +75,27 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   const bool local_root =
       isTransientRootKind(translated_root_kind) && class_tag != 0;
   bool completed_durable_report = false;
+  bool weaker_root_noop = false;
   if (durable_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
     completed_durable_report = ctx->frontier->rootReportCompleted(
         *tag_ptr, translated_root_kind,
         /*anchor_indexed=*/ctx->tracker->isAnchorIndexed(*tag_ptr),
-        ctx->root_enum_attempt_id, ctx->root_enum_previous_attempt_id,
-        ctx->root_enum_retrying_incomplete);
+        ctx->root_report_attempt_id, ctx->root_report_previous_attempt_id,
+        ctx->root_report_retrying_incomplete, &weaker_root_noop);
   }
   // Only reserve LOCAL records replay can absorb; repeated refusals would fill the same prefix and
   // starve later roots.
   bool durable_observation_complete = false;
   bool stage_local = false;
-  if (local_root && *tag_ptr >= 0 && !isLeakTag(*tag_ptr) &&
-      ctx->tracker->localHolderNeedsObservation(*tag_ptr, class_tag) &&
-      !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL) &&
-      ctx->anchor_scope.local_staging_budget() > 0) {
-    stage_local = true;
-    ctx->anchor_scope.consume_local_staging_budget();
+  if (local_root && (*tag_ptr >= 0 || isLeakTag(*tag_ptr)) &&
+      !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL)) {
+    jlong observation_tag = isLeakTag(*tag_ptr) ? 0 : *tag_ptr;
+    stage_local =
+        ctx->anchor_scope.reserveLocalStaging(observation_tag, class_tag);
   }
   AnchorObservationReservationGuard reservation;
-  if (*tag_ptr >= 0 &&
-      ((durable_root && *tag_ptr > 0 && !completed_durable_report) || stage_local) &&
+  if (((durable_root && *tag_ptr > 0 && !completed_durable_report) ||
+       stage_local) &&
       !reservation.acquire(ctx->anchor_scope)) {
     ctx->abortForObservationOverflow(/*static_attachment=*/false);
     return JVMTI_ITERATION_ABORT;
@@ -203,8 +203,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     record.durable_root_kind = durable_kind;
     reservation.commit(record);
   }
-  if (durable_observation_complete) {
-    ctx->frontier->markRootEnumObserved(*tag_ptr, ctx->root_enum_attempt_id);
+  if (durable_observation_complete && !weaker_root_noop) {
+    ctx->frontier->markRootReportObserved(
+        *tag_ptr, translated_root_kind, ctx->root_report_attempt_id);
   }
   return JVMTI_ITERATION_CONTINUE;
 }
@@ -217,6 +218,17 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::stackRefCallback(
   // richer shape, but FrontierEntry has nowhere to record it (depth/method/slot are not part of the
   // record) - admission is otherwise identical to heapRootCallback() above, so this just forwards.
   return heapRootCallback(root_kind, class_tag, size, tag_ptr, user_data);
+}
+
+u32 ReferenceChainTracker::nextRootReportAttemptId(bool static_sweep) {
+  // Root and static sweeps share the frontier stamp; this bit keeps their retries distinct.
+  constexpr u32 source_bit =
+      FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT;
+  if (_root_report_attempt_sequence == source_bit - 1) {
+    _root_report_attempt_sequence = 0;
+  }
+  u32 sequence = ++_root_report_attempt_sequence;
+  return sequence | (static_sweep ? source_bit : 0);
 }
 
 void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -275,12 +287,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     ReferenceChainAnchorObservationScope root_scope(this);
     ReferenceChainPassContext ctx(root_scope);
     ctx.tracker = this;
-    ctx.root_enum_retrying_incomplete = _root_enum_incomplete;
-    ctx.root_enum_previous_attempt_id = _root_enum_attempt_id;
-    if (++_root_enum_attempt_id == 0) {
-      ++_root_enum_attempt_id;
-    }
-    ctx.root_enum_attempt_id = _root_enum_attempt_id;
+    ctx.root_report_retrying_incomplete = _root_enum_incomplete;
+    ctx.root_report_previous_attempt_id = _last_root_enum_attempt_id;
+    ctx.root_report_attempt_id = nextRootReportAttemptId(false);
     ctx.resolved_chain_tags = resolved_chain_tags;
     ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
     ctx.frontier = _frontier;
@@ -324,6 +333,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     _last_root_enum_safepoint_ms = root_enum_safepoint_ns / 1000000;
 
     if (root_err != JVMTI_ERROR_NONE) {
+      _last_root_enum_attempt_id = ctx.root_report_attempt_id;
       // The enumeration attempt errored out - the root picture is incomplete, so record it:
       // runPass()'s termination ladder must not treat the search as settled. The consecutive-error
       // count feeds the ladder's ROOT_ENUM_ERROR abandon; any successful attempt resets it.
@@ -335,6 +345,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       return;
     }
     if (ctx.truncated) {
+      _last_root_enum_attempt_id = ctx.root_report_attempt_id;
       // A truncated attempt ends this pass - an incomplete enumeration leaves the frontier's root
       // picture inconsistent with the expansion phases below, so the next pass expands on the
       // roots already admitted. Retry timing is shouldRunRootEnum()'s (ROOT_ENUM_MIN_INTERVAL_NS).
@@ -351,6 +362,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     // Completed attempt (no error, no truncation): the root picture is now consistent, so the
     // ladder may treat the frontier as the only pending work.
     _root_enum_incomplete = false;
+    _last_root_enum_attempt_id = 0;
     _consecutive_enum_errors = 0;
   }
 
@@ -961,6 +973,8 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     // than reading out of range.
     _static_field_sweep_cursor = 0;
     _static_field_sweep_cycle_truncated = false;
+    _static_field_retry_chunk_start = -1;
+    _static_field_retry_attempt_id = 0;
   }
   jint chunk_start = _static_field_sweep_cursor;
   // A lap starting at class 0 re-traverses the whole loaded-class list, so when it completes it
@@ -1055,6 +1069,13 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   // ReferenceChainPassContext::static_field_seed's own comment) so this sweep actually reaches each
   // class's static fields instead of stopping at the negative-tagged class object itself.
   ctx.static_field_seed = true;
+  bool retrying_static_chunk =
+      _static_field_retry_chunk_start == chunk_start &&
+      _static_field_retry_attempt_id != 0;
+  ctx.root_report_retrying_incomplete = retrying_static_chunk;
+  ctx.root_report_previous_attempt_id =
+      retrying_static_chunk ? _static_field_retry_attempt_id : 0;
+  ctx.root_report_attempt_id = nextRootReportAttemptId(true);
   // Per-class non-STATIC_FIELD admission cap (see ReferenceChainPassContext::_class_other_cap's own
   // comment).
   ctx._class_other_cap = STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS;
@@ -1075,6 +1096,8 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   scope.flush();
   jni->DeleteLocalRef(holder);
   if (follow_err != JVMTI_ERROR_NONE) {
+    _static_field_retry_chunk_start = chunk_start;
+    _static_field_retry_attempt_id = ctx.root_report_attempt_id;
     return;
   }
 
@@ -1084,10 +1107,14 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
 
   if (ctx.truncated) {
     _static_field_sweep_cycle_truncated = true;
+    _static_field_retry_chunk_start = chunk_start;
+    _static_field_retry_attempt_id = ctx.root_report_attempt_id;
     // Resumable cursor: instead of skipping to chunk_end (losing every class after the interruption
     // point for the rest of this lap), redo the chunk on the next pass.
     _static_field_sweep_cursor = chunk_start;
   } else {
+    _static_field_retry_chunk_start = -1;
+    _static_field_retry_attempt_id = 0;
     // Full advance: every class in the chunk was processed.
     _static_field_sweep_cursor = chunk_end;
   }

@@ -346,6 +346,11 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         leak_reservation.commit(makeAnchorObservation(
             frontier_tag, class_tag, 0, AnchorObservation::DURABLE_ADD,
             root_kind));
+        if (ctx->static_field_seed) {
+          ctx->frontier->markRootReportObserved(
+              frontier_tag, root_kind, ctx->root_report_attempt_id,
+              /*static_sweep=*/true);
+        }
       }
       // Auto-mark: record this as a discovered instance, with eviction rights over uncorrelated
       // noise slots (see recordDiscoveredInstance).
@@ -431,6 +436,11 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         durable_admission) {
       admit_reservation.commit(makeAnchorObservation(
           *tag_ptr, class_tag, 0, AnchorObservation::DURABLE_ADD, root_kind));
+      if (ctx->static_field_seed) {
+        ctx->frontier->markRootReportObserved(
+            *tag_ptr, root_kind, ctx->root_report_attempt_id,
+            /*static_sweep=*/true);
+      }
     }
     // Auto-mark: if this object's class matches a watched leak class, record its frontier tag so
     // pollWatchedTargets() can build a chain event for it.
@@ -533,35 +543,37 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
           isDurableAnchorRootKind((u8)reference_kind);
       u8 pending_actions = 0;
       u32 pending_at_risk_klass_id = 0;
+      bool durable_report_complete = false;
       AnchorObservationReservationGuard root_reservation;
       if (durable_edge) {
-        // Decide the possible anchor effects from the current entry before any mutation. A
-        // possible upgrade or an eligible re-enlist/at-risk witness needs a journal slot.
         FrontierEntry current{};
         bool found = ctx->frontier->lookup(*tag_ptr, &current);
         bool upgrade_possible =
             found && current.parent_tag == 0 &&
             rootKindDurability((u8)reference_kind) >
                 rootKindDurability(current.root_kind);
-        // Indexed tags are skipped (cheap probe first): their re-enlist replay is a no-op, and
-        // re-staging the same selectable holders every sweep refills the journal at the same
-        // prefix (sustained overflow aborts at the same edge every pass - no forward progress).
-        if (!ctx->tracker->isAnchorIndexed(*tag_ptr) && found &&
-            ctx->tracker->isSelectableAnchor(current, class_tag)) {
-          pending_actions |= AnchorObservation::REENLIST_ELIGIBLE;
+        if (ctx->static_field_seed && found &&
+            reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+          durable_report_complete = ctx->frontier->rootReportCompleted(
+              *tag_ptr, (u8)reference_kind, /*anchor_indexed=*/false,
+              ctx->root_report_attempt_id,
+              ctx->root_report_previous_attempt_id,
+              ctx->root_report_retrying_incomplete,
+              /*weaker_root_noop=*/nullptr, /*static_sweep=*/true);
         }
-        // The upgrade refuses for parent_tag != 0 by design, so this STATIC_FIELD edge proves an
-        // at-risk static attachment that the anchor tier's parent_tag == 0
-        // filter can never see.
-        if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD && found &&
-            current.parent_tag != 0) {
-          pending_at_risk_klass_id =
-              ctx->tracker->classTags()->resolve(class_tag);
-          if (ctx->tracker->atRiskAnchorNeedsObservation(
-                  *tag_ptr, pending_at_risk_klass_id) &&
-              !ctx->anchor_scope.containsAction(*tag_ptr,
-                                                AnchorObservation::AT_RISK)) {
-            pending_actions |= AnchorObservation::AT_RISK;
+        if (!durable_report_complete) {
+          if (!ctx->tracker->isAnchorIndexed(*tag_ptr) && found &&
+              ctx->tracker->isSelectableAnchor(current, class_tag)) {
+            pending_actions |= AnchorObservation::REENLIST_ELIGIBLE;
+          }
+          if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD && found &&
+              current.parent_tag != 0) {
+            pending_at_risk_klass_id =
+                ctx->tracker->classTags()->resolve(class_tag);
+            if (ctx->anchor_scope.reserveAtRiskStaging(
+                    *tag_ptr, pending_at_risk_klass_id)) {
+              pending_actions |= AnchorObservation::AT_RISK;
+            }
           }
         }
         if ((upgrade_possible || pending_actions != 0) &&
@@ -579,6 +591,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
           root_reservation.commit(makeAnchorObservation(
               *tag_ptr, upgraded_class_tag, 0, AnchorObservation::DURABLE_ADD,
               (u8)reference_kind));
+          durable_report_complete = true;
         }
         ctx->tracker->deferResolvedChainInvalidation(
             *tag_ptr, ctx->resolved_chain_tags,
@@ -593,6 +606,13 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                 ? pending_at_risk_klass_id
                 : 0,
             pending_actions, 0));
+        durable_report_complete = true;
+      }
+      if (ctx->static_field_seed && durable_report_complete &&
+          reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+        ctx->frontier->markRootReportObserved(
+            *tag_ptr, (u8)reference_kind, ctx->root_report_attempt_id,
+            /*static_sweep=*/true);
       }
     }
   }

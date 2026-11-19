@@ -10,6 +10,7 @@
 #include "arch.h"
 #include "common.h"
 #include "referenceChains.h"
+#include <cstring>
 #include <jni.h>
 #include <new>
 
@@ -24,8 +25,9 @@ class ReferenceChainAnchorObservationScope {
 public:
   explicit ReferenceChainAnchorObservationScope(ReferenceChainTracker *tracker)
       : _tracker(tracker), _buffer(&tracker->_anchor_observations),
-        _lease(_buffer->tryLease()),
-        _local_staging_budget(tracker->localStagingAbsorbable()) {}
+        _lease(_buffer->tryLease()) {
+    resetStagingBudgets();
+  }
   ~ReferenceChainAnchorObservationScope() {
     flush();
     _buffer->releaseLease(_lease); // no-op for a non-owning or stale scope
@@ -40,11 +42,58 @@ public:
     return _buffer->containsAction(_lease, tag, action);
   }
 
-  // Replay can absorb only local-index room, pending slots, and displaceable victims.
-  // Only replay changes those capacities, after the same-thread traversal completes.
-  // Refusing excess LOCAL reports prevents journal overflow from starving later roots.
-  u32 local_staging_budget() const { return _local_staging_budget; }
-  void consume_local_staging_budget() { _local_staging_budget--; }
+  // Unknown shapes can use only pending slots; confirmed containers can use the local share.
+  // Spend one scope slot so callbacks cannot overbook replay capacity before the flush.
+  bool reserveLocalStaging(jlong tag, jlong class_tag) {
+    if (_local_staging_budget == 0 ||
+        !_tracker->localHolderNeedsObservation(tag, class_tag)) {
+      return false;
+    }
+    auto shape = _tracker->_class_shape_cache.find(class_tag);
+    if (shape == _tracker->_class_shape_cache.end()) {
+      if (_local_pending_budget == 0) {
+        return false;
+      }
+      _local_pending_budget--;
+    } else if (shape->second ==
+               (u8)ReferenceChainTracker::AnchorClassShape::CONTAINER) {
+      if (_local_index_budget > 0) {
+        _local_index_budget--;
+      } else if (_local_pending_budget > 0) {
+        _local_pending_budget--;
+      } else if (_local_evictable_budget > 0) {
+        _local_evictable_budget--;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+    _local_staging_budget--;
+    return true;
+  }
+
+  bool reserveAtRiskStaging(jlong tag, u32 klass_id) {
+    if (_at_risk_staging_budget == 0 ||
+        !_tracker->atRiskAnchorNeedsObservation(tag, klass_id) ||
+        containsAction(tag, AnchorObservation::AT_RISK)) {
+      return false;
+    }
+    auto live = _tracker->_static_anchor_fifo_klass_counts.find(klass_id);
+    u32 live_count = live == _tracker->_static_anchor_fifo_klass_counts.end()
+                         ? 0
+                         : live->second;
+    u32 slot = atRiskClassSlot(klass_id);
+    if (slot == AT_RISK_CLASS_SET_SLOTS ||
+        live_count + _at_risk_class_counts[slot].count >=
+            ReferenceChainTracker::STATIC_ANCHOR_ATRISK_PER_KLASS_CAP) {
+      return false;
+    }
+    _at_risk_class_counts[slot].count++;
+    _at_risk_staging_budget--;
+    return true;
+  }
+
   void markOverflow(bool static_attachment) { _buffer->markOverflow(_lease, static_attachment); }
   bool ownsLease() const { return _lease.id != 0; }
 
@@ -62,13 +111,71 @@ public:
       _tracker->replayAnchorObservations(_buffer->records(), count, static_retry);
     }
     _buffer->clearPrefix(_lease);
+    resetStagingBudgets();
   }
 
 private:
+  static constexpr u32 AT_RISK_CLASS_SET_SLOTS =
+      ReferenceChainTracker::STATIC_ANCHOR_FIFO_CAP * 2;
+  static constexpr u32 AT_RISK_CLASS_SET_BITMAP_BYTES =
+      AT_RISK_CLASS_SET_SLOTS / 8;
+  struct AtRiskClassCount {
+    u32 klass_id;
+    u8 count;
+  };
+  static_assert((AT_RISK_CLASS_SET_SLOTS & (AT_RISK_CLASS_SET_SLOTS - 1)) == 0,
+                "at-risk staging set must be a power of two");
+  // This fixed table accounts staged classes without allocating in heap callbacks.
+  // Twice the FIFO cap holds one distinct class per staged record at half load.
+
+  u32 atRiskClassSlot(u32 klass_id) {
+    u32 slot = klass_id * 0x9E3779B9U >> 21;
+    for (u32 probes = 0; probes < AT_RISK_CLASS_SET_SLOTS; probes++) {
+      bool used = (_at_risk_class_used[slot >> 3] &
+                   static_cast<u8>(1u << (slot & 7))) != 0;
+      if (!used) {
+        _at_risk_class_used[slot >> 3] |=
+            static_cast<u8>(1u << (slot & 7));
+        _at_risk_class_counts[slot] = AtRiskClassCount{klass_id, 0};
+        return slot;
+      }
+      if (_at_risk_class_counts[slot].klass_id == klass_id) {
+        return slot;
+      }
+      slot = (slot + 1) & (AT_RISK_CLASS_SET_SLOTS - 1);
+    }
+    return AT_RISK_CLASS_SET_SLOTS;
+  }
+
+  void resetStagingBudgets() {
+    _local_staging_budget = _tracker->localStagingAbsorbable();
+    _local_index_budget = ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP -
+                          _tracker->_local_anchor_tags.size();
+    _local_pending_budget = ReferenceChainTracker::PENDING_LOCAL_ANCHOR_CAP -
+                            _tracker->_pending_local_anchors.size();
+    _local_evictable_budget = _tracker->_pending_local_evictable_count;
+#ifdef UNIT_TEST
+    if (_tracker->_local_staging_budget_override_for_test != 0) {
+      _local_index_budget = _local_staging_budget;
+      _local_pending_budget = _local_staging_budget;
+      _local_evictable_budget = _local_staging_budget;
+    }
+#endif
+    _at_risk_staging_budget = ReferenceChainTracker::STATIC_ANCHOR_FIFO_CAP -
+                              _tracker->_static_anchor_fifo.size();
+    memset(_at_risk_class_used, 0, sizeof(_at_risk_class_used));
+  }
+
   ReferenceChainTracker *_tracker;
   AnchorObservationBuffer *_buffer;
   AnchorObservationLease _lease;
-  u32 _local_staging_budget;
+  u32 _local_staging_budget = 0;
+  size_t _local_index_budget = 0;
+  size_t _local_pending_budget = 0;
+  size_t _local_evictable_budget = 0;
+  size_t _at_risk_staging_budget = 0;
+  AtRiskClassCount _at_risk_class_counts[AT_RISK_CLASS_SET_SLOTS] = {};
+  u8 _at_risk_class_used[AT_RISK_CLASS_SET_BITMAP_BYTES] = {};
 };
 
 inline bool isDurableAnchorRootKind(u8 root_kind) {
@@ -117,10 +224,10 @@ struct ReferenceChainPassContext {
 
   ReferenceChainAnchorObservationScope &anchor_scope;
 
-  // Attempt ids let retries match accepted root observations by frontier tag.
-  u32 root_enum_attempt_id = 0;
-  u32 root_enum_previous_attempt_id = 0;
-  bool root_enum_retrying_incomplete = false;
+  // Attempt stamps let each durable-report traversal skip its accepted prefix on retry.
+  u32 root_report_attempt_id = 0;
+  u32 root_report_previous_attempt_id = 0;
+  bool root_report_retrying_incomplete = false;
 
   // Set with `truncated` when the journal had no room; distinct from frontier_cap_hit. The rejected
   // transition is not performed, so the source traversal obligation stays unserved.

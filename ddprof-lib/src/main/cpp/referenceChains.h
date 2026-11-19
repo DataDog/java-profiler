@@ -96,6 +96,8 @@ private:
   // single FollowReferences over every loaded class at once (no cursor) could never finish within
   // one pass's safepoint deadline on a JVM with tens of thousands of loaded classes.
   int _static_field_sweep_cursor;
+  int _static_field_retry_chunk_start = -1;
+  u32 _static_field_retry_attempt_id = 0;
 
   // Set when any chunk within the current lap (the cursor's walk from 0 back to 0) truncates.
   bool _static_field_sweep_cycle_truncated;
@@ -616,16 +618,16 @@ private:
   size_t _anchor_container_cursor = 0;
   size_t _anchor_other_cursor = 0;
 
-  // FIFO of newly admitted anchors awaiting their first walk.
-  std::deque<jlong> _static_anchor_fresh_queue;
+  struct FreshAnchor {
+    jlong tag;
+    jlong own_class_tag;
+  };
+  // FIFO of anchors awaiting their first rotation turn; durable eviction keeps those turns alive.
+  // The class tag is the callback-time snapshot used to select each queued turn.
+  std::deque<FreshAnchor> _static_anchor_fresh_queue;
 
-  // Cap for _static_anchor_fresh_queue. The queue carries its OLDEST unserved entries across
-  // collects (a cross-pass FIFO: the oldest first looks go first); the cap bounds that carry -
-  // overflow entries are dropped and fall back to the fair tiers at their index positions, the
-  // same treatment the force-drain gave them. Without the carry, a stable anchor population above
-  // the durable cap re-enlists a wave larger than one collect's budget every pass and the drain's
-  // window would always hold the same wave tail - re-selecting the same anchors every pass and
-  // starving everything else (8968 of 9000 holders got zero selections in 20 passes).
+  // Overflow drops newest turns, which remain eligible for the fair index tiers.
+  // A served turn stays served after reindexing, preventing repeated fresh-lane priority.
   static constexpr size_t STATIC_ANCHOR_FRESH_CAP = 1024;
 
   // java/lang/Object jclass cache for expandFrontier()'s and admitStaticFieldRoots()'s holder-array
@@ -883,8 +885,9 @@ private:
   // may still hold reachable chains. Cleared on a completed attempt, by restartSearch(), and by
   // resetSearchStateForTest(); runPass()'s termination ladder treats it as pending frontier.
   bool _root_enum_incomplete = false;
-  // Frontier stamps use this id to skip accepted reports across an incomplete retry.
-  u32 _root_enum_attempt_id = 0;
+  // The last incomplete root attempt and the shared source-qualified report-attempt sequence.
+  u32 _last_root_enum_attempt_id = 0;
+  u32 _root_report_attempt_sequence = 0;
 
   // Consecutive root-enumeration attempts ended by a JVMTI error; reset by any successful
   // attempt, restartSearch(), and resetSearchStateForTest(). At MAX_CONSECUTIVE_ENUM_ERRORS the
@@ -1230,27 +1233,22 @@ private:
   // BFS thread, after reconcileAnchorClassShapes(): indexes pending holders confirmed as
   // containers, drops the rest, and empties the pending buffer.
   void resolvePendingLocalAnchors();
-  // Removes local-holder index entries that are no longer selectable (dead or demoted), keeping
-  // _static_anchor_fresh_queue a suffix of the index. Scans only the local share. Run at most once
-  // per resolvePendingLocalAnchors() call, only when the local cap is reached and the backoff
-  // (_local_compact_backoff) is not active. Returns the number of removed entries.
+  // Removes local-holder index entries that are no longer selectable (dead or demoted). Scans only
+  // the local share and runs at most once per resolvePendingLocalAnchors() call at the cap.
+  // Returns the number of removed entries.
   size_t compactLocalAnchors();
   // Removes tags absent from walkStaticFieldAnchors()'s GetObjectsWithTags() resolution - a
   // collected anchor can never be walked again, so its slot is reclaimed instead of waiting for
   // FIFO eviction (and a dead local container would otherwise keep its selectable EXPANDED
   // frontier record until a search restart cleared the frontier).
   void removeMissingAnchors(const std::vector<jlong> &missing);
-  // Shared tail of the three anchor-removal paths above: stable in-place compaction of the two
-  // parallel vectors (relative order preserved, so the fresh queue - a suffix of the index -
-  // stays a suffix), then removal from the membership set, the local-share map and the fresh
-  // queue. Positions shift: the collector clamps out-of-range cursors; in-range ones only lose
-  // fairness for one lap.
-  void eraseAnchorEntries(const std::unordered_set<jlong> &removed);
-  // FIFO-evicts the oldest durable-share entries when the durable share exceeds
-  // DURABLE_ANCHOR_INDEX_CAP, down to cap - DURABLE_ANCHOR_EVICT_BATCH, keeping
-  // _static_anchor_fresh_queue a suffix of the index (stable compaction, queue tags removed
-  // alongside). Local-share entries are never evicted here. Called by the anchor-index
-  // helpers during replay, not from heap callbacks. Returns the number of evicted entries.
+  // Stable compaction preserves index order and parallel class-tag alignment.
+  // Durable eviction keeps pending turns; removal paths clear them.
+  void eraseAnchorEntries(const std::unordered_set<jlong> &removed,
+                          bool preserve_pending_turns = false);
+  // FIFO-evicts the oldest durable entries down to cap - DURABLE_ANCHOR_EVICT_BATCH.
+  // Pending first-look turns survive eviction; the index remains bounded.
+  // Local-share entries are never evicted here. Returns the number evicted.
   size_t evictOldestDurableAnchors();
 
   // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
@@ -1314,6 +1312,7 @@ private:
                           int root_enum_budget, int expand_budget,
                           int *edges_admitted, bool *truncated,
                           bool *frontier_cap_hit, u64 *safepoint_ns);
+  u32 nextRootReportAttemptId(bool static_sweep);
 
   // Inserts (or refreshes) klass_id's resolved chain in _resolved_chains, recording the
   // source_tag/source_search_ns it was reconstructed from so a later poll can tell a stale entry

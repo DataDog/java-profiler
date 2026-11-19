@@ -151,10 +151,11 @@ void ReferenceChainTracker::descendFromAnchor(
 std::vector<jlong>
 ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   std::vector<jlong> selected;
-  if (max_count <= 0 || _static_anchor_index.empty()) {
+  const size_t fresh_queue_len = _static_anchor_fresh_queue.size();
+  if (max_count <= 0 ||
+      (_static_anchor_index.empty() && fresh_queue_len == 0)) {
     return selected;
   }
-  // Scratch buffers used by the bounded index scan reserve before taking the shared lock.
   size_t idx_size = _static_anchor_index.size();
   if (_anchor_container_cursor >= idx_size) {
     _anchor_container_cursor = 0;
@@ -166,30 +167,30 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     size_t pos;
     jlong tag;
   };
-  const size_t max_picks = std::min(idx_size, static_cast<size_t>(max_count));
-  // Fresh picks can hide at most max_picks fair entries; retain enough candidates to replace them.
+  const size_t max_picks = std::min(
+      std::max(idx_size, fresh_queue_len), static_cast<size_t>(max_count));
   const size_t fair_pick_limit = std::min(idx_size, max_picks * 2);
   std::vector<TierPick> leak_picks;
   std::vector<TierPick> fresh_picks;
   std::vector<TierPick> container_picks;
   std::vector<TierPick> other_picks;
   std::vector<jlong> fresh_kept_tags;
-  const size_t fresh_queue_len = _static_anchor_fresh_queue.size();
+  std::vector<jlong> fresh_spent_tags;
   selected.reserve(max_picks);
   leak_picks.reserve(max_picks);
   fresh_picks.reserve(std::min(fresh_queue_len, max_picks));
   container_picks.reserve(fair_pick_limit);
   other_picks.reserve(fair_pick_limit);
   fresh_kept_tags.reserve(std::min(fresh_queue_len, max_picks));
+  fresh_spent_tags.reserve(fresh_queue_len + max_picks);
   bool container_before_cursor = false;
   bool other_before_cursor = false;
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
-    // The scan retains the first budget-sized leak tier and bounded fair-tier candidates at or
-    // beyond each cursor; fresh-kept picks are removed from fair consumption after the lock.
     for (size_t i = 0; i < idx_size; i++) {
       jlong tag = _static_anchor_index[i];
       jlong own_class_tag = i < _static_anchor_own_class_tags.size()
-                               ? _static_anchor_own_class_tags[i] : 0;
+                               ? _static_anchor_own_class_tags[i]
+                               : 0;
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
           !isSelectableAnchor(entry, own_class_tag) ||
@@ -223,85 +224,33 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         }
       }
     }
-    // Fresh-lane drain. FIFO across passes: entries the budget cannot serve stay queued (the
-    // oldest unserved first looks go first, and no anchor loses its turn to a later admission -
-    // under above-cap churn the re-enlistment wave re-forms every pass, so a force-drain here
-    // would re-select the same wave tail every pass and starve everything else). Every popped
-    // entry spends its ONE first look either way: kept if eligible AND (container-shaped OR
-    // not-yet-classified) AND room remains in the budget; dropped otherwise (it keeps its fair-
-    // tier coverage at its index position).
-    // The fresh lane is capped at half the post-leak budget: under above-cap churn the
-    // re-enlistment wave refills the queue every pass, and an uncapped drain would spend the
-    // whole budget on the wave's tail every pass - the fair cursors (the only coverage for
-    // everyone outside the wave) would never advance. The cap must bound the DRAIN's room: pops
-    // beyond it would drop entries from the queue without selecting them.
+
     int fresh_room =
         (max_count - (int)leak_picks.size()) -
         (max_count - (int)leak_picks.size()) / 2;
-    size_t drain_pos = fresh_queue_len <= idx_size ? idx_size - fresh_queue_len : 0;
-    while (!_static_anchor_fresh_queue.empty()) {
-      if (fresh_room <= 0) {
-        // Budget exhausted: the unserved head keeps its queue position for the next collect (a
-        // cross-pass FIFO - the oldest first looks go first). Overflow beyond the cap drops the
-        // NEWEST pushes: they fall back to the fair tiers at their index positions, the same
-        // treatment the force-drain gave them.
-        while (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
-          _static_anchor_fresh_queue.pop_back();
-        }
-        break;
-      }
-      jlong tag = _static_anchor_fresh_queue.front();
+    while (!_static_anchor_fresh_queue.empty() && fresh_room > 0) {
+      FreshAnchor anchor = _static_anchor_fresh_queue.front();
       _static_anchor_fresh_queue.pop_front();
-      size_t pos = drain_pos;
-      drain_pos++;
-      if (pos >= idx_size || _static_anchor_index[pos] != tag) {
-        // The suffix-window invariant broke (cannot happen today; defensive): fall back to a search
-        // rather than mis-shape the entry - the queue is small, this is not a hot path once
-        // healthy.
-        auto it =
-            std::find(_static_anchor_index.begin(),
-                     _static_anchor_index.end(), tag);
-        if (it == _static_anchor_index.end()) {
-          continue;
-        }
-        pos = (size_t)(it - _static_anchor_index.begin());
-      }
-      jlong own_class_tag = pos < _static_anchor_own_class_tags.size()
-                               ? _static_anchor_own_class_tags[pos] : 0;
+      fresh_spent_tags.push_back(anchor.tag);
       FrontierEntry entry{};
-      if (!frontier->lookupLocked(tag, &entry) ||
-          !isSelectableAnchor(entry, own_class_tag) ||
+      if (!frontier->lookupLocked(anchor.tag, &entry) ||
+          !isSelectableAnchor(entry, anchor.own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
-          isQueuedForRotation(tag) || entry.leak_tag != 0) {
-        continue; // dead/ineligible/queued/leak-tier: first look spent, not
-                  // fresh-kept (the leak tier selects it via the scan if it is leak-tagged)
+          isQueuedForRotation(anchor.tag) || entry.leak_tag != 0) {
+        continue;
       }
-      bool keep = false; // container or not-yet-classified rides the
-                         // lane; the wrapper admits one pass before reconcile can classify its
-                         // class
-      if (pos < _static_anchor_own_class_tags.size()) {
-        auto shape_it =
-            _class_shape_cache.find(_static_anchor_own_class_tags[pos]);
-        keep = shape_it == _class_shape_cache.end() ||
-               shape_it->second == (u8)AnchorClassShape::CONTAINER;
-      } else {
-        keep = true; // no own-class tag recorded - treat as unknown
-      }
+      auto shape_it = _class_shape_cache.find(anchor.own_class_tag);
+      bool keep = shape_it == _class_shape_cache.end() ||
+                  shape_it->second == (u8)AnchorClassShape::CONTAINER;
       if (!keep) {
-        continue; // classified non-container: the other tier owns it
+        continue;
       }
-      fresh_picks.push_back(TierPick{pos, tag});
+      fresh_picks.push_back(TierPick{idx_size, anchor.tag});
+      fresh_kept_tags.push_back(anchor.tag);
       fresh_room--;
     }
   });
-  for (const TierPick &pick : fresh_picks) {
-    fresh_kept_tags.push_back(pick.tag);
-  }
-  // Cursor-fair consumption of one tier: scan picks (sorted by pos by construction) starting at
-  // entries with pos >= cursor, stop at `want` OR at the lap end (NO within-call wrap: re-walking
-  // anchors this same call already covered would waste walk budget - the leftover budget flows to
-  // the next tier instead, and the cursor resets to 0 so the NEXT call starts a fresh lap).
   auto consume_tier_fair = [&](const std::vector<TierPick> &picks,
                                bool has_pick_before_cursor, size_t &cursor,
                                int want) {
@@ -310,7 +259,6 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
       return took;
     }
     if (picks.empty()) {
-      // Only members before the cursor means this tier completed its lap; an empty tier does not.
       if (has_pick_before_cursor) {
         cursor = 0;
       }
@@ -340,9 +288,6 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     selected.push_back(p.tag);
     budget_left--;
   }
-  // Fresh lane: queue order (admission order) so a burst larger than the budget spends the oldest
-  // first looks first and nothing jumps the queue; outranked fresh anchors stay queued for their
-  // FIFO turn (the drain's room cap bounds how many are popped per collect).
   for (const TierPick &p : fresh_picks) {
     if (budget_left <= 0) {
       break;
@@ -352,21 +297,27 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   }
   budget_left -= consume_tier_fair(container_picks, container_before_cursor,
                                     _anchor_container_cursor, budget_left);
-  // The other tier is the last consumer of the budget - its leftover has no further reader, so
-  // don't accumulate it back into budget_left (a dead store clang scan-build flags).
   consume_tier_fair(other_picks, other_before_cursor, _anchor_other_cursor,
                     budget_left);
-  // A selected anchor has had its look: whether it came from the fresh lane or a fair tier, it
-  // must leave the queue, or the next collect's fresh lane would re-serve anchors the fair tiers
-  // already covered (the queue's FIFO turn is for anchors still awaiting their first look).
+
   if (!selected.empty()) {
     std::unordered_set<jlong> served(selected.begin(), selected.end());
     _static_anchor_fresh_queue.erase(
         std::remove_if(_static_anchor_fresh_queue.begin(),
                        _static_anchor_fresh_queue.end(),
-                       [&](jlong tag) { return served.count(tag) > 0; }),
+                       [&](const FreshAnchor &anchor) {
+                         if (served.count(anchor.tag) == 0) {
+                           return false;
+                         }
+                         fresh_spent_tags.push_back(anchor.tag);
+                         return true;
+                       }),
         _static_anchor_fresh_queue.end());
+    fresh_spent_tags.insert(fresh_spent_tags.end(), selected.begin(),
+                            selected.end());
   }
+  _frontier->markAnchorRotationServed(fresh_spent_tags.data(),
+                                      fresh_spent_tags.size());
   return selected;
 }
 
@@ -598,7 +549,7 @@ size_t ReferenceChainTracker::evictOldestDurableAnchors() {
     }
     evicted.insert(tag);
   }
-  eraseAnchorEntries(evicted);
+  eraseAnchorEntries(evicted, /*preserve_pending_turns=*/true);
   // Record a resweep request unconditionally (see _durable_anchor_resweep_gen): a holder
   // displaced while admissions keep the population above the cap must be re-swept even when
   // evictions stop. No cursor restart here: with churn above the cap an eviction fires every
@@ -621,14 +572,12 @@ void ReferenceChainTracker::removeMissingAnchors(
 
 // See the declaration in referenceChains.h.
 void ReferenceChainTracker::eraseAnchorEntries(
-    const std::unordered_set<jlong> &removed) {
+    const std::unordered_set<jlong> &removed, bool preserve_pending_turns) {
   if (removed.empty()) {
     return;
   }
-  // Stable in-place compaction of the two parallel vectors keeps relative order, so the fresh
-  // queue (a suffix of the index) stays a suffix once the same tags leave it too. Positions
-  // shift: the collector clamps out-of-range cursors; in-range ones only lose fairness for one
-  // lap.
+  // Stable compaction preserves index order and the parallel class-tag alignment.
+  // Durable eviction preserves pending first-look turns outside the capped index.
   size_t out = 0;
   for (size_t i = 0; i < _static_anchor_index.size(); i++) {
     jlong tag = _static_anchor_index[i];
@@ -649,11 +598,24 @@ void ReferenceChainTracker::eraseAnchorEntries(
     _static_anchor_index_tags.erase(tag);
     _local_anchor_tags.erase(tag);
   }
-  _static_anchor_fresh_queue.erase(
-      std::remove_if(_static_anchor_fresh_queue.begin(),
-                     _static_anchor_fresh_queue.end(),
-                     [&](jlong tag) { return removed.count(tag) > 0; }),
-      _static_anchor_fresh_queue.end());
+  if (!preserve_pending_turns) {
+    std::vector<jlong> pending_removed;
+    pending_removed.reserve(
+        std::min(_static_anchor_fresh_queue.size(), removed.size()));
+    _static_anchor_fresh_queue.erase(
+        std::remove_if(_static_anchor_fresh_queue.begin(),
+                       _static_anchor_fresh_queue.end(),
+                       [&](const FreshAnchor &anchor) {
+                         if (removed.count(anchor.tag) == 0) {
+                           return false;
+                         }
+                         pending_removed.push_back(anchor.tag);
+                         return true;
+                       }),
+        _static_anchor_fresh_queue.end());
+    _frontier->clearAnchorRotationPending(pending_removed.data(),
+                                         pending_removed.size());
+  }
 }
 
 bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
@@ -679,10 +641,10 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
   evictOldestDurableAnchors();
   _static_anchor_index.push_back(tag);
   _static_anchor_own_class_tags.push_back(own_class_tag);
-  // Walk newly admitted anchors before the fair cursors.
-  _static_anchor_fresh_queue.push_back(tag);
-  if (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
-    _static_anchor_fresh_queue.pop_back();
+  if (_frontier != nullptr &&
+      _static_anchor_fresh_queue.size() < STATIC_ANCHOR_FRESH_CAP &&
+      _frontier->tryMarkAnchorRotationPending(tag)) {
+    _static_anchor_fresh_queue.push_back(FreshAnchor{tag, own_class_tag});
   }
 }
 

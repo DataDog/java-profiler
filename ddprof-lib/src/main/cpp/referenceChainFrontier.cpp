@@ -112,7 +112,9 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
       _table[idx].depth = depth;
       _table[idx].state = state;
       _table[idx].root_kind = root_kind;
-      _table[idx].root_enum_attempt = 0;
+      _table[idx].root_report_attempt = 0;
+      _table[idx].root_report_kind_mask = 0;
+      _table[idx].anchor_rotation_flags = 0;
       _table[idx].class_tag = class_tag;
       _table[idx].leak_tag = 0;
       _table[idx].leak_tag_incarnation = 0;
@@ -219,44 +221,186 @@ void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
   }
 }
 
-void FrontierTable::markRootEnumObserved(jlong tag, u32 attempt_id) {
-  if (attempt_id == 0 || tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
+void FrontierTable::markRootReportObserved(jlong tag, u8 root_kind,
+                                           u32 attempt_id,
+                                           bool static_sweep) {
+  u8 kind_bit = root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD
+                    ? FrontierRootReport::STATIC_FIELD_MASK
+                    : root_kind == JVMTI_HEAP_REFERENCE_JNI_GLOBAL
+                          ? FrontierRootReport::JNI_GLOBAL_MASK
+                          : 0;
+  if (kind_bit == 0 || attempt_id == 0 || tag <= 0 ||
+      tag - 1 >= (jlong)INT_MAX ||
+      (static_sweep && root_kind != JVMTI_HEAP_REFERENCE_STATIC_FIELD)) {
     return;
   }
   int idx = (int)(tag - 1);
+  bool chain_attached_static = false;
+  if (static_sweep) {
+    {
+      SharedLockGuard guard(&_table_lock);
+      if (idx >= _table_size) {
+        return;
+      }
+      chain_attached_static = _table[idx].parent_tag != 0;
+      if (chain_attached_static &&
+          (u32)_table[idx].referrer_class_tag == attempt_id) {
+        return;
+      }
+    }
+    if (chain_attached_static) {
+      // Chain hops read their referrer's class from the parent entry instead.
+      // Preserve this unused field for the in-flight static-chunk retry stamp.
+      ExclusiveLockGuard guard(&_table_lock);
+      if (idx < _table_size && _table[idx].parent_tag != 0) {
+        _table[idx].referrer_class_tag = (jlong)attempt_id;
+      }
+      return;
+    }
+  }
   {
     SharedLockGuard guard(&_table_lock);
-    // A report restamped in this attempt needs no exclusive write acquisition.
-    if (idx >= _table_size || _table[idx].root_enum_attempt == attempt_id) {
+    if (idx >= _table_size ||
+        (_table[idx].root_report_attempt == attempt_id &&
+         (_table[idx].root_report_kind_mask & kind_bit) != 0)) {
       return;
     }
   }
   ExclusiveLockGuard guard(&_table_lock);
   if (idx < _table_size) {
-    _table[idx].root_enum_attempt = attempt_id;
+    if (_table[idx].root_report_attempt != attempt_id) {
+      _table[idx].root_report_attempt = attempt_id;
+      _table[idx].root_report_kind_mask = kind_bit;
+    } else {
+      _table[idx].root_report_kind_mask |= kind_bit;
+    }
   }
 }
 
 bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
                                         bool anchor_indexed, u32 attempt_id,
                                         u32 previous_attempt_id,
-                                        bool retrying_incomplete) {
+                                        bool retrying_incomplete,
+                                        bool *weaker_root_noop,
+                                        bool static_sweep) {
+  if (weaker_root_noop != nullptr) {
+    *weaker_root_noop = false;
+  }
   if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
     return false;
   }
   int idx = (int)(tag - 1);
   SharedLockGuard guard(&_table_lock);
-  // Root-attached kind changes are real upgrades; chain-attached entries cannot be upgraded by a root.
-  // Therefore only root-attached entries require a matching root_kind here.
-  if (idx >= _table_size ||
-      (_table[idx].parent_tag == 0 && _table[idx].root_kind != root_kind)) {
+  if (idx >= _table_size) {
     return false;
   }
-  u32 stamped = _table[idx].root_enum_attempt;
-  return anchor_indexed ||
-         (attempt_id != 0 && stamped == attempt_id) ||
-         (retrying_incomplete && previous_attempt_id != 0 &&
-          stamped == previous_attempt_id);
+  const FrontierEntry &entry = _table[idx];
+  // Static attribution stays authoritative, but an unseen evicted anchor may re-enlist.
+  // An index hit or accepted retry stamp suppresses restaging of the weaker report.
+  bool weaker_jni_global = entry.parent_tag == 0 &&
+      entry.root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
+      root_kind == JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
+  if (weaker_jni_global) {
+    bool static_report_seen =
+        (entry.root_report_attempt &
+         FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT) != 0 &&
+        (entry.root_report_kind_mask &
+         FrontierRootReport::STATIC_FIELD_MASK) != 0;
+    bool root_global_seen =
+        attempt_id != 0 && entry.root_report_attempt == attempt_id &&
+        (entry.root_report_kind_mask &
+         FrontierRootReport::JNI_GLOBAL_MASK) != 0;
+    bool previous_global_seen = retrying_incomplete &&
+        previous_attempt_id != 0 &&
+        entry.root_report_attempt == previous_attempt_id &&
+        (entry.root_report_kind_mask &
+         FrontierRootReport::JNI_GLOBAL_MASK) != 0;
+    if (anchor_indexed || static_report_seen || root_global_seen ||
+        previous_global_seen) {
+      if (weaker_root_noop != nullptr) {
+        *weaker_root_noop = true;
+      }
+      return true;
+    }
+  }
+  if (entry.parent_tag == 0 && entry.root_kind != root_kind &&
+      !weaker_jni_global) {
+    return false;
+  }
+  if (static_sweep && root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
+      entry.parent_tag != 0) {
+    u32 stamped = (u32)entry.referrer_class_tag;
+    return anchor_indexed ||
+           (attempt_id != 0 && stamped == attempt_id) ||
+           (retrying_incomplete && previous_attempt_id != 0 &&
+            stamped == previous_attempt_id);
+  }
+  u8 kind_bit = root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD
+                    ? FrontierRootReport::STATIC_FIELD_MASK
+                    : root_kind == JVMTI_HEAP_REFERENCE_JNI_GLOBAL
+                          ? FrontierRootReport::JNI_GLOBAL_MASK
+                          : 0;
+  bool current_stamp = attempt_id != 0 &&
+      entry.root_report_attempt == attempt_id &&
+      (entry.root_report_kind_mask & kind_bit) != 0;
+  bool previous_stamp = retrying_incomplete && previous_attempt_id != 0 &&
+      entry.root_report_attempt == previous_attempt_id &&
+      (entry.root_report_kind_mask & kind_bit) != 0;
+  return anchor_indexed || current_stamp || previous_stamp;
+}
+
+bool FrontierTable::tryMarkAnchorRotationPending(jlong tag) {
+  if (tag <= 0 || tag - 1 >= (jlong)INT_MAX) {
+    return false;
+  }
+  int idx = (int)(tag - 1);
+  ExclusiveLockGuard guard(&_table_lock);
+  if (idx >= _table_size ||
+      (_table[idx].anchor_rotation_flags &
+       (FrontierAnchorRotation::FIRST_LOOK_PENDING |
+        FrontierAnchorRotation::FIRST_LOOK_SERVED)) != 0) {
+    return false;
+  }
+  _table[idx].anchor_rotation_flags |=
+      FrontierAnchorRotation::FIRST_LOOK_PENDING;
+  return true;
+}
+
+void FrontierTable::markAnchorRotationServed(const jlong *tags, size_t count) {
+  if (tags == nullptr || count == 0) {
+    return;
+  }
+  ExclusiveLockGuard guard(&_table_lock);
+  for (size_t i = 0; i < count; i++) {
+    jlong tag = tags[i];
+    if (tag > 0 && tag - 1 < (jlong)INT_MAX) {
+      int idx = (int)(tag - 1);
+      if (idx < _table_size) {
+        u8 &flags = _table[idx].anchor_rotation_flags;
+        flags = static_cast<u8>(
+            (flags & ~FrontierAnchorRotation::FIRST_LOOK_PENDING) |
+            FrontierAnchorRotation::FIRST_LOOK_SERVED);
+      }
+    }
+  }
+}
+
+void FrontierTable::clearAnchorRotationPending(const jlong *tags,
+                                               size_t count) {
+  if (tags == nullptr || count == 0) {
+    return;
+  }
+  ExclusiveLockGuard guard(&_table_lock);
+  for (size_t i = 0; i < count; i++) {
+    jlong tag = tags[i];
+    if (tag > 0 && tag - 1 < (jlong)INT_MAX) {
+      int idx = (int)(tag - 1);
+      if (idx < _table_size) {
+        _table[idx].anchor_rotation_flags &=
+            static_cast<u8>(~FrontierAnchorRotation::FIRST_LOOK_PENDING);
+      }
+    }
+  }
 }
 
 bool FrontierTable::improveChain(jlong tag, jlong parent_tag,

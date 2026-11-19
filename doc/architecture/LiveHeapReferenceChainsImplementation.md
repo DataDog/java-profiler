@@ -16,9 +16,9 @@ Related documents:
 
 ## Main components
 
-`LivenessTracker` detects growth in the number of distinct GC ages among surviving tracked
-samples of a class. Candidate selection also requires qualifying allocating-thread evidence.
-It assigns leak tags to instances in those class/thread groups.
+`LivenessTracker` uses distinct GC ages and allocating-thread evidence to select candidates. Each
+class keeps 16 retained thread cohorts and four challenger slots; these add 143,360 bytes across
+256 classes. When all incumbents meet the count bar, a challenger must outscore the weakest.
 
 `ReferenceChainTracker` maintains a root-based frontier and searches for those instances. It runs on one agent-owned background thread. `_engine_lock` serializes engine state across lifecycle and test paths.
 
@@ -108,10 +108,13 @@ can expand already-admitted roots while waiting for the next enumeration attempt
 
 Root enumeration uses `firstpassbudget`, including attempts after the first pass.
 
-Root enumeration has no JVMTI cursor. The frontier stamps accepted durable-root reports by tag and
-attempt; an incomplete retry skips only stamps from its preceding incomplete attempt.
-Root-attached kind changes and rejected transitions remain eligible. Chain-attached entries cannot
-be upgraded by a root. Restart and test reset clear the attempt id.
+Root enumeration has no JVMTI cursor. It skips compatible indexed anchors and stamps accepted
+durable reports by tag, source, kind, and attempt. A retry suppresses only reports accepted by its
+preceding incomplete attempt; static-field chunks keep separate stamps across index eviction.
+
+A weaker `JNI_GLOBAL` report does not replace `STATIC_FIELD` attribution but can re-enlist an evicted
+anchor when no index or accepted report covers it. Stronger upgrades and rejected transitions remain
+eligible; chain-attached entries cannot be upgraded by roots.
 
 Repeated attempts can examine already-admitted roots without charging admission budget. Direct-root
 leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
@@ -241,14 +244,14 @@ compaction can leave newly dead entries holding slots during its 8 skipped at-ca
 
 The durable share (static fields and JNI globals) is capped at 8192 entries
 (`DURABLE_ANCHOR_INDEX_CAP`). The admission that pushes it past the cap FIFO-evicts the oldest
-1024 durable entries (`DURABLE_ANCHOR_EVICT_BATCH`) from the index, the dedup set and the fresh
-queue, so the per-pass selection scan stays bounded by the sum of the two caps. Eviction also
-invalidates the static sweep memo, forcing one sweep lap, because a re-discovered durable edge is
+1024 durable entries (`DURABLE_ANCHOR_EVICT_BATCH`) from the index and dedup set, so the per-pass
+selection scan stays bounded by the sum of the two caps. Eviction also invalidates the static sweep
+memo, forcing one sweep lap, because a re-discovered durable edge is
 the only path that re-enlists an evicted anchor: an unchanged durable root kind never upgrades,
 an already-admitted entry takes no fresh admission path, and static-only holders never appear in
-root enumeration at all. A live evicted anchor is therefore re-enlisted - with rotation
-eligibility and a fresh-lane first look - the next time its durable edge is traversed; a dead one
-is never reported again. Rotation eligibility is the shared admission contract
+root enumeration at all. A live evicted anchor can be re-enlisted when its durable edge is traversed; a dead one is never
+reported again.
+Rotation eligibility is the shared admission contract
 (`isSelectableAnchor()`): root-attached durable kinds, or CONTAINER-shaped holders - reparented
 containers keep parent_tag set and a stale transient root_kind, so the re-enlist bypasses the
 root-kind filter and re-indexes directly. Eviction bumps a resweep-request generation
@@ -258,6 +261,11 @@ it only on completing, so a lap in flight when the eviction lands, or a truncate
 leave the generation unserved until a full lap actually re-traverses the whole class list. A
 cursor restart on eviction would reset mid-lap progress under sustained above-cap churn and
 starve later classes, so there is none.
+
+Pending first-look turns remain in a capped FIFO after index eviction. Queue items carry the
+callback-time class-tag snapshot, so selection does not search the index per queued tag. Overflow
+drops newest turns, which can rejoin when a later report finds a slot; served turns use fair rotation.
+
 Eviction and re-enlistment run only in the replay step described in
 [Deferred anchor-index updates](#deferred-anchor-index-updates), never in a JVMTI callback.
 A local holder that a durable root later attaches moves to the durable share and stops
@@ -272,13 +280,16 @@ The traversal caller replays the records in arrival order after the synchronous 
 returns. Callbacks skip known no-op LOCAL and AT_RISK actions before reserving a record; the
 scope-local indexes suppress duplicate actions across records in the same prefix.
 
-Each scope limits LOCAL records to the index room, pending slots and displaceable entries replay
-can absorb. Excess holders are offered again by the next root enumeration.
+Each scope reserves LOCAL capacity by shape: unclassified holders use pending slots only; confirmed
+containers use index slots, then pending slots or displaceable entries. It reserves AT_RISK records
+against remaining global FIFO room and per-class quotas. Excess local holders are re-reported by
+root enumeration.
 
 The journal holds 16,384 records of at most 24 bytes each, so the record array uses at most
 384 KiB. Two scope-local indexes suppress duplicate LOCAL and AT_RISK actions. Each index has
 32,768 16-bit slots and a 4 KiB occupancy bitmap; together they add 136 KiB. The record and index
-arrays use 520 KiB per tracker, before other metadata. A reservation fails when the journal is
+arrays use 520 KiB per tracker, before other metadata. Per-scope quota accounting uses a fixed
+16,640-byte stack table and allocates nothing in callbacks. A reservation fails when the journal is
 full. The callback then aborts the traversal before the
 frontier or tag transition that the report would cause. The caller flushes the accepted prefix.
 The source traversal obligation stays unserved, so a later pass retries it:

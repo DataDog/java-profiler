@@ -104,7 +104,6 @@ com.datadoghq.profiler.cpu.TlsPrimingTest.* | PROF-16281 | 2026-10-20 | 2027-01-
 # head efb2a4e5e) and passed the full-suite retry with an identical binary.
 # Scoped to the gtest tsan cells so a failure in the regular suite, in asan, or
 # on another arch still gates.
-LineNumberTableCopyTest.RejectsUnmappedSource | PROF-16621 | 2026-11-12 | 2027-02-10 | glibc-tsan-* | Failed on attempt 1 and passed the full-suite retry (job 2243650462); fault-recovery timing under TSan instrumentation, unrelated to the triggering change set
 
 # PROF-16632 was handled in the test itself: elfparser_ut's
 # invalidElfSmallMappingAfterUnmap skips at runtime under TSan because the

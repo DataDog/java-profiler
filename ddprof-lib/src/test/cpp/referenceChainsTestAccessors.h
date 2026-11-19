@@ -57,7 +57,10 @@ public:
         t->_search_started = false;
         t->_tags_released = true;
         t->_root_enum_incomplete = false;
-        t->_root_enum_attempt_id = 0;
+        t->_last_root_enum_attempt_id = 0;
+        t->_root_report_attempt_sequence = 0;
+        t->_static_field_retry_chunk_start = -1;
+        t->_static_field_retry_attempt_id = 0;
         t->_consecutive_enum_errors = 0;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
@@ -196,6 +199,9 @@ public:
 
     static void setLocalStagingBudgetOverrideForTest(u32 budget) {
         ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(budget);
+    }
+    static jlong leakTagForTest(u32 index) {
+        return ReferenceChainTracker::LEAK_TAG_BASE + index;
     }
 
     // Canary-lane backoff state wrappers - see _canary_backoff_mult's own comment
@@ -644,6 +650,7 @@ public:
                t->_local_anchor_tags.empty() &&
                t->_pending_local_anchors.empty() &&
                t->_pending_local_anchor_tags.empty() &&
+               t->_static_anchor_fresh_queue.empty() &&
                t->_local_compact_backoff == 0 &&
                t->_durable_anchor_resweep_gen == t->_static_field_sweep_served_gen &&
                t->_pending_local_evict_cursor == 0 &&
@@ -691,13 +698,21 @@ public:
     static bool freshAnchorQueueContainsForTest(jlong tag) {
         const auto &queue =
             ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
-        return std::find(queue.begin(), queue.end(), tag) != queue.end();
+        return std::find_if(queue.begin(), queue.end(),
+                            [tag](const auto &entry) {
+                                return entry.tag == tag;
+                            }) != queue.end();
     }
     // Snapshot of the fresh queue in FIFO order (front first) - pins the cross-pass service order.
     static std::vector<jlong> freshQueueTagsForTest() {
         const auto &queue =
             ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
-        return std::vector<jlong>(queue.begin(), queue.end());
+        std::vector<jlong> tags;
+        tags.reserve(queue.size());
+        for (const auto &entry : queue) {
+            tags.push_back(entry.tag);
+        }
+        return tags;
     }
     // The static sweep resweep request (set by durable-share eviction, served and cleared by a
     // full sweep lap): runPassManualWalk() runs admitStaticFieldRoots() while this is pending or
@@ -1243,11 +1258,12 @@ public:
     // already-admitted holder: negative class-object referrer (treated as root-like), holder as
     // tag_ptr.
     static jint reportStaticFieldEdgeForTest(
-        jlong referrer_class_tag, jlong *tag, void *context) {
+        jlong referrer_class_tag, jlong *tag, void *context,
+        jlong class_tag = 0) {
         jlong rtag = referrer_class_tag;
         return ReferenceChainTracker::heapReferenceCallback(
             JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*reference_info=*/nullptr,
-            /*class_tag=*/0, /*referrer_class_tag=*/0, /*size=*/0, tag, &rtag,
+            class_tag, /*referrer_class_tag=*/0, /*size=*/0, tag, &rtag,
             /*length=*/0, context);
     }
 
