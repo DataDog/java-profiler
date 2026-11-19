@@ -1195,16 +1195,20 @@ void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 nex
                                    bool stripes_held) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   SignalBlocker signals;
-  auto publish = [&] {
-    _jfr.wallClockEpoch(getLockIndex(tid), event);
+  auto publish = [&](bool all_stripes_held) {
+    _jfr.wallClockEpoch(getLockIndex(tid), event, all_stripes_held);
     // Publish the successor before dump can prune this epoch without pending units.
     WallClockCounters::beginSamplingEpoch(next_epoch_start);
   };
   if (stripes_held) {
-    publish();
+    publish(true);
+  } else if (_jfr.wallEpochPruneDue()) {
+    // A deferral holds one stripe from its epoch read to its segment commit.
+    RecordingLocks locks(this);
+    publish(true);
   } else {
     ExclusiveLockGuard stripe(&_locks[getLockIndex(tid)]);
-    publish();
+    publish(false);
   }
 }
 

@@ -306,9 +306,12 @@ private:
   off_t _chunk_start;
   MethodMap _method_map;
   // Normal-thread writers hold _rec_lock exclusively; signals never access this map.
-  // Rotation keeps only closed epochs still referenced by retained wall segments.
+  // Pruning keeps only closed epochs still referenced by retained wall segments.
   std::map<u64, WallClockEpochEvent, std::less<u64>,
            CountingAllocator<std::pair<const u64, WallClockEpochEvent>, NM_WALLCLOCK>> _wall_epochs;
+  static constexpr size_t kMinWallEpochPruneThreshold = 64;
+  // Doubling the retained size keeps close-time pruning amortized O(1) per epoch.
+  size_t _wall_epoch_prune_threshold = kMinWallEpochPruneThreshold;
 
   Arguments _args;
 
@@ -376,6 +379,8 @@ public:
 
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
+  // Caller holds _rec_lock exclusively and every recording stripe.
+  void pruneWallEpochs();
 
   void cpuMonitorCycle();
   void appendRecording(const char *target_file, size_t size);
@@ -494,7 +499,12 @@ public:
   void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
                           u64 correlation_id, ExecutionEvent *event,
                           const Context *context = nullptr);
-  void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
+  // all_stripes_held lets the insert prune: no deferral can then add a segment.
+  void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event,
+                            bool all_stripes_held = false);
+  bool wallEpochPruneDue() const {
+    return _wall_epochs.size() + 1 >= _wall_epoch_prune_threshold;
+  }
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
@@ -682,7 +692,8 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
-  void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
+  void wallClockEpoch(int lock_index, WallClockEpochEvent *event, bool all_stripes_held);
+  bool wallEpochPruneDue();
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
 

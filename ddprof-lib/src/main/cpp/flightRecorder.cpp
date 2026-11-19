@@ -35,6 +35,7 @@
 #include "threadState.h"
 #include "tsc.h"
 #include "hotspot/vmStructs.h"
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>
@@ -1188,15 +1189,7 @@ void Recording::switchChunk(int fd) {
   OS::truncateFile(_fd);
   _chunk_start = 0;
 
-  std::unordered_set<u64> pending_epochs;
-  Profiler::instance()->blockTracker()->collectUnownedEpochStarts(pending_epochs);
-  for (auto it = _wall_epochs.begin(); it != _wall_epochs.end();) {
-    if (pending_epochs.count(it->first) == 0) {
-      it = _wall_epochs.erase(it);
-    } else {
-      ++it;
-    }
-  }
+  pruneWallEpochs();
 
   // the recording file is restarted, so write out all the info events again
   writeHeader(_buf);
@@ -1219,6 +1212,19 @@ void Recording::switchChunk(int fd) {
     recordWallClockEpoch(_buf, &entry.second);
   }
   flush(_buf);
+}
+
+void Recording::pruneWallEpochs() {
+  std::unordered_set<u64> pending_epochs;
+  Profiler::instance()->blockTracker()->collectUnownedEpochStarts(pending_epochs);
+  for (auto it = _wall_epochs.begin(); it != _wall_epochs.end();) {
+    if (pending_epochs.count(it->first) == 0) {
+      it = _wall_epochs.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  _wall_epoch_prune_threshold = std::max(kMinWallEpochPruneThreshold, 2 * _wall_epochs.size());
 }
 
 void Recording::cpuMonitorCycle() {
@@ -2561,9 +2567,11 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
-void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
+void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event,
+                                     bool all_stripes_held) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   _wall_epochs.insert_or_assign(event->_start_time, *event);
+  if (all_stripes_held && _wall_epochs.size() >= _wall_epoch_prune_threshold) pruneWallEpochs();
   int start = buf->skip(1);
   buf->putVar64(T_WALLCLOCK_SAMPLE_EPOCH);
   buf->putVar64(event->_start_time);
@@ -2954,13 +2962,19 @@ Error FlightRecorder::dump(const char *filename, const int length) {
   return Error("No active recording");
 }
 
-void FlightRecorder::wallClockEpoch(int lock_index,
-                                    WallClockEpochEvent *event) {
+void FlightRecorder::wallClockEpoch(int lock_index, WallClockEpochEvent *event,
+                                    bool all_stripes_held) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   if (_rec != nullptr) {
-    _rec->recordWallClockEpoch(_rec->buffer(lock_index), event);
+    _rec->recordWallClockEpoch(_rec->buffer(lock_index), event, all_stripes_held);
   }
+}
+
+bool FlightRecorder::wallEpochPruneDue() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  SharedLockGuard locker(&_rec_lock);
+  return _rec != nullptr && _rec->wallEpochPruneDue();
 }
 
 void FlightRecorder::recordTraceRoot(int lock_index, int tid,

@@ -343,6 +343,39 @@ TEST_P(WallEpochRecordingTest, ZeroPendingPeriodicRequestKeepsOrdinaryTimestampA
   checkOrdinaryAfterEpochRotation(false);
 }
 
+TEST_P(WallEpochRecordingTest, ClosedEpochsWithoutRetainedSegmentsDoNotAccumulate) {
+  WallEpochFile continuous;
+  ASSERT_GE(continuous.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  const int recording_fd = dup(continuous.fd);
+  ASSERT_GE(recording_fd, 0);
+  Recording recording(recording_fd, args);
+  target = &recording;
+  struct RecorderRestore {
+    Recording* saved_recording = ProfilerTestAccessor::recording();
+    u64 saved_epoch = WallClockCounters::samplingEpochStart();
+    ~RecorderRestore() {
+      WallClockCounters::beginSamplingEpoch(saved_epoch);
+      ProfilerTestAccessor::recording() = saved_recording;
+    }
+  } restore;
+  ProfilerTestAccessor::recording() = &recording;
+  const u64 retained = TSC::ticks();
+  ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, retained));
+  constexpr u64 kClosedEpochs = 1000;
+  for (u64 i = 0; i < kClosedEpochs; ++i) {
+    WallClockEpochEvent epoch(retained + i);
+    epoch.endEpoch(1);
+    profiler->recordWallClockEpoch(request.tid, &epoch, retained + i + 1, false);
+  }
+  EXPECT_EQ(retained + kClosedEpochs, WallClockCounters::samplingEpochStart());
+  EXPECT_LT(RecordingTestAccessor::epochCount(recording), 64U)
+      << "Closed epochs without retained segments must be pruned between dumps";
+  EXPECT_TRUE(RecordingTestAccessor::hasEpoch(recording, retained))
+      << "An epoch referenced by a retained segment must survive close-time pruning";
+}
+
 class WallEpochTimer : public BaseWallClock {
 public:
   std::atomic<int> passes{0};
