@@ -209,11 +209,15 @@ Error CTimer::start(Arguments &args) {
 }
 
 Error CTimer::startWithTableSize(Arguments &args, int max_timers) {
-  if (args._interval < 0) {
+  // Validate the value actually assigned: cpuSamplerInterval() resolves
+  // _cpu over _interval over DEFAULT_CPU_INTERVAL, and returns 0 only for a
+  // non-CPU event reaching a CPU engine.
+  long interval = args.cpuSamplerInterval();
+  if (interval <= 0) {
     return Error("interval must be positive");
   }
 
-  _interval = args.cpuSamplerInterval();
+  _interval = interval;
   _cstack = args._cstack;
   _signal = SIGPROF;
 
