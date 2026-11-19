@@ -60,7 +60,7 @@ enum Mark {
     MARK_COMPILER_ENTRY = 3,
     MARK_JAVA_PROFILER = 4, // java-profiler internals such as native hooks.
     MARK_THREAD_ENTRY = 5,   // Thread entry points (thread_native_entry, JavaThread::, etc.)
-    MARK_CONT_RUNTIME = 6,   // Continuation freeze/thaw runtime (FreezeBase/ThawBase/entries)
+    MARK_CONT_RUNTIME = 6,   // Continuation freeze/thaw runtime (bases, Config<...> instances, entries)
 };
 
 // MARK_CONT_RUNTIME only annotates a frame: it keeps its symbol and native
