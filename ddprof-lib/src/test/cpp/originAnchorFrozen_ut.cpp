@@ -59,7 +59,7 @@ namespace {
 
 // Mangled names verified against Oracle Graal 21.0.8+12 libjvm symbols.
 const char* const kFreezeSymbol = "_ZN10FreezeBase14recurse_freezeER5frameS1_ibb";
-const char* const kNativeCallSymbol = "JVM_NanoTime";
+const char* const kNativeCallSymbol = "_ZN2os13javaTimeNanosEv";
 
 TEST(ContFreezeThawSymbolTest, FreezeThawRuntimeSymbolsAreClassified) {
     EXPECT_TRUE(isContFreezeThawEntry(kFreezeSymbol));
@@ -67,6 +67,8 @@ TEST(ContFreezeThawSymbolTest, FreezeThawRuntimeSymbolsAreClassified) {
     EXPECT_TRUE(isContFreezeThawEntry("_Z4thawI6ConfigIL8oop_kind0E12G1BarrierSetEEPlP10JavaThreadi"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN8ThawBase9thaw_slowEP17stackChunkOopDescb"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN6FreezeI6ConfigIL8oop_kind0E12G1BarrierSetEE15try_freeze_fastEv"));
+    EXPECT_TRUE(isContFreezeThawEntry("_ZL15freeze_internalI6ConfigIL8oop_kind0E12G1BarrierSetELb0EE13freeze_resultP10JavaThreadPl"));
+    EXPECT_TRUE(isContFreezeThawEntry("_ZN6ConfigIL8oop_kind0E12G1BarrierSetE4thawEP10JavaThreadN12Continuation9thaw_kindE"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN4ThawI6ConfigIL8oop_kind0E12G1BarrierSetEE9thaw_fastEP17stackChunkOopDesc"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN12Continuation12freeze_entryEv"));
     EXPECT_TRUE(isContFreezeThawEntry("_ZN12Continuation10thaw_entryEv"));
@@ -242,7 +244,7 @@ protected:
         native_lib->setTextBase(reinterpret_cast<const char*>(native_base));
         native_lib->add(nativePc(kFreezeOff), 0x20, kFreezeSymbol);
         native_lib->add(nativePc(kNativeCallOff), 0x20, kNativeCallSymbol);
-        native_lib->add(nativePc(kNativeCallOff2), 0x20, "JVM_NanoTimeSlow");
+        native_lib->add(nativePc(kNativeCallOff2), 0x20, "clock_gettime");
         native_lib->sort();
         // setDwarfTable keeps the pointer: allocate like the production parser
         // would, not a stack array that would dangle after configure().
@@ -648,7 +650,7 @@ protected:
                 // The freeze/thaw mark annotates B2's frame without dropping its symbol.
                 EXPECT_STREQ(control == FreezeRuntimeAnchorB2 ? kFreezeSymbol
                              : control == NativeCallFallbackB3 || control == GenericAnchorRedirectB6
-                                     ? "JVM_NanoTimeSlow" : kNativeCallSymbol,
+                                     ? "clock_gettime" : kNativeCallSymbol,
                              reinterpret_cast<const char*>(frames[i].method_id));
                 i++;
             }

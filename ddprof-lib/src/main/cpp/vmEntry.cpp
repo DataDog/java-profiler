@@ -89,8 +89,15 @@ static bool starts_with(const char* name, const char* prefix) {
     return strncmp(name, prefix, strlen(prefix)) == 0;
 }
 
+// Every freeze/thaw template instantiation, including the internal glue between the
+// entries and the Freeze/Thaw classes, is parameterized by Config<oop_kind, BarrierSet>.
+static bool hasFreezeThawConfig(const char* name) {
+    return strstr(name, "6ConfigIL8oop_kind") != nullptr;
+}
+
 bool isContFreezeThawEntry(const char* blob_name) {
-    return starts_with(blob_name, "_Z6freezeI")   // freeze<Config<...>>(JavaThread*, long)
+    return hasFreezeThawConfig(blob_name)
+        || starts_with(blob_name, "_Z6freezeI")   // freeze<Config<...>>(JavaThread*, long)
         || starts_with(blob_name, "_Z4thawI")      // thaw<Config<...>>(long, JavaThread*, int)
         || starts_with(blob_name, "_ZN10FreezeBase")
         || starts_with(blob_name, "_ZN8ThawBase")

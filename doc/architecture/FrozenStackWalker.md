@@ -22,8 +22,9 @@ agent/API initialization leaves the published offsets and oop width unchanged.
 Initialization that has not yet found all required metadata remains retryable.
 
 The sampled thread must be in Java, and the interrupted PC must not lie inside
-the continuation freeze/thaw runtime (marked from `FreezeBase`, `ThawBase` and
-the freeze/thaw entry symbols at library initialization), because an
+the continuation freeze/thaw runtime (marked at library initialization:
+`FreezeBase`, `ThawBase`, every function instantiated for
+`Config<oop_kind, BarrierSet>`, and the freeze/thaw entry symbols), because an
 in-progress freeze/thaw runs without a Java-to-VM transition and copied frames
 can sit on the carrier and in the chunk at once. An unmarked callee of that
 runtime is covered too: an in-progress freeze/thaw keeps its runtime frames on
@@ -34,8 +35,8 @@ the state check alone is insufficient. The mark only annotates these frames:
 they keep their symbols, and native stack walks continue through them.
 
 For a native interrupted PC outside that runtime, the chunk is quiescent. An
-example is a native call that leaves the thread in Java, such as compiled
-`System.nanoTime`; JNI calls change the state and stay rejected. Recovery is
+example is a native call that keeps the thread in the Java state, such as
+compiled `System.nanoTime`; JNI calls change the state and stay rejected. Recovery is
 then gated on the first mounted Java frame the walk verified instead of the
 interrupted PC.
 That substitution requires positive proof: every native frame between the
