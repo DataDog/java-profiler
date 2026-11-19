@@ -186,8 +186,8 @@ void ReferenceChainTracker::autoTuneDefaults(Arguments &args) {
         std::min(scaled, MAX_REFERENCE_CHAINS_BUDGET));
   }
 
-  // --- First-pass budget --- The root enumeration pass is one-shot per search and can afford a
-  // much larger budget.
+  // --- First-pass budget --- Root enumeration passes (first pass and interval-gated repeats) spend
+  // a much larger budget than expansion passes.
   if (!(tuned & REF_CHAINS_TUNED_FIRST_PASS_BUDGET)) {
     int fpb = args._reference_chains_budget * 10;
     args._reference_chains_first_pass_budget = std::min(fpb,
@@ -291,8 +291,8 @@ Error ReferenceChainTracker::start(Arguments &args) {
   _hop_cap = args._reference_chains_hop_cap;
   _budget = args._reference_chains_budget;
   // 0 (unset) auto-scales from _budget instead of falling back to it plainly - see this field's own
-  // comment (referenceChains.h) for why a steady-state per-pass budget is the wrong size for the
-  // first pass.
+  // comment (referenceChains.h) for why a steady-state per-pass budget is the wrong size for root
+  // enumeration passes.
   _first_pass_budget = args._reference_chains_first_pass_budget > 0
                             ? args._reference_chains_first_pass_budget
                             : std::min(_budget * AUTO_FIRST_PASS_BUDGET_MULTIPLIER,

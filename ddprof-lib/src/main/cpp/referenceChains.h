@@ -114,7 +114,9 @@ private:
   int _hop_cap;
   int _budget;
 
-  // Larger one-shot edge budget for the search's root-seeded first pass.
+  // Edge budget for each root/stack-ref enumeration (first pass and every interval-gated repeat),
+  // much larger than _budget: an exhausted budget truncates the enumeration. Expansion passes
+  // spend _effective_budget instead.
   int _first_pass_budget;
 
   // Wall-clock TTL for one search; <= 0 disables the cutoff.
@@ -334,9 +336,8 @@ private:
                 "batch descriptor capacity must track the batch upper bound");
   ReferenceChainBatchSet _batch_set;
 
-  // Search lifecycle state. _search_started distinguishes a search's first pass (seed
-  // FollowReferences from the heap roots) from a resumed pass (expand the persisted frontier, see
-  // expandFrontier()) - runPass() below.
+  // Search lifecycle state. _search_started marks a search's first pass, which always enumerates
+  // roots; later passes enumerate only once the interval elapses (see runPass()).
   bool _search_started;
   volatile u8 _search_state;
 
@@ -488,8 +489,8 @@ private:
     }
   } _priority_expand_set;
 
-  // Chain-attached holders without a known collection shape need a first
-  // descend walk when a static edge or reparenting removes their root eligibility.
+  // Holders reparented under a chain, or reached by a static edge while chain-attached, are queued
+  // for one first descend walk whatever their class shape (bounded by the FIFO and per-class caps).
   struct AtRiskAnchor {
     jlong tag;
     u32 klass_id;
@@ -1423,13 +1424,9 @@ public:
   // frontierTable()'s existing rationale.
   ClassTagTable *classTags() { return &_class_tags; }
 
-  // Runs exactly one bounded BFS pass and returns. The first call for a search seeds
-  // FollowReferences from the heap roots (heap_filter=0, klass=NULL, initial_object=NULL - see this
-  // method's own comment in referenceChains.cpp for why FollowReferences rather than
-  // IterateThroughHeap); every later call resumes from the persisted frontier via expandFrontier()
-  // instead of re-walking from the roots (see expandFrontier()'s comment for why - re-walking from
-  // the roots each call would re-traverse the entire already-discovered subgraph every pass,
-  // defeating the point of a per-pass budget).
+  // Runs exactly one bounded BFS pass and returns. Root/stack-ref enumeration is mandatory on a
+  // search's first pass and repeats once rootEnumIntervalFloorNs() has elapsed; every pass then
+  // expands the persisted frontier via expandFrontier() rather than re-walking the whole graph.
   bool runPass(jvmtiEnv *jvmti, JNIEnv *jni, bool *out_truncated = nullptr);
 
   // Serialized entry points used by threadLoop(), the BFS thread.
@@ -1551,17 +1548,9 @@ public:
   // (livenessTracker.h).
   jlong tagAsRootForTest(jvmtiEnv *jvmti, JNIEnv *jni, jobject obj);
 
-  // Test seam - not part of the production API. Since ReferenceChainTracker is a process-wide
-  // singleton (ExternalProcessReferenceChainTest's own class javadoc explains why that matters:
-  // only the *first* test to ever call runPass() in a shared JVM gets a real root-seeded walk,
-  // since runPass() only re-walks from the roots once per search's whole lifetime), an in-process
-  // test that needs its own genuine first-ever root walk calls this at the start of its test body
-  // to force exactly that - releasing any tags a previous test's search still held, then resetting
-  // search/frontier state to the same "brand-new tracker" state restartSearch()
-  // (referenceChains.cpp) produces, plus the target- dedup/pending-event state restartSearch()
-  // itself intentionally leaves for pollWatchedTargets()/drainPendingChainEvents() to self-clear
-  // (this is an immediate, out-of-band reset - there is no next real pass here to observe the
-  // change and clear them the ordinary way).
+  // Shared-JVM tests must reset this singleton before a fresh search or inherit earlier search state.
+  // This seam releases old tags and clears frontier, candidate, cache, and pending-event state.
+  // Call only between tests; it stops and restarts the BFS thread around the reset.
   void resetSearchStateForTest(jvmtiEnv *jvmti, JNIEnv *jni);
 
   // Test seam - not part of the production API. Diagnostic-only: reports how far a given

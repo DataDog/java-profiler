@@ -1461,7 +1461,7 @@ public:
   void seedKlassPopulationSampleForTest(
       u32 klass_id, u32 count, u64 epoch, jweak *out_evicted = nullptr,
       int *out_evicted_count = nullptr, int max_evicted = 0) {
-    _table_lock.lock();
+    ExclusiveLockGuard guard(&_table_lock);
     klass_id = resolveTestKlassAliasLocked(klass_id);
     for (int i = 0; i < _klass_population_size; i++) {
       if (_klass_population[i].klass_id == klass_id) {
@@ -1474,7 +1474,6 @@ public:
     recordKlassPopulationSampleLocked(klass_id, count, epoch, &slot, &created,
                                       out_evicted, out_evicted_count, max_evicted);
     _klass_population[slot].test_seeded_history = true;
-    _table_lock.unlock();
   }
 #endif
 

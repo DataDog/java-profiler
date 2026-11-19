@@ -120,8 +120,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   if (max_count <= 0 || _static_anchor_index.empty()) {
     return selected;
   }
-  // Tiered selection over _static_anchor_index (O(anchors) per pass, under ONE shared lock - the
-  // lookups below are lookupLocked()).
+  // Tiered selection over _static_anchor_index (O(anchors) per pass). The tracker thread, holding
+  // _engine_lock, is the only production index writer and runs this prune; the frontier shared lock
+  // covers frontier lookups, not index members, so production writers must stay serialized.
   size_t idx_size = _static_anchor_index.size();
   if (_anchor_container_cursor >= idx_size) {
     _anchor_container_cursor = 0;
@@ -202,9 +203,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
       size_t pos = drain_pos;
       drain_pos++;
       if (pos >= idx_size || _static_anchor_index[pos] != tag) {
-        // The suffix-window invariant broke (cannot happen today; defensive): fall back to a search
-        // rather than mis-shape the entry - the queue is small, this is not a hot path once
-        // healthy.
+        // Reachable: the prune above dropped a queued tag, shifting the suffix window for entries
+        // queued before it. Search the whole index for the tag; a pruned tag is absent, so it is
+        // skipped. Cost: one index scan per mismatched entry, at most STATIC_ANCHOR_FRESH_CAP.
         auto it =
             std::find(_static_anchor_index.begin(),
                      _static_anchor_index.end(), tag);

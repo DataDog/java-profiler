@@ -1049,3 +1049,177 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
 // offset, the superclass-chain order, the interface-referrer branch - and degrade to the edge KIND
 // on any undecodable hop, never a fabricated name (the fail-safe contract: a wrong numbering on an
 // unverified JVM degrades, it does not lie).
+
+// A prune inside the fresh-queue window misaligns the estimated queue positions; the fallback
+// search must still shape every surviving fresh anchor in admission order and drop the dead ones.
+TEST_F(ReferenceChainsBfsTest, InWindowPruneKeepsFreshQueueSelections) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr int kFresh = 6;
+    for (int i = 0; i < kFresh; i++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, 900 + i, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            900 + i, 910000 + i, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        ReferenceChainsTestAccessor::primeClassShapeForTest(910000 + i, true);
+    }
+    ASSERT_EQ((size_t)kFresh,
+              ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest());
+    // Two dead entries inside the queue window (the ABANDONED shape the production death path
+    // leaves): every later queue position now differs from its estimate.
+    frontier->clear(901);
+    frontier->clear(903);
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(16);
+    EXPECT_EQ((std::vector<jlong>{900, 902, 904, 905}), selected);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest());
+    EXPECT_EQ((std::vector<jlong>{900, 902, 904, 905}),
+              ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest());
+}
+
+// Cursors are clamped before the prune compacts the index: entries pruned below the cursor shift
+// unvisited survivors under it. They wait for the next lap - delayed once, never repeated or lost.
+TEST_F(ReferenceChainsBfsTest, FairCursorAfterPruneDelaysSkippedSurvivorsOneLap) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+
+    for (int i = 0; i < 10; i++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, 950 + i, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            950 + i, 920000 + i, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        ReferenceChainsTestAccessor::primeClassShapeForTest(920000 + i, false);
+    }
+    ASSERT_EQ((std::vector<jlong>{950, 951, 952, 953}),
+              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4));
+    frontier->clear(950);
+    frontier->clear(951);
+    // The cursor sat at position 4; survivors 952..959 now sit at 0..7, so 954 and 955 (not yet
+    // visited) fall below it.
+    EXPECT_EQ((std::vector<jlong>{956, 957, 958, 959}),
+              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4));
+    EXPECT_EQ((std::vector<jlong>{952, 953, 954, 955}),
+              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4))
+        << "the lap wrapped: the skipped survivors are served next, none lost";
+}
+
+// The rotation selection is 32 persistent anchors plus at most 16 drained at-risk anchors; the
+// drain stops at its per-pass cap and a drained duplicate of a persistent pick is not repeated.
+TEST_F(ReferenceChainsBfsTest, RotationSelectionBoundaryIsPersistentPlusDrained) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+
+    for (int i = 0; i < 40; i++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, 1100 + i, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            1100 + i, 930000 + i, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        ReferenceChainsTestAccessor::primeClassShapeForTest(930000 + i, false);
+    }
+    std::vector<jlong> selection =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(32);
+    ASSERT_EQ(32u, selection.size());
+    // 17 at-risk entries: 16 distinct from the persistent picks, plus one repeating selection[0].
+    for (int i = 0; i < 16; i++) {
+        ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(2100 + i, 77);
+    }
+    ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(selection[0], 77);
+    std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained;
+    ASSERT_EQ(16, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(16, drained));
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest())
+        << "the 17th at-risk entry waits for the next pass";
+    ReferenceChainsTestAccessor::mergeAtRiskAnchorsForTest(selection, drained);
+    EXPECT_EQ(48u, selection.size());
+    EXPECT_EQ(2100, selection[32]);
+    EXPECT_EQ(2115, selection.back());
+
+    std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> next;
+    ASSERT_EQ(1, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(16, next));
+    std::vector<jlong> full = selection;
+    ReferenceChainsTestAccessor::mergeAtRiskAnchorsForTest(full, next);
+    EXPECT_EQ(selection, full) << "a drained duplicate of a persistent pick is not repeated";
+}
+
+// A pass that found no candidate leaves the loop-tail poll as the only registration path: a leak
+// qualifying after the pass must be admitted by finishLoopIterationSerialized, once.
+TEST_F(ReferenceChainsBfsTest, IdleLoopTailPollRegistersLaterCandidateOnce) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    LivenessTrackerTestResetGuard liveness_reset_guard;
+    LivenessTracker *liveness = LivenessTracker::instance();
+    liveness->klassPopulationResetForTest();
+    liveness->setGcGenerationsForTest(true);
+    liveness->classMapGenerationSetForTest(Profiler::instance()->classMap()->generation());
+    int root = addNode();
+    script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, root, -1}};
+
+    EXPECT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni));
+    tracker->finishLoopIterationSerialized(&mock_jvmti, &mock_jni);
+    ASSERT_EQ(0, ReferenceChainsTestAccessor::candidateCountForTest())
+        << "the idle iteration must not have a candidate";
+
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        liveness->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        liveness->tidTrendRecordForTest(1, 4242, epoch, epoch);
+    }
+    liveness->klassPopulationSetStableClassTagForTest(1, -41);
+
+    tracker->finishLoopIterationSerialized(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateCountForTest());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::candidateKlassIdForTest(0));
+    tracker->finishLoopIterationSerialized(&mock_jvmti, &mock_jni);
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateCountForTest());
+}
+
+// Admission appends to a bounded fresh queue; the 1025th eligible anchor evicts the oldest entry.
+TEST_F(ReferenceChainsBfsTest, FreshAnchorQueueDropsOldestPastCap) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+    constexpr int kCap = 1024;
+    constexpr jlong kFirstTag = 5000, kClassTag = 940000;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kClassTag, true);
+    for (int i = 0; i <= kCap; i++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, kFirstTag + i, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            kFirstTag + i, kClassTag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        if (i == kCap - 1) {
+            ASSERT_EQ(1024u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest());
+        }
+    }
+    EXPECT_EQ(1024u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest())
+        << "the 1025th admission must evict, not grow the queue";
+    ASSERT_EQ(1025u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+
+    std::vector<jlong> first =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(1);
+    ASSERT_EQ(1u, first.size());
+    EXPECT_EQ(kFirstTag + 1, first[0]) << "the evicted oldest anchor must not ride the fresh lane";
+}

@@ -8,6 +8,8 @@
 #include "referenceChainInternal.h"
 #include "tsc.h"
 
+#include <type_traits>
+
 
 
 
@@ -23,12 +25,18 @@ protected:
 
 class LivenessTrackerTestResetGuard {
 public:
+    LivenessTrackerTestResetGuard() = default;
+    LivenessTrackerTestResetGuard(const LivenessTrackerTestResetGuard &) = delete;
+    LivenessTrackerTestResetGuard &operator=(const LivenessTrackerTestResetGuard &) = delete;
     ~LivenessTrackerTestResetGuard() {
         LivenessTracker *liveness = LivenessTracker::instance();
         liveness->klassPopulationResetForTest();
         liveness->setGcGenerationsForTest(false);
     }
 };
+static_assert(!std::is_copy_constructible<LivenessTrackerTestResetGuard>::value &&
+                  !std::is_copy_assignable<LivenessTrackerTestResetGuard>::value,
+              "the reset guard owns a cleanup and must not be copied");
 
 TEST_F(ReferenceChainsBfsTest, ReconstructsChainForSyntheticGraph) {
     Arguments args;

@@ -169,8 +169,8 @@ void ReferenceChainTracker::mergeAtRiskAnchors(
     std::vector<jlong> &selection,
     const std::vector<AtRiskAnchor> &drained) {
   for (const AtRiskAnchor &at_risk : drained) {
-    // A reparented collection can also have been selected by the persistent
-    // container tier. The combined selection is bounded by 48 + 16 entries.
+    // The persistent tiers may already have selected this tag. The combined selection holds at most
+    // STATIC_ANCHOR_ROTATION_BUDGET persistent plus STATIC_ANCHOR_FIFO_DRAIN drained entries.
     if (std::find(selection.begin(), selection.end(), at_risk.tag) ==
         selection.end()) {
       selection.push_back(at_risk.tag);
@@ -221,11 +221,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                               STALE_EXPANDED_ROTATION_BUDGET);
   int budget = expand_budget - rotation_reserved_budget;
 
-  // Root/stack-ref enumeration alone (unlike a root-seeded FollowReferences call on the fallback
-  // path) never discovers a root's own transitive children - IterateOverReachableObjects's
-  // root/stack-ref callbacks are given no oop, only a tag_ptr (see heapRootCallback()'s own
-  // comment) - so even when it runs this pass, the expandFrontier() call below is still needed to
-  // make any further progress.
+  // Root/stack-ref enumeration never discovers a root's transitive children (its callbacks get no
+  // oop, only a tag_ptr), so even when it runs this pass, expandFrontier() below is still needed
+  // to make progress.
   if (run_root_enum) {
     jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
     ReferenceChainPassContext ctx;
@@ -1099,10 +1097,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   if (manual_first_pass) {
     _search_started = true;
     store(_search_start_ns, OS::nanotime());
-    // Register the candidates that triggered this search before walking. The
-    // first pass can drain the frontier; without a watched klass it would then
-    // complete and release its tags before the loop's post-pass poll can
-    // reconstruct any chain or schedule candidate-scoped walks.
+    // Poll before the first walk: with no watched klass, a pass that drains the frontier completes
+    // and releases its tags before the loop's post-pass poll can register candidates or build chains.
     pollWatchedTargets(jvmti, jni);
   }
 

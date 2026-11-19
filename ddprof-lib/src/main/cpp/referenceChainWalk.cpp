@@ -446,9 +446,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // This new path is deeper - replace the shallow root-attached entry with the deeper
       // chain-attached entry.
       u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-      // Pre-read the CURRENT shape: improveChain() can remove this entry's
-      // durable-root eligibility. A known collection remains in the container
-      // tier; other holders need the FIFO's first look below.
+      // Pre-read the CURRENT shape: improveChain() can remove this entry's durable-root
+      // eligibility; the FIFO push below then gives it a first descend walk.
       FrontierEntry pre_improve_entry{};
       bool was_root_attached_durable =
           ctx->frontier->lookup(*tag_ptr, &pre_improve_entry) &&

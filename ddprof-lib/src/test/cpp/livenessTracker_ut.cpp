@@ -1123,6 +1123,24 @@ public:
         t->_table_lock.unlock();
     }
 
+    using Scratch = LivenessTracker::KlassCountScratch;
+    static constexpr int KLASS_POPULATION_CAP = LivenessTracker::MAX_KLASS_POPULATION_ENTRIES;
+
+    static void addObjects(LivenessTracker *t, Scratch &s, jint tid, u32 age, int n = 1) {
+        for (int i = 0; i < n; i++) {
+            t->insertThreadGen(s, tid, age);
+        }
+    }
+
+    static const Scratch::ThreadGens *findThread(const Scratch &s, jint tid) {
+        for (int i = 0; i < s.thread_count; i++) {
+            if (s.threads[i].tid == tid) {
+                return &s.threads[i];
+            }
+        }
+        return nullptr;
+    }
+
     // Runs one onGC() with the given _container_limit_resolved value and returns the
     // container usage it recorded. Restores the touched fields afterwards.
     static u64 containerUsageRecordedByOnGC(LivenessTracker *t, bool limit_resolved) {
@@ -1355,6 +1373,42 @@ TEST_F(SelectLeakCandidatesTest, SeededClassHistoryAcceptsExplicitUpdatesAfterGc
     }
     EXPECT_EQ(0, tracker->selectLeakCandidates(out, 5));
 }
+TEST_F(SelectLeakCandidatesTest, SeededClassHistoryLosesProtectionAfterReset) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->seedKlassPopulationSampleForTest(1, 10, 1);
+    LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, 2);
+    KlassPopulationEntry entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(1, &entry));
+    ASSERT_EQ(1, entry.ring_fill);  // protection reached: the fold added no sample
+    tracker->klassPopulationResetForTest();
+    ASSERT_FALSE(tracker->klassPopulationLookupForTest(1, &entry));
+    int slot;
+    bool created;
+    tracker->klassPopulationRecordForTest(1, 10, 3, &slot, &created);
+    LivenessTrackerTestAccessor::foldClassCohort(tracker, 1, 7, 4);
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(1, &entry));
+    EXPECT_EQ(2, entry.ring_fill);
+    EXPECT_EQ(1u, entry.count_ring[1]);  // the fold's one distinct age
+}
+
+TEST_F(SelectLeakCandidatesTest, SeededClassHistoryProtectionDoesNotSurviveSlotReuse) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr int cap = LivenessTrackerTestAccessor::KLASS_POPULATION_CAP;
+    tracker->seedKlassPopulationSampleForTest(1, 10, 1);  // oldest epoch: the LRU victim
+    int slot;
+    bool created;
+    for (int id = 2; id <= cap; id++) {
+        tracker->klassPopulationRecordForTest(id, 1, 2, &slot, &created);
+    }
+    tracker->klassPopulationRecordForTest(1, 0, 1, &slot, &created);
+    ASSERT_FALSE(created);  // table is full and class 1 sits in the slot to be evicted
+    LivenessTrackerTestAccessor::foldClassCohort(tracker, 1000, 7, 3);
+    KlassPopulationEntry entry;
+    ASSERT_FALSE(tracker->klassPopulationLookupForTest(1, &entry));
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(1000, &entry));
+    EXPECT_EQ(1, entry.ring_fill);  // a leaked seed flag would have skipped the fold's sample
+    EXPECT_EQ(1u, entry.count_ring[0]);
+}
 #endif
 
 TEST_F(SelectLeakCandidatesTest, OrdinaryClassHistoryStillDecaysAfterGrowthStops) {
@@ -1435,10 +1489,9 @@ TEST_F(SelectLeakCandidatesTest, ScratchOverflowPreservesStrongEarlyThreads) {
     }
 }
 
-// Victim selection among equal retained sets must keep the FIRST minimal slot (strictly-less
-// comparison): flipping it to <= evicts the last minimal thread instead. Thread 2 is the first
-// minimal slot and thread 1 ties with it at the same count - thread 2 must lose its history
-// (absent from the fold every epoch) while thread 1's survives.
+// Victim selection among equal retained sets keeps the FIRST minimal slot (strict <): flipping
+// it to <= evicts the last minimal thread. Threads 1 and 2 tie at the minimum count; thread 1
+// (slot 0) is evicted every epoch, so its history never reaches the fold while thread 2's does.
 TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsFirstMinimalSlot) {
     LivenessTracker *tracker = LivenessTracker::instance();
     std::vector<std::pair<jint, u32>> cohorts;
@@ -1500,8 +1553,109 @@ TEST_F(SelectLeakCandidatesTest, ScratchOverflowEvictsTheGlobalMinimumThread) {
         return false;
     };
     EXPECT_FALSE(contains_tid(1));
-    // Thread 1's history is evicted on every overflow arrival and never reaches the fold; the
-    // qualifying threads are the 9-count threads the scan never minimizes onto.
+}
+
+// Direct accumulator tests: the scratch holds MAX_THREADS_PER_KLASS (16) tids; each helper
+// fills it, then one extra tid forces the victim scan.
+static void fillScratchWithTids(LivenessTracker *t, LivenessTrackerTestAccessor::Scratch &s,
+                                int count_per_tid) {
+    for (jint tid = 1; tid <= 16; tid++) {
+        LivenessTrackerTestAccessor::addObjects(t, s, tid, 1, count_per_tid);
+    }
+    ASSERT_EQ(16, s.thread_count);
+}
+
+TEST(LivenessTrackerScratchTest, IncomingAndReappearingTidsStartFromTheirOwnObject) {
+    LivenessTracker *t = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::Scratch s{};
+    // tid 1 is the unique minimum (count 3, three ages); the rest hold count 5.
+    for (u32 age = 1; age <= 3; age++) {
+        LivenessTrackerTestAccessor::addObjects(t, s, 1, age);
+    }
+    for (jint tid = 2; tid <= 16; tid++) {
+        LivenessTrackerTestAccessor::addObjects(t, s, tid, 1, 5);
+    }
+    ASSERT_EQ(16, s.thread_count);
+    LivenessTrackerTestAccessor::addObjects(t, s, 99, 9);
+    EXPECT_EQ(16, s.thread_count);
+    ASSERT_EQ(nullptr, LivenessTrackerTestAccessor::findThread(s, 1));
+    auto *in = LivenessTrackerTestAccessor::findThread(s, 99);
+    ASSERT_NE(nullptr, in);
+    EXPECT_EQ(1u, in->count);
+    EXPECT_EQ(1u, in->age_count);
+    EXPECT_EQ(9u, in->ages[0]);
+    LivenessTrackerTestAccessor::addObjects(t, s, 99, 9);
+    EXPECT_EQ(2u, LivenessTrackerTestAccessor::findThread(s, 99)->count);
+    // The evicted tid reappears: it replaces the now-minimal tid 99 and starts at one object,
+    // not at its earlier count of 3 or its earlier ages.
+    LivenessTrackerTestAccessor::addObjects(t, s, 1, 4);
+    EXPECT_EQ(nullptr, LivenessTrackerTestAccessor::findThread(s, 99));
+    auto *back = LivenessTrackerTestAccessor::findThread(s, 1);
+    ASSERT_NE(nullptr, back);
+    EXPECT_EQ(1u, back->count);
+    EXPECT_EQ(1u, back->age_count);
+    EXPECT_EQ(4u, back->ages[0]);
+}
+
+TEST(LivenessTrackerScratchTest, LowestCountIsEvictedEvenWithMoreAges) {
+    LivenessTracker *t = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::Scratch s{};
+    LivenessTrackerTestAccessor::addObjects(t, s, 1, 1);
+    LivenessTrackerTestAccessor::addObjects(t, s, 1, 2);
+    for (jint tid = 2; tid <= 16; tid++) {
+        LivenessTrackerTestAccessor::addObjects(t, s, tid, 1, 3);
+    }
+    LivenessTrackerTestAccessor::addObjects(t, s, 99, 1);
+    EXPECT_EQ(nullptr, LivenessTrackerTestAccessor::findThread(s, 1));
+    EXPECT_NE(nullptr, LivenessTrackerTestAccessor::findThread(s, 2));
+}
+
+TEST(LivenessTrackerScratchTest, FewerAgesLoseAtEqualCount) {
+    LivenessTracker *t = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::Scratch s{};
+    for (u32 age = 1; age <= 4; age++) {
+        LivenessTrackerTestAccessor::addObjects(t, s, 1, age);
+    }
+    LivenessTrackerTestAccessor::addObjects(t, s, 2, 1, 4);
+    for (jint tid = 3; tid <= 16; tid++) {
+        LivenessTrackerTestAccessor::addObjects(t, s, tid, 1, 6);
+    }
+    LivenessTrackerTestAccessor::addObjects(t, s, 99, 1);
+    // tid 1 (slot 0) ties tid 2 on count but has more ages, so tid 2 is the victim.
+    EXPECT_EQ(nullptr, LivenessTrackerTestAccessor::findThread(s, 2));
+    auto *kept = LivenessTrackerTestAccessor::findThread(s, 1);
+    ASSERT_NE(nullptr, kept);
+    EXPECT_EQ(4u, kept->age_count);
+}
+
+TEST(LivenessTrackerScratchTest, CompleteTieEvictsFirstSlot) {
+    LivenessTracker *t = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::Scratch s{};
+    fillScratchWithTids(t, s, 4);
+    LivenessTrackerTestAccessor::addObjects(t, s, 99, 1);
+    EXPECT_EQ(99, s.threads[0].tid);
+    EXPECT_EQ(nullptr, LivenessTrackerTestAccessor::findThread(s, 1));
+    EXPECT_NE(nullptr, LivenessTrackerTestAccessor::findThread(s, 16));
+}
+
+TEST(LivenessTrackerScratchTest, DistinctAgesAreBoundedSortedAndCountedPerObject) {
+    LivenessTracker *t = LivenessTracker::instance();
+    LivenessTrackerTestAccessor::Scratch s{};
+    constexpr u32 limit = LivenessTrackerTestAccessor::Scratch::MAX_AGES_PER_THREAD;
+    // Descending arrival exercises the sorted-insert shift; the first `limit` distinct ages stay.
+    for (u32 age = limit + 8; age >= 1; age--) {
+        LivenessTrackerTestAccessor::addObjects(t, s, 5, age);
+    }
+    LivenessTrackerTestAccessor::addObjects(t, s, 5, limit + 8);  // duplicate age
+    auto *th = LivenessTrackerTestAccessor::findThread(s, 5);
+    ASSERT_NE(nullptr, th);
+    EXPECT_EQ(limit, th->age_count);
+    EXPECT_EQ(limit + 8 + 1, th->count);
+    EXPECT_EQ(9u, th->ages[0]);
+    EXPECT_EQ(limit + 8, th->ages[limit - 1]);
+    for (u32 i = 1; i < th->age_count; i++) {
+        EXPECT_LT(th->ages[i - 1], th->ages[i]);
+    }
 }
 
 TEST(LivenessTrackerSessionTest, ResetSessionClearsOnlyRecordingGates) {
