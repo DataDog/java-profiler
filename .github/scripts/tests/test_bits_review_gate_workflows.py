@@ -519,7 +519,7 @@ class PublisherOctoStsPolicyTest(unittest.TestCase):
         for line in block.group(1).splitlines():
             key, _, value = line.strip().partition(": ")
             entries[key] = value
-        self.assertEqual(entries, {"statuses": "write", "members": "read"})
+        self.assertEqual(entries, {"statuses": "write"})
 
 
 class CiScriptTestsWiringTest(unittest.TestCase):

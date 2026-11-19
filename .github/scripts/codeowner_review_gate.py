@@ -5,15 +5,18 @@ Companion of ``bits_review_gate.py``: publishes the ``codeowner-review/head``
 commit status for the same resolved head SHAs, in the same trusted publish
 job and with the same status token. A head that changes any path with a
 CODEOWNERS entry beyond the repository-wide default rule requires an
-approving review from a member of the owning team, by someone other than
-the PR author. A head with no sensitive change passes without a review.
-The decision is fail-closed: any API error or malformed input publishes
+approving review from a login listed in the checked-in owner roster
+(``.github/scripts/owner_roster.txt``), by someone other than the PR
+author. A head with no sensitive change passes without a review. The
+decision is fail-closed: any read error or malformed input publishes
 ``failure``, never a pass.
 
 CODEOWNERS is the single source of the sensitive-path list: the file keeps
 the repository-wide default rule for change attribution, and every more
 specific entry marks a sensitive path. Reviewer routing and this check
-therefore cannot drift apart.
+therefore cannot drift apart. The roster and CODEOWNERS are both read from
+the trusted ``refs/heads/main`` checkout the publish job makes — never from
+a pull request head, which the author could edit.
 """
 
 import argparse
@@ -35,12 +38,15 @@ CODEOWNERS_PATH = os.path.join(
 #: The repository-wide default rule: it covers every path for change
 #: attribution and never marks a path sensitive.
 DEFAULT_RULE_PATTERN = "*"
-#: The one team whose approval this gate accepts; every sensitive-path
-#: entry in CODEOWNERS must name exactly this team (checked at load time).
-OWNER_ORG = "DataDog"
-OWNER_TEAM_SLUG = "profiling-java"
-OWNER_TEAM = "@%s/%s" % (OWNER_ORG, OWNER_TEAM_SLUG)
+#: The team named in the failure description; every sensitive-path entry
+#: in CODEOWNERS must name exactly this team (checked at load time).
+OWNER_TEAM = "@DataDog/profiling-java"
 CODEOWNERS_MAX_LINES = 1024
+# Anchored to this file: the publish job checks out refs/heads/main, so a
+# PR head's copy of the roster is never read.
+ROSTER_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "owner_roster.txt")
+ROSTER_MAX_LINES = 1024
 #: The compare endpoint caps its file list and offers no pagination; a full
 #: list is indistinguishable from a truncation and fails closed.
 _COMPARE_FILE_CAP = 300
@@ -54,64 +60,7 @@ class FileCapExceeded(gate.ApiError):
 
 
 class CodeownerClient(gate.GitHubClient):
-    """GitHubClient plus the two reads this gate adds: changed files and
-    team membership. Pagination reuses the base client's helpers."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._membership_token = None
-        self._team_logins = None
-
-    def set_membership_token(self, token):
-        """Arm the org-team reads with the status token: the repository-
-        scoped read token cannot authorize organization-team lookups."""
-        self._membership_token = token
-
-    def _collect_member_login(self, entry, url):
-        """The login of one member record, fail-closed: a malformed record
-        shrinks the roster, and a shrunk roster could accept an approval
-        from a non-member, so it is an error, not a skip."""
-        if not isinstance(entry, dict) or not isinstance(entry.get("login"), str) \
-                or not entry.get("login"):
-            raise gate.ApiError("malformed member record from %s" % (url,))
-        return entry["login"]
-
-    def team_logins(self, org, team_slug):
-        """The login of every member of ``org``'s ``team_slug`` team, all
-        pages, cached for the process lifetime. The read goes out with the
-        membership token — the repository-scoped read token cannot
-        authorize organization-team lookups — paginated with the same
-        page-following rules as the base client's list reads."""
-        cached = self._team_logins
-        if cached is None:
-            url = "%s/orgs/%s/teams/%s/members?per_page=%d" % (
-                self._api_url, org, team_slug, gate.REST_PER_PAGE)
-            token = self._membership_token
-            pages = 0
-            members = []
-            while url is not None:
-                body, link = self._fetch(url, token=token)
-                try:
-                    page = json.loads(body)
-                except ValueError as error:
-                    raise gate.ApiError("malformed JSON from %s" % (url,)) from error
-                if not isinstance(page, list):
-                    raise gate.ApiError("expected a JSON array from %s" % (url,))
-                members.extend(
-                    self._collect_member_login(entry, url) for entry in page)
-                url = gate._next_link(link, self._api_url)
-                if url is None:
-                    # The last page is in hand; the cap only bounds a read
-                    # that would continue, like the base client's pages.
-                    break
-                pages += 1
-                if pages >= gate.MAX_FETCH_PAGES:
-                    raise gate.ApiError(
-                        "team membership for %s exceeds %d pages"
-                        % (team_slug, gate.MAX_FETCH_PAGES))
-            cached = frozenset(members)
-            self._team_logins = cached
-        return cached
+    """GitHubClient plus the changed-files read this gate adds."""
 
     def compare_files(self, base_ref, head_sha):
         """The changed files between ``base_ref`` and the immutable head
@@ -189,6 +138,37 @@ def load_sensitive_patterns(path):
                 % (path, pattern))
         patterns.append(pattern)
     return patterns
+
+
+def load_roster(path):
+    """The logins whose approving review this gate accepts.
+
+    One login per line; blank lines and ``#`` comments are ignored. The
+    failure modes are the same as CODEOWNERS — unreadable or oversized —
+    plus two of its own, both fatal: a line without a login and an empty
+    roster. An empty roster could never pass a sensitive head, so it is a
+    maintenance accident to report, not a legitimate state to serve.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError as error:
+        raise gate.ApiError("unreadable %s: %s" % (path, error)) from error
+    if len(lines) > ROSTER_MAX_LINES:
+        raise gate.ApiError("%s exceeds %d lines" % (path, ROSTER_MAX_LINES))
+    logins = set()
+    for line in lines:
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        tokens = entry.split()
+        if len(tokens) != 1:
+            raise gate.ApiError(
+                "%s entry %r is not a single login" % (path, entry))
+        logins.add(tokens[0])
+    if not logins:
+        raise gate.ApiError("%s lists no login" % (path,))
+    return frozenset(logins)
 
 
 def is_sensitive(path, patterns):
@@ -308,8 +288,8 @@ def _deciding_reviews(records):
             if record.get("state") not in ("COMMENTED", "PENDING")]
 
 
-def owner_approval(records, author_login, team_logins, head):
-    """True when some team member other than the PR author's latest
+def owner_approval(records, author_login, roster, head):
+    """True when some roster login other than the PR author's latest
     review approves the evaluated head. Self-approval never counts: the
     author could otherwise satisfy the check alone. The approval must be
     bound to the head commit — without ``dismiss stale reviews``, an
@@ -319,7 +299,7 @@ def owner_approval(records, author_login, team_logins, head):
             _deciding_reviews(records)).items():
         if login == author_login:
             continue
-        if (login in team_logins and record.get("state") == "APPROVED"
+        if (login in roster and record.get("state") == "APPROVED"
                 and record.get("commit_oid") == head):
             return True
     return False
@@ -437,16 +417,16 @@ def evaluate_sha(sha, client, patterns):
         except gate.ApiError as error:
             decisions.append((number, "failure", "cannot evaluate: %s" % (error,)))
             continue
-        # The roster is fetched lazily and fail-closed like every other
-        # read: only a head with a sensitive-path change and a review read
-        # behind it needs it.
+        # The roster is a local read of the trusted checkout, but it is
+        # guarded like every other read: a malformed or unreadable roster
+        # must fail the PR, not crash the evaluation.
         try:
-            team_logins = client.team_logins(OWNER_ORG, OWNER_TEAM_SLUG)
-        except (gate.ApiError, gate.RateLimitError):
+            roster = load_roster(ROSTER_PATH)
+        except gate.ApiError:
             decisions.append((number, "failure",
-                              "cannot evaluate: team roster read failed"))
+                              "cannot evaluate: owner roster unreadable"))
             continue
-        if owner_approval(records, author_login, team_logins, sha):
+        if owner_approval(records, author_login, roster, sha):
             decisions.append((number, "pass", None))
             approved_prs.append(number)
             approved_author[number] = author_login
@@ -495,10 +475,7 @@ def evaluate_sha(sha, client, patterns):
         try:
             fresh_records = _validated_reviews(
                 client.fetch_reviews(number), number)
-            # The roster is process-cached by now, but the read must stay
-            # guarded on its own terms: a cache-less future must fail the
-            # publish, not crash it before any status is written.
-            team_logins = client.team_logins(OWNER_ORG, OWNER_TEAM_SLUG)
+            roster = load_roster(ROSTER_PATH)
         except gate.RateLimitError:
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (number,),
@@ -507,7 +484,7 @@ def evaluate_sha(sha, client, patterns):
             return ("failure", "failure", "cannot evaluate: %s" % (error,),
                     "%s/pull/%d" % (_repo_url(client), number))
         if not owner_approval(fresh_records, approved_author[number],
-                              team_logins, sha):
+                              roster, sha):
             return ("failure", "failure",
                     "sensitive paths changed: approval from %s required"
                     % (OWNER_TEAM,),
@@ -549,10 +526,7 @@ def _matches_status(status, payload):
 
 def publish(sha, client, status_token):
     """Evaluate one head SHA and publish its status. Returns the process
-    exit code: 0 for success, 1 for failure or a failed write. The team
-    roster is fetched only after evaluation asks for it: a head with no
-    open PR spends one read, not two."""
-    client.set_membership_token(status_token)
+    exit code: 0 for success, 1 for failure or a failed write."""
     try:
         patterns = load_sensitive_patterns(CODEOWNERS_PATH)
     except gate.ApiError as error:
@@ -592,8 +566,8 @@ def main(argv=None):
     if not gate._SHA_RE.fullmatch(args.sha):
         parser.error("--sha must be a 40-hex commit SHA")
     if not os.environ.get("STATUS_TOKEN"):
-        parser.error("STATUS_TOKEN is not set; the roster read and the status "
-                     "write cannot be authorized")
+        parser.error("STATUS_TOKEN is not set; the status write cannot be "
+                     "authorized")
     repo = os.environ.get("GITHUB_REPOSITORY", "DataDog/java-profiler")
     client = CodeownerClient(repo)
     return publish(args.sha, client, os.environ.get("STATUS_TOKEN"))
