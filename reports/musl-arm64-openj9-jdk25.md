@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-19 12:23:27 EST
+**Date:** 2026-11-19 12:25:26 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 90 |
-| Sample Rate | 1.50/sec |
-| Health Score | 94% |
-| Threads | 11 |
-| Allocations | 57 |
+| CPU Samples | 91 |
+| Sample Rate | 1.52/sec |
+| Health Score | 95% |
+| Threads | 10 |
+| Allocations | 59 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 746 |
-| Sample Rate | 12.43/sec |
-| Health Score | 777% |
-| Threads | 11 |
-| Allocations | 529 |
+| CPU Samples | 92 |
+| Sample Rate | 1.53/sec |
+| Health Score | 96% |
+| Threads | 13 |
+| Allocations | 60 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 20-20 cores)</summary>
 
 ```
-1795108621 20
-1795108626 20
-1795108631 20
-1795108636 20
-1795108641 20
-1795108646 20
-1795108651 20
-1795108656 20
-1795108661 20
-1795108666 20
-1795108671 20
-1795108676 20
-1795108681 20
-1795108686 20
-1795108691 20
-1795108696 20
-1795108701 20
-1795108706 20
-1795108711 20
-1795108716 20
+1795108806 20
+1795108811 20
+1795108816 20
+1795108821 20
+1795108826 20
+1795108831 20
+1795108836 20
+1795108841 20
+1795108846 20
+1795108851 20
+1795108856 20
+1795108861 20
+1795108866 20
+1795108871 20
+1795108876 20
+1795108881 20
+1795108886 20
+1795108891 20
+1795108896 20
+1795108901 20
 ```
 </details>
 
