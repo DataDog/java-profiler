@@ -200,15 +200,17 @@ void runInChild(Scenario scenario) {
 TEST(MallocHookerAdmissionTest, EveryOperationPrimarySlotRejectsFresh) {
   resolveFixturePath();
   static const ImportId OPS[5] = {im_malloc, im_calloc, im_realloc, im_posix_memalign, im_aligned_alloc};
+  static const char* const HOOKS[5] = {
+      "fixture_malloc_hook", "fixture_calloc_hook", "fixture_realloc_hook", "fixture_posix_memalign_hook",
+      "fixture_aligned_alloc_hook"};
   for (int op = 0; op < 5; op++) {
     runInChild([op]() {
       CodeCache* own = findOwnLibrary();
       if (own == NULL) _exit(CHILD_NO_OWN_LIB);
       MallocHookerTestAccessor::setInitialized(false);
 
-      // calloc/realloc/posix_memalign get a hook whose signature keeps the
-      // resolve probes safe (the probes call each operation once).
-      const char* hook = (op == 0 || op == 1) ? "fixture_malloc_hook" : "fixture_aligned_alloc_hook";
+      // Each slot uses a signature-matching hook so resolve probes call it safely.
+      const char* hook = HOOKS[op];
       void* fixture = loadFixtureHook(hook);
       int exit_code = CHILD_OK;
       writeOwnSlot(own, OPS[op], fixture, &exit_code);
