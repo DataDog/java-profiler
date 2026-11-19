@@ -983,7 +983,11 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   // a mid-lap eviction) must leave the request unserved so the gate keeps running the sweep until
   // a lap from class 0 actually completes and publishes the generation (see the completion write
   // in runPassManualWalk()).
-  if (chunk_start == 0) {
+  // A retry of the first chunk keeps the ORIGINAL latch: its retry stamps suppress re-reports of
+  // holders the failed attempt already accepted, so a request raised between the original latch
+  // and the retry (an at-cap eviction while replaying the accepted prefix, for one) would be
+  // consumed without its holder ever being re-indexed. The next fresh lap from class 0 serves it.
+  if (chunk_start == 0 && _static_field_retry_attempt_id == 0) {
     _static_field_sweep_lap_request_gen = _durable_anchor_resweep_gen;
   }
   jint chunk_end =

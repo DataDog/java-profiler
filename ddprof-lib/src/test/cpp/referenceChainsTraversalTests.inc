@@ -1564,6 +1564,79 @@ TEST_F(ReferenceChainsBfsTest, StaticSweepMultiChunkTruncatedChunkRetriesWithout
     tracker->stop();
 }
 
+// A FollowReferences error after a prefix of the FIRST chunk keeps the lap's original latch across
+// the chunk retry: a resweep request raised between the latch and the retry (stood in for here by
+// an at-cap eviction after the failed attempt) stays unserved until a fresh lap from class 0
+// completes. The retry stamps suppress re-reports of holders the failed attempt already accepted,
+// so a retry that re-latched the newer generation would publish it as served while the evicted
+// holder's class sits behind the retry stamps - leaving the holder out of the index with no
+// pending request. The fresh lap's unsuppressed re-report must be what re-indexes it.
+TEST_F(ReferenceChainsBfsTest, StaticSweepFirstChunkErrorRetryKeepsOriginalLatch) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=5000:firstpassbudget=5000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    t8KeepSearchRunning();
+
+    T8LapWorld w;
+    t8BuildLapWorld(*this, &w);
+    ASSERT_EQ(kLapClasses, (int)classes.size());
+    ASSERT_GT(kLapClasses, kLapChunk);
+    t8PartitionChunks(*this, &w);
+
+    // Lap 1, chunk 0: a four-edge prefix of the chunk's static fields is accepted (stamped by
+    // the failed attempt), then FollowReferences errors. The latch fired at the chunk-0 start;
+    // the retry flags are set and the cursor stays at the chunk start. The mock delivers all 512
+    // class seeds before the script's static-field edges, so the prefix budget covers both.
+    active_fixture->follow_error_after_prefix = JVMTI_ERROR_OUT_OF_MEMORY;
+    active_fixture->follow_prefix_count = kLapChunk + 4;
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    active_fixture->follow_error_after_prefix = JVMTI_ERROR_NONE;
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest())
+        << "the errored first chunk must retry its own start";
+    std::vector<jlong> stamped_tags;
+    for (int c : w.chunk0) {
+        if (tags_ever_assigned[w.holders[c]] != 0) {
+            stamped_tags.push_back(tags_ever_assigned[w.holders[c]]);
+        }
+    }
+    ASSERT_EQ(4u, stamped_tags.size())
+        << "only the static-field edges delivered before the error may be admitted";
+    const jlong stamped_tag = stamped_tags[0];
+    EXPECT_FALSE(T8Acc::durableAnchorResweepUnservedForTest());
+
+    // One at-cap eviction raises a resweep request while the retry is pending.
+    t8FillDurableShareToCap(tracker, 10000);
+    t8CrossDurableCapOnce(tracker, 40000);
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+
+    // The retry re-sweeps chunk 0: the stamped prefix is suppressed, the rest is admitted.
+    truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ((size_t)kLapChunk, T8Acc::staticFieldSweepCursorForTest());
+
+    // Chunk 1 completes the lap: it publishes the ORIGINAL latch, so the eviction's request
+    // stays unserved - a re-latch at the retry's chunk-0 start would serve it here.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest())
+        << "the retry lap must not serve the request raised after its lap latched";
+
+    // The fresh lap from class 0 re-reports the suppressed prefix without retry stamps,
+    // re-indexing the evicted holder, and its completion serves the request.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ((size_t)kLapChunk, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(T8Acc::durableAnchorResweepUnservedForTest());
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(stamped_tag))
+        << "the fresh lap's unsuppressed re-report must re-index the evicted holder";
+
+    tracker->stop();
+}
+
 // Selected-anchor walk with a full journal: the rejected demotion below the anchor's walk is not
 // performed, the anchor returns to the front of the at-risk FIFO, and the next pass walks it again.
 TEST_F(ReferenceChainsBfsTest, SelectedAnchorWalkOverflowRequeuesAnchorForRetry) {
