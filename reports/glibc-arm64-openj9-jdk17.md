@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-19 12:16:25 EST
+**Date:** 2026-11-19 12:23:25 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 321 |
-| Sample Rate | 5.35/sec |
-| Health Score | 334% |
-| Threads | 11 |
-| Allocations | 167 |
+| CPU Samples | 81 |
+| Sample Rate | 1.35/sec |
+| Health Score | 84% |
+| Threads | 9 |
+| Allocations | 59 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 859 |
-| Sample Rate | 14.32/sec |
-| Health Score | 895% |
-| Threads | 10 |
-| Allocations | 432 |
+| CPU Samples | 327 |
+| Sample Rate | 5.45/sec |
+| Health Score | 341% |
+| Threads | 11 |
+| Allocations | 125 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 29-29 cores)</summary>
 
 ```
-1795108275 29
-1795108280 29
-1795108285 29
-1795108290 29
-1795108295 29
-1795108300 29
-1795108305 29
-1795108310 29
-1795108315 29
-1795108320 29
-1795108325 29
-1795108330 29
-1795108335 29
-1795108340 29
-1795108345 29
-1795108350 29
-1795108355 29
-1795108360 29
-1795108365 29
-1795108370 29
+1795108630 29
+1795108635 29
+1795108640 29
+1795108645 29
+1795108650 29
+1795108655 29
+1795108660 29
+1795108665 29
+1795108670 29
+1795108676 29
+1795108681 29
+1795108686 29
+1795108691 29
+1795108696 29
+1795108701 29
+1795108706 29
+1795108711 29
+1795108716 29
+1795108721 29
+1795108726 29
 ```
 </details>
 
