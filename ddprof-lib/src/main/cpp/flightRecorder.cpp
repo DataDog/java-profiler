@@ -185,7 +185,7 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
     state._demangled = abi::__cxa_demangle(name, NULL, NULL, &status);
     if (state._demangled != NULL) {
       cutArguments(state._demangled);
-      mi->_sig = _symbols.lookup("()L;");
+      mi->_sig = _symbols.lookupSignature("()L;");
       mi->_type = FRAME_CPP;
 
       // Rust legacy demangling
@@ -204,11 +204,11 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
   size_t len = strlen(name);
   if (len >= 4 && strcmp(name + len - 4, "_[k]") == 0) {
     mi->_name = _symbols.lookup(name, len - 4);
-    mi->_sig = _symbols.lookup("(Lk;)L;");
+    mi->_sig = _symbols.lookupSignature("(Lk;)L;");
     mi->_type = FRAME_KERNEL;
   } else {
     mi->_name = _symbols.lookup(name);
-    mi->_sig = _symbols.lookup("()L;");
+    mi->_sig = _symbols.lookupSignature("()L;");
     mi->_type = FRAME_NATIVE;
   }
 }
@@ -221,7 +221,7 @@ void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
   // Store PC offset in hex format in the signature field
   char offset_hex[32];
   snprintf(offset_hex, sizeof(offset_hex), "0x%" PRIxPTR, rfi->pc_offset);
-  mi->_sig = _symbols.lookup(offset_hex);
+  mi->_sig = _symbols.lookupSignature(offset_hex);
 
   // Use same modifiers as regular native frames (0x100 = ACC_NATIVE for consistency)
   mi->_modifiers = 0x100;
@@ -387,7 +387,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       Counters::increment(JMETHODID_SKIPPED);
       mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       mi->_name = _symbols.lookup("<unloaded>");
-      mi->_sig = _symbols.lookup("()L;");
+      mi->_sig = _symbols.lookupSignature("()L;");
     }
 
     mi->_type = FRAME_INTERPRETED;
@@ -499,7 +499,7 @@ void Lookup::fillJavaMethodNames(MethodInfo *mi, const char *class_name,
 
   mi->_class = class_name_id;
   mi->_name = method_name_id;
-  mi->_sig = _symbols.lookup(method_sig);
+  mi->_sig = _symbols.lookupSignature(method_sig);
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
@@ -876,7 +876,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       // and incrementing VTABLE_RECEIVER_RESOLVE_FAILED.
       mi->_class = vtable_class_id;
       mi->_name = _symbols.lookup("<vtable_receiver>");
-      mi->_sig = _symbols.lookup("()V");
+      mi->_sig = _symbols.lookupSignature("()V");
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
     } else {
@@ -940,6 +940,7 @@ u32 Lookup::getPackage(const char *class_name) {
   if (class_name[0] == '[') {
     class_name = strchr(class_name, 'L') + 1;
   }
+  // A failed insert also yields 0, which means "no package".
   return _packages.lookup(class_name, package - class_name);
 }
 
@@ -1797,7 +1798,13 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   pool_count += writeMethods(buf, &lookup);
   pool_count += writeClasses(buf, &lookup);
   pool_count += writePackages(buf, &lookup);
-  pool_count += writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+  {
+    // Must follow every pool that looks up a symbol: collect() adds the
+    // unresolved entry only once all lookups ran. The scope frees the map before the next pools collect theirs.
+    std::map<u32, const char *> symbols;
+    lookup._symbols.collect(symbols);
+    pool_count += writeConstantPoolSection(buf, T_SYMBOL, symbols);
+  }
   pool_count += writeConstantPoolSection(
       buf, T_STRING, Profiler::instance()->stringLabelMap()->standby());
   pool_count += writeConstantPoolSection(

@@ -557,7 +557,7 @@ public:
       _raw_method_cache;
 
   Dictionary _packages;
-  Dictionary _symbols;
+  SymbolDictionary _symbols;
 
   // The single row every frame that could not be resolved collapses onto.
   //
