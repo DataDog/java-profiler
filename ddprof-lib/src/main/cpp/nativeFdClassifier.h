@@ -59,8 +59,9 @@ private:
   // After both banks retire, probes continue without caching. The full epoch
   // never wraps, and pending probes retain their original bank until returning.
   std::atomic<uint64_t> _fd_cache_gen{1};
-  // Lazy, bounded 1088 KiB of entries. Lifecycle invalidation alone must not
-  // allocate, and an allocation failure falls back to uncached classification.
+  // Lazy 1088 KiB of entries, freed only by the destructor: both owners are
+  // process-lifetime singletons. Invalidation must not allocate; an allocation
+  // failure falls back to uncached classification.
   std::once_flag _cache_alloc_once;
   std::atomic<bool> _caches_allocated{false};
   std::atomic<uint64_t>* _fd_type_cache = nullptr;

@@ -106,6 +106,8 @@ The packed fields never cycle within a cache bank. Each classifier allocates two
 65536-entry low-FD and 4096-entry high-FD banks on first classification (1,114,112
 bytes of atomic entries total, excluding allocator overhead). Both owners
 therefore retain at most 2,228,224 bytes of entries in four array allocations.
+Both owners are process-lifetime singletons, so the tables stay allocated after
+`stop()` and are never freed. The `native_mem_*` counters do not include them.
 The first active classification may allocate the arrays; lifecycle invalidation
 and subsequent classification do not allocate classifier tables. Banks are never
 reused during that classifier's lifetime. A 17-bit epoch boundary retires the
