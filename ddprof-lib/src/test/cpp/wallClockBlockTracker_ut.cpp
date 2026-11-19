@@ -265,23 +265,23 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryWithoutOwnedRunResetsUnownedTail) 
 }
 
 TEST(WallClockBlockTrackerNativeMemTest, LazyBackingIsAccountedOnceAndSurvivesResets) {
-    const long long before = NativeMem::live(NM_WALLCLOCK);
+    const long long before = NativeMem::live(NM_WALL_BLOCK_TRACKER);
     {
         WallClockBlockTracker local_tracker;
         ThreadFilter registry;
         registry.setBlockTracker(&local_tracker);
         EXPECT_LT(sizeof(local_tracker), DEFAULT_CACHE_LINE_SIZE * 2u);
-        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
         EXPECT_EQ(nullptr, local_tracker.slotForId(0));
         registry.init("");
         local_tracker.resetAll();
         local_tracker.resetSlot(0, OSThreadState::UNKNOWN);
         local_tracker.resetAtContextBoundary(0);
-        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
         EXPECT_EQ(nullptr, local_tracker.slotForId(0));
 
         registry.init("enabled");
-        EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
         int slot_id = registry.registerThread(9001);
         ASSERT_GE(slot_id, 0);
         auto* block = local_tracker.slotForId(slot_id);
@@ -292,7 +292,7 @@ TEST(WallClockBlockTrackerNativeMemTest, LazyBackingIsAccountedOnceAndSurvivesRe
         EXPECT_FALSE(block->sampledThisRun());
         const long long allocated = before + sizeof(WallClockBlockTracker::BlockState) *
                                                 ThreadFilter::kMaxThreads;
-        EXPECT_EQ(allocated, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(allocated, NativeMem::live(NM_WALL_BLOCK_TRACKER));
         EXPECT_TRUE(local_tracker.ensureAllocated());
         EXPECT_EQ(slot_id, registry.registerThread(9001));
         local_tracker.resetAll();
@@ -301,15 +301,15 @@ TEST(WallClockBlockTrackerNativeMemTest, LazyBackingIsAccountedOnceAndSurvivesRe
         EXPECT_EQ(slot_id, registry.registerThread(9001));
         registry.unregisterThread(slot_id);
         EXPECT_EQ(block, local_tracker.slotForId(slot_id));
-        EXPECT_EQ(allocated, NativeMem::live(NM_WALLCLOCK));
+        EXPECT_EQ(allocated, NativeMem::live(NM_WALL_BLOCK_TRACKER));
         EXPECT_EQ(nullptr, local_tracker.slotForId(-1));
         EXPECT_EQ(nullptr, local_tracker.slotForId(ThreadFilter::kMaxThreads));
     }
-    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
 }
 
 TEST(WallClockBlockTrackerNativeMemTest, ConcurrentBackingPublicationAccountsOnlyTheWinner) {
-    const long long before = NativeMem::live(NM_WALLCLOCK);
+    const long long before = NativeMem::live(NM_WALL_BLOCK_TRACKER);
     {
         WallClockBlockTracker local_tracker;
         struct Allocations {
@@ -344,13 +344,13 @@ TEST(WallClockBlockTrackerNativeMemTest, ConcurrentBackingPublicationAccountsOnl
         EXPECT_EQ(first, second);
         EXPECT_EQ(before + static_cast<long long>(sizeof(WallClockBlockTracker::BlockState)) *
                                ThreadFilter::kMaxThreads,
-                  NativeMem::live(NM_WALLCLOCK));
+                  NativeMem::live(NM_WALL_BLOCK_TRACKER));
     }
-    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
 }
 
 TEST_F(WallClockBlockTrackerTest, AllocationFailureKeepsRegistrationAndSuppressionFailOpen) {
-    const long long before = NativeMem::live(NM_WALLCLOCK);
+    const long long before = NativeMem::live(NM_WALL_BLOCK_TRACKER);
     tracker->setAllocationFailureForTest(true);
     int slot_id = filter->registerThread(9002);
     ASSERT_GE(slot_id, 0);
@@ -365,23 +365,23 @@ TEST_F(WallClockBlockTrackerTest, AllocationFailureKeepsRegistrationAndSuppressi
     filter->remove(slot_id);
     tracker->resetAll();
     EXPECT_EQ(nullptr, tracker->slotForId(slot_id));
-    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
 
     tracker->setAllocationFailureForTest(false);
     // Hot lookups must stay allocation-free even when allocation could succeed.
     EXPECT_EQ(nullptr, tracker->slotForId(slot_id));
     EXPECT_EQ(0u, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
     EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
-    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
     ASSERT_EQ(slot_id, filter->registerThread(9002));
     ASSERT_NE(nullptr, tracker->slotForId(slot_id));
     EXPECT_NE(0u, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
     EXPECT_EQ(before + static_cast<long long>(sizeof(WallClockBlockTracker::BlockState)) *
                            ThreadFilter::kMaxThreads,
-              NativeMem::live(NM_WALLCLOCK));
+              NativeMem::live(NM_WALL_BLOCK_TRACKER));
     filter.reset();
     tracker.reset();
-    EXPECT_EQ(before, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
 }
 
 TEST_F(WallClockBlockTrackerTest, ContextEntryWithCleanTrackerPerformsNoResetWrites) {

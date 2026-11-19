@@ -76,9 +76,10 @@ private:
 class WallClockAccountingTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        ASSERT_TRUE(tracker.ensureAllocated());
-        baseline = NativeMem::live(NM_WALLCLOCK);
-        ASSERT_GT(baseline, 0);
+        original = NativeMem::live(NM_WALLCLOCK);
+        // A foreign contributor: delta accounting keeps it, a gauge overwrite would drop it.
+        NativeMem::record(NM_WALLCLOCK, kForeignBytes);
+        baseline = original + kForeignBytes;
         previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
         first.enableEvents(true);
     }
@@ -89,19 +90,20 @@ protected:
         first.enableEvents(false);
         std::signal(WAKEUP_SIGNAL, previous_handler);
         // Preserve the process-global gauge even in the unfixed reproduction.
-        NativeMem::setLive(NM_WALLCLOCK, baseline);
+        NativeMem::setLive(NM_WALLCLOCK, original);
     }
 
+    static constexpr long long kForeignBytes = 4096;
     Arguments args;
-    WallClockBlockTracker tracker;
     AccountingWallClock first;
     AccountingWallClock second;
+    long long original = 0;
     long long baseline = 0;
     using SignalHandler = void (*)(int);
     SignalHandler previous_handler = SIG_DFL;
 };
 
-TEST_F(WallClockAccountingTest, TimerPreservesTrackerBytesAcrossStopAndRestart) {
+TEST_F(WallClockAccountingTest, TimerPreservesForeignBytesAcrossStopAndRestart) {
     args._wall = 1000000;
     for (int recording = 0; recording < 2; ++recording) {
         first.completed_phase.store(0, std::memory_order_release);

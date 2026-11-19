@@ -23,7 +23,7 @@ WallClockBlockTracker::~WallClockBlockTracker() {
     SlotStorage* storage = _storage.exchange(nullptr, std::memory_order_acq_rel);
     if (storage != nullptr) {
         delete storage;
-        NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(SlotStorage)));
+        NativeMem::record(NM_WALL_BLOCK_TRACKER, -static_cast<long long>(sizeof(SlotStorage)));
     }
 }
 
@@ -51,7 +51,7 @@ bool WallClockBlockTracker::ensureAllocated() {
     if (_storage.compare_exchange_strong(expected, fresh.get(), std::memory_order_acq_rel,
                                          std::memory_order_acquire)) {
         fresh.release();
-        NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(SlotStorage)));
+        NativeMem::record(NM_WALL_BLOCK_TRACKER, static_cast<long long>(sizeof(SlotStorage)));
     }
     return true;
 }

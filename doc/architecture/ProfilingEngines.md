@@ -531,7 +531,9 @@ unowned deferred tails: original context attributes are not retained with them.
 
 Timer backing capacity is accounted with allocation deltas and retracted on exit,
 not by replacing the shared `NM_WALLCLOCK` gauge. The tracker allocates its backing
-on first registry registration and accounts it independently until destruction.
+on first registry registration and keeps it until destruction. It is charged to its own
+`NM_WALL_BLOCK_TRACKER` category, not to the recording-scoped `NM_WALLCLOCK`, because
+in-flight owner hooks can carry slot IDs across `stop()`.
 Allocation failure leaves suppression inactive; a later registration retries.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
@@ -771,9 +773,9 @@ In summary:
 ## Profiler Self-Accounting (`NativeMem`, `nativeMem.{h,cpp}`)
 
 `nativeMem.{h,cpp}` is **not** a profiling engine and does not observe
-application allocations. It tracks the profiler's **own** native memory in 14
+application allocations. It tracks the profiler's **own** native memory in 15
 categories, defined in `nativeMem.h`: `NM_CALLTRACE`, `NM_DICTIONARY`, ...,
-`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_CTIMER`, `NM_MISC`.
+`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_WALL_BLOCK_TRACKER`, `NM_CTIMER`, `NM_MISC`.
 
 - `record(cat, delta)` is a relaxed atomic add plus a lock-free CAS on the
   per-category peak. It is async-signal-safe, which matters because the

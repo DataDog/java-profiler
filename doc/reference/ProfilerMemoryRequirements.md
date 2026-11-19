@@ -292,7 +292,7 @@ recording), and the CPU timer table (`ctimer`; `pid_max × 4` bytes, 16 MiB at a
 since it was patched (see [Stopping](../architecture/NativeMemoryProfiling.md#stopping)).
 What stays: the context-value dictionary (so the `dictionary` gauge stays non-zero),
 per-thread state (`thread_local`), parsed native symbols (`native_symbols`), the thread
-filter, the persistent `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`'
+filter, the wall-clock block tracker's per-slot backing (`wall_block_tracker`, 128 KiB once allocated), the persistent `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`'
 per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
 `line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
 counters, read 0 after every `stop()`.
