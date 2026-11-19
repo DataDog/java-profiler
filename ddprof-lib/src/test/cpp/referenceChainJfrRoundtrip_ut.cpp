@@ -73,6 +73,7 @@
 #include "engine.h"
 #include "flightRecorder.h"
 #include "jfrMetadata.h"
+#include "referenceChainFrontier.h"
 #include "profiler.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -534,4 +535,68 @@ TEST_F(ReferenceChainJfrRoundtripTest, DefaultLivenessEventHasZeroLeakTag) {
     ObjectLivenessEvent event;
     EXPECT_EQ(0, event.leak_tag);
     EXPECT_EQ(0u, event.leak_tag_incarnation);
+}
+
+// Exercise the real writer: ROOT_ENUM_ERROR must remain distinguishable from
+// the unknown-value fallback even though RECORDING_END occupies the preceding enum slot.
+TEST_F(ReferenceChainJfrRoundtripTest,
+       AbandonedEventSerializesRootEnumErrorReason) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    args._jfr_options = JFR_SYNC_OPTS;
+
+    // Java parser tests consume the chain fixture at chainRoundtripJfrPath().
+    // Use a separate file so these events cannot replace that fixture.
+    const std::string path = chainRoundtripJfrPath() + ".abandoned";
+    // ASSERT_* below returns early on failure; this guard keeps the file from leaking.
+    struct UnlinkOnExit {
+        const std::string &path;
+        ~UnlinkOnExit() { unlink(path.c_str()); }
+    } unlink_guard{path};
+    int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
+    ASSERT_GE(fd, 0) << "could not open " << path << " for writing";
+
+    Recording rec(fd, args);
+    Buffer *buf = rec.buffer(/*lock_index=*/0);
+    rec.flushIfNeeded(buf, /*limit=*/0);
+
+    // A zero timestamp occupies one byte, keeping the reason offset fixed.
+    // Keep the timestamp zero when changing the cases below.
+    struct ReasonCase {
+        u8 reason;
+        const char *expected;
+    };
+    const ReasonCase cases[] = {
+        {SearchAbandonReason::ROOT_ENUM_ERROR, "root_enum_error"},
+        {250, "unknown"}, // out of table range - bounds check
+    };
+    for (const ReasonCase &c : cases) {
+        ReferenceChainAbandonedEvent event;
+        event._reason = c.reason;
+        event._start_time = 0;
+
+        int offset_before = buf->offset();
+        rec.recordReferenceChainAbandoned(buf, &event);
+        int offset_after = buf->offset();
+        EXPECT_LE(offset_after, RECORDING_BUFFER_LIMIT);
+        EXPECT_GT(offset_after, offset_before);
+
+        // This writer reserves one size byte, unlike the chain writer's five-byte prefix.
+        // Skip the type id and zero timestamp before reading the UTF-8 tag and length.
+        const char *data = buf->data() + offset_before;
+        int off = 1; // size prefix
+        off += sizeOfVar64(static_cast<u64>(T_REFERENCE_CHAIN_ABANDONED));
+        off += sizeOfVar64(0);
+        EXPECT_EQ(3, data[off])
+            << "reason putUtf8's encoding-tag byte must precede its length";
+        off += 1;
+        u32 len = decodeVar32(data, &off);
+        u32 expected_len = static_cast<u32>(strlen(c.expected));
+        ASSERT_EQ(expected_len, len)
+            << "reason " << (int)c.reason << " must serialize as "
+            << c.expected;
+        EXPECT_EQ(0, memcmp(data + off, c.expected, expected_len))
+            << "reason " << (int)c.reason << " must serialize as "
+            << c.expected;
+    }
 }

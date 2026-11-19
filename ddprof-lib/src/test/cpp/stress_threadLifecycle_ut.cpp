@@ -158,12 +158,14 @@ static void dump_thread() {
 TEST(StressThreadLifecycle, Smoke) {
   ProfiledThread::initCurrentThreadSignalSafe();
   CallTraceStorage storage;
+  storage.acquire();
   storage.clear();
   SUCCEED();
 }
 
 TEST(StressThreadLifecycle, ChurnOnly) {
   installGtestCrashHandler<STRESS_TEST_NAME>();
+  g_storage.acquire();
   g_storage.clear();
 
   ThreadFilter filter;
@@ -186,6 +188,7 @@ TEST(StressThreadLifecycle, ChurnOnly) {
 
 TEST(StressThreadLifecycle, ChurnDuringDump) {
   installGtestCrashHandler<STRESS_TEST_NAME>();
+  g_storage.acquire();
   g_storage.clear();
 
   ThreadFilter filter;

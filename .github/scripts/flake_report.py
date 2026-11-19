@@ -71,7 +71,12 @@ def attempt_results(root_dir):
                 # proposing for quarantine.
                 continue
             test_id = "{}.{}".format(classname, name)
-            if case.find("skipped") is None:
+            # gtest writes status="notrun" (e.g. DISABLED_ tests, never run)
+            # with no result element; counting those as observed would claim a
+            # test ran and passed when it never started. Gradle's XML leaves
+            # the status attribute empty and marks skips with <skipped>, so
+            # this only bites gtest reports.
+            if case.find("skipped") is None and case.get("status") != "notrun":
                 observed.add(test_id)
             problem = case.find("failure")
             if problem is None:
@@ -134,6 +139,14 @@ _CRASH_RE = re.compile(
 # review on this PR against commit 5f01c39c, before the fix here).
 _WORKER_DIED_RE = re.compile(r"finished with non-zero exit value")
 
+# Marker printed by .gitlab/scripts/run-gtest-quarantine.sh when a gtest
+# binary exited non-zero without writing its JUnit XML -- a sanitizer abort
+# (ASan exit 1, TSan exit 66) kills the binary before gtest writes anything,
+# so the abort reaches the classifier only through this log line.
+_ABORTED_WITHOUT_RESULTS_RE = re.compile(
+    r"ABORTED: \S+ exited \d+ without producing test results"
+)
+
 
 def non_test_task_failures(log_path, test_task_pattern):
     """Gradle task names blamed for a failure, other than the test task itself.
@@ -162,14 +175,17 @@ def cut_short_marker(log_path, musl=False):
     caller happened not to pass.
 
     `musl=True` drops _WORKER_DIED_RE from consideration: see its docstring
-    for why that line is ambiguous there. The crash banner alone still
-    catches a genuine musl crash.
+    for why that line is ambiguous there. The crash banner and the gtest
+    abort marker alone still catch a genuine cut-short run.
     """
     if not log_path or not os.path.isfile(log_path):
         return None
-    pattern = _CRASH_RE if musl else re.compile(
-        "{}|{}".format(_CRASH_RE.pattern, _WORKER_DIED_RE.pattern)
-    )
+    if musl:
+        pattern = re.compile("{}|{}".format(_CRASH_RE.pattern, _ABORTED_WITHOUT_RESULTS_RE.pattern))
+    else:
+        pattern = re.compile("{}|{}|{}".format(
+            _CRASH_RE.pattern, _WORKER_DIED_RE.pattern, _ABORTED_WITHOUT_RESULTS_RE.pattern
+        ))
     with open(log_path, errors="replace") as handle:
         for line in handle:
             m = pattern.search(line)

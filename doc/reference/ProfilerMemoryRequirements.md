@@ -115,9 +115,11 @@ Typical overhead (UNVERIFIABLE estimate; depends on workload):
 - Applications with dynamic dispatch: 100K-1M unique traces
 
 **Lifecycle:**
-- Allocated with the `Profiler` singleton
+- Allocated by `start()` (`CallTraceStorage::acquire()`), together with the per-stripe
+  frame buffers `recordSample()` unwinds into
 - Rotated and partly reset on every JFR chunk
-- Cleared on profiler restart
+- Freed by `stop()` once the final chunk is written (`CallTraceStorage::release()`), so
+  an idle profiler holds none of it
 
 ### 4. RefCountSlot Arrays (Thread-Local Reference Counting)
 
@@ -144,14 +146,16 @@ Fixed allocation (static arrays):
   context attribute values); see [StringDictionary](../architecture/StringDictionary.md)
 - Each is triple-buffered. Each buffer has a 128-row × 3-cell root `SBTable` (~6 KB),
   heap-allocated overflow tables, and a `StringArena` of 512 KB chunks for the key strings
-- Two plain `Dictionary` instances (`_packages`, `_symbols`) live in the per-dump `Lookup`
-  and are freed after each dump
+- A plain `Dictionary` (`_packages`) and a `SymbolDictionary` (`_symbols`, which maps a
+  failed insert to a reserved name or signature id) live in the per-dump `Lookup` and are freed after each dump
 
 **Memory cost:**
 ```
-Fixed per StringDictionary:
+Per StringDictionary, once each buffer has been written to:
 - 3 buffers × (~6 KB root table + one 512 KB arena chunk) ≈ 1.5 MB
 - 3 dictionaries ≈ 4.6 MB
+(A buffer's root table and first chunk are allocated by its first insert, so an
+unused dictionary holds nothing.)
 
 Growth:
 - Further 512 KB arena chunks and overflow tables as unique strings accumulate
@@ -164,10 +168,14 @@ Growth:
 - Context values: Bounded by unique span/trace attribute values
 
 **Lifecycle:**
-- Allocated with the `Profiler` singleton
+- Storage is allocated on first use
 - Buffers rotate with each dump; a rotated-out buffer is cleared (keeping its root
   table and first arena chunk)
 - `clearAll()` on a fresh profiler start resets all buffers
+- `stop()` frees all storage of the class-name and string-label dictionaries
+  (`release()`); the tracer's endpoint and queue-time calls skip interning while the
+  profiler is idle, so they stay empty until the next start. The context-value dictionary is kept across `stop()`, because threads cache
+  its encodings (see [StringDictionary](../architecture/StringDictionary.md#release-protocol))
 
 ### 6. Recording Buffers (JFR Event Storage)
 
@@ -285,6 +293,23 @@ owner objects, allocator overhead, other profiler structures and RSS effects;
 it is not a whole-profiler memory limit or an accepted resource budget.
 `NativeMem::record()` tracks logical live bytes, not allocator overhead.
 See [TLSContext.md](../architecture/TLSContext.md) for publication and lifetime rules.
+
+### Idle Profiler (after `stop()`)
+
+Recording-scoped memory is freed when a recording stops: the call-trace tables and
+per-stripe frame buffers (`calltrace`), the class-name and string-label dictionaries
+(the `dictionary_classes_bytes` and `dictionary_endpoints_bytes` debug counters), the JFR buffers (`jfr_buffers`), and the liveness tracker's tracking
+table and its weak refs (`liveness`; up to 262,144 × 256 bytes = 64 MB while
+recording), and the CPU timer table (`ctimer`; `pid_max × 4` bytes, 16 MiB at a
+`pid_max` of 4194304, mostly untouched address space). Native malloc hooks are restored, except in a library that was unloaded or replaced
+since it was patched (see [Stopping](../architecture/NativeMemoryProfiling.md#stopping)).
+What stays: the context-value dictionary (so the `dictionary` gauge stays non-zero),
+per-thread state (`thread_local`), parsed native symbols (`native_symbols`), the thread
+filter and the wall-clock block-tracker backing (`wallclock`, once a thread-registry
+registration allocated it), the persistent `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`'
+per-thread events. `ProfilerLifecycleTest` uses no thread filter, so no tracker backing exists, and asserts that `calltrace`, `jfr_buffers`, `wallclock`,
+`line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
+counters, read 0 after every `stop()`.
 
 ### Summary: Memory Components
 
@@ -583,6 +608,28 @@ jcmd <pid> VM.native_memory summary.diff
 - Profiler data structures (CallTraceStorage, StringDictionary, etc.) are not visible
   to NMT (libc `malloc`/raw `mmap`); the `native_mem_*` counters break these down by category
 
+### Malloc Arena Counters
+
+The `malloc_*` JFR counters report the process-wide allocator state, not profiler
+memory: `malloc_arena_bytes` (system memory held by the allocator's arenas),
+`malloc_in_use_bytes` (bytes currently handed out to callers),
+`malloc_free_held_bytes` (bytes free but retained in the arenas),
+`malloc_trimmable_bytes` (the main arena's top chunk, i.e. what `malloc_trim`
+could return), and `malloc_mmap_bytes` (bytes in mmap'd chunks, returned to the
+OS on free).
+
+On glibc these come from `mallinfo2()`, resolved at runtime rather than at
+compile time: a build made against old glibc headers (the el8 image has glibc
+2.28) still populates the counters when the runtime glibc provides `mallinfo2`
+(glibc >= 2.33). The counters stay unset — not published as zero — when the
+runtime allocator does not provide `mallinfo2` (glibc < 2.33, musl, macOS), or
+when a replacement allocator (tcmalloc, jemalloc) is loaded, because its
+accounting model differs and the values would not be comparable. High
+`malloc_free_held_bytes` with flat `malloc_in_use_bytes` indicates arena
+fragmentation from interleaved allocation; `malloc_trimmable_bytes` separates
+trim-threshold policy from genuine fragmentation, which trimming cannot
+reclaim.
+
 ### Class Count Metrics
 
 ```bash
@@ -651,8 +698,8 @@ Paths are relative to `ddprof-lib/src/main/cpp/`.
 **5. String dictionaries:**
 - `stringDictionary.h` - `StringDictionary`, `SBTable`, `StringArena` (`CHUNK_SIZE = 512 KB`)
 - `profiler.h` - `_class_map`, `_string_label_map`, `_context_value_map`
-- `dictionary.h` - `Dictionary` (`ROWS = 128`, `CELLS = 3`), used for `Lookup::_packages`
-  and `Lookup::_symbols`
+- `dictionary.h` - `Dictionary` (`ROWS = 128`, `CELLS = 3`), used for `Lookup::_packages`;
+  `SymbolDictionary` wraps it for `Lookup::_symbols`
 
 **6. Recording buffers:**
 - `buffers.h` - `RECORDING_BUFFER_SIZE = 65536`, `RECORDING_BUFFER_OVERFLOW = 8192`

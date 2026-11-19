@@ -108,6 +108,8 @@ protected:
     request.context.setTag(0, 22);
     ASGCT_CallFrame frame{};
     frame.method_id = reinterpret_cast<jmethodID>(0x1234);
+    // The storage is allocated only for a recording.
+    ASSERT_TRUE(profiler->callTraceStorageForTest()->acquire());
     origin = profiler->callTraceStorageForTest()->put(1, &frame, false, 1);
     frame.method_id = reinterpret_cast<jmethodID>(0x1235);
     current = profiler->callTraceStorageForTest()->put(1, &frame, false, 1);
