@@ -14,6 +14,7 @@ context and fails closed on unreadable CODEOWNERS and failed writes.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -121,30 +122,59 @@ class SensitivePatternsTest(unittest.TestCase):
     def test_entry_count_at_the_cap_is_accepted_and_over_it_rejected(self):
         with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
                                          delete=False) as handle:
-            for index in range(cogate.CODEOWNERS_MAX_ENTRIES - 1):
+            for index in range(cogate.CODEOWNERS_MAX_LINES - 1):
                 handle.write("/p/%d @DataDog/profiling-java\n" % index)
             name = handle.name
         try:
             self.assertEqual(
                 len(cogate.load_sensitive_patterns(name)),
-                cogate.CODEOWNERS_MAX_ENTRIES - 1)
+                cogate.CODEOWNERS_MAX_LINES - 1)
         finally:
             os.unlink(name)
         with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
                                          delete=False) as handle:
-            for index in range(cogate.CODEOWNERS_MAX_ENTRIES):
+            for index in range(cogate.CODEOWNERS_MAX_LINES):
                 handle.write("/p/%d @DataDog/profiling-java\n" % index)
             name = handle.name
         try:
             self.assertEqual(
                 len(cogate.load_sensitive_patterns(name)),
-                cogate.CODEOWNERS_MAX_ENTRIES)
+                cogate.CODEOWNERS_MAX_LINES)
         finally:
             os.unlink(name)
         with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
                                          delete=False) as handle:
-            for index in range(cogate.CODEOWNERS_MAX_ENTRIES + 1):
+            for index in range(cogate.CODEOWNERS_MAX_LINES + 1):
                 handle.write("/p/%d @DataDog/profiling-java\n" % index)
+            name = handle.name
+        try:
+            with self.assertRaises(gate.ApiError):
+                cogate.load_sensitive_patterns(name)
+        finally:
+            os.unlink(name)
+
+    def test_comments_and_blanks_count_toward_the_line_cap(self):
+        # The cap bounds the raw line count, not the entry count: a file
+        # under the cap is accepted even with fewer real entries.
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            for index in range(9):
+                handle.write("# comment %d\n" % index)
+                handle.write("\n")
+            handle.write("/p @DataDog/profiling-java\n")
+            name = handle.name
+        try:
+            self.assertEqual(cogate.load_sensitive_patterns(name), ["/p"])
+        finally:
+            os.unlink(name)
+
+    def test_default_rule_naming_another_team_is_rejected(self):
+        # The default rule gets the same owner check as every other entry:
+        # a repo-wide rule naming another team reroutes attribution while
+        # this gate keeps demanding this team's approval.
+        with tempfile.NamedTemporaryFile("w", suffix="CODEOWNERS",
+                                         delete=False) as handle:
+            handle.write("* @DataDog/other-team\n")
             name = handle.name
         try:
             with self.assertRaises(gate.ApiError):
@@ -215,6 +245,18 @@ class SensitiveMatchTest(unittest.TestCase):
         with self.assertRaises(gate.ApiError):
             make_client(transport).team_logins("DataDog", "profiling-java")
 
+    def test_mid_pattern_double_star_covers_zero_directories(self):
+        # GitHub's ** matches zero directories anywhere: /a/**/b also
+        # covers a/b, which plain fnmatch cannot reach.
+        self.assertTrue(cogate.is_sensitive(
+            "a/b", ["/a/**/b"]))
+        self.assertTrue(cogate.is_sensitive(
+            "a/x/b", ["/a/**/b"]))
+        self.assertTrue(cogate.is_sensitive(
+            "a/x/b/c.py", ["/a/**/b"]))
+        self.assertFalse(cogate.is_sensitive(
+            "a/x/y", ["/a/**/b"]))
+
     def test_leading_slash_is_dropped_before_matching(self):
         self.assertTrue(cogate.is_sensitive(
             ".github/scripts/deploy.sh", ["/.github/scripts/deploy.sh"]))
@@ -247,6 +289,17 @@ class LatestReviewTest(unittest.TestCase):
             review("owner-a", "COMMENTED", "2026-01-01T00:00:00Z", 2)]]
         self.assertEqual(cogate.latest_review_by_login(records)["owner-a"]["state"],
                          "COMMENTED")
+
+    def test_fractional_and_whole_second_timestamps_order_correctly(self):
+        # The grammar admits fractional seconds, and .5Z is later than Z —
+        # as plain strings it would sort earlier, keeping a superseded
+        # approval alive.
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
+            review("owner-a", "CHANGES_REQUESTED",
+                   "2026-01-01T00:00:00.5Z", 2)]]
+        self.assertFalse(cogate.owner_approval(
+            records, "pr-author", TEAM_LOGINS, SHA))
 
     def test_records_without_login_are_ignored(self):
         records = [{"author_login": None, "state": "APPROVED",
@@ -937,6 +990,15 @@ class SelectedStatusTest(unittest.TestCase):
         self.assertIsNone(cogate._selected_status(
             [self.status(1, creator="dd-octo-sts[bot]")]))
 
+    def test_non_integer_status_id_is_not_a_candidate(self):
+        # A status whose id is not an integer cannot be ordered: comparing
+        # it would crash the publish and leave a recorded success standing.
+        # It is skipped, never a candidate; the valid status still wins.
+        self.assertIsNone(cogate._selected_status([self.status(None)]))
+        self.assertIsNone(cogate._selected_status([self.status("12")]))
+        self.assertEqual(cogate._selected_status(
+            [self.status(None), self.status(2)])["id"], 2)
+
     def test_every_field_must_match_for_suppression(self):
         recorded = self.status(
             1, description="sensitive-path owner review satisfied")
@@ -950,6 +1012,32 @@ class SelectedStatusTest(unittest.TestCase):
             self.status(1, description="other text"), payload))
         self.assertFalse(cogate._matches_status(
             self.status(1, state="failure"), payload))
+
+
+class DesignDocPolicyDriftTest(unittest.TestCase):
+    """The design doc embeds the sts policy's claim contract verbatim; the
+    embedded copy is duplicated state, so this test fails when the live
+    policy file and the doc's block drift apart."""
+
+    def test_doc_yaml_block_matches_the_live_policy_file(self):
+        doc = open(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "..", "doc", "BitsReviewMergeGateDesign.md"),
+            encoding="utf-8").read()
+        policy = open(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "..", ".github", "chainguard",
+            "self.bits-review-gate.publish-status.sts.yaml"),
+            encoding="utf-8").read()
+        block = re.search(r"```yaml\n(.*?)```", doc, re.S)
+        self.assertIsNotNone(block)
+        for line in policy.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            self.assertIn(stripped, block.group(1),
+                          "policy line %r missing from the doc's yaml block; "
+                          "update BitsReviewMergeGateDesign.md" % (stripped,))
 
 
 class TeamLoginsTest(unittest.TestCase):

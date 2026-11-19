@@ -40,7 +40,7 @@ DEFAULT_RULE_PATTERN = "*"
 OWNER_ORG = "DataDog"
 OWNER_TEAM_SLUG = "profiling-java"
 OWNER_TEAM = "@%s/%s" % (OWNER_ORG, OWNER_TEAM_SLUG)
-CODEOWNERS_MAX_ENTRIES = 1024
+CODEOWNERS_MAX_LINES = 1024
 #: The compare endpoint caps its file list and offers no pagination; a full
 #: list is indistinguishable from a truncation and fails closed.
 _COMPARE_FILE_CAP = 300
@@ -60,6 +60,7 @@ class CodeownerClient(gate.GitHubClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._membership_token = None
+        self._team_logins = None
 
     def set_membership_token(self, token):
         """Arm the org-team reads with the status token: the repository-
@@ -81,11 +82,11 @@ class CodeownerClient(gate.GitHubClient):
         membership token — the repository-scoped read token cannot
         authorize organization-team lookups — paginated with the same
         page-following rules as the base client's list reads."""
-        cached = getattr(self, "_team_logins", None)
+        cached = self._team_logins
         if cached is None:
             url = "%s/orgs/%s/teams/%s/members?per_page=%d" % (
                 self._api_url, org, team_slug, gate.REST_PER_PAGE)
-            token = getattr(self, "_membership_token", None)
+            token = self._membership_token
             pages = 0
             members = []
             while url is not None:
@@ -156,8 +157,9 @@ def load_sensitive_patterns(path):
             lines = handle.readlines()
     except OSError as error:
         raise gate.ApiError("unreadable %s: %s" % (path, error)) from error
-    if len(lines) > CODEOWNERS_MAX_ENTRIES:
-        raise gate.ApiError("%s exceeds %d entries" % (path, CODEOWNERS_MAX_ENTRIES))
+    if len(lines) > CODEOWNERS_MAX_LINES:
+        raise gate.ApiError(
+            "%s exceeds %d lines" % (path, CODEOWNERS_MAX_LINES))
     patterns = []
     for line in lines:
         entry = line.split("#", 1)[0].strip()
@@ -165,16 +167,19 @@ def load_sensitive_patterns(path):
             continue
         tokens = entry.split()
         pattern = tokens[0]
-        if pattern == DEFAULT_RULE_PATTERN:
-            continue
-        # The gate approves by one fixed team; an entry naming any other
-        # team would route reviewers there while this gate keeps demanding
-        # this team's approval — reject instead of letting the two drift.
+        # The default rule gets the same owner check as every other entry:
+        # a repo-wide rule naming another team would reroute attribution
+        # while this gate keeps demanding this team's approval.
         owners = set(tokens[1:])
         if owners != {OWNER_TEAM}:
             raise gate.ApiError(
                 "%s entry %r names owners %s; this gate only supports %s"
                 % (path, pattern, sorted(owners), OWNER_TEAM))
+        if pattern == DEFAULT_RULE_PATTERN:
+            continue
+        # The gate approves by one fixed team; an entry naming any other
+        # team would route reviewers there while this gate keeps demanding
+        # this team's approval — reject instead of letting the two drift.
         if not pattern.startswith("/"):
             # GitHub would match an unanchored pattern in any directory;
             # a whole-path fnmatch would let those paths escape the check,
@@ -220,6 +225,10 @@ def is_sensitive(path, patterns):
             variants = [pattern]
             if pattern.startswith("**/"):
                 variants.append(pattern[3:])
+            if "/**/" in pattern:
+                # GitHub's ** matches zero directories anywhere: /a/**/b
+                # also covers a/b, which plain fnmatch cannot reach.
+                variants.append(pattern.replace("/**/", "/", 1))
             if any(fnmatch.fnmatchcase(prefix, variant)
                    for variant in variants for prefix in prefixes):
                 return True
@@ -233,6 +242,18 @@ def is_sensitive(path, patterns):
 
 _SUBMITTED_AT_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+
+
+def _submitted_at_key(record):
+    """The ordering key of a review record's submission time. The strict
+    grammar admits fractional and whole seconds; as plain strings ``.5Z``
+    sorts before ``Z``, so the key is (whole-second body, fractional part)
+    with the trailing ``Z`` stripped from the whole-second body."""
+    stamp = record.get("submitted_at") or ""
+    whole, _, fraction = stamp.partition(".")
+    if whole.endswith("Z"):
+        whole = whole[:-1]
+    return (whole, fraction[:-1] if fraction else "")
 
 
 def _validated_reviews(nodes, number):
@@ -268,8 +289,8 @@ def latest_review_by_login(records):
             continue
         current = latest.get(login)
         if (current is None
-                or (record.get("submitted_at") or "") > (current.get("submitted_at") or "")
-                or (record.get("submitted_at") == current.get("submitted_at")
+                or _submitted_at_key(record) > _submitted_at_key(current)
+                or (_submitted_at_key(record) == _submitted_at_key(current)
                     and (record.get("id") or 0) > (current.get("id") or 0))):
             latest[login] = record
     return latest
@@ -301,9 +322,8 @@ def owner_approval(records, author_login, team_logins, head):
     return False
 
 
-def _repo_url():
-    repo = os.environ.get("GITHUB_REPOSITORY", "DataDog/java-profiler")
-    return "https://github.com/" + repo
+def _repo_url(client):
+    return "https://github.com/" + client.repo
 
 
 def evaluate_sha(sha, client, patterns):
@@ -430,14 +450,13 @@ def evaluate_sha(sha, client, patterns):
         else:
             decisions.append((
                 number, "failure",
-                "sensitive paths changed: approval from @DataDog/"
-                "profiling-java required",
+                "sensitive paths changed: approval from %s required" % (OWNER_TEAM,),
             ))
     failures = [decision for decision in decisions if decision[1] != "pass"]
     if failures:
         number, _, description = failures[0]
         return ("failure", "failure", description,
-                "%s/pull/%d" % (_repo_url(), number))
+                "%s/pull/%d" % (_repo_url(client), number))
     # Revalidate every contributing PR after the reads: a head that moved on
     # or a PR that closed between the listing and here must not leave a
     # success attached to this SHA — the next evaluation of the new head
@@ -450,7 +469,7 @@ def evaluate_sha(sha, client, patterns):
         except (gate.ApiError, gate.RateLimitError):
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (pr["number"],),
-                    "%s/pull/%d" % (_repo_url(), pr["number"]))
+                    "%s/pull/%d" % (_repo_url(client), pr["number"]))
         # A malformed record is a failed read, not a settled one: treating
         # it as "moved or closed" would skip the write and leave any
         # recorded success standing.
@@ -462,7 +481,7 @@ def evaluate_sha(sha, client, patterns):
                 or not gate._SHA_RE.fullmatch(fresh_head["sha"])):
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (pr["number"],),
-                    "%s/pull/%d" % (_repo_url(), pr["number"]))
+                    "%s/pull/%d" % (_repo_url(client), pr["number"]))
         if fresh["state"] != "open" or fresh_head["sha"] != sha:
             return ("empty", None, None, None)
     # An approval read earlier can be dismissed before the status lands:
@@ -480,16 +499,16 @@ def evaluate_sha(sha, client, patterns):
         except gate.RateLimitError:
             return ("failure", "failure",
                     "cannot evaluate: PR %d revalidation failed" % (number,),
-                    "%s/pull/%d" % (_repo_url(), number))
+                    "%s/pull/%d" % (_repo_url(client), number))
         except gate.ApiError as error:
             return ("failure", "failure", "cannot evaluate: %s" % (error,),
-                    "%s/pull/%d" % (_repo_url(), number))
+                    "%s/pull/%d" % (_repo_url(client), number))
         if not owner_approval(fresh_records, approved_author[number],
                               team_logins, sha):
             return ("failure", "failure",
-                    "sensitive paths changed: approval from @DataDog/"
-                    "profiling-java required",
-                    "%s/pull/%d" % (_repo_url(), number))
+                    "sensitive paths changed: approval from %s required"
+                    % (OWNER_TEAM,),
+                    "%s/pull/%d" % (_repo_url(client), number))
     return ("success", "success", "sensitive-path owner review satisfied", None)
 
 
@@ -501,12 +520,17 @@ def _selected_status(statuses):
     for status in statuses:
         if not isinstance(status, dict):
             continue
+        status_id = status.get("id")
+        if not isinstance(status_id, int):
+            # A status whose id is not an integer cannot be ordered; treat
+            # it as malformed input, never as a candidate.
+            continue
         creator = status.get("creator")
         if (status.get("context") != STATUS_CONTEXT
                 or not isinstance(creator, dict)
                 or creator.get("login") != gate.STATUS_CREATOR):
             continue
-        if latest is None or status.get("id", 0) > latest.get("id", 0):
+        if latest is None or status_id > latest.get("id", 0):
             latest = status
     return latest
 
