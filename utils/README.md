@@ -83,10 +83,9 @@ Only `failure` and `startup_failure` are labelled as workflow failures.
 
 `.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
 test. It validates release tag/branch creation, version computation,
-trivial-PR authorization, and recovery from workflow monitoring errors using
-temporary local Git repositories and a GitHub CLI fixture. It does not load
-credentials or contact GitHub, so it cannot publish, tag, push, or merge
-anything remotely.
+and recovery from workflow monitoring errors using temporary local Git
+repositories and a GitHub CLI fixture. It does not load credentials or contact
+GitHub, so it cannot publish, tag, push, or merge anything remotely.
 The terminal interaction tests require Python 3.
 
 ```bash
