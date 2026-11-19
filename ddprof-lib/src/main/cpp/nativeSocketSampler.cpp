@@ -187,8 +187,8 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
 #endif
         return;
     }
-    // Admission cannot pin an application's open file description. Revalidate
-    // sampled results as well, including send/recv, before resolving the peer.
+    // Admission trusts the cached verdict, which a raw close/dup2 in an
+    // unpatched library can leave stale. Revalidate before resolving the peer.
     if (!revalidateSocket(fd)) return;
     SAMPLER_PERF_PROBE(SP_NATIVESOCKET);
 #ifdef DEBUG
@@ -259,7 +259,7 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
     u64 t0 = 0;
     {
         ErrnoGuard errno_guard;
-        is_socket = _instance->revalidateSocket(fd);
+        is_socket = _instance->isSocket(fd);
         if (is_socket) {
 #ifdef DEBUG
             uint64_t n = _send_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -285,7 +285,7 @@ ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags)
     u64 t0 = 0;
     {
         ErrnoGuard errno_guard;
-        is_socket = _instance->revalidateSocket(fd);
+        is_socket = _instance->isSocket(fd);
         if (is_socket) {
 #ifdef DEBUG
             uint64_t n = _recv_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -311,7 +311,7 @@ ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
     u64 t0 = 0;
     {
         ErrnoGuard errno_guard;
-        is_socket = _instance->revalidateSocket(fd);
+        is_socket = _instance->isSocket(fd);
 #ifdef DEBUG
         uint64_t n = _write_hook_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3FF) == 0) {
@@ -335,7 +335,7 @@ ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
     u64 t0 = 0;
     {
         ErrnoGuard errno_guard;
-        is_socket = _instance->revalidateSocket(fd);
+        is_socket = _instance->isSocket(fd);
 #ifdef DEBUG
         uint64_t n = _read_hook_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3FF) == 0) {
