@@ -248,12 +248,15 @@ def _submitted_at_key(record):
     """The ordering key of a review record's submission time. The strict
     grammar admits fractional and whole seconds; as plain strings ``.5Z``
     sorts before ``Z``, so the key is (whole-second body, fractional part)
-    with the trailing ``Z`` stripped from the whole-second body."""
+    with the trailing ``Z`` stripped from the whole-second body and
+    insignificant trailing zeros stripped from the fraction — timestamps
+    denoting the same instant must compare equal, so the id tie-breaker
+    can decide."""
     stamp = record.get("submitted_at") or ""
     whole, _, fraction = stamp.partition(".")
     if whole.endswith("Z"):
         whole = whole[:-1]
-    return (whole, fraction[:-1] if fraction else "")
+    return (whole, fraction[:-1].rstrip("0") if fraction else "")
 
 
 def _validated_reviews(nodes, number):

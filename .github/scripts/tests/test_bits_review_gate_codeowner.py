@@ -301,6 +301,16 @@ class LatestReviewTest(unittest.TestCase):
         self.assertFalse(cogate.owner_approval(
             records, "pr-author", TEAM_LOGINS, SHA))
 
+    def test_equivalent_timestamps_fall_through_to_the_id_tiebreak(self):
+        # .0Z and Z denote the same instant: the keys must compare equal so
+        # the review-id tie-breaker decides, not the fraction spelling.
+        records = [gate.normalize_review(n) for n in [
+            review("owner-a", "APPROVED", "2026-01-01T00:00:00.0Z", 1),
+            review("owner-a", "CHANGES_REQUESTED",
+                   "2026-01-01T00:00:00Z", 2)]]
+        self.assertFalse(cogate.owner_approval(
+            records, "pr-author", TEAM_LOGINS, SHA))
+
     def test_records_without_login_are_ignored(self):
         records = [{"author_login": None, "state": "APPROVED",
                     "submitted_at": "2026-01-01T00:00:00Z", "id": 1}]
