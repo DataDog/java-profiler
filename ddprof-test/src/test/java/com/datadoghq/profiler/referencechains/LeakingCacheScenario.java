@@ -63,12 +63,9 @@ public final class LeakingCacheScenario {
    */
   public static final String CHAIN_NOT_PERSISTED_MARKER = "[chain-not-persisted] ";
 
-  // The chain event lands only after the search's first BFS pass completes - chain
-  // building polls are serialized behind the in-flight pass - so the tail must cover
-  // the whole pass plus one poll. No tighter upper bound is known: from round-loop
-  // start, admission comes at t≈6-8s and the event at t≈15-17s (measured across three
-  // aarch64/glibc release runs), hence 60s, inside the parent's 150s child timeout
-  // (round loop ≈9s measured + 60s tail + startup + post-tail diagnostics).
+  // The chain event lands only after the first BFS pass completes - polls serialize
+  // behind the in-flight pass - so the tail must cover the whole pass plus one poll:
+  // admission t≈6-8s, event t≈15-17s on aarch64/glibc release builds; hence 60s.
   private static final long TAIL_BUDGET_MILLIS = 60_000;
   private static final long TAIL_POLL_INTERVAL_MILLIS = 1000;
 

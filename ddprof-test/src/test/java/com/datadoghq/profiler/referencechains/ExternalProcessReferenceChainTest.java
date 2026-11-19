@@ -162,9 +162,8 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
               packedCommand,
               Collections.emptyMap(),
               // Same 150s as shouldReconstructReferrerChainInSeparateProcess(): this scenario's
-              // own tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s on
-              // top of the round loop for a cold JVM's first full pass to actually complete -
-              // see that method's own comment.
+              // tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s for a
+              // cold JVM's first full pass; see that method's own comment.
               childTimeoutSeconds(150),
               line -> {
                 if (line.startsWith(StaticFieldGrowingCollectionScenario.FOUND_MARKER)
