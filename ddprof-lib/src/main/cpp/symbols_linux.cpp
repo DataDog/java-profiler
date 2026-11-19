@@ -1283,14 +1283,11 @@ static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
 }
 
 static int matchImageBase(struct dl_phdr_info* info, size_t, void* data) {
-    uintptr_t min_vaddr = UINTPTR_MAX;
-    for (int i = 0; i < info->dlpi_phnum; i++) {
-        if (info->dlpi_phdr[i].p_type == PT_LOAD && info->dlpi_phdr[i].p_vaddr < min_vaddr) {
-            min_vaddr = info->dlpi_phdr[i].p_vaddr;
-        }
-    }
-    return min_vaddr != UINTPTR_MAX &&
-           ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) == reinterpret_cast<uintptr_t>(data);
+    LoadedImage image(reinterpret_cast<const ElfProgramHeader*>(info->dlpi_phdr), info->dlpi_phnum,
+                      static_cast<uintptr_t>(info->dlpi_addr));
+    uintptr_t base;
+    // Overflow is a non-match so dl_iterate_phdr continues with other images.
+    return image.pageBase(base) && base == reinterpret_cast<uintptr_t>(data);
 }
 
 // musl's dlopen() links a library into the list dl_iterate_phdr() walks only after mapping
@@ -1348,7 +1345,7 @@ static u64 fnv1a(const void* data, size_t size, u64 hash) {
 // false if a symbol or its name lies outside the readable image. relent must be
 // at least sizeof(ElfRelocation) (hashImportLayout() checks it), so every entry
 // the walk visits holds a whole r_offset and r_info and the walk advances.
-bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size, size_t relent,
+static bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size, size_t relent,
                            uintptr_t symtab, size_t syment, uintptr_t strtab, size_t strsz,
                            u64& hash) {
     for (size_t offs = 0; relent <= size - offs; offs += relent) {
@@ -1371,7 +1368,7 @@ bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size,
 // Hashes the dynamic relocations that name a symbol, from DT_JMPREL and
 // DT_RELA/DT_REL: together they say which import each GOT slot holds.
 // Returns false if a table lies outside the readable image.
-bool hashImportLayout(const LoadedImage& image, u64& hash) {
+static bool hashImportLayout(const LoadedImage& image, u64& hash) {
     const ElfProgramHeader* dynamic = image.find(PT_DYNAMIC);
     if (dynamic == NULL) return true;  // nothing is imported
     uintptr_t dyn_start;

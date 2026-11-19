@@ -37,6 +37,8 @@ public class NativememDdprofExclusionTest extends AbstractProcessProfilerTest {
   private static final String NO_ENGINE_LITERAL =
       "Neither CPU, wallclock nor allocation profiling could be started";
 
+  private static native int checkMalformedMetadata(int scenario);
+
   @BeforeAll
   static void requireSupportedPlatform() {
     // Linux-only child-JVM scenarios: the stand-in's GOT rewrite is
@@ -87,6 +89,51 @@ public class NativememDdprofExclusionTest extends AbstractProcessProfilerTest {
         "[markers] start=0 stop=0",
         markers,
         "the admission check must never execute a marker function");
+  }
+
+  private static int malformedMetadataResult(int scenario) {
+    DdprofStandin.startMarkerCalls();
+    return checkMalformedMetadata(scenario);
+  }
+
+  @Test
+  void locateOperationSlotsRejectsOutOfRangeSymbolIndex() {
+    assertEquals(-1, malformedMetadataResult(0), "symbol indices must stay within DT_SYMTAB");
+  }
+
+  @Test
+  void locateOperationSlotsRejectsOutOfRangeStringOffset() {
+    assertEquals(-2, malformedMetadataResult(1), "st_name must stay within DT_STRSZ");
+  }
+
+  @Test
+  void locateOperationSlotsRejectsUnterminatedStringTableName() {
+    assertEquals(-3, malformedMetadataResult(2), "symbol names must terminate within DT_STRSZ");
+  }
+
+  @Test
+  void dynamicPointerRejectsAddressOverflow() {
+    assertEquals(-1, malformedMetadataResult(3), "image-relative pointers must not wrap on addition");
+  }
+
+  @Test
+  void readableRangeRejectsSegmentsWithoutReadPermission() {
+    assertEquals(0, malformedMetadataResult(4), "only PF_R PT_LOAD ranges may be read");
+  }
+
+  @Test
+  void locateOperationSlotsRejectsUnreadableDynamicTable() {
+    assertEquals(-1, malformedMetadataResult(5), "dynamic metadata must be in a readable PT_LOAD");
+  }
+
+  @Test
+  void readableRangeRejectsFileBackedOverrun() {
+    assertEquals(0, malformedMetadataResult(6), "the full requested range must fit within p_filesz");
+  }
+
+  @Test
+  void readableRangeRejectsSegmentEndOverflow() {
+    assertEquals(0, malformedMetadataResult(7), "segment bounds must not wrap around uintptr_t");
   }
 
   // Without a native-memory request the admission check does not run: no

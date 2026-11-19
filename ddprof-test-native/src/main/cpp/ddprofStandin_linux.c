@@ -77,24 +77,46 @@ struct ProfilerImage {
   ElfW(Half) phnum;
 };
 
+static int imageAddress(const struct ProfilerImage* image, uintptr_t vaddr, uintptr_t* address) {
+  return __builtin_add_overflow(image->bias, vaddr, address) ? -1 : 0;
+}
+
+// Check ranges by subtraction so neither segment nor address end arithmetic can wrap.
+static int readableRange(const struct ProfilerImage* image, uintptr_t address, size_t size) {
+  for (ElfW(Half) i = 0; i < image->phnum; i++) {
+    const ElfW(Phdr)* ph = &image->phdr[i];
+    uintptr_t start;
+    uintptr_t end;
+    if (ph->p_type != PT_LOAD || (ph->p_flags & PF_R) == 0 || imageAddress(image, ph->p_vaddr, &start) != 0
+        || __builtin_add_overflow(start, (uintptr_t)ph->p_filesz, &end) || address < start || address > end) {
+      continue;
+    }
+    uintptr_t offset = address - start;
+    if (offset <= ph->p_filesz && size <= ph->p_filesz - offset) return 1;
+  }
+  return 0;
+}
+
 // glibc relocates dynamic-section pointers in place; musl leaves them as
-// image-relative virtual addresses. Normalize both forms using the lowest
-// PT_LOAD page, matching the profiler's read-only ELF view.
-static uintptr_t dynamicPointer(uintptr_t raw, const struct ProfilerImage* image) {
+// image-relative virtual addresses. Failure must not fall back to the raw value.
+static int dynamicPointer(uintptr_t raw, const struct ProfilerImage* image, uintptr_t* address) {
   uintptr_t min_vaddr = UINTPTR_MAX;
   for (ElfW(Half) i = 0; i < image->phnum; i++) {
     if (image->phdr[i].p_type == PT_LOAD && image->phdr[i].p_vaddr < min_vaddr) {
       min_vaddr = image->phdr[i].p_vaddr;
     }
   }
-  if (min_vaddr == UINTPTR_MAX) return raw;
+  if (min_vaddr == UINTPTR_MAX) return -1;
   long page_size = sysconf(_SC_PAGESIZE);
-  if (page_size <= 0) return raw;
+  if (page_size <= 0) return -1;
   uintptr_t base_page;
-  if (__builtin_add_overflow(image->bias, min_vaddr & ~((uintptr_t)page_size - 1), &base_page)) return raw;
-  if (raw >= base_page) return raw;
-  uintptr_t absolute;
-  return __builtin_add_overflow(image->bias, raw, &absolute) ? raw : absolute;
+  uintptr_t page_mask = (uintptr_t)page_size - 1;
+  if (imageAddress(image, min_vaddr & ~page_mask, &base_page) != 0) return -1;
+  if (raw >= base_page) {
+    *address = raw;
+    return 0;
+  }
+  return imageAddress(image, raw, address);
 }
 
 static int findProfilerImage(struct dl_phdr_info* info, size_t size, void* data) {
@@ -109,9 +131,32 @@ static int findProfilerImage(struct dl_phdr_info* info, size_t size, void* data)
   return 0;
 }
 
+enum OperationLookupResult {
+  OPERATION_LOOKUP_INVALID_INDEX = -1,
+  OPERATION_LOOKUP_INVALID_NAME_OFFSET = -2,
+  OPERATION_LOOKUP_UNTERMINATED_NAME = -3,
+  OPERATION_LOOKUP_NO_MATCH = -4,
+  OPERATION_LOOKUP_INVALID_TABLE = -5,
+};
+
+/* Resolves an operation name only after validating its supplied ELF table bounds. */
+static int operationIndex(const ElfW(Sym)* symtab, size_t nsyms, const char* strtab, size_t strsz,
+                          size_t sym_index) {
+  if (symtab == NULL || strtab == NULL || strsz == 0) return OPERATION_LOOKUP_INVALID_TABLE;
+  if (sym_index >= nsyms) return OPERATION_LOOKUP_INVALID_INDEX;
+  size_t st_name = symtab[sym_index].st_name;
+  if (st_name >= strsz) return OPERATION_LOOKUP_INVALID_NAME_OFFSET;
+  const char* name = strtab + st_name;
+  if (memchr(name, '\0', strsz - st_name) == NULL) return OPERATION_LOOKUP_UNTERMINATED_NAME;
+  for (int op = 0; op < 5; op++) {
+    if (strcmp(name, OPERATION_NAMES[op]) == 0) return op;
+  }
+  return OPERATION_LOOKUP_NO_MATCH;
+}
+
 /* Locates the libjavaProfiler image and records every JUMP_SLOT/GLOB_DAT
- * relocation for the five allocation symbols. Returns 0 on success, -1 when
- * the image or the dynamic metadata cannot be inspected. */
+ * relocation for the five allocation symbols. Every ELF-derived read range
+ * must be readable and file-backed; malformed metadata fails closed. */
 static int locateOperationSlots(struct ProfilerImage* image) {
   memset(operation_slot_count, 0, sizeof(operation_slot_count));
   const ElfW(Phdr)* dynamic = NULL;
@@ -121,8 +166,15 @@ static int locateOperationSlots(struct ProfilerImage* image) {
       break;
     }
   }
-  if (dynamic == NULL) return -1;
-  const ElfW(Dyn)* dyn = (const ElfW(Dyn)*)(image->bias + dynamic->p_vaddr);
+  if (dynamic == NULL || dynamic->p_filesz < sizeof(ElfW(Dyn))
+      || dynamic->p_filesz % sizeof(ElfW(Dyn)) != 0) {
+    return -1;
+  }
+  uintptr_t dyn_addr;
+  if (imageAddress(image, dynamic->p_vaddr, &dyn_addr) != 0 || !readableRange(image, dyn_addr, dynamic->p_filesz)) {
+    return -1;
+  }
+  const ElfW(Dyn)* dyn = (const ElfW(Dyn)*)dyn_addr;
 
   uintptr_t jmprel = 0;
   size_t pltrelsz = 0;
@@ -130,37 +182,70 @@ static int locateOperationSlots(struct ProfilerImage* image) {
   size_t relasz = 0;
   const ElfW(Sym)* symtab = NULL;
   const char* strtab = NULL;
-  for (const ElfW(Dyn)* d = dyn; d->d_tag != DT_NULL; d++) {
+  size_t strsz = 0;
+  size_t dyn_count = dynamic->p_filesz / sizeof(*dyn);
+  int found_null = 0;
+  for (size_t i = 0; i < dyn_count; i++) {
+    const ElfW(Dyn)* d = &dyn[i];
+    if (d->d_tag == DT_NULL) {
+      found_null = 1;
+      break;
+    }
     switch (d->d_tag) {
-      case DT_JMPREL:
-        jmprel = dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
+      case DT_JMPREL: {
+        uintptr_t address;
+        if (dynamicPointer((uintptr_t)d->d_un.d_ptr, image, &address) != 0) return -1;
+        jmprel = address;
         break;
+      }
       case DT_PLTRELSZ:
         pltrelsz = (size_t)d->d_un.d_val;
         break;
-      case DT_RELA:
-        rela = dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
+      case DT_RELA: {
+        uintptr_t address;
+        if (dynamicPointer((uintptr_t)d->d_un.d_ptr, image, &address) != 0) return -1;
+        rela = address;
         break;
+      }
       case DT_RELASZ:
         relasz = (size_t)d->d_un.d_val;
         break;
-      case DT_SYMTAB:
-        symtab = (const ElfW(Sym)*)dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
+      case DT_SYMTAB: {
+        uintptr_t address;
+        if (dynamicPointer((uintptr_t)d->d_un.d_ptr, image, &address) != 0) return -1;
+        symtab = (const ElfW(Sym)*)address;
         break;
-      case DT_STRTAB:
-        strtab = (const char*)dynamicPointer((uintptr_t)d->d_un.d_ptr, image);
+      }
+      case DT_STRTAB: {
+        uintptr_t address;
+        if (dynamicPointer((uintptr_t)d->d_un.d_ptr, image, &address) != 0) return -1;
+        strtab = (const char*)address;
+        break;
+      }
+      case DT_STRSZ:
+        strsz = (size_t)d->d_un.d_val;
         break;
       default:
         break;
     }
   }
-  if (symtab == NULL || strtab == NULL) return -1;
+  if (!found_null || symtab == NULL || strtab == NULL || strsz == 0) return -1;
+  uintptr_t symtab_addr = (uintptr_t)symtab;
+  uintptr_t strtab_addr = (uintptr_t)strtab;
+  if (strtab_addr <= symtab_addr) return -1;
+  size_t nsyms = (size_t)((strtab_addr - symtab_addr) / sizeof(*symtab));
+  size_t symtab_size;
+  if (nsyms == 0 || __builtin_mul_overflow(nsyms, sizeof(*symtab), &symtab_size)
+      || !readableRange(image, symtab_addr, symtab_size) || !readableRange(image, strtab_addr, strsz)) {
+    return -1;
+  }
 
   for (int table = 0; table < 2; table++) {
     uintptr_t base = table == 0 ? jmprel : rela;
     size_t size = table == 0 ? pltrelsz : relasz;
-    if (base == 0) continue;
-    for (size_t off = 0; off + sizeof(ElfW(Rela)) <= size; off += sizeof(ElfW(Rela))) {
+    if (size == 0) continue;
+    if (base == 0 || size % sizeof(ElfW(Rela)) != 0 || !readableRange(image, base, size)) return -1;
+    for (size_t off = 0; off < size; off += sizeof(ElfW(Rela))) {
       const ElfW(Rela)* entry = (const ElfW(Rela)*)(base + off);
       unsigned int reloc_type = ELF64_R_TYPE(entry->r_info);
 #if defined(__aarch64__)
@@ -171,13 +256,16 @@ static int locateOperationSlots(struct ProfilerImage* image) {
       continue;
 #endif
       size_t sym_index = ELF64_R_SYM(entry->r_info);
-      const char* name = strtab + symtab[sym_index].st_name;
-      for (int op = 0; op < 5; op++) {
-        if (strcmp(name, OPERATION_NAMES[op]) != 0) continue;
-        if (operation_slot_count[op] >= MAX_SLOTS_PER_OP) break;
-        void** slot = (void**)(image->bias + entry->r_offset);
-        operation_slots[op][operation_slot_count[op]++] = slot;
+      int op = operationIndex(symtab, nsyms, strtab, strsz, sym_index);
+      if (op == OPERATION_LOOKUP_NO_MATCH) continue;
+      if (op < 0) return -1;
+      if (operation_slot_count[op] >= MAX_SLOTS_PER_OP) continue;
+      uintptr_t slot_addr;
+      if (imageAddress(image, entry->r_offset, &slot_addr) != 0 || !readableRange(image, slot_addr, sizeof(void*))) {
+        return -1;
       }
+      void** slot = (void**)slot_addr;
+      operation_slots[op][operation_slot_count[op]++] = slot;
     }
   }
   for (int op = 0; op < 5; op++) {
@@ -267,6 +355,90 @@ Java_com_datadoghq_profiler_nativemem_DdprofStandin_stopMarkerCalls(JNIEnv* env,
   (void)env;
   (void)clazz;
   return (jlong)standin_stop_calls;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_datadoghq_profiler_nativemem_NativememDdprofExclusionTest_checkMalformedMetadata(
+    JNIEnv* env, jclass clazz, jint scenario) {
+  (void)env;
+  (void)clazz;
+  ElfW(Sym) symtab[2];
+  memset(symtab, 0, sizeof(symtab));
+  char strtab[] = {'m', 'a', 'l', 'l', 'o', 'c', '\0', '\0'};
+  size_t nsyms = 1;
+  size_t strsz = 7;
+  size_t sym_index = 0;
+
+  switch (scenario) {
+    case 0:
+      symtab[1].st_name = 0;
+      sym_index = 1;
+      return operationIndex(symtab, nsyms, strtab, strsz, sym_index);
+    case 1:
+      symtab[0].st_name = 6;
+      strsz = 6;
+      return operationIndex(symtab, nsyms, strtab, strsz, sym_index);
+    case 2:
+      strtab[6] = 'x';
+      strsz = 6;
+      return operationIndex(symtab, nsyms, strtab, strsz, sym_index);
+    case 3: {
+      ElfW(Phdr) phdr[1];
+      memset(phdr, 0, sizeof(phdr));
+      phdr[0].p_type = PT_LOAD;
+      phdr[0].p_flags = PF_R;
+      phdr[0].p_filesz = 0x1000;
+      struct ProfilerImage image = {UINTPTR_MAX - 0x800, phdr, 1};
+      uintptr_t address;
+      return dynamicPointer(0x1000, &image, &address);
+    }
+    case 4: {
+      ElfW(Phdr) phdr[1];
+      memset(phdr, 0, sizeof(phdr));
+      phdr[0].p_type = PT_LOAD;
+      phdr[0].p_flags = PF_W;
+      phdr[0].p_vaddr = 0x1000;
+      phdr[0].p_filesz = 0x40;
+      struct ProfilerImage image = {0, phdr, 1};
+      return readableRange(&image, 0x1000, 1);
+    }
+    case 5: {
+      ElfW(Dyn) entries[1];
+      ElfW(Phdr) phdr[2];
+      memset(entries, 0, sizeof(entries));
+      memset(phdr, 0, sizeof(phdr));
+      phdr[0].p_type = PT_DYNAMIC;
+      phdr[0].p_vaddr = (ElfW(Addr))(uintptr_t)entries;
+      phdr[0].p_filesz = sizeof(entries);
+      phdr[1].p_type = PT_LOAD;
+      phdr[1].p_flags = PF_W;
+      phdr[1].p_vaddr = (ElfW(Addr))(uintptr_t)entries;
+      phdr[1].p_filesz = sizeof(entries);
+      struct ProfilerImage image = {0, phdr, 2};
+      return locateOperationSlots(&image);
+    }
+    case 6: {
+      ElfW(Phdr) phdr[1];
+      memset(phdr, 0, sizeof(phdr));
+      phdr[0].p_type = PT_LOAD;
+      phdr[0].p_flags = PF_R;
+      phdr[0].p_vaddr = 0x1000;
+      phdr[0].p_filesz = 0x40;
+      struct ProfilerImage image = {0, phdr, 1};
+      return readableRange(&image, 0x1030, 0x11);
+    }
+    case 7: {
+      ElfW(Phdr) phdr[1];
+      memset(phdr, 0, sizeof(phdr));
+      phdr[0].p_type = PT_LOAD;
+      phdr[0].p_flags = PF_R;
+      phdr[0].p_filesz = 0x40;
+      struct ProfilerImage image = {UINTPTR_MAX - 0x10, phdr, 1};
+      return readableRange(&image, image.bias, 1);
+    }
+    default:
+      return OPERATION_LOOKUP_INVALID_TABLE;
+  }
 }
 
 #endif /* __linux__ */

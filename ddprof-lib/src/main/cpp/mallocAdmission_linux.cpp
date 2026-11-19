@@ -34,10 +34,8 @@ static bool addChecked(uintptr_t base, size_t offset, uintptr_t& out) {
     return !__builtin_add_overflow(base, static_cast<uintptr_t>(offset), &out);
 }
 
-// True if [addr, addr + size) lies inside the file-backed part of a PT_LOAD
-// segment that also has the PF_R flag. LoadedImage::readable() alone does not
-// test PF_R — the admission reader must not treat a mapping it may not read
-// as readable, so the flag test lives here and not in the moved class.
+// True if [addr, addr + size) lies inside a file-backed PT_LOAD with PF_R.
+// This local check uses the exact program-header table from the callback.
 bool readableR(const ElfProgramHeader* ph, int phnum, uintptr_t load_bias, uintptr_t addr, size_t size) {
     for (int i = 0; i < phnum; i++) {
         if (ph[i].p_type != PT_LOAD) continue;

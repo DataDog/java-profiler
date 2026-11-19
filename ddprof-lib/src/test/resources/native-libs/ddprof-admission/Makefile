@@ -7,7 +7,7 @@ LDFLAGS =
 
 # The STT_GNU_IFUNC marker needs glibc: musl headers and assembler have no
 # indirect-function support, so the ifunc fixture is only built on glibc hosts.
-GLIBC := $(shell ldd --version 2>/dev/null | grep -ci glibc)
+GLIBC := $(shell if ldd --version 2>/dev/null | grep -qiE 'glibc|gnu[[:space:]]+libc'; then echo 1; else echo 0; fi)
 
 VARIANTS = libddprof-fixture-gnu.so \
            libddprof-fixture-sysv.so \
