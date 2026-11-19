@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <link.h>
+#include <memory>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -778,6 +779,130 @@ TEST_F(MallocHookerIdentityTest, RejectsDifferentImageAtSamePathAndBase) {
     }
     MallocHooker::patchLibraries();
     exitRemoving(path, *slot == before ? CHILD_OK : CHILD_CORRUPTED);
+  });
+}
+
+// Keep the replacement loadable while its file-only table has no corresponding mapped address.
+static off_t moveProgramHeadersOutsideLoadSegments(const char* path) {
+  std::unique_ptr<FILE, decltype(&fclose)> file(fopen(path, "r+b"), fclose);
+  if (!file) _exit(CHILD_DLOPEN_FAILED);
+  ElfW(Ehdr) header;
+  if (fread(&header, sizeof(header), 1, file.get()) != 1) _exit(CHILD_WRONG_LAYOUT);
+  ElfW(Phdr) phdrs[16];
+  if (header.e_phnum > 16 || fseeko(file.get(), header.e_phoff, SEEK_SET) != 0
+      || fread(phdrs, sizeof(phdrs[0]), header.e_phnum, file.get()) != header.e_phnum) {
+    _exit(CHILD_WRONG_LAYOUT);
+  }
+  constexpr off_t file_phoff = 1 << 30;
+  for (int i = 0; i < header.e_phnum; i++) {
+    if (phdrs[i].p_type == PT_PHDR
+        || (phdrs[i].p_type == PT_LOAD && phdrs[i].p_offset + phdrs[i].p_filesz >= file_phoff)) {
+      _exit(CHILD_WRONG_LAYOUT);
+    }
+  }
+  if (fseeko(file.get(), file_phoff, SEEK_SET) != 0
+      || fwrite(phdrs, sizeof(phdrs[0]), header.e_phnum, file.get()) != header.e_phnum) {
+    _exit(CHILD_WRONG_LAYOUT);
+  }
+  header.e_phoff = file_phoff;
+  if (fseeko(file.get(), 0, SEEK_SET) != 0 || fwrite(&header, sizeof(header), 1, file.get()) != 1) {
+    _exit(CHILD_WRONG_LAYOUT);
+  }
+  return file_phoff;
+}
+
+TEST_F(MallocHookerIdentityTest, RejectsReplacementWithProgramHeadersOutsideLoadSegments) {
+  if (OS::isMusl()) GTEST_SKIP() << "musl does not unmap dlclosed DSOs";
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    CodeCache* cc = loadMallocTarget(path, sizeof(path), &handle);
+    void** slot = cc->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    void* base = loadBaseOf(handle);
+    if (!unload(handle, slot, path)) exitRemoving(path, CHILD_WRONG_BASE);
+
+    char source[PATH_MAX], replacement[64];
+    testLibPath(source, sizeof(source), "/libnoid-valloc.so");
+    copyLibToTemp(replacement, sizeof(replacement), source);
+    off_t phoff = moveProgramHeadersOutsideLoadSegments(replacement);
+    if (rename(replacement, path) != 0) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    handle = dlopen(path, RTLD_NOW);
+    if (handle == nullptr) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    if (loadBaseOf(handle) != base) exitRemoving(path, CHILD_WRONG_BASE);
+    void* file_phdr_address = static_cast<char*>(base) + phoff;
+    if (msync(file_phdr_address, sysconf(_SC_PAGESIZE), MS_ASYNC) == 0 || errno != ENOMEM) {
+      exitRemoving(path, CHILD_WRONG_LAYOUT);
+    }
+    void* before = *slot;
+    {
+      UnloadProtection pin(cc);
+      if (!pin.isValid()) exitRemoving(path, CHILD_DLOPEN_FAILED);
+    }
+    MallocHooker::patchLibraries();
+    exitRemoving(path, *slot == before ? CHILD_OK : CHILD_CORRUPTED);
+  });
+}
+
+class MallocHookerTestAccessor {
+ public:
+  static void beginAt(CodeCache* cache) {
+    const CodeCacheArray& libraries = Libraries::instance()->native_libs();
+    for (int i = 0; i < libraries.count(); ++i) {
+      if (libraries[i] == cache) {
+        MallocHooker::_patched_libs = i;
+        return;
+      }
+    }
+    _exit(CHILD_LIB_NOT_FOUND);
+  }
+};
+
+static std::atomic<bool> g_malloc_walk_entered{false};
+static std::atomic<bool> g_foreign_malloc_patch_finished{false};
+
+static void pauseFirstMallocImportWalk() {
+  if (!g_malloc_walk_entered.exchange(true, std::memory_order_acq_rel)) {
+    while (!g_foreign_malloc_patch_finished.load(std::memory_order_acquire)) sched_yield();
+  }
+}
+
+static void* patchMallocConcurrently(void*) {
+  MallocHooker::patchLibraries();
+  return nullptr;
+}
+
+// A foreign callback must finish while another patcher pauses before its live-header walk.
+// Holding the patch mutex across that boundary would block this callback indefinitely.
+static int patchMallocInsideForeignWalk(struct dl_phdr_info*, size_t, void* data) {
+  pthread_t* patcher = static_cast<pthread_t*>(data);
+  if (pthread_create(patcher, nullptr, patchMallocConcurrently, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
+  while (!g_malloc_walk_entered.load(std::memory_order_acquire)) sched_yield();
+  MallocHooker::patchLibraries();
+  g_foreign_malloc_patch_finished.store(true, std::memory_order_release);
+  return 1;
+}
+
+TEST_F(MallocHookerIdentityTest, ForeignWalkPatchesWhileConcurrentPatcherIsBeforeImportWalk) {
+  runInChild([]() {
+    char path[64];
+    void* handle;
+    loadMallocTarget(path, sizeof(path), &handle);
+    CodeCache* writer = Libraries::instance()->findLibraryByAddress(reinterpret_cast<void*>(MallocTracer::recordMalloc));
+    if (writer == nullptr) exitRemoving(path, CHILD_LIB_NOT_FOUND);
+    void** slot = writer->peekImport(im_malloc);
+    if (slot == nullptr) exitRemoving(path, CHILD_NO_IMPORT);
+    // The main executable needs no dlopen pin before the instrumented live-header walk.
+    MallocHookerTestAccessor::beginAt(writer);
+    UnloadProtection::beforeImportWalkForTest = pauseFirstMallocImportWalk;
+    signal(SIGALRM, [](int) { _exit(CHILD_DEADLOCK); });
+    alarm(5);
+    pthread_t patcher;
+    dl_iterate_phdr(patchMallocInsideForeignWalk, &patcher);
+    if (pthread_join(patcher, nullptr) != 0) exitRemoving(path, CHILD_THREAD_FAILED);
+    alarm(0);
+    UnloadProtection::beforeImportWalkForTest = nullptr;
+    exitRemoving(path, *slot == reinterpret_cast<void*>(malloc_hook) ? CHILD_OK : CHILD_SLOT_NOT_HOOKED);
   });
 }
 

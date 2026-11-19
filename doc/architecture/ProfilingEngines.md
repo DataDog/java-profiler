@@ -499,8 +499,11 @@ A contended stripe or failed write keeps the slot retired with its original trac
 context, state and epoch weights. Registry drains retry these bounded retained slots.
 
 Recording stop flushes live and retired tails after signal and TaskBlock drains,
-before engine teardown. A failed flush with healthy output leaves teardown retryable.
-Quarantined output completes producer teardown and retains uncommitted segments in
+before engine teardown. Full JFR thread tables recover capacity without discarding old
+thread references or requiring a dump; retries are bounded by registry and table capacity.
+
+A failed flush with healthy output leaves teardown retryable. Quarantined output skips
+capacity recovery, completes producer teardown and retains uncommitted segments in
 non-restartable `ERROR`; no stop path synthesizes an owned TaskBlock duration.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
