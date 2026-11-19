@@ -15,12 +15,18 @@ import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
 
 public class VtableReceiverFrameTest extends CStackAwareAbstractProfilerTest {
+  private static final int MIN_WORK_ROUNDS = 10;
+  private static final long MIN_WORK_CPU_NANOS = 2_000_000_000L;
+  private static final long MAX_WORK_WALL_NANOS = 20_000_000_000L;
+
   public VtableReceiverFrameTest(@CStack String cstack) {
     super(cstack);
   }
@@ -64,14 +70,30 @@ public class VtableReceiverFrameTest extends CStackAwareAbstractProfilerTest {
     }
   }
 
+  /**
+   * Runs at least {@link #MIN_WORK_ROUNDS} rounds and {@link #MIN_WORK_CPU_NANOS} of this thread's
+   * CPU time, which cpu=1ms samples. A vtable stub is a few instructions, so a fixed loop count can
+   * finish on a fast JIT before a sample lands in one. Capped by {@link #MAX_WORK_WALL_NANOS}.
+   */
   private int profiledWork(Shape... shapes) {
+    ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+    boolean cpuClock = threads.isCurrentThreadCpuTimeSupported();
+    long wallStart = System.nanoTime();
+    long cpuStart = cpuClock ? threads.getCurrentThreadCpuTime() : wallStart;
     int result = 0;
-    for (int i = 0; i < 10_000_000; i++) {
-      for (Shape shape : shapes) {
-        result += shape.area();
+    for (int round = 0; ; round++) {
+      for (int i = 0; i < 1_000_000; i++) {
+        for (Shape shape : shapes) {
+          result += shape.area();
+        }
+      }
+      long now = System.nanoTime();
+      long used = (cpuClock ? threads.getCurrentThreadCpuTime() : now) - cpuStart;
+      if (round + 1 >= MIN_WORK_ROUNDS
+          && (used >= MIN_WORK_CPU_NANOS || now - wallStart >= MAX_WORK_WALL_NANOS)) {
+        return result;
       }
     }
-    return result;
   }
 
   /**
