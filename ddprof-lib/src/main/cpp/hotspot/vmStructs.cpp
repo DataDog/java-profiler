@@ -362,7 +362,7 @@ void VMStructs::resolveOffsets() {
     }
 
     // fromOop reads this only with compact headers.
-    _inflated_mark = inflatedMarkFor(readBoolFlag("UseObjectMonitorTable"));
+    _inflated_mark = inflatedMarkFor(readBoolFlag("UseObjectMonitorTable"), VM::hotspot_version());
 
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)
@@ -811,11 +811,11 @@ int ScopeDesc::readInt() {
 }
 
 VMStructs::BoolFlag VMStructs::readBoolFlag(const char* name) {
-    if (VMFlag::find(name) == NULL) {
+    VMFlag* flag = VMFlag::find(name);
+    if (flag == NULL) {
         return BoolFlag::Absent;
     }
-    VMFlag* flag = VMFlag::find(name, {VMFlag::Type::Bool});
-    if (flag == NULL) {
+    if (flag->type() != VMFlag::Type::Bool) {
         return BoolFlag::NotBool;
     }
     return flag->get() ? BoolFlag::True : BoolFlag::False;

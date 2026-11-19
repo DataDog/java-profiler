@@ -170,8 +170,8 @@ public:
     void useUnknownInflatedMark() { set(VMStructs::_inflated_mark, VMStructs::InflatedMark::Unknown); }
     using InflatedMark = VMStructs::InflatedMark;
     using BoolFlag = VMStructs::BoolFlag;
-    static InflatedMark inflatedMarkFor(BoolFlag object_monitor_table) {
-        return VMStructs::inflatedMarkFor(object_monitor_table);
+    static InflatedMark inflatedMarkFor(BoolFlag object_monitor_table, int hotspot_version) {
+        return VMStructs::inflatedMarkFor(object_monitor_table, hotspot_version);
     }
     static uintptr_t monitorBit() { return VMStructs::MONITOR_BIT; }
     static uintptr_t lockMask() { return VMStructs::LOCK_MASK; }
@@ -352,10 +352,13 @@ TEST_F(VtableReceiverCaptureTest, NullReceiverKlassAndSymbolAreNotCaptured) {
 TEST_F(VtableReceiverCaptureTest, InflatedMarkLayoutFollowsUseObjectMonitorTable) {
     using InflatedMark = VMStructsTestAccessor::InflatedMark;
     using BoolFlag = VMStructsTestAccessor::BoolFlag;
-    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::True));
-    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::False));
-    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent));
-    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::NotBool));
+    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::True, 25));
+    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::False, 25));
+    EXPECT_EQ(InflatedMark::Unknown, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::NotBool, 25));
+    // Before JDK 24 there is no monitor table; after JDK 25 a missing flag means it is always used.
+    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 21));
+    EXPECT_EQ(InflatedMark::MonitorPointer, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 25));
+    EXPECT_EQ(InflatedMark::Header, VMStructsTestAccessor::inflatedMarkFor(BoolFlag::Absent, 26));
 }
 
 TEST_F(VtableReceiverCaptureTest, InflatedHeaderMarkKeepsItsKlassBits) {

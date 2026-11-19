@@ -416,17 +416,18 @@ class VMStructs {
     enum class BoolFlag { Absent, NotBool, False, True };
     static InflatedMark _inflated_mark;
     static BoolFlag readBoolFlag(const char* name);
-    // A compact-header JVM without the flag always uses the monitor table, so its inflated
-    // marks keep their header. A flag that cannot be read as a bool leaves the layout Unknown.
-    static InflatedMark inflatedMarkFor(BoolFlag object_monitor_table) {
+    // JDK 24 and 25 define the flag. Without it, an older JVM predates the monitor table
+    // and a newer one always uses it. A flag that is not a bool leaves the layout Unknown.
+    static InflatedMark inflatedMarkFor(BoolFlag object_monitor_table, int hotspot_version) {
         switch (object_monitor_table) {
         case BoolFlag::Absent:
+            return hotspot_version > 25 ? InflatedMark::Header : InflatedMark::MonitorPointer;
         case BoolFlag::True:
             return InflatedMark::Header;
         case BoolFlag::False:
             return InflatedMark::MonitorPointer;
         case BoolFlag::NotBool:
-            break;
+            return InflatedMark::Unknown;
         }
         return InflatedMark::Unknown;
     }
