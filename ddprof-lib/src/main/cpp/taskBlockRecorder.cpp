@@ -271,12 +271,11 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
                               OSThreadState state) {
   Profiler *profiler = Profiler::instance();
   if (!profiler->taskBlockEnabled() ||
-      !profiler->nativeMonitorTaskBlockEnabled() ||
-      !JVMSupport::isPlatformThread(jni, thread)) {
+      !profiler->nativeMonitorTaskBlockEnabled()) {
     return;
   }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  if (current == nullptr) return;
+  if (current == nullptr || !JVMSupport::isPlatformThread(jni, thread)) return;
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);

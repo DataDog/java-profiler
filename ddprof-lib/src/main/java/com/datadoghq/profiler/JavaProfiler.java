@@ -545,9 +545,10 @@ public final class JavaProfiler {
    * profiler cannot track or verify the current thread, or a trace context is active on the current
    * thread.
    *
-   * <p>On JDK 19 or later, platform-thread classification uses JNI {@code IsVirtualThread} on every
-   * supported JVM. If that entry is unavailable, classification fails closed: this method returns
-   * {@code 0}, and the native profiler counts the failure and emits a one-time warning.
+   * <p>On non-HotSpot JVMs running JDK 19 or later, no thread is classified as a platform thread,
+   * so this method always returns {@code 0} there. On HotSpot, if JNI {@code IsVirtualThread} is
+   * unavailable, this method returns {@code 0} and the native profiler counts the failure and emits
+   * a one-time warning.
    *
    * @return an opaque token, or {@code 0} when the interval could not be armed or the current
    *     thread is not classified as a platform thread; any non-zero value, including a negative

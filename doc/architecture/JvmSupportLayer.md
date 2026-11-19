@@ -105,7 +105,7 @@ If either step fails, profiling is disabled.
 | Function | HotSpot | J9 / Zing |
 |---|---|---|
 | `initialize()` | shared (`JVMThread` + `ProfiledThread` TLS) | shared |
-| `isPlatformThread(jni, thread)` | positive JNI < 19: true; JNI >= 19: runtime `IsVirtualThread` check | positive JNI < 19: true; JNI >= 19: runtime `IsVirtualThread` check |
+| `isPlatformThread(jni, thread)` | positive JNI < 19: true; JNI >= 19: runtime `IsVirtualThread` check | positive JNI < 19: true; JNI >= 19: false without reading the virtual-thread slot |
 | `initExecution(args, jvmti, jni)` | selects `Fully_loaded`, `Partial_loaded`, or `Lazy_loaded` via `HotspotSupport::shouldPreloadJmethodIDs` / `canResolveLazily` / `initLazyResolution` (`jvmSupport.cpp:79-94`) | always `Fully_loaded`. `fjmethodid=lazy` only logs a warning (`jvmSupport.cpp:95-97`) |
 | `walkJavaStack(request)` | `HotspotSupport::walkJavaStack` | ASGCT through `asyncGetCallTrace()`. Debug builds assert that the event is CPU, wall, native malloc, or native socket (`jvmSupport.cpp:112-117`) |
 | `walkCurrentJavaStack(request)` | anchor-seeded `walkVM`; returns 0 for failed or unsafe allocation stacks | returns 0 for JVMTI retry |
@@ -149,13 +149,21 @@ classification. See [TLSContext](TLSContext.md#paired-taskblock-intervals).
 nonpositive `GetVersion()` results. A positive JNI version below 19 classifies
 the thread as platform without reading a virtual-thread function-table entry.
 
-On VMs reporting JNI 19 or later, classification calls `IsVirtualThread` through
-runtime JNI slot 234. A missing function or a virtual-thread result rejects the
-thread. This path does not depend on the build JDK's JNI headers.
+On HotSpot reporting JNI 19 or later, classification calls `IsVirtualThread`
+through runtime JNI slot 234. A missing function or a virtual-thread result
+rejects the thread; a missing function also increments
+`task_block_virtual_thread_detection_failed` and warns once. This path does not
+depend on the build JDK's JNI headers.
 
-`jvmSupport_ut.cpp` covers both HotSpot and non-HotSpot classification, JNI-version
-boundaries, missing functions and virtual threads. Native engine capability also
-controls whether TaskBlock recording is supported.
+On non-HotSpot VMs reporting JNI 19 or later, classification returns false before
+reading slot 234 because this classifier trusts that offset only on HotSpot.
+The paired API therefore returns zero from begin and false from end, and the
+JVMTI monitor producers record nothing, on those VMs. The park and generic block
+hooks take virtuality from Java `Thread.isVirtual()` and are not affected.
+
+`jvmSupport_ut.cpp` runs the classification contract with `VM::isHotspot()` false
+and true, and checks that a non-HotSpot lookup never reads slot 234. Native engine
+capability also controls whether TaskBlock recording is supported.
 
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 

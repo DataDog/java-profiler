@@ -368,7 +368,7 @@ Recovery emits no event and closes only the token's matching current slot and ge
 See [TLSContext](doc/architecture/TLSContext.md#paired-taskblock-intervals).
 
 **Platform-thread classification.** Verify the caller before mutating Java-owned TaskBlock TLS.
-`JVMSupport::isPlatformThread()` checks the runtime JNI table on JNI >= 19 across JVM implementations.
+`JVMSupport::isPlatformThread()` rejects non-HotSpot JNI >= 19 without reading slot 234.
 See [JvmSupportLayer](doc/architecture/JvmSupportLayer.md#platform-thread-classification).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering

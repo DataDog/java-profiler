@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include <cstring>
+#include "counters.h"
 #include "jvmSupport.h"
 #include "jvmThread.h"
 #include "vmEntry.h"
@@ -133,6 +134,24 @@ protected:
 
     void SetUp() override { initializeClassification(GetParam()); }
 
+    // At JNI >= 19 only HotSpot calls slot 234; other VMs fail closed first.
+    void expectJni19Classification(bool platform_on_hotspot) {
+        const bool hotspot = GetParam();
+        EXPECT_EQ(hotspot && platform_on_hotspot, JVMSupport::isPlatformThread(&jni, thread));
+        EXPECT_EQ(hotspot ? 1 : 0, is_virtual_thread_calls);
+        EXPECT_EQ(hotspot ? thread : nullptr, last_thread);
+    }
+
+    // A null slot is counted only when read, so an unchanged counter proves no read.
+    void expectMissingJni19FunctionFailsClosed() {
+        function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
+        long long before = Counters::getCounter(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED);
+        EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+        EXPECT_EQ(0, is_virtual_thread_calls);
+        EXPECT_EQ(before + (GetParam() ? 1 : 0),
+                  Counters::getCounter(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED));
+    }
+
     void TearDown() override {
         VMTestAccessor::setHotspot(_orig_hotspot);
     }
@@ -229,65 +248,47 @@ TEST_P(JvmSupportThreadClassificationTest, PreJni19ThreadIsPlatform) {
 
 TEST_P(JvmSupportThreadClassificationTest, Jni19PlatformThreadIsAccepted) {
     jni_version = 0x00130000;
-    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(1, is_virtual_thread_calls);
-    EXPECT_EQ(thread, last_thread);
+    expectJni19Classification(true);
 }
 
 TEST_P(JvmSupportThreadClassificationTest, Jni19VirtualThreadIsRejected) {
     jni_version = 0x00130000;
     virtual_thread = JNI_TRUE;
-    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(1, is_virtual_thread_calls);
-    EXPECT_EQ(thread, last_thread);
+    expectJni19Classification(false);
 }
 
 TEST_P(JvmSupportThreadClassificationTest, MissingJni19FunctionFailsClosed) {
     jni_version = 0x00130000;
-    function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
-    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(0, is_virtual_thread_calls);
+    expectMissingJni19FunctionFailsClosed();
 }
 
 TEST_P(JvmSupportThreadClassificationTest, Jni20PlatformThreadIsAccepted) {
     jni_version = 0x00140000;
-    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(1, is_virtual_thread_calls);
-    EXPECT_EQ(thread, last_thread);
+    expectJni19Classification(true);
 }
 
 TEST_P(JvmSupportThreadClassificationTest, Jni20VirtualThreadIsRejected) {
     jni_version = 0x00140000;
     virtual_thread = JNI_TRUE;
-    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(1, is_virtual_thread_calls);
-    EXPECT_EQ(thread, last_thread);
+    expectJni19Classification(false);
 }
 
 TEST_P(JvmSupportThreadClassificationTest, MissingJni20FunctionFailsClosed) {
     jni_version = 0x00140000;
-    function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
-    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(0, is_virtual_thread_calls);
+    expectMissingJni19FunctionFailsClosed();
 }
 
 TEST_P(JvmSupportThreadClassificationTest, Jni21PlatformThreadIsAccepted) {
-    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(1, is_virtual_thread_calls);
-    EXPECT_EQ(thread, last_thread);
+    expectJni19Classification(true);
 }
 
 TEST_P(JvmSupportThreadClassificationTest, Jni21VirtualThreadIsRejected) {
     virtual_thread = JNI_TRUE;
-    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(1, is_virtual_thread_calls);
-    EXPECT_EQ(thread, last_thread);
+    expectJni19Classification(false);
 }
 
 TEST_P(JvmSupportThreadClassificationTest, MissingJni21FunctionFailsClosed) {
-    function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
-    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
-    EXPECT_EQ(0, is_virtual_thread_calls);
+    expectMissingJni19FunctionFailsClosed();
 }
 
 namespace {
