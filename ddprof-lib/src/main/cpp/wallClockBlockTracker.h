@@ -370,8 +370,13 @@ public:
 #endif
 
 private:
+    // Span and root ids, then each pair of 32-bit tags packed into one word.
+    static constexpr int kContextIdWords = 2;
+    static constexpr int kContextTagWords = static_cast<int>(DD_TAGS_CAPACITY / 2);
+    static constexpr int kContextWords = kContextIdWords + kContextTagWords;
+    static_assert(DD_TAGS_CAPACITY % 2 == 0, "Unowned context packs tags in pairs");
     struct alignas(DEFAULT_CACHE_LINE_SIZE) UnownedContextCell {
-        std::atomic<u64> words[7]{};
+        std::atomic<u64> words[kContextWords]{};
         std::atomic<u64> publication{0};
         struct {
             std::atomic<u64> epoch_start{0};

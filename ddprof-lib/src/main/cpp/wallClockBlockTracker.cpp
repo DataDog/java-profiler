@@ -260,8 +260,8 @@ bool WallClockBlockTracker::readUnownedContext(ThreadFilter::SlotID slot_id, Con
     if (before == 0 || (before & 1) != 0) return false;
     context.spanId = cell->words[0].load(std::memory_order_acquire);
     context.rootSpanId = cell->words[1].load(std::memory_order_acquire);
-    for (int i = 0; i < 5; ++i) {
-        u64 pair = cell->words[i + 2].load(std::memory_order_acquire);
+    for (int i = 0; i < kContextTagWords; ++i) {
+        u64 pair = cell->words[i + kContextIdWords].load(std::memory_order_acquire);
         context.setTag(i * 2, static_cast<u32>(pair));
         context.setTag(i * 2 + 1, static_cast<u32>(pair >> 32));
     }
@@ -375,10 +375,10 @@ bool WallClockBlockTracker::publishUnownedTrace(ThreadFilter::SlotID slot_id, u6
 #ifdef UNIT_TEST
     if (_context_publication_hook != nullptr) _context_publication_hook(0, _context_publication_hook_arg);
 #endif
-    for (int word = 0; word < 7; ++word) {
+    for (int word = 0; word < kContextWords; ++word) {
         u64 value = word == 0 ? context.spanId : context.rootSpanId;
-        if (word >= 2) {
-            int tag = (word - 2) * 2;
+        if (word >= kContextIdWords) {
+            int tag = (word - kContextIdWords) * 2;
             value = static_cast<u64>(context.getTag(tag)) |
                     (static_cast<u64>(context.getTag(tag + 1)) << 32);
         }
