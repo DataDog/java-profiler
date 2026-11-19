@@ -77,6 +77,15 @@ public final class LeakingCacheScenario {
    */
   public static final String CHAIN_NOT_PERSISTED_MARKER = "[chain-not-persisted] ";
 
+  // The chain event lands only after the search's first BFS pass completes - chain
+  // building polls are serialized behind the in-flight pass - so the tail must cover
+  // the whole pass plus one poll. No tighter upper bound is known: from round-loop
+  // start, admission comes at t≈6-8s and the event at t≈15-17s (measured across three
+  // aarch64/glibc release runs), hence 60s, inside the parent's 150s child timeout
+  // (round loop ≈9s measured + 60s tail + startup + post-tail diagnostics).
+  private static final long TAIL_BUDGET_MILLIS = 60_000;
+  private static final long TAIL_POLL_INTERVAL_MILLIS = 1000;
+
   /**
    * Seeds {@code cache} with an initial batch, *then* starts the profiler (order is load-bearing,
    * see the class comment), then runs the same population-growth loop {@code
@@ -154,13 +163,13 @@ public final class LeakingCacheScenario {
         match = findMatch(scratchDumpPath);
       }
       if (round == 1 || round == 5 || round == 10 || round == 25) {
-        System.out.println("[debug] round=" + round + " cache.size()=" + cache.size());
         debugDumpAllChainLeaves(scratchDumpPath);
       }
     }
 
-    for (int attempt = 0; match == null && attempt < 5; attempt++) {
-      Thread.sleep(1000);
+    long tailDeadlineNanos = System.nanoTime() + TAIL_BUDGET_MILLIS * 1_000_000L;
+    for (int attempt = 0; match == null && System.nanoTime() < tailDeadlineNanos; attempt++) {
+      Thread.sleep(TAIL_POLL_INTERVAL_MILLIS);
       profiler.dump(scratchDumpPath);
       match = findMatch(scratchDumpPath);
     }

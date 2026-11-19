@@ -89,9 +89,9 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
               jvmArgs,
               packedCommand,
               Collections.emptyMap(),
-              // Generous: a separate JVM's startup/classloading cost on top of the up-to-25-round
-              // growth loop plus grace period (~20s in-process).
-              childTimeoutSeconds(90),
+              // Generous: cold-JVM startup + the 25-round growth loop + the scenario's 60s tail
+              // budget + post-tail diagnostics; the sibling static-field test uses the same 150s.
+              childTimeoutSeconds(150),
               line -> {
                 if (line.startsWith(LeakingCacheScenario.FOUND_MARKER)
                     || line.equals(LeakingCacheScenario.NOT_FOUND_MARKER)
@@ -176,11 +176,10 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
               jvmArgs,
               packedCommand,
               Collections.emptyMap(),
-              // Wider than shouldReconstructReferrerChainInSeparateProcess()'s 90s: this scenario's
-              // own tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s on top
-              // of
-              // the round loop for a cold JVM's first full pass to actually complete - see that
-              // method's own comment.
+              // Same 150s as shouldReconstructReferrerChainInSeparateProcess(): this scenario's
+              // own tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s on
+              // top of the round loop for a cold JVM's first full pass to actually complete -
+              // see that method's own comment.
               childTimeoutSeconds(150),
               line -> {
                 if (line.startsWith(StaticFieldGrowingCollectionScenario.FOUND_MARKER)
