@@ -83,7 +83,8 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
       return;
     }
     Assumptions.assumeFalse(isAsan() || isTsan());
-    Assumptions.assumeTrue(canAttachThroughSudo(), "JOL attach requires passwordless sudo");
+    Assumptions.assumeTrue(
+        Platform.isMusl() || canAttachThroughSudo(), "JOL attach requires passwordless sudo");
 
     AllocatingTarget target1 = new AllocatingTarget();
     AllocatingTarget target2 = new AllocatingTarget();
