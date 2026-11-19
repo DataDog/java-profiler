@@ -47,6 +47,8 @@ enum SocketPatchTarget : u8 {
 };
 
 const int SOCKET_BASE_TABLE_SIZE = MAX_NATIVE_LIBS * 2;
+// Bounds the linear skip-set scan; a skip beyond it is retried on the next refresh.
+const int SOCKET_SKIPPED_IMAGE_CAPACITY = 64;
 // A library to visit with a LibraryPatcher::LiveLibraryWalk
 typedef struct _libraryRef {
   uintptr_t  _base;  // lib->imageBase(), the sort key
@@ -89,6 +91,10 @@ private:
   static std::vector<SocketPatchEntry> _socket_entries;
   static std::vector<SocketPatchedLibrary> _socket_libraries;
   static const void* _socket_bases[SOCKET_BASE_TABLE_SIZE];
+  // Netty images rejected by an image-local failure. Guarded by _lock and cleared
+  // with the socket patches, so they are retried by the next installation only.
+  static CodeCache* _socket_skipped_images[SOCKET_SKIPPED_IMAGE_CAPACITY];
+  static int _socket_skipped_image_count;
 
   // Candidates of the current LiveLibraryWalk, filled by add_live_candidate().
   // Guarded by _lock.
@@ -129,6 +135,10 @@ private:
   static bool is_profiler_library(CodeCache* lib);
   static bool socket_library_patched_unlocked(const void* image_base);
   static void remember_socket_library_unlocked(const void* image_base);
+  static bool socket_image_skipped_unlocked(const CodeCache* lib);
+  static void skip_socket_image_unlocked(CodeCache* lib, const char* reason);
+  static void skip_socket_image(CodeCache* lib, u64 generation, bool require_active,
+                                const char* reason);
   static void unpatch_socket_functions_unlocked(
       std::vector<SocketPatchedLibrary>& libraries_to_release);
   static void release_socket_libraries(
@@ -156,7 +166,8 @@ public:
   using SocketPatchObserverForTest = void (*)(const char* phase);
   static void setSocketPatchObserverForTest(SocketPatchObserverForTest observer);
   // Called under _lock after lookup; must not reenter the patcher or loader.
-  // Return true to exercise production's missing-slot rollback.
+  // Return true to report a missing slot: a Netty image is skipped before any
+  // write; other images exercise production's missing-slot rollback.
   using SocketImportFailureForTest = bool (*)(CodeCache*, ImportId, size_t);
   static SocketImportFailureForTest exchangeSocketImportFailureForTest(
       SocketImportFailureForTest failure);

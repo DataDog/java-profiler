@@ -6,10 +6,12 @@
 #include <gtest/gtest.h>
 
 #ifdef __linux__
+#include "counters.h"
 #include "libraries.h"
 #include "nativeTestResources_linux.h"
 #include "libraryPatcher.h"
 #include "nativeSocketInterposer.h"
+#include "nativeSocketSampler.h"
 #include "os.h"
 #include "symbols.h"
 
@@ -488,6 +490,187 @@ TEST_P(NettyEpollAliasDiscoveryTest, SkipsImageUnloadedBeforeLoaderAliasPin) {
   EXPECT_EQ(existing_libraries, LibraryPatcher::socket_library_count_for_test());
   EXPECT_EQ(existing_patches, LibraryPatcher::socket_patch_count_for_test());
 }
+
+// Fails the Netty read slot on the selected consultation: the first is the
+// pre-write validation, the second is the write loop after it passed.
+class NettyReadSlotFailure {
+public:
+  NettyReadSlotFailure(CodeCache* target, int failing_call)
+      : _target(target), _failing_call(failing_call) {
+    _current = this;
+    _previous = LibraryPatcher::exchangeSocketImportFailureForTest(fail);
+  }
+  ~NettyReadSlotFailure() {
+    LibraryPatcher::exchangeSocketImportFailureForTest(_previous);
+    _current = nullptr;
+  }
+  NettyReadSlotFailure(const NettyReadSlotFailure&) = delete;
+  NettyReadSlotFailure& operator=(const NettyReadSlotFailure&) = delete;
+
+  int calls = 0;
+
+private:
+  static bool fail(CodeCache* lib, ImportId id, size_t index) {
+    if (_current == nullptr || lib != _current->_target || id != im_read || index != 0) {
+      return false;
+    }
+    return ++_current->calls == _current->_failing_call;
+  }
+
+  static NettyReadSlotFailure* _current;
+  CodeCache* _target;
+  int _failing_call;
+  LibraryPatcher::SocketImportFailureForTest _previous = nullptr;
+};
+
+NettyReadSlotFailure* NettyReadSlotFailure::_current = nullptr;
+
+// Pairs the Netty image with an unmarked JDK libnet that must stay patched.
+class NettyEpollImageSkipTest : public NettyEpollDiscoveryTest {
+protected:
+  void SetUp() override {
+    NettyEpollDiscoveryTest::SetUp();
+    ASSERT_FALSE(HasFatalFailure());
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/libnet.so", fixture_root);
+    // musl retains a previous case's libnet, which the base count then includes.
+    void* retained = dlopen(path, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
+    if (retained != nullptr) EXPECT_EQ(0, dlclose(retained));
+    expected_libraries = existing_libraries + (retained == nullptr ? 1 : 0);
+    jdk_handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    ASSERT_NE(nullptr, jdk_handle) << dlerror();
+    Dl_info info;
+    ASSERT_NE(0, dladdr(dlsym(jdk_handle, "jdk_fixture_read"), &info));
+    Libraries::instance()->updateSymbols(false);
+    if (GetParam()) ASSERT_EQ(0, unlink(loaded_path));
+    netty = loadedCache();
+    ASSERT_NE(nullptr, netty);
+    const CodeCacheArray& libraries = Libraries::instance()->native_libs();
+    for (int index = libraries.count() - 1; index >= 0 && jdk == nullptr; index--) {
+      CodeCache* library = libraries.at(index);
+      if (library != nullptr && library->imageBase() == info.dli_fbase) jdk = library;
+    }
+    ASSERT_NE(nullptr, jdk);
+    netty_slot = netty->findImport(im_read);
+    jdk_slot = jdk->findImport(im_read);
+    ASSERT_NE(nullptr, netty_slot);
+    ASSERT_NE(nullptr, jdk_slot);
+    netty_original = __atomic_load_n(netty_slot, __ATOMIC_ACQUIRE);
+    jdk_original = __atomic_load_n(jdk_slot, __ATOMIC_ACQUIRE);
+    saved_interposer = NativeSocketInterposer::instance()->setActiveForTest(true);
+    saved_sampler = NativeSocketSampler::setActiveForTest(true);
+    owners_saved = true;
+    skipped_before = Counters::getCounter(NATIVE_IO_NETTY_IMAGES_SKIPPED);
+  }
+
+  void TearDown() override {
+    LibraryPatcher::unpatch_socket_functions();
+    if (owners_saved) {
+      NativeSocketInterposer::instance()->setActiveForTest(saved_interposer);
+      NativeSocketSampler::setActiveForTest(saved_sampler);
+    }
+    if (jdk_handle != nullptr) EXPECT_EQ(0, dlclose(jdk_handle));
+    NettyEpollDiscoveryTest::TearDown();
+  }
+
+  long long skipped() const {
+    return Counters::getCounter(NATIVE_IO_NETTY_IMAGES_SKIPPED) - skipped_before;
+  }
+
+  // The JDK image stays patched, both owners stay active, the Netty slot is untouched.
+  void expectOnlyNettySkipped() {
+    EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+    EXPECT_TRUE(NativeSocketSampler::active());
+    EXPECT_EQ(reinterpret_cast<void*>(NativeSocketInterposer::read_hook),
+              __atomic_load_n(jdk_slot, __ATOMIC_ACQUIRE));
+    EXPECT_EQ(netty_original, __atomic_load_n(netty_slot, __ATOMIC_ACQUIRE));
+    EXPECT_EQ(expected_libraries, LibraryPatcher::socket_library_count_for_test());
+  }
+
+  void expectFailedClosed() {
+    EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+    EXPECT_FALSE(NativeSocketInterposer::instance()->active());
+    EXPECT_FALSE(NativeSocketSampler::active());
+    EXPECT_EQ(jdk_original, __atomic_load_n(jdk_slot, __ATOMIC_ACQUIRE));
+    EXPECT_EQ(netty_original, __atomic_load_n(netty_slot, __ATOMIC_ACQUIRE));
+    EXPECT_EQ(0, LibraryPatcher::socket_patch_count_for_test());
+    EXPECT_EQ(0, LibraryPatcher::socket_library_count_for_test());
+    EXPECT_EQ(0, skipped());
+  }
+
+  // Patches stay installed for libnet; only a pin could keep the Netty image mapped.
+  void expectNettyImageNotPinned() {
+    if (OS::isMusl()) return;  // musl does not unmap dlclosed DSOs
+    ASSERT_EQ(0, dlclose(handle));
+    handle = nullptr;
+    Dl_info info;
+    EXPECT_EQ(0, dladdr(symbol, &info));
+  }
+
+  void* jdk_handle = nullptr;
+  CodeCache* netty = nullptr;
+  CodeCache* jdk = nullptr;
+  void** netty_slot = nullptr;
+  void** jdk_slot = nullptr;
+  void* netty_original = nullptr;
+  void* jdk_original = nullptr;
+  bool saved_interposer = false;
+  bool saved_sampler = false;
+  bool owners_saved = false;
+  int expected_libraries = 0;
+  long long skipped_before = 0;
+};
+
+TEST_P(NettyEpollImageSkipTest, MissingSlotSkipsImageUntilNextInstallation) {
+  NettyReadSlotFailure failure(netty, 1);
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(1, failure.calls);
+  EXPECT_EQ(1, skipped());
+  expectOnlyNettySkipped();
+
+  // Neither a library refresh nor a second owner start retries the skipped image.
+  LibraryPatcher::install_socket_hooks();
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(1, failure.calls);
+  EXPECT_EQ(1, skipped());
+  expectOnlyNettySkipped();
+
+  // Removing the patches ends the installation; the next one retries the image.
+  LibraryPatcher::unpatch_socket_functions();
+  EXPECT_EQ(jdk_original, __atomic_load_n(jdk_slot, __ATOMIC_ACQUIRE));
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(2, failure.calls);
+  EXPECT_EQ(2, skipped());
+  expectOnlyNettySkipped();
+  expectNettyImageNotPinned();
+}
+
+TEST_P(NettyEpollImageSkipTest, IncompleteImportsSkipImageDuringDiscovery) {
+  netty->markImportIncompleteForTest(im_read);
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(1, skipped());
+  expectOnlyNettySkipped();
+  LibraryPatcher::install_socket_hooks();
+  EXPECT_EQ(1, skipped());
+  expectNettyImageNotPinned();
+}
+
+TEST_P(NettyEpollImageSkipTest, NettyFailureAfterValidationStillFailsClosed) {
+  NettyReadSlotFailure failure(netty, 2);
+  EXPECT_FALSE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(2, failure.calls);
+  expectFailedClosed();
+}
+
+TEST_P(NettyEpollImageSkipTest, JdkImageFailureStillFailsClosed) {
+  NettyReadSlotFailure failure(jdk, 1);
+  EXPECT_FALSE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(1, failure.calls);
+  expectFailedClosed();
+}
+
+INSTANTIATE_TEST_SUITE_P(ParsedBeforeUnlink, NettyEpollImageSkipTest, ::testing::Bool());
 
 INSTANTIATE_TEST_SUITE_P(BackingFileDeleted, NettyEpollAliasDiscoveryTest,
                          ::testing::Bool());

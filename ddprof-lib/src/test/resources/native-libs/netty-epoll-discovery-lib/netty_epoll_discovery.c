@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef FIXTURE_DIRECTORY_ANCHOR
+#if !defined(FIXTURE_DIRECTORY_ANCHOR) && !defined(JDK_NETWORK_IMAGE)
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
@@ -40,6 +40,13 @@ int netty_fixture_epoll_pwait2(void) {
     struct epoll_event event;
     struct timespec timeout = {0, 1};
     return epoll_pwait2(-1, &event, 1, &timeout, NULL);
+}
+#elif defined(JDK_NETWORK_IMAGE)
+#include <unistd.h>
+
+// An unmarked libnet beside libjava is a standard JDK candidate, not a Netty image.
+ssize_t jdk_fixture_read(int fd, void* buffer, size_t size) {
+    return read(fd, buffer, size);
 }
 #else
 void netty_fixture_directory_anchor(void) {}

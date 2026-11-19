@@ -17,6 +17,7 @@ together under the patch lock, before library discovery.
 producer eligibility. Stop disables the consumer before conditionally removing
 the patches; patches remain installed while the other consumer is active.
 A current installation failure disables both consumers and restores saved import values.
+A failure local to one Netty image is the exception; see [Netty epoll](#netty-epoll).
 A failed discovery from an older generation cannot disable a newer owner.
 Original libc function pointers remain available for hooks entered before
 restoration.
@@ -181,6 +182,10 @@ new hook fault or of successful EFAULT recovery.
 - `LibraryPatcherSocketTransactionTest.OwnerRestartMakesReloadedFullRelroImportsWritable`:
   production owner start/stop, actual unmap/reload at the same base, read-only GOT
   precondition, restarted installation/forwarding and restored originals.
+- `NettyEpollImageSkipTest`: a missing slot or incomplete imports skip only the
+  Netty image beside a patched JDK libnet, with both owners active, the counter,
+  no retained pin and no retry before the next installation. A Netty failure after
+  validation, or a libnet failure, still fails closed.
 - `NettyEpollAliasDiscoveryTest`: removed loader symlinks with live/deleted backing
   files, forwarding/restoration, final-close retention and unload before fallback pin.
 - `LibraryPatcherSocketTransactionTest.OwnersPreserveDisplacedJdk8PollAdapterForwardingAndRestoration`:
@@ -247,6 +252,23 @@ name outside the patch lock. It pins by that name and revalidates the fingerprin
 This supports deleted backing files and removed symlinks after marker ingestion.
 
 Initial ingestion is not guaranteed when neither pathname can retain the image.
+
+A failure local to one Netty image skips only that image. These failures are a
+failed pin, incomplete imports, a GOT that cannot be made writable and a missing
+import slot. The commit validates each new Netty image before any GOT write.
+A skipped image has no patch, and its pin is released before the transaction
+returns. Other libraries keep their patches, and both owners stay active. Each
+skip increments `native_io_netty_images_skipped`.
+
+The patcher remembers a skipped image until the socket patches are removed.
+Library refreshes and a second owner start do not retry it. The next
+installation, normally the next recording, retries it once. An unmapped image or
+a fingerprint mismatch is not a failure: discovery ignores it without a skip.
+
+These failures still disable both owners and restore every image: a missing libc
+original, a candidate-table or transaction allocation failure, any JDK image
+failure and a missing slot found after writes started. A stale generation still
+abandons the transaction without changing a newer owner.
 A NULL weak `epoll_pwait2` import stays NULL; supported imports use the same
 errno-preserving scope as the other epoll waits.
 
