@@ -200,10 +200,12 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    happened: an unload (`dlpi_subs`) since the last full pass, or a load
    (`dlpi_adds`) since then while any unload has ever happened (the unload of a
    reload can fall in an earlier pass than its load). Otherwise only unpatched
-   libraries enter the identity-checking walk. A re-check re-hooks a patched
-   library only if its slot holds the real `pthread_create` or the library's own
-   lazy-binding stub, as a reload's fresh GOT does; a slot someone else hooked
-   after us is left alone. The wrapper passes the routine's
+   libraries enter the identity-checking walk. The first patch and a re-check
+   hook a slot only if it holds what the loader resolves `pthread_create` to
+   (captured by `initialize_persistent()`, a preloaded interposer included) or
+   the library's own lazy-binding stub, as a fresh GOT does; a slot someone else
+   hooked is left alone. A pass that left such a slot alone is not counted as
+   handled, so the next pass looks at the library again. The wrapper passes the routine's
    return value to `pthread_exit()`, so `pthread_join()` still sees it even
    though the hook outlives every recording. The hook runs without
    `_state_lock`, so both calls are gated:
