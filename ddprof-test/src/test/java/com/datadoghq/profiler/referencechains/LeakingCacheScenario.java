@@ -34,10 +34,6 @@ public final class LeakingCacheScenario {
   // margin. generations=true needs that gate cleared to authorize the BFS thread's first pass.
   private static final int SEED_EPOCHS_FOR_HYSTERESIS = 15;
 
-  // The tracker can cache a chain after the final growth-round dump.
-  private static final int TAIL_POLL_ATTEMPTS = 20;
-  private static final long TAIL_POLL_INTERVAL_MILLIS = 1000;
-
   /**
    * Durable holder for the cache fixture. The discovered-chain gate suppresses chains shallower
    * than the first real holder hop that are rooted at a TRANSIENT root (stack/JNI local) - a
@@ -67,6 +63,15 @@ public final class LeakingCacheScenario {
    */
   public static final String CHAIN_NOT_PERSISTED_MARKER = "[chain-not-persisted] ";
 
+  // The chain event lands only after the search's first BFS pass completes - chain
+  // building polls are serialized behind the in-flight pass - so the tail must cover
+  // the whole pass plus one poll. No tighter upper bound is known: from round-loop
+  // start, admission comes at t≈6-8s and the event at t≈15-17s (measured across three
+  // aarch64/glibc release runs), hence 60s, inside the parent's 150s child timeout
+  // (round loop ≈9s measured + 60s tail + startup + post-tail diagnostics).
+  private static final long TAIL_BUDGET_MILLIS = 60_000;
+  private static final long TAIL_POLL_INTERVAL_MILLIS = 1000;
+
   /**
    * Seeds {@code cache} with an initial batch, *then* starts the profiler (order is load-bearing,
    * see the class comment), then runs the same population-growth loop {@code
@@ -92,6 +97,7 @@ public final class LeakingCacheScenario {
     boolean seededTestKlassTrend = false;
     ReferenceChainAssertions.ChainMatch match = null;
     int totalRounds = 25;
+    long roundLoopStartNanos = System.nanoTime();
     for (int round = 1; round <= totalRounds && match == null; round++) {
       int newEntries = round * 300;
       int roundNumber = round;
@@ -143,16 +149,53 @@ public final class LeakingCacheScenario {
         profiler.dump(scratchDumpPath);
         match = findMatch(scratchDumpPath);
       }
+      // per-round wall-clock and reference_chain_* counter snapshot: a failing run then shows
+      // when the frontier stops growing (single-pass duration) and whether a candidate was
+      // admitted, without touching the native engine. Cost is one scan over the counter table.
+      StringBuilder diag = new StringBuilder("[debug] round=").append(round);
+      diag.append(" t=")
+          .append((System.nanoTime() - roundLoopStartNanos) / 1_000_000_000L)
+          .append("s");
+      diag.append(" cache.size()=").append(cache.size());
+      try {
+        profiler
+            .getDebugCounters()
+            .forEach(
+                (k, v) -> {
+                  if (k.startsWith("reference_chain_")) {
+                    diag.append(' ').append(k).append('=').append(v);
+                  }
+                });
+      } catch (Exception e) {
+        diag.append(" counters-error=").append(e);
+      }
+      System.out.println(diag);
       if (round == 1 || round == 5 || round == 10 || round == 25) {
-        System.out.println("[debug] round=" + round + " cache.size()=" + cache.size());
         debugDumpAllChainLeaves(scratchDumpPath);
       }
     }
 
-    for (int attempt = 0; match == null && attempt < TAIL_POLL_ATTEMPTS; attempt++) {
-      Thread.sleep(TAIL_POLL_INTERVAL_MILLIS);
+    long tailDeadlineNanos = System.nanoTime() + TAIL_BUDGET_MILLIS * 1_000_000L;
+    for (int attempt = 0; match == null; attempt++) {
+      long nowNanos = System.nanoTime();
+      if (nowNanos >= tailDeadlineNanos) {
+        break;
+      }
+      // Cap the final sleep so the attempt's dump starts within the budget; the dump
+      // and JFR parse themselves still run past it on the last attempt.
+      long sleepMillis =
+          Math.min(TAIL_POLL_INTERVAL_MILLIS, (tailDeadlineNanos - nowNanos) / 1_000_000L);
+      Thread.sleep(sleepMillis);
       profiler.dump(scratchDumpPath);
       match = findMatch(scratchDumpPath);
+      System.out.println(
+          "[debug] tail attempt="
+              + attempt
+              + " t="
+              + (System.nanoTime() - roundLoopStartNanos) / 1_000_000_000L
+              + "s"
+              + " matchFound="
+              + (match != null));
     }
 
     if (match == null) {
