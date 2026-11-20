@@ -51,8 +51,8 @@ final class TaskBlockAssertions {
   static final int OSTHREAD_STATE_SLEEPING = 7;
 
   /**
-   * {@code java.vm.name} substrings that the native {@code VM::init()} (vmEntry.cpp) uses to set
-   * {@code VM::isHotspot()}. Keep this list in sync with that check.
+   * {@code java.vm.name} substrings that the native {@code VM::initShared()} (vmEntry.cpp) uses to
+   * set {@code VM::isHotspot()}. Keep this list in sync with that check.
    */
   private static final String[] HOTSPOT_VM_NAME_MARKERS = {
     "OpenJDK", "HotSpot", "GraalVM", "Dynamic Code Evolution"
