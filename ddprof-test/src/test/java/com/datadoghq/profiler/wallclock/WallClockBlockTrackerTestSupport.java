@@ -8,26 +8,30 @@ package com.datadoghq.profiler.wallclock;
 import com.datadoghq.profiler.NativeBuildConfig;
 
 /**
- * DEBUG-only observations of the existing worker slot, without seeding state or allocating
- * identity. Release tests use decoded target-worker JFR evidence for readiness instead.
+ * Read-only observations of the existing worker slot, without seeding state or allocating identity.
+ * The tid and pending-weight reads work in every build; the registry and owned-block observations
+ * are DEBUG-only.
  */
 final class WallClockBlockTrackerTestSupport {
   private WallClockBlockTrackerTestSupport() {}
 
+  /** Whether the DEBUG-only registry and owned-block observations are compiled in. */
   static boolean available() {
     return NativeBuildConfig.isDebugInstrumented();
   }
 
   static int currentTid() {
-    return available() ? currentTid0() : -1;
+    return currentTid0();
   }
 
+  /** Aggregate pending unowned weight of tid's slot in this recording; 0 without an entry. */
   static long pendingUnownedWeight(int tid) {
-    return available() ? pendingUnownedWeight0(tid) : -1;
+    return pendingUnownedWeight0(tid);
   }
 
+  /** Largest single-epoch pending segment of tid's slot; 0 without an entry. */
   static long maxPendingUnownedSegmentWeight(int tid) {
-    return available() ? maxPendingUnownedSegmentWeight0(tid) : -1;
+    return maxPendingUnownedSegmentWeight0(tid);
   }
 
   private static native long maxPendingUnownedSegmentWeight0(int tid);
