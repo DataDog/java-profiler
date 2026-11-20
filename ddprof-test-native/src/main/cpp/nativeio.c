@@ -95,12 +95,14 @@ static int collect_imports(struct dl_phdr_info *info, size_t size, void *data) {
  * A /dev/full stdout makes DEBUG instrumentation observably alter errno unless
  * both pre-original work and sampled recording are guarded. No JVM identity is
  * synthesized and no production originals/active flags are overridden.
+ * Returns -2 when only the low-FD pass ran and passed.
  */
 JNIEXPORT jint JNICALL
 Java_com_datadoghq_profiler_nativesocket_NativeIoErrnoTest_exerciseImports(JNIEnv *env, jclass cls) {
     struct rlimit limit;
     if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return 28;
-    if (limit.rlim_max <= 65536u) return -2;
+    /* F_DUPFD to 65536 needs a higher limit; the low-FD pass runs regardless. */
+    int passes = limit.rlim_max > 65536u ? 2 : 1;
     struct imports imports = {{NULL, NULL, NULL, NULL}};
     dl_iterate_phdr(collect_imports, &imports);
     for (int op = 0; op < 4; op++) if (imports.functions[op] == NULL) return 10 + op;
@@ -119,7 +121,7 @@ Java_com_datadoghq_profiler_nativesocket_NativeIoErrnoTest_exerciseImports(JNIEn
     }
     close(full);
     int failure = 0;
-    for (int high = 0; high < 2 && failure == 0; high++) {
+    for (int high = 0; high < passes && failure == 0; high++) {
         int sockets[2];
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) != 0) { failure = 22; break; }
         struct timeval timeout = {2, 0};
@@ -156,7 +158,7 @@ Java_com_datadoghq_profiler_nativesocket_NativeIoErrnoTest_exerciseImports(JNIEn
     if (dup2(saved_stdout, STDOUT_FILENO) < 0) failure = 26;
     close(saved_stdout);
     clearerr(stdout);
-    return failure;
+    return failure == 0 && passes == 1 ? -2 : failure;
 }
 static void pinned_read_failure(JNIEnv *env, const char *message) {
     jclass error = (*env)->FindClass(env, "java/lang/IllegalStateException");
