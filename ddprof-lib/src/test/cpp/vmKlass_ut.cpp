@@ -2,8 +2,11 @@
 
 #include <gtest/gtest.h>
 #include <cstddef>
+#include <signal.h>
+#include <sys/mman.h>
 #include "guards.h"
 #include "hotspot/vmStructs.inline.h"
+#include "profiler.h"
 
 class VMStructsTestAccessor {
 public:
@@ -32,12 +35,26 @@ protected:
     uint64_t saved_size = VMStructsTestAccessor::klassSize();
     bool saved_hotspot = VMTestAccessor::hotspot();
     bool owns_thread = false;
+    struct sigaction saved_segv{};
+    struct sigaction saved_bus{};
     struct Header {
         uintptr_t mark;
         uintptr_t klass;
     } header{};
 
+    static void installFaultHandler(int signo, SigAction handler, struct sigaction* old) {
+        struct sigaction action{};
+        action.sa_sigaction = handler;
+        action.sa_flags = SA_SIGINFO | SA_RESTART | SA_NODEFER;
+        sigemptyset(&action.sa_mask);
+        ASSERT_EQ(0, sigaction(signo, &action, old));
+    }
+
     void SetUp() override {
+        // The decoded-Klass readability probe faults on unmapped memory; the profiler's
+        // handlers resume SafeAccess loads in place, as they do in the agent.
+        installFaultHandler(SIGSEGV, Profiler::segvHandler, &saved_segv);
+        installFaultHandler(SIGBUS, Profiler::busHandler, &saved_bus);
         owns_thread = ProfiledThread::current() == nullptr;
         if (owns_thread) ProfiledThread::initCurrentThread();
         ASSERT_NE(nullptr, ProfiledThread::current());
@@ -57,6 +74,8 @@ protected:
         VMStructsTestAccessor::klassSize() = saved_size;
         VMTestAccessor::hotspot() = saved_hotspot;
         if (owns_thread) ProfiledThread::release();
+        EXPECT_EQ(0, sigaction(SIGSEGV, &saved_segv, nullptr));
+        EXPECT_EQ(0, sigaction(SIGBUS, &saved_bus, nullptr));
     }
 
     uintptr_t decode(uintptr_t base, int shift) {
@@ -84,6 +103,22 @@ TEST_F(VMKlassFromOopTest, ZeroBaseRejectsUnmappedDecodedKlass) {
     header.klass = 0x12340;
     EXPECT_EQ(0u, decode(0, 0));
     EXPECT_EQ(0u, decode(0, 3));
+}
+
+TEST_F(VMKlassFromOopTest, ZeroBaseDecodesIntoReadableLowMemory) {
+    // A zero base reaches only the low 32 GB with shift 3; map a page there if the OS allows.
+    constexpr uintptr_t LIMIT = uintptr_t(1) << 35;
+    void* page = mmap(reinterpret_cast<void*>(uintptr_t(1) << 32), 4096, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANON, -1, 0);
+    ASSERT_NE(MAP_FAILED, page);
+    uintptr_t target = reinterpret_cast<uintptr_t>(page);
+    if (target >= LIMIT) {
+        munmap(page, 4096);
+        GTEST_SKIP() << "no mapping below 32 GB";
+    }
+    header.klass = target >> 3;
+    EXPECT_EQ(target, decode(0, 3));
+    munmap(page, 4096);
 }
 
 TEST_F(VMKlassFromOopTest, NonzeroBaseWithNonzeroEncodedKlass) {
