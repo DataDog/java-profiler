@@ -51,9 +51,10 @@ public final class DelegatedObjectWaitScenario extends AbstractProcessProfilerTe
       int count = 0;
       JfrEvents events = JfrEvents.load(recording, "datadog.TaskBlock");
       for (JfrEvent event : events) {
-        count++;
         assertNotNull(event.get("eventThread"));
-        assertEquals(Long.valueOf(workerId), event.getThreadJavaId("eventThread"));
+        // Native contention producers stay enabled, so other child threads may emit events.
+        if (!Long.valueOf(workerId).equals(event.getThreadJavaId("eventThread"))) continue;
+        count++;
         assertEquals(WORKER, event.getThreadName("eventThread"));
         assertEquals("WAITING", event.getString("observedBlockingState"));
         assertEquals(Long.valueOf(BLOCKER), event.getLong("blocker"));

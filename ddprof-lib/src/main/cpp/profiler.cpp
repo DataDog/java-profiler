@@ -2164,12 +2164,15 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
-bool Profiler::taskBlockSupportedForTest(JNIEnv* env, jthread thread) {
+bool Profiler::wallRegistryTrackingSupportedForTest() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   Arguments args;
   args._wall = 1000000;
-  return selectWallEngine(args)->supportsUnfilteredThreadRegistryTracking() &&
-      JVMSupport::isPlatformThread(env, thread);
+  return selectWallEngine(args)->supportsUnfilteredThreadRegistryTracking();
+}
+
+bool Profiler::taskBlockSupportedForTest(JNIEnv* env, jthread thread) {
+  return wallRegistryTrackingSupportedForTest() && JVMSupport::isPlatformThread(env, thread);
 }
 
 Engine *Profiler::selectWallEngine(Arguments &args) {
