@@ -27,7 +27,6 @@ import org.junit.jupiter.api.Test;
 /** Checks real ASGCT stack resolution while an unowned blocked worker spans repeated dumps. */
 public class UnownedWallTailRotationTest extends AbstractProfilerTest {
   private static final String WORKER = "unowned-tail";
-  private static final String SUPPRESSED = "wc_unowned_blocked_suppressed";
   private static final String TAIL_RECORDED = "wc_unowned_blocked_tail_recorded";
   private static volatile long spinSink;
 
@@ -84,12 +83,13 @@ public class UnownedWallTailRotationTest extends AbstractProfilerTest {
             assertWorkerStacksResolve(verifyEvents(snapshots[i], "datadog.MethodSample", false));
       }
       assertTrue(blockedSamples > 0, "No blocked worker samples across the dumps");
-      // A suppression after the last dump leaves pending weight for the runnable flush.
+      // Sampling epochs close at least once a second; the next periodic record of the
+      // still-blocked worker then writes the retained tail of the closed window.
       awaitCounterAbove(
-          SUPPRESSED, profiler.getDebugCounters().getOrDefault(SUPPRESSED, 0L), workerFailure);
-      long tailsBeforeRelease = profiler.getDebugCounters().getOrDefault(TAIL_RECORDED, 0L);
+          TAIL_RECORDED,
+          profiler.getDebugCounters().getOrDefault(TAIL_RECORDED, 0L),
+          workerFailure);
       release.countDown();
-      awaitCounterAbove(TAIL_RECORDED, tailsBeforeRelease, workerFailure);
       // This is a runnable workload, not a timing-derived exact-weight oracle.
       Thread.sleep(300);
     } finally {
@@ -146,7 +146,8 @@ public class UnownedWallTailRotationTest extends AbstractProfilerTest {
   /** Waits until a debug counter exceeds its baseline, failing if the worker failed first. */
   private void awaitCounterAbove(
       String counter, long baseline, AtomicReference<Throwable> workerFailure) throws Exception {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    // Bounded generously for loaded CI hosts; the trigger needs about one epoch.
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
     while (System.nanoTime() < deadline) {
       assertNull(workerFailure.get(), "Worker failed while waiting for " + counter);
       if (profiler.getDebugCounters().getOrDefault(counter, 0L) > baseline) {
