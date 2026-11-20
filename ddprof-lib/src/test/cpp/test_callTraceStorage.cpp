@@ -4,6 +4,7 @@
  */
 
 #include "gtest/gtest.h"
+#include <csignal>
 #include "callTraceStorage.h"
 #include <vector>
 #include <unordered_map>
@@ -73,25 +74,28 @@ TEST_F(CallTraceStorageTest, BasicFunctionality) {
     EXPECT_TRUE(found_traces);
 }
 
-// When memory runs out, acquire() reports it and publishes no table, so a
-// later acquire() allocates all three from scratch instead of finding a
-// half-initialized storage.
-TEST(CallTraceStorageAcquireTest, AllocationFailureLeavesNoTablePublished) {
+// A table whose construction failed (the nothrow allocation of the table
+// object returned null) leaves no table published, and acquire() still
+// succeeds on the next attempt. The unique_ptrs must free any table built
+// before the failing one: each table mmaps an 8 MB chunk.
+TEST(CallTraceStorageAcquireTest, NullTableLeavesNoTablePublished) {
     CallTraceStorage storage;
     storage.release();
 
-    storage.failAllocationForTest(true);
-    EXPECT_FALSE(storage.acquire());
-    EXPECT_EQ(nullptr, storage.activeTableForTest());
+    for (int index = 0; index < 3; index++) {
+        storage.nullTableForTest(index);
+        EXPECT_FALSE(storage.acquire()) << "null table " << index;
+        EXPECT_EQ(nullptr, storage.activeTableForTest()) << "null table " << index;
+    }
 
-    storage.failAllocationForTest(false);
+    storage.nullTableForTest(CallTraceStorage::NO_UNUSABLE_TABLE);
     EXPECT_TRUE(storage.acquire());
     EXPECT_NE(nullptr, storage.activeTableForTest());
     EXPECT_TRUE(storage.acquire());  // idempotent once allocated
 }
 
-// A table whose constructor could not allocate its first table does not throw.
-// acquire() must still fail and publish none of the three tables.
+// A table whose constructor could not allocate its first table does not
+// throw. acquire() must still fail and publish none of the three tables.
 TEST(CallTraceStorageAcquireTest, UnusableTableLeavesNoTablePublished) {
     CallTraceStorage storage;
     storage.release();
@@ -102,8 +106,12 @@ TEST(CallTraceStorageAcquireTest, UnusableTableLeavesNoTablePublished) {
         EXPECT_EQ(nullptr, storage.activeTableForTest()) << "unusable table " << index;
     }
 
-    EXPECT_THROW(storage.unusableTableForTest(3), std::out_of_range);
+    // An out-of-range index is a test bug: assert in debug, abort in release
+    // builds of the test binary; both raise SIGABRT.
+    EXPECT_EXIT(storage.unusableTableForTest(3), ::testing::KilledBySignal(SIGABRT), "");
+    EXPECT_EXIT(storage.nullTableForTest(3), ::testing::KilledBySignal(SIGABRT), "");
     storage.unusableTableForTest(CallTraceStorage::NO_UNUSABLE_TABLE);
+    storage.nullTableForTest(CallTraceStorage::NO_UNUSABLE_TABLE);
     EXPECT_TRUE(storage.acquire());
     EXPECT_NE(nullptr, storage.activeTableForTest());
 }

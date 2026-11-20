@@ -37,8 +37,9 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
     // storage holds none while the profiler is idle - including before the
     // first start(), as Profiler's member is constructed when the library loads.
 
-    // Pre-allocate containers to avoid malloc() during hot path operations
-    _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
+    // Pre-allocate the checker list to avoid growth: checkers register rarely
+    // and 1-2 are typical
+    _liveness_checkers.reserve(4);
 
     // Initialize counters
     Counters::set(CALLTRACE_STORAGE_BYTES, 0);
@@ -46,40 +47,36 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
 }
 
 bool CallTraceStorage::allocateTables() {
-    std::unique_ptr<CallTraceHashTable> active_table;
-    std::unique_ptr<CallTraceHashTable> standby_table;
-    std::unique_ptr<CallTraceHashTable> scratch_table;
-    bool ok = false;
-    try {
-        // Pre-allocate and pre-size collections with conservative load factor
-        _traces_buffer.max_load_factor(0.75f);
-        _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
+    // Pre-size the collections with a conservative load factor; the bucket
+    // arrays themselves allocate on first rotation (see the member comment).
+    _traces_buffer.max_load_factor(0.75f);
+    _preserve_set_buffer.max_load_factor(0.75f);
 
-        _preserve_set_buffer.max_load_factor(0.75f);
-        _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
-
+    // nothrow allocation: an OOM here must fail acquire(), not terminate the
+    // process. The constructor itself does not throw: it allocates via
+    // LinearAllocator (mmap; a failure is reported by usable()).
+    std::unique_ptr<CallTraceHashTable> active_table(new (std::nothrow) CallTraceHashTable());
+    std::unique_ptr<CallTraceHashTable> standby_table(new (std::nothrow) CallTraceHashTable());
+    std::unique_ptr<CallTraceHashTable> scratch_table(new (std::nothrow) CallTraceHashTable());
+    // The unique_ptrs own and free any table that was built before a later
+    // one failed, so a failed acquire() leaks nothing (each table mmaps an
+    // 8 MB chunk). The failure decision reads the built[] copies, which the
+    // UNIT_TEST hooks below may null.
+    CallTraceHashTable *built[] = {active_table.get(), standby_table.get(), scratch_table.get()};
 #ifdef UNIT_TEST
-        if (_fail_allocation_for_test) {
-            throw std::bad_alloc();
-        }
-#endif
-        active_table = std::make_unique<CallTraceHashTable>();
-        standby_table = std::make_unique<CallTraceHashTable>();
-        scratch_table = std::make_unique<CallTraceHashTable>();
-#ifdef UNIT_TEST
-        CallTraceHashTable *built[] = {active_table.get(), standby_table.get(), scratch_table.get()};
-        if (_unusable_table_for_test != NO_UNUSABLE_TABLE) {
-            built[_unusable_table_for_test]->dropTableForTest();
-        }
-#endif
-        ok = active_table->usable() && standby_table->usable() && scratch_table->usable();
-    } catch (const std::bad_alloc&) {
+    if (_null_table_for_test != NO_UNUSABLE_TABLE) {
+        built[_null_table_for_test] = nullptr;
     }
+    if (_unusable_table_for_test != NO_UNUSABLE_TABLE &&
+        built[_unusable_table_for_test] != nullptr) {
+        built[_unusable_table_for_test]->dropTableForTest();
+    }
+#endif
+    bool ok = built[0] && built[1] && built[2] &&
+              built[0]->usable() && built[1]->usable() && built[2]->usable();
     if (!ok) {
         // Nothing is published: the storage stays idle and start() can fail.
-        // Give the pre-sized bucket arrays back, as release() does.
-        CallTraceSet().swap(_traces_buffer);
-        CallTraceIdSet().swap(_preserve_set_buffer);
+        // The unique_ptrs above free any table built before the failure.
         return false;
     }
 
@@ -248,7 +245,6 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     {
         SharedLockGuard lock(&_liveness_lock);
 
-        // Use pre-allocated containers to avoid malloc()
         _preserve_set_buffer.clear();
 
         for (const auto& checker : _liveness_checkers) {
@@ -264,7 +260,8 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     CallTraceHashTable* original_standby = const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_ACQUIRE));
     CallTraceHashTable* original_scratch = const_cast<CallTraceHashTable*>(__atomic_load_n(&_scratch_storage, __ATOMIC_ACQUIRE));
 
-    // Clear process collection for reuse (no malloc/free)
+    // Clear process collection for reuse: clear() keeps the bucket arrays
+    // and frees the nodes
     _traces_buffer.clear();
 
     // Step 1: Collect from current standby directly to _traces_buffer with hook for immediate preservation
@@ -334,7 +331,8 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     }
     
     // Triple-buffer rotation maintains trace continuity with thread-safe malloc-free operations:
-    // - Pre-allocated collections prevent malloc/free during processTraces
+    // - The collection bucket arrays stay allocated after the first rotation;
+    //   node allocation per trace is unavoidable and repeats per rotation
     // - Standby traces collected first (safe - no signal handler writes to standby)
     // - New active (old standby, now empty) receives new traces from signal handlers
     // - Old active (now scratch) safely collected after rotation, then cleared
