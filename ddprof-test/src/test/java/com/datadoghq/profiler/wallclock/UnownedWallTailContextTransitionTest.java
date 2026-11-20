@@ -643,8 +643,14 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     return pending;
   }
 
-  /** Requires the target worker, not ambient native owners, to supply weighted-tail coverage. */
+  /**
+   * Waits for a weighted pending tail: the worker's own slot in DEBUG, process-wide counters in
+   * release. Release must not dump: a dump rotates away the samples the caller's oracle reads and
+   * closes the epoch, splitting pending weight into unit segments that no weighted tail can show.
+   */
   private void awaitWorkerWeightedTailReady(AtomicReference<Throwable> failure) throws Exception {
+    Map<String, Long> base = profiler.getDebugCounters();
+    long suppressionTarget = -1;
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
     while (System.nanoTime() < deadline) {
       assertNull(failure.get(), "Worker failed before required weighted tail");
@@ -664,20 +670,22 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
           return;
         }
       } else {
-        Path witness =
-            Files.createTempFile(Paths.get("/tmp/recordings"), "unowned-worker-readiness-", ".jfr");
-        try {
-          dump(witness);
-          for (JfrEvent sample : verifyEvents(witness, "datadog.MethodSample", false)) {
-            if (isWorker(sample)
-                && sample.getStackTraceString().contains("blockedOriginA")
-                && "PARKED".equals(sample.getEnumName(THREAD_STATE))
-                && sample.getLong(WEIGHT, 0) > 1) {
-              return;
-            }
-          }
-        } finally {
-          if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(witness);
+        // Ambient owners can move these counters too; the callers' oracles still require
+        // target-worker samples. A periodic record consumes earlier suppression: need two after.
+        Map<String, Long> counters = profiler.getDebugCounters();
+        long suppressed = counters.getOrDefault("wc_unowned_blocked_suppressed", 0L);
+        if (suppressionTarget < 0
+            && counters.getOrDefault("wc_unowned_blocked_recorded", 0L)
+                > base.getOrDefault("wc_unowned_blocked_recorded", 0L)) {
+          suppressionTarget = suppressed + 2;
+        }
+        if (suppressionTarget >= 0 && suppressed >= suppressionTarget) {
+          System.out.println(
+              "Attribution suppression ready: suppressed="
+                  + suppressed
+                  + ", target="
+                  + suppressionTarget);
+          return;
         }
       }
       Thread.sleep(1);
