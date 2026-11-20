@@ -375,7 +375,7 @@ if [ "$n" -lt 2 ]; then fail "T4 RefCountGuard.md mentions REFCOUNT_NESTED_OVERF
 rc=0; out=$(python3 "$ROOT/utils/check-claude-md.py" 2>&1) || rc=$?
 expect "T4 tracked CLAUDE.md is canonical" 0 "$rc" "$out" "CLAUDE.md: OK"
 
-for s in check-copyright.py check-claude-md.py check-knowledgebase.py check-skills.py check-native-agents.py; do
+for s in check-copyright.py check-claude-md.py check-knowledgebase.py check-skills.py check-native-agents.py check-cpp-exceptions.py; do
   if grep -q "\"$s\"" "$GRADLE"; then pass; else fail "T4 qualityChecks does not run $s"; fi
 done
 
@@ -878,6 +878,85 @@ na_reset; rm "$NA_ROOT/AGENTS.md"
 na; expect "T9q root AGENTS.md missing" 2 "$rc" "$out" "error: cannot read AGENTS.md"
 rm -rf "$NA_ROOT/.git"
 na; expect "T9r environment error outside a checkout" 2 "$rc" "$out" "error:"
+
+# --- T10: check-cpp-exceptions.py keyword, blanking and exception-list -------
+
+EXC="$ROOT/utils/check-cpp-exceptions.py"
+EXC_ROOT="$TEMP_DIR/exc"
+mkdir -p "$EXC_ROOT/$SRC" && git -C "$EXC_ROOT" init -q
+
+cat > "$EXC_ROOT/$SRC/bad.cpp" <<'EOF'
+void f() {
+  try { g(); } catch (const std::bad_alloc&) { }
+  throw std::logic_error("unreachable");
+  // comments may say try, catch, throw and std::rethrow_exception
+  const char* s = "and strings may say throw";
+  char digit_sep = 1'0;
+}
+EOF
+cp "$EXC_ROOT/$SRC/bad.cpp" "$EXC_ROOT/$SRC/bad.h"
+cat > "$EXC_ROOT/$SRC/notes.md" <<'EOF'
+The rule text mentions throw, try and catch.
+EOF
+git -C "$EXC_ROOT" add -f "$SRC"
+
+# A second repo with only bad.cpp tracked: the exception-list cases must not
+# be confused by bad.h flagging the same keywords.
+EXC2_ROOT="$TEMP_DIR/exc2"
+mkdir -p "$EXC2_ROOT/$SRC" && git -C "$EXC2_ROOT" init -q
+cp "$EXC_ROOT/$SRC/bad.cpp" "$EXC2_ROOT/$SRC/bad.cpp"
+git -C "$EXC2_ROOT" add -f "$SRC"
+
+# File mode: every keyword hits; comments, strings and digit separators do not.
+rc=0; out=$(python3 "$EXC" --root "$EXC_ROOT" "$SRC/bad.cpp" 2>&1) || rc=$?
+expect "T10a file mode flags keywords" 1 "$rc" "$out" "$SRC/bad.cpp:2: C++ exceptions are forbidden"
+expect "T10b catch flagged" 1 "$rc" "$out" "(catch)"
+n=$(printf '%s' "$out" | grep -c 'forbidden in native code' || true)
+if [ "$n" -eq 3 ]; then pass; else fail "T10c exactly 3 hits in bad.cpp, got $n"; fi
+
+rc=0; out=$(python3 "$EXC" --root "$EXC_ROOT" 2>&1) || rc=$?
+expect "T10d tracked mode checks .cpp and .h" 1 "$rc" "$out" "$SRC/bad.h:3: C++ exceptions are forbidden"
+if [[ "$out" == *notes.md* ]]; then fail "T10e tracked mode reads a non-source file:"$'\n'"$out"; else pass; fi
+
+# The real tree is clean and has no known exceptions; a new compliant native
+# source must not fail this.
+rc=0; out=$(python3 "$EXC" 2>&1) || rc=$?
+expect "T10f tracked tree clean" 0 "$rc" "$out" "native exceptions: OK (0 calls, 0 known exception(s))"
+
+# Exception-list behavior, exercised through the module: a listed site is
+# exempt (once), an entry whose site disappeared fails as stale.
+run_exc_module() {
+  # Tracked mode: the stale-exception check runs only without file arguments.
+  python3 - "$EXC" "$EXC2_ROOT" "$1" <<'EOF' 2>&1
+import importlib.util, sys
+
+path, root, case = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("check_cpp_exceptions", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+# Exception keys are relative to mod.SRC (the tracked-mode view of the file).
+rel = "bad.cpp"
+if case == "exempt":
+    mod.KNOWN_EXCEPTIONS = {(rel, "try")}
+elif case == "stale":
+    mod.KNOWN_EXCEPTIONS = {(rel, "goto")}
+sys.exit(mod.main(["--root", root]))
+EOF
+}
+rc=0; out=$(run_exc_module exempt) || rc=$?
+expect "T10g listed site exempt once" 1 "$rc" "$out" "$SRC/bad.cpp:2: C++ exceptions are forbidden in native code (catch)"
+if [[ "$out" == *"(try)"* ]]; then
+  fail "T10g the listed occurrence is not exempt:"$'\n'"$out"
+else
+  pass
+fi
+if [[ "$out" == *"(throw)"* ]] && [[ "$out" == *"(catch)"* ]]; then
+  pass
+else
+  fail "T10g unlisted keywords must stay flagged:"$'\n'"$out"
+fi
+rc=0; out=$(run_exc_module stale) || rc=$?
+expect "T10h stale exception entry fails" 1 "$rc" "$out" "known exception goto no longer found"
 
 # --- Summary -----------------------------------------------------------------
 
