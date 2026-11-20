@@ -152,6 +152,9 @@ jobs:
           fetch_all_jobs() {
             local jobs_json="" page_json page=1
             while :; do
+              # A transient curl failure yields an empty page, which ends this
+              # attempt's pagination short; the outer retry loop re-fetches
+              # from scratch, so the verdict self-heals on the next attempt.
               page_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                 "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page" || echo "[]")
               if [ -z "$jobs_json" ]; then
@@ -175,9 +178,9 @@ jobs:
               st=$(echo "$jobs_json" | jq -r --arg j "$job" \
                 '[.[] | select(.name == $j or (.name | startswith($j + ": ["))) | .status] |
                  if length == 0 then empty
-                 elif any(. == "created" or . == "waiting_for_resource" or . == "preparing" or . == "pending" or . == "running") then "pending"
-                 elif all(. == "success") then "success"
-                 else "failed" end')
+                 elif all(. == "success" or . == "failed" or . == "canceled" or . == "skipped" or . == "manual") then
+                   (if all(. == "success") then "success" else "failed" end)
+                 else "pending" end')
               if [ -z "$st" ]; then missing=$((missing+1));
               elif [ "$st" != "success" ] && [ "$st" != "failed" ]; then pending=$((pending+1)); fi
               STATUS[$job]="${st:-pending}"
@@ -244,7 +247,7 @@ jobs:
                   $0 == "failure" { f = 1 }
                   $0 == "cancelled" { c = 1 }
                   $0 == "timed_out" { t = 1 }
-                  ($0 != "" && $0 != "skipped" && $0 != "failure" && $0 != "cancelled" && $0 != "timed_out") && !s { s = $0 }
+                  ($0 != "" && $0 != "skipped" && $0 != "null" && $0 != "failure" && $0 != "cancelled" && $0 != "timed_out") && !s { s = $0 }
                   END { if (f) print "failure"; else if (c) print "cancelled"; else if (t) print "timed_out"; else if (s) print s; else print "unknown" }')
               echo "- ${job}: ${st:-unknown}"
             done
