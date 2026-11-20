@@ -157,6 +157,12 @@ private:
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot);
 
+    // The caller identifies a vtable stub; pc/sp/fp must still describe that leaf, whose
+    // argument registers supply the receiver. Unreadable memory yields nullptr, and the
+    // caller's crash-protection scope covers a concurrent unmap. Resolved at dump time.
+    static VMSymbol* captureVtableReceiver(HotspotStackFrame& frame, uintptr_t pc,
+                                         uintptr_t sp, uintptr_t fp, StackWalkFeatures features);
+
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
 
     // fjmethodid=lazy: redefinition marks of the classes redefined while lazy
