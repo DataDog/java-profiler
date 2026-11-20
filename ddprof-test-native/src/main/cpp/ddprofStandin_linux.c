@@ -322,7 +322,8 @@ Java_com_datadoghq_profiler_nativemem_DdprofStandin_install(JNIEnv* env, jclass 
   (void)env;
   (void)clazz;
   if (installed) return 0;
-  /* Never rewrite a slot whose value is already a stand-in forwarder. */
+  /* The installer skips only an already-installed stand-in; slot values are
+ * saved before the rewrite, and restore() puts the originals back. */
   if (rewriteSlots(STANDIN_HOOKS, 1) != 0) return -1;
   installed = 1;
   return 0;
