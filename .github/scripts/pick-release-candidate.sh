@@ -31,7 +31,7 @@ if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
   LS_RC=0
   git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1 || LS_RC=$?
   if [ "$LS_RC" -eq 2 ]; then
-    echo "No certification notes on origin yet"
+    echo "No certification notes on origin yet" >&2
   else
     echo "ERROR: failed to fetch $NOTES_REF from origin (ls-remote rc=$LS_RC)" >&2
     exit 1
@@ -70,11 +70,20 @@ if [ -z "$NEWEST_CERTIFIED" ]; then
   exit 10
 fi
 
-# Newest release tag, ordered with the same version sort compute-version.sh
-# uses.
-TAG=$(git tag --list 'v_*' | sed 's/^v_//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+# Newest release tag whose commit is on main (a maintenance-branch patch
+# tag is newer by version but does not gate the mainline train). Ordered
+# with the same version sort compute-version.sh uses.
+TAG=""
+TAG_COMMIT=""
+for t in $(git tag --list 'v_*' | sed 's/^v_//' | sort -t. -k1,1n -k2,2n -k3,3n | awk '{a[NR]=$0} END {for (i=NR; i>=1; i--) print a[i]}'); do
+  c=$(git rev-parse --verify --quiet "v_${t}^{commit}" || true)
+  if [ -n "$c" ] && git merge-base --is-ancestor "$c" origin/main; then
+    TAG="$t"
+    TAG_COMMIT="$c"
+    break
+  fi
+done
 if [ -n "$TAG" ]; then
-  TAG_COMMIT=$(git rev-parse --verify --quiet "v_${TAG}^{commit}" || true)
   if [ -z "$TAG_COMMIT" ]; then
     echo "ERROR: tag v_${TAG} does not resolve to a commit" >&2
     exit 1

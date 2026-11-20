@@ -210,8 +210,15 @@ jobs:
           {
             echo "Certification of ${GITHUB_SHA} failed."
             for job in test-debug test-asan slow-test-debug slow-test-asan fuzz gitlab-integration certify; do
+              # Reusable-workflow jobs carry matrix suffixes and a cancelled
+              # cell may be listed first, so aggregate: any failed cell fails
+              # the component.
               st=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
-                --jq ".jobs[] | select(.name | startswith(\"$job\")) | .conclusion" | head -1)
+                --jq "[.jobs[] | select(.name | startswith(\"$job\")) | .conclusion] as \$c \
+                  | if (\$c | index(\"failure\")) then \"failure\" \
+                    elif (\$c | index(\"cancelled\")) then \"cancelled\" \
+                    elif (\$c | index(\"timed_out\")) then \"timed_out\" \
+                    else (\$c | map(select(. != null and . != \"skipped\")) | first // \"unknown\") end")
               echo "- ${job}: ${st:-unknown}"
             done
             if ls ./artifacts/failures_*.txt >/dev/null 2>&1; then
@@ -222,12 +229,15 @@ jobs:
           } > summary.txt
           cat summary.txt
       - name: Notify Slack
-        if: ${{ secrets.SLACK_WEBHOOK != '' }}
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
           python3 - <<'PY'
           import json, os, urllib.request
+          webhook = os.environ.get("SLACK_WEBHOOK", "")
+          if not webhook:
+              print("SLACK_WEBHOOK not configured, skipping notification")
+              raise SystemExit(0)
           with open("summary.txt") as f:
               summary = f.read()
           payload = {
@@ -237,7 +247,7 @@ jobs:
                       + os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"]
                       + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
           }
-          req = urllib.request.Request(os.environ["SLACK_WEBHOOK"],
+          req = urllib.request.Request(webhook,
                                        data=json.dumps(payload).encode(),
                                        headers={"Content-Type": "application/json"})
           with urllib.request.urlopen(req):

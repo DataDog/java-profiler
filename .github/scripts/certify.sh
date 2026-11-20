@@ -56,7 +56,7 @@ if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
   LS_RC=0
   git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1 || LS_RC=$?
   if [ "$LS_RC" -eq 2 ]; then
-    echo "No certification notes on origin yet"
+    echo "No certification notes on origin yet" >&2
   else
     echo "ERROR: failed to fetch $NOTES_REF from origin (ls-remote rc=$LS_RC)" >&2
     exit 1
@@ -71,7 +71,9 @@ fi
 CERTIFIED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 NOTE="{\"commit\":\"$SHA\",\"certified_at\":\"$CERTIFIED_AT\",\"run_url\":\"$RUN_URL\",\"suite\":\"$SUITE\"}"
 
-git notes --ref=certification add -f -m "$NOTE" "$SHA"
+# Runners carry no git identity; the note commit needs one.
+git -c user.name="Datadog Java Profiler" -c user.email="java-profiler@datadoghq.com" \
+  notes --ref=certification add -f -m "$NOTE" "$SHA"
 git push origin "$NOTES_REF"
 
 echo "Certified $SHA"
