@@ -293,15 +293,24 @@ TEST_F(WallTailRecordingTest, TailCarriesWeightAccumulatedWhileBlocked) {
 }
 
 TEST_F(WallTailRecordingTest, ProducerFlushRetainsOriginWhenStripeIsContended) {
-  auto held = profiler->recordingLocksForTest();
-  EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
-  expectOriginRetained();
+  captureWrites();
+  {
+    auto held = profiler->recordingLocksForTest();
+    EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+    EXPECT_TRUE(writes.empty()) << "a contended stripe must not reach the writer";
+    expectOriginRetained();
+  }
+  // Positive control: the same flush writes once the stripe is free.
+  EXPECT_TRUE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  ASSERT_EQ(1u, writes.size());
+  expectWrite(writes[0], request.sampling_epoch_start, 1);
+  EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(request.slot_id)
+                      ->unowned_blocked_pending_weight.load(std::memory_order_acquire));
 }
 
-TEST_F(WallTailRecordingTest, ProducerFlushRetainsOriginWhenOutputFails) {
+TEST_F(WallTailRecordingTest, ProducerFlushRetainsOriginWithoutActiveRecording) {
   EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
   expectOriginRetained();
-  auto held = profiler->recordingLocksForTest();
 }
 
 TEST_F(WallTailRecordingTest, ActiveOutputFlushFailureRetainsEpochUnitsContextAndTraceRoot) {
