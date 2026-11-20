@@ -74,6 +74,12 @@ jobs:
     # token with contents:write + pull_requests:write on DataDog/dd-trace-java.
     needs: update-assets-and-releaase
     if: ${{ needs.update-assets-and-releaase.result == 'success' }}
+    # A tag-triggered run and a manual run for the same version can both
+    # pass the open-PR lookup; serialized here, the later run observes the
+    # opened PR instead of deleting its head branch on push rejection.
+    concurrency:
+      group: dd-trace-java-bump
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

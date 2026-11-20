@@ -134,8 +134,12 @@ jobs:
             # the SHA instead of burning the whole budget on an empty
             # ref-filtered result.
             if [ "$attempt" -gt 18 ]; then REF_PARAM=""; fi
+            # A trigger/child pipeline (e.g. a JDK-integration trigger) can
+            # exist for the same SHA and lack the integration jobs entirely;
+            # certify against the push pipeline that has them.
             PIPELINE_ID=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              "$API/pipelines?sha=$SHA$REF_PARAM&sort=desc&per_page=5" | jq -r '.[0].id // empty') || true
+              "$API/pipelines?sha=$SHA$REF_PARAM&sort=desc&per_page=20" \
+              | jq -r '[.[] | select(.source == "push")][0].id // empty') || true
             [ -n "$PIPELINE_ID" ] && break
             echo "attempt $attempt/36: no pipeline for $SHA yet, retrying in 5 min"
             sleep 300
@@ -268,8 +272,12 @@ jobs:
             fi
           } > summary.txt
           cat summary.txt
+      # The job only starts on failure() || cancelled(); !cancelled() here
+      # runs the notifications on the failure path and skips them when the
+      # run was cancelled. Step-level failure() would be false when only a
+      # dependency job failed, so it must not gate these steps.
       - name: Notify Slack
-        if: ${{ failure() }}
+        if: ${{ !cancelled() }}
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
@@ -295,7 +303,7 @@ jobs:
               pass
           PY
       - name: File PROF ticket
-        if: ${{ failure() }}
+        if: ${{ !cancelled() }}
         id: jira
         env:
           ATLASSIAN_BASE_URL: ${{ secrets.ATLASSIAN_BASE_URL }}

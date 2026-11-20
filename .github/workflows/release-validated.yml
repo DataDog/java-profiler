@@ -34,10 +34,13 @@ on:
         type: string
         default: ""
 
-# Two dispatches for the same candidate (a retried train while the first
-# release run is still in flight) must not race the tag creation.
+# Mainline releases (train-pinned or manual) must serialize with each other
+# even when they target the same commit: a queued run validates before the
+# previous run's tag exists, so per-SHA grouping is not enough. Maintenance
+# (patch/retag) dispatches run on the release branch and keep a per-branch
+# group so a mainline release does not gate them.
 concurrency:
-  group: release-${{ inputs.source_sha || github.ref }}
+  group: ${{ (inputs.release_type == 'patch' || inputs.release_type == 'retag') && format('release-maintenance-{0}', github.ref) || 'release-mainline' }}
   cancel-in-progress: false
 
 permissions:
@@ -74,7 +77,11 @@ jobs:
           # The input reaches the script through env: interpolating it into
           # the shell program would execute dispatcher-controlled text.
           TARGET_SHA="${SOURCE_SHA_INPUT:-$GITHUB_SHA}"
-          if ! git rev-parse --verify --quiet "$TARGET_SHA^{commit}" >/dev/null; then
+          # Canonicalize to the commit ID: a tag name or revision expression
+          # passes --verify but, kept raw, would defeat the duplicate-release
+          # guard (which compares commit IDs) and flow into the checkout
+          # command in the release job as dispatcher-controlled text.
+          if ! TARGET_SHA=$(git rev-parse --verify --quiet "$TARGET_SHA^{commit}"); then
             echo "::error::Requested source SHA does not resolve to a commit: $TARGET_SHA" >&2
             exit 1
           fi
@@ -130,7 +137,9 @@ jobs:
           # would otherwise compute the next version and release the same
           # commit twice.
           for tag in $(git tag --list 'v_*'); do
-            if [ "$(git rev-parse "$tag^{commit}")" == "$TARGET_SHA" ]; then
+            # retag re-points an existing tag at the same commit by design;
+            # the guard exists to stop double releases, not recovery.
+            if [ "$TYPE" != "retag" ] && [ "$(git rev-parse "$tag^{commit}")" == "$TARGET_SHA" ]; then
               echo "::error::Release commit $TARGET_SHA already carries a release tag ($tag)"
               exit 1
             fi
