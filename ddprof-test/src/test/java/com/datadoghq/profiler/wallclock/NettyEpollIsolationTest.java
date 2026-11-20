@@ -99,7 +99,7 @@ public class NettyEpollIsolationTest {
     Path run = Files.createTempDirectory(directory, method + "-");
     List<String> command = new ArrayList<>();
     command.add(Paths.get(System.getProperty("java.home"), "bin", "java").toString());
-    command.add("-Xmx512m");
+    command.addAll(NettyEpollJvm.heapLayoutArgs());
     command.add("-Djdk.attach.allowAttachSelf=true");
     command.add("-Dddprof.disable_unsafe=true");
     command.add("-Dddprof.netty.reports=" + run.resolve("junit").toAbsolutePath());

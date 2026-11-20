@@ -5,16 +5,50 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /** Outer owner of one test JVM, with output retained even if a JNI worker never returns. */
 public final class NettyEpollJvm {
   private NettyEpollJvm() {}
+
+  /** Child heap when the parent JVM was started without -Xmx. */
+  static final String DEFAULT_CHILD_HEAP = "-Xmx512m";
+
+  private static final String[] HEAP_LAYOUT_FLAGS = {
+    "-Xmx", "-XX:HeapBaseMinAddress=", "-XX:CompressedClassSpaceSize="
+  };
+
+  /** Heap-layout flags of this JVM for a child JVM; see {@link #heapLayoutArgs(List)}. */
+  static List<String> heapLayoutArgs() {
+    return heapLayoutArgs(ManagementFactory.getRuntimeMXBean().getInputArguments());
+  }
+
+  /**
+   * Selects the parent's heap size and the ASan heap-placement flags, which keep the Java heap
+   * below the shadow region only when the child uses them too. The last occurrence wins, as in the
+   * JVM.
+   */
+  static List<String> heapLayoutArgs(List<String> parentArgs) {
+    Map<String, String> selected = new LinkedHashMap<>();
+    selected.put("-Xmx", DEFAULT_CHILD_HEAP);
+    for (String arg : parentArgs) {
+      for (String flag : HEAP_LAYOUT_FLAGS) {
+        if (arg.startsWith(flag)) {
+          selected.put(flag, arg);
+        }
+      }
+    }
+    return new ArrayList<>(selected.values());
+  }
 
   /**
    * Takes a fresh log path followed by the exact parent-reviewed child JVM argv. The command must

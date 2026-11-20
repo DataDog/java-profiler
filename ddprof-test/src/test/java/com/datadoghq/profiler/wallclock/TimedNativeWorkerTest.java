@@ -191,13 +191,17 @@ public class TimedNativeWorkerTest {
                     .getLocation()
                     .toURI())
             .toString();
-    return Arrays.asList(
-        Paths.get(System.getProperty("java.home"), "bin", "java").toString(),
-        "-Djava.library.path=" + System.getProperty("java.library.path"),
-        "-cp",
-        classes,
-        Child.class.getName(),
-        mode);
+    java.util.List<String> command = new java.util.ArrayList<>();
+    command.add(Paths.get(System.getProperty("java.home"), "bin", "java").toString());
+    command.addAll(NettyEpollJvm.heapLayoutArgs());
+    command.addAll(
+        Arrays.asList(
+            "-Djava.library.path=" + System.getProperty("java.library.path"),
+            "-cp",
+            classes,
+            Child.class.getName(),
+            mode));
+    return command;
   }
 
   private static String read(Path log) throws Exception {
