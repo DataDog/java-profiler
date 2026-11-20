@@ -36,6 +36,8 @@ public class TaskBlockReceivingScopeTest extends AbstractProfilerTest {
   // these cases isolate collection/clock identity, not large-epoch rounding.
   private static final long EPOCH_NS = 1_000_000_000_000L;
   private static final long QUANTUM_NS = 10_000_000L;
+  // Must match T_TASK_BLOCK in jfrMetadata.h.
+  private static final long TASK_BLOCK_TYPE = 133;
 
   /** An earlier dump's observation is subtracted after its own chunk clock conversion. */
   @Test
@@ -56,7 +58,7 @@ public class TaskBlockReceivingScopeTest extends AbstractProfilerTest {
             500_000,
             2_000_000,
             new ThreadRow[] {new ThreadRow(7, 81, 42, "original-worker")},
-            event(131, 520_000, 256_000, 7, 1, 0, 0, 0, 0, 0));
+            event(TASK_BLOCK_TYPE, 520_000, 256_000, 7, 1, 0, 0, 0, 0, 0));
 
     IItemCollection collection = load(earlierDump, receivingDump);
     assertEquals(EPOCH_NS + 20_000_000L, onlySampleTime(collection));
@@ -85,7 +87,7 @@ public class TaskBlockReceivingScopeTest extends AbstractProfilerTest {
             500_000,
             2_000_000,
             new ThreadRow[] {new ThreadRow(7, 82, 43, "different-worker")},
-            event(131, 520_000, 256_000, 7, 1, 0, 0, 0, 0, 0));
+            event(TASK_BLOCK_TYPE, 520_000, 256_000, 7, 1, 0, 0, 0, 0, 0));
     IItemCollection collection = load(original, nextRecording);
     assertEquals(128_000_000L, syntheticWallTime(collection));
     assertEquals(2, factualBindings(collection).size());
@@ -111,7 +113,7 @@ public class TaskBlockReceivingScopeTest extends AbstractProfilerTest {
             500_000,
             2_000_000,
             new ThreadRow[] {new ThreadRow(9, 82, 42, "conflicting-worker")},
-            event(131, 520_000, 256_000, 9, 1, 0, 0, 0, 0, 0));
+            event(TASK_BLOCK_TYPE, 520_000, 256_000, 9, 1, 0, 0, 0, 0, 0));
     assertEquals(1, factualBindings(load(original)).size());
     assertEquals(1, factualBindings(load(conflicting)).size());
     // Neither dump has a local collision. Dropping history at a dump boundary misses this one.
@@ -138,7 +140,7 @@ public class TaskBlockReceivingScopeTest extends AbstractProfilerTest {
             500_000,
             2_000_000,
             new ThreadRow[] {new ThreadRow(9, 81, 0, "native-worker")},
-            event(131, 520_000, 256_000, 9, 1, 0, 0, 0, 0, 0));
+            event(TASK_BLOCK_TYPE, 520_000, 256_000, 9, 1, 0, 0, 0, 0, 0));
     assertEquals(118_000_000L, syntheticWallTime(load(earlierDump, sameFallback)));
     assertTrue(factualBindings(load(earlierDump, sameFallback)).containsKey(81L));
     byte[] preferredJava =
@@ -148,7 +150,7 @@ public class TaskBlockReceivingScopeTest extends AbstractProfilerTest {
             500_000,
             2_000_000,
             new ThreadRow[] {new ThreadRow(9, 81, 42, "native-worker")},
-            event(131, 520_000, 256_000, 9, 1, 0, 0, 0, 0, 0));
+            event(TASK_BLOCK_TYPE, 520_000, 256_000, 9, 1, 0, 0, 0, 0, 0));
     assertEquals(128_000_000L, syntheticWallTime(load(earlierDump, preferredJava)));
   }
 
