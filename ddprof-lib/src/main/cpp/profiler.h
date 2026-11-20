@@ -340,7 +340,12 @@ private:
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
 
-  u32 getLockIndex(int tid);
+  u32 getLockIndex(int tid) {
+    u32 lock_index = tid;
+    lock_index ^= lock_index >> 8;
+    lock_index ^= lock_index >> 4;
+    return lock_index % CONCURRENCY_LEVEL;
+  }
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
                      int tid, StackContext *java_ctx, bool *truncated, int lock_index);
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,

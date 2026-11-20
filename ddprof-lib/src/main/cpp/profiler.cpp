@@ -417,13 +417,6 @@ const char *Profiler::asgctError(int code) {
   }
 }
 
-inline u32 Profiler::getLockIndex(int tid) {
-  u32 lock_index = tid;
-  lock_index ^= lock_index >> 8;
-  lock_index ^= lock_index >> 4;
-  return lock_index % CONCURRENCY_LEVEL;
-}
-
 void Profiler::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;
   strcpy(buf, "_ZN");
