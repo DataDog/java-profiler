@@ -177,7 +177,7 @@ void JfrMetadata::initialize(
               << field("numPermissionDenied", T_INT,
                        "Number of Permission Denied Errors")
               << field("numSuppressedOwnedBlock", T_LONG,
-                       "Signals suppressed for lifecycle-owned blocked intervals"))
+                       "Signals suppressed for lifecycle-owned blocked intervals during the epoch"))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include <gtest/gtest-spi.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -1240,6 +1241,8 @@ private:
 // Pool sizes stay within the reservoir so every candidate is selected each pass.
 class SingleCloseWallClock : public BaseWallClock {
 public:
+    // Passes on which candidate 0 is suppressed; pass 10 opens the larger-pool epoch.
+    std::vector<int> suppressed_passes{10};
     std::atomic<bool> completed{false};
     std::vector<WallClockEpochEvent> closed;
     const char* name() override { return "Single close test timer"; }
@@ -1255,8 +1258,10 @@ private:
             for (int tid = 0; tid < population; ++tid) entries.push_back(tid);
         };
         auto sample = [&](int tid, int& failures, int&, int&, int&, bool) {
-            // The pass that opens the larger-pool epoch also drains a suppression.
-            if (pass == 10 && tid == 0) WallClockCounters::incrementSuppressedOwnedBlock();
+            if (tid == 0 && std::find(suppressed_passes.begin(), suppressed_passes.end(), pass) !=
+                                suppressed_passes.end()) {
+                WallClockCounters::incrementSuppressedOwnedBlock();
+            }
             if (pass >= 20 && tid == 0) {
                 failures++;
                 return WallClockCandidateOutcome::SIGNAL_FAILED;
@@ -1270,9 +1275,9 @@ private:
     }
 };
 
-TEST(WallClockSamplingEpochTest, EachStatisticsChangeClosesOneEpoch) {
+static void runSingleClose(SingleCloseWallClock& clock) {
     auto previous_handler = std::signal(WAKEUP_SIGNAL, +[](int) {});
-    SingleCloseWallClock clock;
+    WallClockCounters::drainSuppressedOwnedBlock();
     clock.enableEvents(true);
     Arguments args;
     args._wall = 1000000;
@@ -1285,6 +1290,11 @@ TEST(WallClockSamplingEpochTest, EachStatisticsChangeClosesOneEpoch) {
     std::signal(WAKEUP_SIGNAL, previous_handler);
     ASSERT_TRUE(started);
     ASSERT_TRUE(clock.completed.load());
+}
+
+TEST(WallClockSamplingEpochTest, EachStatisticsChangeClosesOneEpoch) {
+    SingleCloseWallClock clock;
+    ASSERT_NO_FATAL_FAILURE(runSingleClose(clock));
     auto same_stats = [](const WallClockEpochEvent& a, const WallClockEpochEvent& b) {
         return a._num_samplable_threads == b._num_samplable_threads &&
                a._num_successful_samples == b._num_successful_samples &&
@@ -1308,6 +1318,22 @@ TEST(WallClockSamplingEpochTest, EachStatisticsChangeClosesOneEpoch) {
     }
     EXPECT_EQ(1, pool_changes);
     EXPECT_EQ(1, outcome_changes);
+}
+
+TEST(WallClockSamplingEpochTest, SuppressionsAccumulateIntoOpenEpoch) {
+    SingleCloseWallClock clock;
+    clock.suppressed_passes = {2, 3, 4, 5, 11, 12, 13};
+    ASSERT_NO_FATAL_FAILURE(runSingleClose(clock));
+    // Only the pool change (pass 10) and the outcome change (pass 20) close epochs.
+    ASSERT_GE(clock.closed.size(), 3u);
+    const auto& small_pool = clock.closed[0];
+    const auto& large_pool = clock.closed[1];
+    EXPECT_EQ(8u, small_pool._num_samplable_threads);
+    EXPECT_EQ(4u, small_pool._num_suppressed_owned_block);
+    EXPECT_EQ(16u, large_pool._num_samplable_threads);
+    EXPECT_EQ(0u, large_pool._num_failed_samples);
+    EXPECT_EQ(3u, large_pool._num_suppressed_owned_block);
+    EXPECT_EQ(1u, clock.closed[2]._num_failed_samples);
 }
 
 TEST(WallClockSamplingEpochTest, PopulationBoundaryClosesWithPriorScaleInBothDirections) {

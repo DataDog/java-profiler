@@ -256,12 +256,8 @@ public:
     }
   }
 
-  void addNumSuppressedOwnedBlock(u64 n) {
-    if (n > 0) {
-      _dirty = true;
-      _num_suppressed_owned_block += n;
-    }
-  }
+  // Accumulates into the open epoch; a suppression alone never closes it.
+  void addNumSuppressedOwnedBlock(u64 n) { _num_suppressed_owned_block += n; }
 
   void endEpoch(u64 millis) { _duration_millis = millis; }
 
