@@ -700,7 +700,8 @@ void ElfParser::parseDynamicSection() {
         // skips them too). Walking only while a whole entry fits keeps offs
         // within the table, so offs += relent cannot wrap.
         if (jmprel != NULL && pltrelsz != 0 && relent >= sizeof(ElfRelocation)) {
-            // Parse .rela.plt table
+            // Parse .rela.plt table before .rela.dyn: findImport(id) returns the
+            // first recorded slot, which must be the JUMP_SLOT direct calls use.
             for (size_t offs = 0; relent <= pltrelsz - offs; offs += relent) {
                 ElfRelocation r = relocationAt(jmprel + offs);
                 uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r.r_info) * syment);

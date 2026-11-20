@@ -248,13 +248,51 @@ TEST(CodeCacheTest, PeekImportFinalizesVariableCountLayoutWithoutWritingMappings
     cache.addImport(read_slot, "read");
     cache.addImport(read_slot, "read");
 
-    EXPECT_EQ(read_slot, cache.peekImport(im_read));
+    EXPECT_EQ(second_read_slot, cache.peekImport(im_read));
     EXPECT_EQ(2u, cache.importCount(im_read));
     EXPECT_EQ(recv_slot, cache.peekImport(im_recv));
     EXPECT_EQ(nullptr, cache.peekImport(im_sigaction));
     // Negative values are outside ImportId's C++ enum domain; use a valid upper outlier.
     EXPECT_EQ(nullptr, cache.peekImport(static_cast<ImportId>(NUM_IMPORTS + 1)));
     EXPECT_EQ(nullptr, cache.peekImport(NUM_IMPORTS));
+}
+
+// ElfParser records the .rela.plt JUMP_SLOT before a .rela.dyn GLOB_DAT that can sit
+// at a lower address. Single-slot callers (the sigaction hook, the J9 dlopen trap)
+// patch index 0, so it must be the JUMP_SLOT that direct calls go through.
+TEST(CodeCacheTest, FirstImportSlotIsFirstRecordedNotLowestAddress) {
+    void* slots[2] = {};
+    void** glob_dat = &slots[0];
+    void** jump_slot = &slots[1];
+    CodeCache cache("call-slot-first", -1, NO_MIN_ADDRESS, NO_MAX_ADDRESS, nullptr,
+                    /* imports_patchable */ true);
+    cache.addImport(jump_slot, "sigaction");
+    cache.addImport(glob_dat, "sigaction");
+
+    ASSERT_EQ(2u, cache.importCount(im_sigaction));
+    EXPECT_EQ(jump_slot, cache.findImport(im_sigaction));
+    EXPECT_EQ(glob_dat, cache.findImport(im_sigaction, 1));
+    EXPECT_EQ(jump_slot, cache.peekImport(im_sigaction));
+}
+
+// A duplicate recording must not move a slot ahead of one recorded between the two,
+// and a slot recorded after finalization goes last.
+TEST(CodeCacheTest, ImportOrderSurvivesDuplicatesAndLateRecording) {
+    void* slots[3] = {};
+    CodeCache cache("ordered-imports", -1, NO_MIN_ADDRESS, NO_MAX_ADDRESS, nullptr,
+                    /* imports_patchable */ true);
+    cache.addImport(&slots[2], "dlopen");
+    cache.addImport(&slots[1], "dlopen");
+    cache.addImport(&slots[2], "dlopen");
+    ASSERT_EQ(2u, cache.importCount(im_dlopen));
+    EXPECT_EQ(&slots[2], cache.findImport(im_dlopen, 0));
+    EXPECT_EQ(&slots[1], cache.findImport(im_dlopen, 1));
+
+    cache.addImport(&slots[0], "dlopen");
+    ASSERT_EQ(3u, cache.importCount(im_dlopen));
+    EXPECT_EQ(&slots[2], cache.findImport(im_dlopen, 0));
+    EXPECT_EQ(&slots[1], cache.findImport(im_dlopen, 1));
+    EXPECT_EQ(&slots[0], cache.findImport(im_dlopen, 2));
 }
 
 TEST(CodeCacheTest, PublishedImportsPreserveLookupAndDeduplication) {

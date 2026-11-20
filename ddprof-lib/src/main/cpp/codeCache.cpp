@@ -65,6 +65,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _image_fingerprint = 0;
 
   memset(_import_offsets, 0, sizeof(_import_offsets));
+  _import_sequence = 0;
   _incomplete_imports = 0;
   _imports_finalized = true;
   _imports_patchable.store(imports_patchable, std::memory_order_release);
@@ -113,6 +114,7 @@ void CodeCache::copyFrom(const CodeCache& other) {
 
   _imports.clear();
   memset(_import_offsets, 0, sizeof(_import_offsets));
+  _import_sequence = 0;
   _incomplete_imports = 0;
   _imports_finalized = true;
   _imports_patchable.store(other._imports_patchable.load(std::memory_order_acquire),
@@ -380,7 +382,7 @@ void CodeCache::saveImport(ImportId id, void** entry) {
         return;
     }
     try {
-        _imports.push_back({id, entry});
+        _imports.push_back({id, entry, _import_sequence++});
         _imports_finalized = false;
     } catch (const std::bad_alloc&) {
         _incomplete_imports |= 1ULL << id;
@@ -485,18 +487,29 @@ void CodeCache::finalizeImports() {
     return;
   }
 
+  // Group by slot so std::unique keeps each slot's first recording.
   std::sort(_imports.begin(), _imports.end(), [](const ImportLocation& a,
                                                   const ImportLocation& b) {
     if (a._id != b._id) {
       return a._id < b._id;
     }
-    return reinterpret_cast<uintptr_t>(a._location) <
-           reinterpret_cast<uintptr_t>(b._location);
+    if (a._location != b._location) {
+      return reinterpret_cast<uintptr_t>(a._location) <
+             reinterpret_cast<uintptr_t>(b._location);
+    }
+    return a._order < b._order;
   });
   _imports.erase(std::unique(_imports.begin(), _imports.end(),
                              [](const ImportLocation& a, const ImportLocation& b) {
     return a._id == b._id && a._location == b._location;
   }), _imports.end());
+  // Single-slot callers (sigaction, dlopen, pthread_setspecific) use slot 0. ElfParser
+  // records .rela.plt before .rela.dyn, so recording order puts the JUMP_SLOT that
+  // direct calls go through ahead of a GLOB_DAT, which may sit at a lower address.
+  std::sort(_imports.begin(), _imports.end(), [](const ImportLocation& a,
+                                                  const ImportLocation& b) {
+    return a._id != b._id ? a._id < b._id : a._order < b._order;
+  });
 
   memset(_import_offsets, 0, sizeof(_import_offsets));
   for (const ImportLocation& entry : _imports) {

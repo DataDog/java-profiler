@@ -164,6 +164,8 @@ private:
   struct ImportLocation {
     ImportId _id;
     void** _location;
+    // Recording order, which finalizeImports() keeps within each import.
+    size_t _order;
   };
 
   char *_name;
@@ -185,6 +187,7 @@ private:
 
   std::vector<ImportLocation> _imports;
   size_t _import_offsets[NUM_IMPORTS + 1];
+  size_t _import_sequence;
   u64 _incomplete_imports;
   bool _imports_finalized;
   // LibraryPatcher and MallocHooker protect import writes with different locks.
@@ -379,6 +382,7 @@ public:
   void markImportIncompleteForTest(ImportId id) { _incomplete_imports |= 1ULL << id; }
 #endif
   bool prepareImportsForPatch();
+  // Index 0 is the JUMP_SLOT when the library has one (see finalizeImports()).
   void **findImport(ImportId id, size_t index = 0);
   bool patchImport(ImportId, void *hook_func);
   // Import lookup without making the library writable.
