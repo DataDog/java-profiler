@@ -202,6 +202,7 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
 #ifdef UNIT_TEST
 static std::atomic<LibraryPatcher::SocketImportFailureForTest>
     socket_import_failure_for_test{nullptr};
+static std::atomic<int> socket_missing_original_for_test{-1};
 #endif
 
 static_assert(SOCKET_BASE_TABLE_SIZE > 0 &&
@@ -1061,9 +1062,11 @@ static void** socket_import_slot(CodeCache* lib, ImportId import_id, size_t inde
 }
 
 static bool socket_import_slots_present(CodeCache* lib,
-                                        const NativeSocketInterposer::NativeIoHookSpec* hooks) {
+                                        const NativeSocketInterposer::NativeIoHookSpec* hooks,
+                                        int unhooked_index) {
   for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
        hook_index++) {
+    if (hook_index == unhooked_index) continue;
     ImportId import_id = hooks[hook_index].import_id;
     for (size_t index = 0; index < lib->importCount(import_id); index++) {
       if (socket_import_slot(lib, import_id, index) == nullptr) return false;
@@ -1206,6 +1209,18 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     Log::warn("native I/O hooks disabled: all original symbol lookups failed");
     return disable_and_unpatch();
   }
+  bool epoll_pwait2_original =
+      cached_originals[NativeSocketInterposer::HOOK_EPOLL_PWAIT2] != nullptr;
+#ifdef UNIT_TEST
+  if (socket_missing_original_for_test.load(std::memory_order_acquire) ==
+      NativeSocketInterposer::HOOK_EPOLL_PWAIT2) {
+    epoll_pwait2_original = false;
+  }
+#endif
+  // Before glibc 2.35 libc has no epoll_pwait2. Its optional imports, including
+  // non-NULL lazy-binding stubs, then stay untouched instead of disabling the hooks.
+  const int unhooked_index =
+      epoll_pwait2_original ? -1 : static_cast<int>(NativeSocketInterposer::HOOK_EPOLL_PWAIT2);
 
   // Publish the process that owns profiler state before any fork-safe hook can
   // become reachable. A post-fork child observes a different getpid() value
@@ -1288,6 +1303,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     bool imports_incomplete = false;
     for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
          hook_index++) {
+      if (hook_index == unhooked_index) continue;
       ImportId import_id = hooks[hook_index].import_id;
       if (!lib->importsComplete(import_id)) {
         if (netty_image) {
@@ -1363,7 +1379,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
       // is read-only again, even though this append-only cache says writable.
       if (!lib->makeImportsWritable()) {
         failure = "cannot make imports writable";
-      } else if (netty_image && !socket_import_slots_present(lib, hooks)) {
+      } else if (netty_image && !socket_import_slots_present(lib, hooks, unhooked_index)) {
         failure = "missing import slot";
       }
       if (failure == nullptr) continue;
@@ -1402,6 +1418,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
         for (int hook_index = 0;
              hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS && success;
              hook_index++) {
+          if (hook_index == unhooked_index) continue;
           ImportId import_id = hooks[hook_index].import_id;
           size_t count = lib->importCount(import_id);
           for (size_t import_index = 0; import_index < count; import_index++) {
@@ -1480,6 +1497,10 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
 LibraryPatcher::SocketImportFailureForTest
 LibraryPatcher::exchangeSocketImportFailureForTest(SocketImportFailureForTest failure) {
   return socket_import_failure_for_test.exchange(failure, std::memory_order_acq_rel);
+}
+
+int LibraryPatcher::exchangeSocketMissingOriginalForTest(int hook_index) {
+  return socket_missing_original_for_test.exchange(hook_index, std::memory_order_acq_rel);
 }
 
 int LibraryPatcher::patch_socket_import_for_test(CodeCache* lib, ImportId import_id,

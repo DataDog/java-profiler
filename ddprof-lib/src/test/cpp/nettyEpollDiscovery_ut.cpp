@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dlfcn.h>
 #include <future>
 #include <limits.h>
@@ -525,6 +526,25 @@ private:
 
 NettyReadSlotFailure* NettyReadSlotFailure::_current = nullptr;
 
+// Models a libc without epoll_pwait2 regardless of the host glibc.
+class MissingEpollPwait2Original {
+public:
+  MissingEpollPwait2Original()
+      : _previous(LibraryPatcher::exchangeSocketMissingOriginalForTest(
+            NativeSocketInterposer::HOOK_EPOLL_PWAIT2)) {}
+  ~MissingEpollPwait2Original() {
+    LibraryPatcher::exchangeSocketMissingOriginalForTest(_previous);
+  }
+  MissingEpollPwait2Original(const MissingEpollPwait2Original&) = delete;
+  MissingEpollPwait2Original& operator=(const MissingEpollPwait2Original&) = delete;
+
+private:
+  int _previous;
+};
+
+// Stands in for the PLT resolver address a lazily bound JUMP_SLOT holds; never called.
+int lazyBindingStub() { return -1; }
+
 // Pairs the Netty image with an unmarked JDK libnet that must stay patched.
 class NettyEpollImageSkipTest : public NettyEpollDiscoveryTest {
 protected:
@@ -678,6 +698,45 @@ TEST_P(NettyEpollImageSkipTest, JdkImageFailureStillFailsClosed) {
   EXPECT_FALSE(LibraryPatcher::patch_socket_functions());
   EXPECT_EQ(1, failure.calls);
   expectFailedClosed();
+}
+
+TEST_P(NettyEpollImageSkipTest, MissingEpollPwait2OriginalLeavesLazySlotUntouched) {
+  size_t count = netty->importCount(im_epoll_pwait2);
+  ASSERT_GT(count, 0u);
+  ASSERT_LE(count, 256u);
+  std::vector<void**> slots;
+  std::vector<void*> originals;
+  for (size_t index = 0; index < count; index++) {
+    void** location = netty->findImport(im_epoll_pwait2, index);
+    ASSERT_NE(nullptr, location);
+    slots.push_back(location);
+    originals.push_back(__atomic_load_n(location, __ATOMIC_ACQUIRE));
+  }
+  ASSERT_TRUE(netty->prepareImportsForPatch());
+  void* lazy_stub = reinterpret_cast<void*>(lazyBindingStub);
+  for (void** location : slots) __atomic_store_n(location, lazy_stub, __ATOMIC_RELEASE);
+  {
+    MissingEpollPwait2Original missing;
+    EXPECT_TRUE(LibraryPatcher::patch_socket_functions());
+  }
+  EXPECT_EQ(0, skipped());
+  EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+  EXPECT_TRUE(NativeSocketInterposer::instance()->active());
+  EXPECT_TRUE(NativeSocketSampler::active());
+  EXPECT_EQ(reinterpret_cast<void*>(NativeSocketInterposer::read_hook),
+            __atomic_load_n(jdk_slot, __ATOMIC_ACQUIRE));
+  EXPECT_EQ(reinterpret_cast<void*>(NativeSocketInterposer::read_hook),
+            __atomic_load_n(netty_slot, __ATOMIC_ACQUIRE));
+  EXPECT_EQ(expected_libraries + 1, LibraryPatcher::socket_library_count_for_test());
+  for (void** location : slots) {
+    EXPECT_EQ(lazy_stub, __atomic_load_n(location, __ATOMIC_ACQUIRE));
+  }
+  LibraryPatcher::unpatch_socket_functions();
+  EXPECT_EQ(netty_original, __atomic_load_n(netty_slot, __ATOMIC_ACQUIRE));
+  for (size_t index = 0; index < count; index++) {
+    EXPECT_EQ(lazy_stub, __atomic_load_n(slots[index], __ATOMIC_ACQUIRE));
+    __atomic_store_n(slots[index], originals[index], __ATOMIC_RELEASE);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(ParsedBeforeUnlink, NettyEpollImageSkipTest, ::testing::Bool());

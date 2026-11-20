@@ -190,7 +190,8 @@ new hook fault or of successful EFAULT recovery.
 - `NettyEpollImageSkipTest`: a missing slot or incomplete imports skip only the
   Netty image beside a patched JDK libnet, with both owners active, the counter,
   no retained pin and no retry before the next installation. A Netty failure after
-  validation, or a libnet failure, still fails closed.
+  validation, or a libnet failure, still fails closed. A missing libc `epoll_pwait2`
+  leaves a non-NULL Netty slot untouched and keeps the other hooks.
 - `NettyEpollAliasDiscoveryTest`: removed loader symlinks with live/deleted backing
   files, forwarding/restoration, final-close retention and unload before fallback pin.
 - `LibraryPatcherSocketTransactionTest.OwnersPreserveDisplacedJdk8PollAdapterForwardingAndRestoration`:
@@ -278,7 +279,9 @@ failure, a full table of 64 skipped images and a missing slot found after
 writes started. A stale generation still
 abandons the transaction without changing a newer owner.
 A NULL weak `epoll_pwait2` import stays NULL; supported imports use the same
-errno-preserving scope as the other epoll waits.
+errno-preserving scope as the other epoll waits. When libc has no `epoll_pwait2`
+(glibc before 2.35), every `epoll_pwait2` import stays untouched. This includes a
+non-NULL lazy-binding stub. Such an import does not disable the hooks or skip the image.
 
 Recording admission validates the requesting native TID, lifecycle generation and
 recording epoch under the registry lock before provisioning suppression backing

@@ -179,6 +179,9 @@ public:
   using SocketImportFailureForTest = bool (*)(CodeCache*, ImportId, size_t);
   static SocketImportFailureForTest exchangeSocketImportFailureForTest(
       SocketImportFailureForTest failure);
+  // Treats the libc original of hook_index as missing for later installs; -1 clears.
+  // Only HOOK_EPOLL_PWAIT2 is honored.
+  static int exchangeSocketMissingOriginalForTest(int hook_index);
   static int patch_socket_import_for_test(CodeCache* lib, ImportId import_id,
                                           void* hook, const char* name,
                                           bool retain_library = false);
