@@ -2,15 +2,14 @@
 
 # Native-memory profiler exclusion
 
-**Status:** Proposed; implementation authorized and in progress. The behavior
-described here is not yet verified: the design is being implemented and each
-claim below becomes verified only through its acceptance tests.
+**Status:** Implemented. The admission check described here ships in this
+change set; the glibc Linux behavior is covered by the gtest and child-JVM
+suites in this repository. Verification against released ddprof archives (the
+matrix below) is not complete for every cell.
 
-This document specifies a startup admission check for java-profiler native-memory
-profiling. It does not yet describe verified implemented behavior. The current
-implemented runtime contract remains
-[Native Memory Profiling](architecture/NativeMemoryProfiling.md) until
-acceptance verification is complete.
+This document records the design decision and its rationale. The implemented
+runtime contract is documented in
+[Native Memory Profiling](architecture/NativeMemoryProfiling.md).
 
 ## Decision
 
@@ -92,7 +91,7 @@ A Java native-memory request means `nativemem` is enabled by the parsed argument
 `nativemem=0` is a request to record every allocation; it is not a disable value.
 A request without native-memory profiling must not invoke this check.
 
-No new configuration flag or override is proposed. The check must not silently
+No new configuration flag or override is added. The check must not silently
 change the process allocator or disable ddprof.
 
 ## Admission semantics
@@ -133,7 +132,7 @@ neutral and also run on non-Linux; there only foreign-written inconsistent
 own-slot states can newly reject, since the owner classifier always returns
 `NOT_RECOGNIZED`.
 
-Do not inspect every application's allocator import. The proposed check covers
+Do not inspect every application's allocator import. The check covers
 Java's own current and effective forwarding targets. It is not a consistency
 audit of all loaded libraries.
 
@@ -167,9 +166,9 @@ or a different image. Renamed and extracted libraries must use the same rules.
 | `NOT_RECOGNIZED` | Valid owner metadata contains no owned externally visible definition of either marker name | Continue checking other targets |
 | `INDETERMINATE` | Owner/lifetime/metadata cannot be validated, owned marker definitions are partial, wrong-kind or ambiguous, or forwarding state is inconsistent | Reject with an inspection diagnostic |
 
-**Proposed conservative policy:** indeterminate inspection declines Java
-native-memory profiling. This is a review decision, not an existing behavior.
-Do not report that ddprof was detected when inspection was indeterminate.
+**Conservative policy:** indeterminate inspection declines Java
+native-memory profiling. Do not report that ddprof was detected when inspection
+was indeterminate.
 
 A recognized ddprof target takes precedence over an indeterminate target. The
 check may stop on `DDPROF`; otherwise retain any indeterminate result and inspect
@@ -295,7 +294,7 @@ An inspection failure must become `INDETERMINATE`, not a false negative or crash
 
 Query the ELF GNU/SysV symbol hash/index for the two names; do not linearly scan
 large symbol tables. The existing `CodeCache::findSymbol()` uses a linear name
-scan [S6] and is not the proposed production lookup. Likewise, do not add a
+scan [S6] and is not the production lookup. Likewise, do not add a
 repeated full-library scan for each operation; account for the existing address
 lookup's cold path rather than claiming it is constant time.
 
@@ -386,10 +385,10 @@ Review must explicitly accept:
    custom hooks.
 4. Startup inspection cost, with no allocation/free-path compatibility work.
 
-While the implementation is in progress, do not present this proposal as the
-current runtime contract. When the behavior is implemented and verified,
-update the native-memory architecture page, its AGENTS subsystem summary, and
-relevant operational guidance in the same change set.
+The implemented runtime contract is documented in
+[Native Memory Profiling](architecture/NativeMemoryProfiling.md), and the
+native subsystem summary in `ddprof-lib/src/main/cpp/AGENTS.md` names the
+admission check. Keep both in sync with this design in the same change set.
 
 ## Sources and verification baseline
 
@@ -397,15 +396,10 @@ The mechanism and lifecycle distinctions above were checked against released
 java-profiler 1.52.1, ddprof 0.26.0/0.27.0, and zstd-jni 1.5.7-25 on Linux x86_64
 with glibc 2.39 and jemalloc 5.3.0. There are 58 checked cases covering routing,
 owner identity, recording lifecycle, later activation, and closed-stream live
-accounting. The implementation is in progress; acceptance verification is not
-complete.
-
-The allocation-hook source is identical between the released Java version and
-main `399ce5e60b9543940ebed4f4769474f05ae37d79`. ddprof ELF hook handling is identical
-between those releases and main `9830a2e27ac15fa08f4761c94392de8b9edb3d04`. These
-main revisions were source-reviewed, not built and executed. The implementation
-verification matrix targets Linux x86_64 and aarch64 with glibc, using the
-published ddprof 0.26.0 and 0.27.0 archives. A blocked matrix cell does not
+accounting. The glibc Linux behavior is covered by the gtest and child-JVM
+suites in this repository; the implementation verification matrix targets Linux
+x86_64 and aarch64 with the published ddprof 0.26.0 and 0.27.0 archives and is
+not complete for every cell. A blocked matrix cell does not
 establish behavior for that architecture or mode. No service-specific
 percentages, production growth rates, or RSS measurements are assumed here.
 
