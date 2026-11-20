@@ -533,6 +533,7 @@ Timer exit settles the final window. Signals never access this mutex or timer st
 
 A changed population closes the preceding window before dispatch. Changed send
 results close it with its prior statistics before installing the new counts.
+The new counts open the next window. They do not close it in the same pass.
 With unchanged population, failures discovered later in a pass can leave
 pass-straddling units coalesced under the prior success ratio. For example,
 16/16 to 16/14 gives the straddling units about 12.5% attribution error. The writer
@@ -568,7 +569,9 @@ original fields; see [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 Timer backing capacity is accounted with allocation deltas and retracted on exit,
 not by replacing the shared `NM_WALLCLOCK` gauge. The tracker's slots and context sidecars
-are allocated lazily and accounted independently until tracker destruction.
+are allocated lazily and kept until tracker destruction. In-flight owner hooks can carry
+slot IDs across `stop()`, so this backing outlives the recording; it is charged to its own
+`NM_WALL_BLOCK_TRACKER` category because `NM_WALLCLOCK` reads 0 when idle.
 Block-slot allocation failure leaves suppression inactive; a later registration retries.
 Context boundaries skip clean owned-run writes and retain unowned context and epoch segments
 in both filtered and unfiltered stackful ASGCT recordings. Paired TaskBlock runs survive
@@ -579,9 +582,14 @@ A contended stripe or failed write keeps the slot retired with its original trac
 context, state and epoch weights. Registry drains retry these bounded retained slots.
 
 Recording stop flushes live and retired tails after signal and TaskBlock drains,
-before engine teardown. Full JFR thread tables recover capacity without discarding old
-thread references or requiring a dump; retries are bounded by registry and table capacity.
-Other failed flushes retain uncommitted segments; no owned TaskBlock duration is synthesized.
+before engine teardown. It holds the sampling-epoch mutex, so the wall timer cannot close
+an epoch during the flush. It waits for each exact stripe instead of trying it once.
+Full JFR thread tables recover capacity without discarding old thread references or
+requiring a dump; retries are bounded by registry and table capacity. Other failures,
+such as a retiring thread that has not yet published its TID, get three 1 ms backoffs.
+After the retries, stop discards the remaining tails under every stripe, adds their
+weight to `wc_unowned_tail_dropped_at_stop`, and continues teardown.
+No owned TaskBlock duration is synthesized.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.
@@ -820,9 +828,9 @@ In summary:
 ## Profiler Self-Accounting (`NativeMem`, `nativeMem.{h,cpp}`)
 
 `nativeMem.{h,cpp}` is **not** a profiling engine and does not observe
-application allocations. It tracks the profiler's **own** native memory in 14
+application allocations. It tracks the profiler's **own** native memory in 15
 categories, defined in `nativeMem.h`: `NM_CALLTRACE`, `NM_DICTIONARY`, ...,
-`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_CTIMER`, `NM_MISC`.
+`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_WALL_BLOCK_TRACKER`, `NM_CTIMER`, `NM_MISC`.
 
 - `record(cat, delta)` is a relaxed atomic add plus a lock-free CAS on the
   per-category peak. It is async-signal-safe, which matters because the
@@ -841,9 +849,9 @@ The engines above feed it: `PerfEvents` reports its tid-indexed event table
 (up to `pid_max × sizeof(PerfEvent)` bytes, two cache lines per slot; address
 space) and the per-thread ring pages (resident) as `NM_PERF`, `CTimer` reports
 its tid-indexed timer table (up to `pid_max × 4` bytes, `pid_max × sizeof(int)`;
-address space) as `NM_CTIMER`, `timerLoopCommon()` accounts its candidate-vector capacity under `NM_WALLCLOCK`, and
-`LivenessTracker` reports `NM_LIVENESS`. Lazy wall-tracker slots and retained-context
-chunks are separately charged to `NM_WALLCLOCK`; see
+address space) as `NM_CTIMER`, `timerLoopCommon()` accounts its candidate-vector capacity under `NM_WALLCLOCK`,
+`WallClockBlockTracker` reports its lazy slots and retained-context chunks as
+`NM_WALL_BLOCK_TRACKER`, and `LivenessTracker` reports `NM_LIVENESS`; see
 [ProfilerMemoryRequirements](../reference/ProfilerMemoryRequirements.md#9-native-owners-and-retained-context-storage).
 
 Unlike the other categories, the two tid-indexed tables are allocated address

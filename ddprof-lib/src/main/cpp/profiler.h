@@ -299,7 +299,9 @@ private:
   // Partial writes consume only accepted segments, retaining the original payload for retries.
   bool flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
                            bool preserve_cadence);
-  bool flushWallTail(ThreadFilter::SlotID slot_id, int tid);
+  bool flushWallTail(ThreadFilter::SlotID slot_id, int tid, bool blocking);
+  // Never fails: each retained tail is written, or its weight is counted as dropped.
+  void flushUnownedTailsAtStop();
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -355,7 +357,12 @@ private:
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
 
-  u32 getLockIndex(int tid);
+  u32 getLockIndex(int tid) {
+    u32 lock_index = tid;
+    lock_index ^= lock_index >> 8;
+    lock_index ^= lock_index >> 4;
+    return lock_index % CONCURRENCY_LEVEL;
+  }
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
                      int tid, StackContext *java_ctx, bool *truncated, int lock_index);
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
@@ -502,8 +509,8 @@ public:
       _calltrace_buffer[i] = NULL;
     }
     _thread_filter.setBlockTracker(&_block_tracker);
-    _block_tracker.setTailFlush([this](ThreadFilter::SlotID slot_id, int tid) {
-      return flushWallTail(slot_id, tid);
+    _block_tracker.setTailFlush([this](ThreadFilter::SlotID slot_id, int tid, bool blocking) {
+      return flushWallTail(slot_id, tid, blocking);
     });
     _call_trace_storage.registerLivenessChecker(
         [this](CallTraceIdSet& live) { _block_tracker.collectLiveTraceIds(live); },
@@ -525,6 +532,9 @@ public:
   using SampleWriteHook = bool (*)(u32, u64, Event*, const Context*, void*);
   SampleWriteHook sampleWriteHookForTest = nullptr;
   void* sampleWriteHookArgForTest = nullptr;
+  // Runs before each stop-time tail flush backoff sleep.
+  void (*stopTailBackoffHookForTest)(void*) = nullptr;
+  void* stopTailBackoffHookArgForTest = nullptr;
   RecordingLocks recordingLocksForTest() { return RecordingLocks(this); }
   u32 exchangeNumContextAttributesForTest(u32 count);
 #endif
@@ -800,6 +810,8 @@ public:
   // stripes_held requires every recording stripe, as held by chunk sealing.
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start,
                             bool stripes_held = false);
+  // Sampling-epoch mutex holder, no stripe held: drops closed epochs without segments.
+  void pruneClosedWallEpochs();
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   enum class TaskBlockRecordResult {

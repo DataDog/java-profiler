@@ -13,12 +13,7 @@
 
 class ProfilerTestAccessor {
 public:
-  static void prepareStop(Profiler& profiler, Engine* engine) {
-    profiler._cpu_engine = engine;
-    profiler._wall_engine = engine;
-    profiler._state.store(RUNNING, std::memory_order_release);
-  }
-  static bool running(Profiler& profiler) { return profiler.state() == RUNNING; }
+  static void flushUnownedTailsAtStop(Profiler& profiler) { profiler.flushUnownedTailsAtStop(); }
   static FlightRecorder& recorder(Profiler& profiler) { return profiler._jfr; }
   static u32 stripe(Profiler& profiler, int tid) { return profiler.getLockIndex(tid); }
 };
@@ -346,26 +341,7 @@ TEST_F(WallTailRecordingTest, StopFlushDoesNotSynthesizeAnOwnedTaskBlock) {
             tracker->slotForId(request.slot_id)->blockGeneration());
 }
 
-TEST_F(WallTailRecordingTest, StopFailureDoesNotTearDownEnginesOrLeaveRotationClosed) {
-  class StopObserver : public Engine {
-  public:
-    unsigned stops = 0;
-    void stop() override { ++stops; }
-  } engine;
-  captureWrites();
-  rejected_epoch = request.sampling_epoch_start;
-  ProfilerTestAccessor::prepareStop(*profiler, &engine);
-  Error error = profiler->stop();
-  ASSERT_TRUE(error);
-  EXPECT_STREQ("pending wall-clock tails could not be written; teardown skipped", error.message());
-  EXPECT_TRUE(ProfilerTestAccessor::running(*profiler));
-  EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
-  EXPECT_EQ(0U, engine.stops);
-  expectOriginRetained();
-}
-
-TEST_F(WallTailRecordingTest, StopCapacityRecoveryBudgetKeepsUnwrittenTailRetryable) {
-  Engine engine;
+TEST_F(WallTailRecordingTest, StopCapacityRecoveryBudgetCountsUnwrittenTailAsDropped) {
   FlightRecorder& recorder = ProfilerTestAccessor::recorder(*profiler);
   ScopedTailRecording output(recorder);
   constexpr int max_retries = 1 + ThreadFilter::kMaxThreads / ThreadIdTable::capacity();
@@ -390,17 +366,15 @@ TEST_F(WallTailRecordingTest, StopCapacityRecoveryBudgetKeepsUnwrittenTailRetrya
         stripe, state.tid, trace, static_cast<ExecutionEvent*>(event), *context));
     return false;
   };
-  ProfilerTestAccessor::prepareStop(*profiler, &engine);
-  Error error = profiler->stop();
-  ASSERT_TRUE(error);
+  const auto dropped = Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP);
+  ProfilerTestAccessor::flushUnownedTailsAtStop(*profiler);
   EXPECT_EQ(max_retries + 1, saturation.calls);
-  EXPECT_TRUE(ProfilerTestAccessor::running(*profiler));
-  EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
-  expectOriginRetained();
+  EXPECT_EQ(dropped + 1, Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP));
+  EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(request.slot_id)
+                     ->unowned_blocked_pending_weight.load());
   captureWrites();
   EXPECT_TRUE(profiler->threadFilter()->flushUnownedTails());
-  ASSERT_EQ(1U, writes.size());
-  expectWrite(writes[0], request.sampling_epoch_start, 1);
+  EXPECT_TRUE(writes.empty()) << "a tail counted as dropped must not be written later";
 }
 
 TEST_F(WallTailRecordingTest, ConcurrentRetirementAndStopFlushDoNotDuplicateTail) {

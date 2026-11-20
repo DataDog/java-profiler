@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 /** Checks real ASGCT stack resolution while an unowned blocked worker spans repeated dumps. */
 public class UnownedWallTailRotationTest extends AbstractProfilerTest {
   private static final String WORKER = "unowned-tail";
+  private static final String TAIL_RECORDED = "wc_unowned_blocked_tail_recorded";
   private static volatile long spinSink;
 
   @Override
@@ -82,6 +83,12 @@ public class UnownedWallTailRotationTest extends AbstractProfilerTest {
             assertWorkerStacksResolve(verifyEvents(snapshots[i], "datadog.MethodSample", false));
       }
       assertTrue(blockedSamples > 0, "No blocked worker samples across the dumps");
+      // Sampling epochs close at least once a second; the next periodic record of the
+      // still-blocked worker then writes the retained tail of the closed window.
+      awaitCounterAbove(
+          TAIL_RECORDED,
+          profiler.getDebugCounters().getOrDefault(TAIL_RECORDED, 0L),
+          workerFailure);
       release.countDown();
       // This is a runnable workload, not a timing-derived exact-weight oracle.
       Thread.sleep(300);
@@ -134,6 +141,21 @@ public class UnownedWallTailRotationTest extends AbstractProfilerTest {
       Thread.sleep(1);
     }
     throw new AssertionError("ASGCT unowned blocked sampling/suppression was not exercised");
+  }
+
+  /** Waits until a debug counter exceeds its baseline, failing if the worker failed first. */
+  private void awaitCounterAbove(
+      String counter, long baseline, AtomicReference<Throwable> workerFailure) throws Exception {
+    // Bounded generously for loaded CI hosts; the trigger needs about one epoch.
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    while (System.nanoTime() < deadline) {
+      assertNull(workerFailure.get(), "Worker failed while waiting for " + counter);
+      if (profiler.getDebugCounters().getOrDefault(counter, 0L) > baseline) {
+        return;
+      }
+      Thread.sleep(1);
+    }
+    throw new AssertionError(counter + " did not increase: the path was not exercised");
   }
 
   /**

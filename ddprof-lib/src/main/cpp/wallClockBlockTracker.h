@@ -22,11 +22,13 @@
 #include <cstdint>
 #include <functional>
 #include <utility>
+#include <vector>
 
 #include "arch.h"
 #include "taskBlockDiagnostics.h"
 #include "counters.h"
 #include "callTraceHashTable.h"
+#include "countingAllocator.h"
 #include "context.h"
 #include "threadFilter.h"
 #include "threadState.h"
@@ -327,7 +329,9 @@ public:
 #endif
     // Normal-thread callbacks; all recording stripes must exclude publication.
     void collectLiveTraceIds(CallTraceIdSet& live);
-    void collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const;
+    using EpochStarts = std::vector<u64, CountingAllocator<u64, NM_WALLCLOCK>>;
+    // Appends the epoch starts of root slots' pending segments, sorted and unique.
+    void collectUnownedEpochStarts(EpochStarts& epochs) const;
     void onUnpreservedTraceIds(const CallTraceIdSet& failed);
 
     // Returns nullptr if slot_id is out of range or storage is not yet
@@ -369,12 +373,13 @@ public:
     bool snapshotAndExitBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                                    u64 generation, BlockRunSnapshot* snapshot
                                    TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* origin = nullptr));
-    using TailFlush = std::function<bool(ThreadFilter::SlotID, int)>;
-    // Wired once before registry use; lock contention must retain the tail, not wait.
+    using TailFlush = std::function<bool(ThreadFilter::SlotID, int, bool)>;
+    // Wired once before registry use. Only the drained stop path passes blocking=true;
+    // elsewhere lock contention must retain the tail, not wait.
     // Profiler wires this during static initialization, before TLS keys are guaranteed ready.
     void setTailFlush(TailFlush flush) { _tail_flush = std::move(flush); }
     // Teardown retains failed writes; registry reclamation must wait for success.
-    bool flushUnownedTail(ThreadFilter::SlotID slot_id, int tid);
+    bool flushUnownedTail(ThreadFilter::SlotID slot_id, int tid, bool blocking = false);
     bool retireSlot(ThreadFilter::SlotID slot_id, int tid);
     // Generation-checked exits preserve retained unowned context and epoch segments.
     // Clears stale suppression state so a new/reused slot cannot inherit a
@@ -391,7 +396,8 @@ public:
     bool hasActiveBlockRun(ThreadFilter::SlotID slot_id) const;
     // Drops every pending unowned tail (trace id, weight and epoch segments);
     // owned runs keep their state. Callers exclude signal handlers.
-    void resetUnownedBlockedTails();
+    // Returns the pending weight it discarded.
+    u64 resetUnownedBlockedTails();
     // Timer- and signal-side owned-block decisions. All of them read the
     // complete suppression payload and reject it if slot identity or block
     // lifecycle changes before final validation.
@@ -448,8 +454,13 @@ private:
     bool ownedBlockGeneration(ThreadFilter* registry, const ThreadEntry& entry,
                               u64& generation, bool& already_sampled) const;
 
+    // Span and root ids, then each pair of 32-bit tags packed into one word.
+    static constexpr int kContextIdWords = 2;
+    static constexpr int kContextTagWords = static_cast<int>(DD_TAGS_CAPACITY / 2);
+    static constexpr int kContextWords = kContextIdWords + kContextTagWords;
+    static_assert(DD_TAGS_CAPACITY % 2 == 0, "Unowned context packs tags in pairs");
     struct alignas(DEFAULT_CACHE_LINE_SIZE) UnownedContextCell {
-        std::atomic<u64> words[7]{};
+        std::atomic<u64> words[kContextWords]{};
         std::atomic<u64> publication{0};
         struct {
             std::atomic<u64> epoch_start{0};
