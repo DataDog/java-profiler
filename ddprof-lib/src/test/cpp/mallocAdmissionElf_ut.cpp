@@ -960,6 +960,47 @@ TEST(MallocAdmissionElfSynthTest, GnuChainLimitBoundary) {
     EXPECT_EQ(beyond_limit.reason, CHAIN_LIMIT);
 }
 
+// A SysV chain of exactly MAX_HASH_CHAIN_STEPS entries that ends in a
+// terminator is a valid chain, not an exhausted one; one more entry is
+// beyond the cap and reports CHAIN_LIMIT.
+TEST(MallocAdmissionElfSynthTest, SysvChainLimitBoundary) {
+    auto classify_at = [&](uint32_t entries) {
+        SynthImage img;
+        img.startStringTable();
+        size_t filler = img.addString("filler");
+        size_t start = img.addString(SYNTH_START);
+        size_t stop = img.addString(SYNTH_STOP);
+        img.finishStringTable();
+
+        // One bucket: addSysvTable links symbols 1..entries in index order and
+        // stores the terminator 0 in the last visited symbol's chain word, so
+        // the walk visits exactly `entries` entries before reading the 0.
+        std::vector<SynthSymbol> syms;
+        syms.reserve((size_t)entries + 1);
+        syms.push_back({nullptr, 0, 0, 0, 0});
+        for (uint32_t i = 1; i < entries - 1; i++) {
+            syms.push_back({"filler", (uint32_t)filler, synthInfo(STB_GLOBAL, STT_OBJECT), STV_DEFAULT, 3});
+        }
+        syms.push_back({SYNTH_START, (uint32_t)start, synthInfo(STB_GLOBAL, STT_FUNC), STV_DEFAULT, 1});
+        syms.push_back({SYNTH_STOP, (uint32_t)stop, synthInfo(STB_GLOBAL, STT_FUNC), STV_DEFAULT, 2});
+        size_t symtab = img.addSymtab(syms);
+        SysvTableOffsets sysv = img.addSysvTable(syms, 1);
+        img.addDynamic({{DT_SYMTAB, symtab},
+                        {DT_STRTAB, img.strtabOffset()},
+                        {DT_STRSZ, img.strtabSize()},
+                        {DT_HASH, sysv.header}});
+        return img.classify();
+    };
+
+    AdmissionVerdict at_limit = classify_at(65536);
+    EXPECT_EQ(at_limit.outcome, DDPROF);
+    EXPECT_EQ(at_limit.reason, NONE);
+
+    AdmissionVerdict beyond_limit = classify_at(65537);
+    EXPECT_EQ(beyond_limit.outcome, INDETERMINATE);
+    EXPECT_EQ(beyond_limit.reason, CHAIN_LIMIT);
+}
+
 // A SysV chain that loops through readable filler symbols: bounded by
 // MAX_HASH_CHAIN_STEPS (nchain 100000 is above the cap), reports CHAIN_LIMIT.
 TEST(MallocAdmissionElfSynthTest, SysvCyclicChainIsChainLimit) {
