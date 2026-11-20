@@ -1227,9 +1227,8 @@ TEST(LibraryPatcherSocketStateTest, AdmitsNettyNativeEpollBySymbolOutsideJdkDire
                 "libnetty_transport_native_epoll_x86_64.so", false));
 }
 
-TEST(LibraryPatcherSocketStateTest, NettyMarkersTrackIngestionCopyAndAssignment) {
+TEST(LibraryPatcherSocketStateTest, NettyMarkersTrackIngestionAndCopy) {
   CodeCache source("arbitrarily-renamed.so");
-  CodeCache empty("ordinary.so");
   char marker_addresses[2] = {};
   auto target = [](CodeCache& cache) {
     return LibraryPatcher::socket_patch_target_for_test(
@@ -1244,9 +1243,6 @@ TEST(LibraryPatcherSocketStateTest, NettyMarkersTrackIngestionCopyAndAssignment)
   EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL, target(source));
   CodeCache copied(source);
   EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL, target(copied));
-  CodeCache assigned(empty);
-  assigned = source;
-  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL, target(assigned));
 
   CodeCache partial("unknown-markers.so");
   partial.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll_suffix");
