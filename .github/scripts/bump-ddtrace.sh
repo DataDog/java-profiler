@@ -80,6 +80,10 @@ git config user.email "java-profiler@datadoghq.com"
 git config user.name "Datadog Java Profiler"
 git add "$TOML" "$LOCK"
 git commit -m "Bump java-profiler (ddprof) to ${VERSION}"
+# A remote branch from a closed/failed previous run would reject a plain
+# push as non-fast-forward; the branch is bot-owned and version-scoped, so
+# recreate it.
+git push origin :"$BRANCH" 2>/dev/null || true
 git push origin "$BRANCH"
 
 PR_BODY=$(cat <<EOF

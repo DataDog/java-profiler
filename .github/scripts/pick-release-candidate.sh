@@ -20,24 +20,41 @@ set -euo pipefail
 
 NOTES_REF="refs/notes/certification"
 
-git fetch origin "$NOTES_REF:$NOTES_REF" 2>/dev/null || true
+# A missing notes ref on origin is normal (first certification); any other
+# fetch failure must fail loudly — a stale or absent local ref would make the
+# train skip a release that should run. '+' allows non-fast-forward notes
+# updates, which are routine for git notes.
+if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
+  if git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1; then
+    echo "ERROR: failed to fetch $NOTES_REF from origin" >&2
+    exit 1
+  fi
+  echo "No certification notes on origin yet"
+fi
 
-# Certified commits, newest (by commit date) first.
+# Certified commits known to this clone.
 CERTIFIED=$(git notes --ref=certification list 2>/dev/null | awk '{print $2}' | sort -u || true)
 if [ -z "$CERTIFIED" ]; then
   echo "none: no certified commits"
   exit 10
 fi
 
-NEWEST_CERTIFIED=$(for sha in $CERTIFIED; do
-  git show -s --format='%ct %H' "$sha" 2>/dev/null || true
-done | sort -rn | awk 'NR==1 {print $2}')
+# Newest certified commit by history position on main, not by committer
+# date: rebases and cherry-picks make dates unreliable, and same-second
+# commits make date ties arbitrary. The first certified commit in
+# rev-list --topo-order of origin/main is the tip-most one. Certified
+# commits unreachable from origin/main cannot be candidates.
+CERT_LIST=$(mktemp)
+printf '%s\n' "$CERTIFIED" > "$CERT_LIST"
+NEWEST_CERTIFIED=$(git rev-list origin/main --topo-order | grep -Fx -f "$CERT_LIST" | head -1)
+rm -f "$CERT_LIST"
 if [ -z "$NEWEST_CERTIFIED" ]; then
-  echo "none: certification notes point at unknown commits"
+  echo "none: no certified commit is reachable from origin/main"
   exit 10
 fi
 
-# Newest release tag, ordered like compute-version.sh orders versions.
+# Newest release tag, ordered with the same version sort compute-version.sh
+# uses.
 TAG=$(git tag --list 'v_*' | sed 's/^v_//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
 if [ -n "$TAG" ]; then
   TAG_COMMIT=$(git rev-parse --verify --quiet "v_${TAG}^{commit}" || true)

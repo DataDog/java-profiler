@@ -17,8 +17,10 @@ set -euo pipefail
 #   file-jira-issue.sh --summary <text> --body-file <path> [--priority <name>]
 #                      [--label <label> ...]
 #
-# Dedupe: when an unresolved issue in the project already has the exact
-# summary, a dedupe comment is added to it instead of creating a new issue.
+# Dedupe: when an unresolved issue in the project already matches the
+# summary text (JQL '~' is a text match, not exact equality), a dedupe
+# comment is added to it instead of creating a new issue. A failed dedupe
+# lookup only warns: a duplicate ticket beats a lost failure report.
 # Prints the created/updated issue key on stdout.
 
 usage() {
@@ -67,7 +69,10 @@ JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\
 JQL="project = $PROJECT AND summary ~ \"$JQL_SUMMARY\" AND resolution = Unresolved"
 EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
   --get --data-urlencode "jql=$JQL" --data 'maxResults=1&fields=key' \
-  "$API/search" | jq -r '.issues[0].key // empty') || EXISTING_KEY=""
+  "$API/search" | jq -r '.issues[0].key // empty') || {
+  echo "WARNING: dedupe lookup failed; creating a new issue" >&2
+  EXISTING_KEY=""
+}
 
 BODY=$(cat "$BODY_FILE")
 
