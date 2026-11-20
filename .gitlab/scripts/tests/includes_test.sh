@@ -51,4 +51,15 @@ assert_false "empty candidate is rejected" \
 assert_true "non-empty candidate with empty baseline is accepted" \
   is_new_snapshot_version "20260101.120000-5" ""
 
+# The memory gate pins the build deploy.sh published, never an empty selector.
+TMP_ENV=$(mktemp)
+assert_true "writes the published build as the memory gate candidate" \
+  write_memory_gate_candidate "1.54.0-my_branch-20261109.101500-3" "${TMP_ENV}"
+assert_true "the candidate is the build's snapshot selector" \
+  grep -qx "MEMORY_GATE_CANDIDATE=snapshot:1.54.0-my_branch-20261109.101500-3" "${TMP_ENV}"
+: > "${TMP_ENV}"
+assert_false "an empty build is rejected" write_memory_gate_candidate "" "${TMP_ENV}"
+assert_false "an empty build writes nothing" test -s "${TMP_ENV}"
+rm -f "${TMP_ENV}"
+
 exit "${FAILED}"

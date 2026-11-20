@@ -52,6 +52,14 @@ function is_new_snapshot_version() {
   [ -n "${candidate}" ] && [ "${candidate}" != "${baseline}" ]
 }
 
+# Writes the speedlab memory gate's candidate, the snapshot build deploy.sh just
+# published and verified, as a dotenv line to $2. $1 is that build's version in
+# maven-metadata.xml, e.g. 1.54.0-my_branch-20261109.101500-3.
+function write_memory_gate_candidate() {
+  [ -n "$1" ] || return 1
+  echo "MEMORY_GATE_CANDIDATE=snapshot:$1" > "$2"
+}
+
 function collect_artifacts() {
   local target=$1
   local artifact_type=$2  # "test" or "stresstest"
