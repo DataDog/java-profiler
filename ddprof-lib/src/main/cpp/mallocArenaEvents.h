@@ -1,0 +1,64 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef _MALLOCARENAEVENTS_H
+#define _MALLOCARENAEVENTS_H
+
+#include "arch.h"
+#include "buffers.h"
+#include "mallocArenaRule.h"
+
+// Payload of datadog.MallocArenaStats, one event per JFR chunk. Fields marked
+// -1 are unavailable; walk-derived counts are 0 unless walkStatus is "ok".
+struct MallocArenaStatsRecord {
+  int arenaCount;
+  long long nonMainArenaBytes;
+  long long freeHeldBytes;      // -1 without mallinfo2
+  long long largestArenaBytes;
+  int cpuQuotaMilli;            // <= 0 means no quota
+  long long memoryLimit;
+  long long maxHeap;            // -1 when unknown
+  const char* walkStatus;       // arenaWalkStatusName() of the walk
+};
+
+// Payload of datadog.MallocArenaWarning; derived values come from rule
+// evaluation. -1 marks an unavailable field; walk-derived counts are 0
+// unless walkStatus is "ok".
+struct MallocArenaWarningRecord {
+  int arenaCount;
+  int arenaLimit;
+  const char* arenaLimitSource;
+  int onlineCpus;
+  int cpuQuotaMilli;            // <= 0 means no quota
+  long long memoryLimit;
+  const char* memoryLimitSource;
+  long long maxHeap;            // -1 when unknown
+  long long freeHeldBytes;      // -1 without mallinfo2
+  long long nonMainArenaBytes;
+  int thresholdPercent;
+  int threadPrivateArenas;      // -1 without attached_threads
+  long long largestArenaBytes;
+  long long largestArenaMaxBytes;
+  const char* glibcVersion;
+  const char* layout;
+  const char* walkStatus;
+  MallocArenaEvaluation evaluation;
+};
+
+// Writers emit the complete event including its size prefix; the caller calls
+// flushIfNeeded(). Strings are inline, truncated to MAX_STRING_BYTES; null is "".
+namespace MallocArenaEvents {
+
+static const u32 MAX_STRING_BYTES = 32;
+
+void writeStats(Buffer* buf, u64 ticks, const MallocArenaStatsRecord& record);
+
+// state is MallocArenaWarningState::name() of the transition being reported.
+void writeWarning(Buffer* buf, u64 ticks, const char* state,
+                  const MallocArenaWarningRecord& record);
+
+}  // namespace MallocArenaEvents
+
+#endif  // _MALLOCARENAEVENTS_H

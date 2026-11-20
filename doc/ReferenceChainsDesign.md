@@ -86,23 +86,27 @@ The tracker separates root discovery from frontier expansion.
 3. Frontier expansion resolves a batch of tags and follows one bounded step from those objects.
 4. Rotation revisits selected expanded objects whose outgoing references can change.
 
-The edge budget and callback deadline stop admission after the current limit. A later
-pass continues frontier expansion from saved tags. JVMTI can still perform work before
-or between callbacks, so the deadline is not a hard real-time bound.
+Ordinary admission gates count new objects, not all callbacks. Selected traversal phases
+use callback deadlines, and later passes resume frontier expansion from saved tags.
+The deadlines do not establish a hard whole-pass pause bound.
 
-Root enumeration is not resumable through the JVMTI API. Aborting it and retrying starts
-again from the first root, which can prevent later roots from being examined. The current
-release therefore permits this phase to finish. For this release, a root-enumeration
-pause is acceptable if it is shorter than three seconds. Improvement is
-tracked in [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284).
+Root enumeration has no callback deadline or saved enumeration cursor. Admission exhaustion,
+an abort request, or a JVMTI error can still stop an attempt. Later attempts enumerate roots
+again rather than resuming a cursor; their interval also gates restarted searches.
+
+For this release, a root-enumeration pause is acceptable if it is shorter than three
+seconds. This is an acceptance threshold, not an enforced real-time bound. See
+[the implementation reference](architecture/LiveHeapReferenceChainsImplementation.md#root-discovery).
 
 ## Scheduling
 
-The JVMTI specification restricts functions that an agent can call from heap and GC callbacks. The profiler therefore does not run the heap walk from a GC callback. A GC callback only updates an atomic epoch.
+Reference-chain GC callbacks update epochs instead of executing heap walks. The liveness
+callback also records usage samples. The background thread calls the traversal functions;
+GC completion does not independently authorize a pass.
 
-The background thread calls the JVMTI heap functions. The JVM performs the required safepoint operation for those calls.
-
-The scheduler uses the GC epoch, a fallback cadence, leak signals, adaptive cost budgets, and candidate-search backoff. See [ReferenceChainsSignalsExplained.md](architecture/ReferenceChainsSignalsExplained.md).
+Starting a search requires a class/thread leak candidate, cleared safepoint-cost debt,
+and the root-enumeration interval. Running-search passes use cadence, CPU-cost debt, and
+candidate backoff. See [ReferenceChainsSignalsExplained.md](architecture/ReferenceChainsSignalsExplained.md).
 
 ## Correctness model
 

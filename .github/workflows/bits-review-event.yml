@@ -1,0 +1,17 @@
+name: Bits review event
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request:
+    types: [edited]
+
+permissions: {}
+
+jobs:
+  event:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record the review event
+        run: echo "Bits review event received; the gate publisher re-reads live GitHub state"

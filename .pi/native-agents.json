@@ -1,0 +1,9 @@
+{
+  "instructions": "ddprof-lib/src/main/cpp/AGENTS.md",
+  "dirs": [
+    "ddprof-lib/src/main/cpp",
+    "ddprof-lib/src/test/cpp",
+    "ddprof-lib/src/test/fuzz",
+    "malloc-shim/src"
+  ]
+}

@@ -17,7 +17,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-extern void run_with_cleanup(void* (*)(void*), void*, void (*)(void*), void*);
+extern void* run_with_cleanup(void* (*)(void*), void*, void (*)(void*), void*);
 
 namespace {
 

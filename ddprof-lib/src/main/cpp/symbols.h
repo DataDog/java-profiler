@@ -48,6 +48,11 @@ class Symbols {
     // Returns 0 if a table it needs lies outside them.
     static u64 imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias);
 #endif
+#ifdef __APPLE__
+    // Fingerprint of a loaded 64-bit Mach-O image: its LC_UUID, which the
+    // linker regenerates for every build. Returns 0 if the image has none.
+    static u64 imageFingerprint(const void* mach_header);
+#endif
 };
 
 class UnloadProtection {
@@ -66,12 +71,6 @@ class UnloadProtection {
 
     bool isValid() const { return _valid; }
     void* release();
-    // Returns true for valid pins; Linux also requires a matching live import-layout fingerprint.
-    // Validation enters the loader; callers must not hold a patch mutex.
-    bool importsAreCurrent(const CodeCache* cc) const;
-#ifdef UNIT_TEST
-    static void (*beforeImportWalkForTest)();
-#endif
 };
 
 #endif // _SYMBOLS_H

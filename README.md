@@ -497,7 +497,7 @@ Added support for remote symbolication to enable offloading symbol resolution fr
 
 **Key files**: `elfBuildId.h`, `elfBuildId.cpp`, `profiler.cpp`, `flightRecorder.cpp`
 
-For detailed documentation, see [doc/RemoteSymbolication.md](doc/plans/RemoteSymbolication.md).
+For detailed documentation, see [doc/reference/RemoteSymbolication.md](doc/reference/RemoteSymbolication.md).
 
 ## Contributing
 1. Fork the repository

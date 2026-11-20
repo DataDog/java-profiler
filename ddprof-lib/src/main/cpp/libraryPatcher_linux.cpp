@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <utility>
 #include <setjmp.h>
+#include <stddef.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -46,22 +47,29 @@ std::atomic<bool> LibraryPatcher::_socket_active{false};
 LibraryRef LibraryPatcher::_live_refs[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_live_count = 0;
 
-static bool has_entry_for(const PatchEntry* entries, int size, CodeCache* lib) {
+static int find_entry(const PatchEntry* entries, int size, CodeCache* lib) {
   for (int index = 0; index < size; index++) {
-    if (entries[index]._lib == lib) return true;
+    if (entries[index]._lib == lib) return index;
   }
-  return false;
+  return -1;
 }
+
+static bool has_entry_for(const PatchEntry* entries, int size, CodeCache* lib) {
+  return find_entry(entries, size, lib) >= 0;
+}
+
+// Per pthread_create entry, parallel to _patched_entries: whether the last pass
+// that looked found its library mapped. Guarded by _lock.
+static bool pthread_create_entry_mapped[MAX_NATIVE_LIBS];
+// The entries' libraries, sorted, for patch_pthread_create()'s collector.
+// Guarded by _lock.
+static CodeCache* pthread_create_entry_libs[MAX_NATIVE_LIBS];
 
 void LibraryPatcher::add_live_candidate(CodeCache* lib, int tag) {
   // Libraries without a known image base never had their imports parsed.
   if (lib->imageBase() == nullptr) return;
   // Every caller adds at most one candidate per CodeCache, and there are at
-  // most MAX_NATIVE_LIBS of them. unpatch_socket_functions() adds one per run
-  // of a library's entries, and a library has a single run: its slots are
-  // appended in one patch_socket_slots() call, and a later pass adds none,
-  // since its remaining slots were skipped as already present or because the
-  // table was full, which it stays until the entries are cleared.
+  // most MAX_NATIVE_LIBS of them.
   assert(_live_count < MAX_NATIVE_LIBS && "more live candidates than libraries");
   if (_live_count >= MAX_NATIVE_LIBS) return;
   _live_refs[_live_count++] = {(uintptr_t)lib->imageBase(), lib, tag};
@@ -313,10 +321,11 @@ void LibraryPatcher::remember_socket_library_unlocked(const void* image_base) {
   _socket_bases[slot] = image_base;
 }
 
-void LibraryPatcher::initialize() {
+void LibraryPatcher::initialize_persistent() {
   if (!_initialized.load(std::memory_order_acquire)) {
     _size = 0;
     // Release so the reset above is visible to any thread that sees the flag.
+    // Once set, pthread_create patches are persistent across stop/start cycles.
     _initialized.store(true, std::memory_order_release);
   }
 }
@@ -428,9 +437,11 @@ extern "C" {
 }
 #endif
 
+// Returns routine's result, which the wrappers hand to pthread_exit() so that a
+// pthread_join() on the thread still sees what the original routine returned.
 __attribute__((visibility("hidden"), noinline, no_stack_protector))
-void run_with_cleanup(func_start_routine routine, void* params,
-                      void (*cleanup_fn)(void*), void* cleanup_arg) {
+void* run_with_cleanup(func_start_routine routine, void* params,
+                       void (*cleanup_fn)(void*), void* cleanup_arg) {
 #ifdef __GLIBC__
     __pthread_unwind_buf_t cancel_buf = {};
     // With savemask=0, __sigsetjmp only writes __jmp_buf + int __mask_was_saved;
@@ -465,14 +476,19 @@ void run_with_cleanup(func_start_routine routine, void* params,
     // or enter as a new thread without a pending cancellation request.
     // The routine may restore cancellation only after this registration.
     __pthread_register_cancel(&cancel_buf);
-    routine(params);
+    void* result = routine(params);
     __pthread_unregister_cancel(&cancel_buf);
     cleanup_fn(cleanup_arg);
+    return result;
 #else
     // musl / non-glibc: pthread_cleanup_push uses the C/sigsetjmp form, no RAII.
+    // result is declared outside the push/pop block, which the macros open and
+    // close.
+    void* result;
     pthread_cleanup_push(cleanup_fn, cleanup_arg);
-    routine(params);
+    result = routine(params);
     pthread_cleanup_pop(1);
+    return result;
 #endif
 }
 
@@ -489,7 +505,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
 //   pthread_create_wrapped_for_test → start_routine_for_test
 //     → ProfiledThread::initCurrentThread()
 //     → run_with_cleanup(routine, params, cleanup_fn, cleanup_arg)
-//     → pthread_exit(nullptr)
+//     → pthread_exit(routine's result)
 struct WrapperTestCtx {
     func_start_routine routine;
     void* params;
@@ -509,8 +525,7 @@ static void* start_routine_for_test(void* raw) {
         delete ctx;
         ProfiledThread::initCurrentThread();
     }
-    run_with_cleanup(routine, params, cleanup_fn, cleanup_arg);
-    pthread_exit(nullptr);
+    pthread_exit(run_with_cleanup(routine, params, cleanup_fn, cleanup_arg));
     __builtin_unreachable();
 }
 
@@ -621,9 +636,9 @@ static void* start_routine_wrapper_spec(void* args) {
     // routine(params).  The push/pop pair lives inside run_with_cleanup so
     // that __pthread_unwind_buf_t (glibc) / struct __ptcb (musl) does not land
     // in this frame's DEOPT-corruption zone.
-    run_with_cleanup(routine, params, cleanup_unregister, nullptr);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
-    // by DEOPT PACKING; returning would jump to a garbage address.
+    // by DEOPT PACKING. The result goes from run_with_cleanup's return register
+    // into pthread_exit, never via this frame's stack, so pthread_join() sees it.
     // cleanup_unregister has already run via run_with_cleanup's normal return
     // path, so there is no registered cancel handler left.  The forced unwind
     // raised by pthread_exit walks this frame, but it is safe because no
@@ -632,7 +647,7 @@ static void* start_routine_wrapper_spec(void* args) {
     // without ever calling _Unwind_SetGR, avoiding the static-libgcc abort.
     // WARNING: adding any RAII local with a destructor between run_with_cleanup
     // and pthread_exit would reintroduce that crash.
-    pthread_exit(nullptr);
+    pthread_exit(run_with_cleanup(routine, params, cleanup_unregister, nullptr));
     __builtin_unreachable();
 }
 
@@ -689,8 +704,8 @@ static void* start_routine_wrapper(void* args) {
     // The pthread_exit forced unwind is safe here for the same reason as in
     // start_routine_wrapper_spec: no destructor-bearing local is live at this
     // call site, so __gxx_personality_v0 never calls _Unwind_SetGR.
-    run_with_cleanup(routine, params, cleanup_unregister, nullptr);
-    pthread_exit(nullptr);
+    // Pass the routine's result on, so pthread_join() sees it.
+    pthread_exit(run_with_cleanup(routine, params, cleanup_unregister, nullptr));
     __builtin_unreachable();
 }
 
@@ -712,8 +727,9 @@ static int pthread_create_hook(pthread_t* thread,
 }
 
 void LibraryPatcher::patch_libraries() {
-   // Profiler::start() has not run yet, so the hook would have nowhere to
-   // register new threads. Also the case in Gtest, which never initializes.
+   // Set by initialize_persistent() from Profiler::init() or start(). Not set
+   // in Gtest, which never initializes. The hook may run before the first
+   // start(); Profiler::registerThread() tolerates that.
    if (!_initialized.load(std::memory_order_acquire)) {
      return;
    }
@@ -741,15 +757,13 @@ bool LibraryPatcher::excluded_from_pthread_create_patch(CodeCache* lib) {
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   if (excluded_from_pthread_create_patch(lib)) return;
 
-  void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
-  if (pthread_create_location == nullptr) {
+  // Every slot (JUMP_SLOT and GLOB_DAT): a thread created through either must
+  // reach the hook.
+  size_t slot_count = lib->importCount(im_pthread_create);
+  if (slot_count == 0) {
     return;
   }
 
-  if (has_entry_for(_patched_entries, _size, lib)) { // Already patched
-    return;
-  }
-  TEST_LOG("Patching: %s", lib->name());
   void* func = (void*)pthread_create_hook;
 
 #ifdef __aarch64__
@@ -758,49 +772,148 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
     func = (void*)pthread_create_hook_spec;
   }
 #endif
-  _patched_entries[_size]._lib = lib;
-  _patched_entries[_size]._location = pthread_create_location;
-  _patched_entries[_size]._func = (void*)__atomic_load_n(pthread_create_location, __ATOMIC_RELAXED);
-  __atomic_store_n(pthread_create_location, func, __ATOMIC_RELAXED);
-  _size++;
+
+  // An entry outlives its library: a reload at the same base keeps its
+  // CodeCache and entry, but its fresh GOT holds the real pthread_create. The
+  // walk verified it is the same image, so the saved slots are valid.
+  int entry = find_entry(_patched_entries, _size, lib);
+  bool reload = entry >= 0;
+  if (reload) {
+    pthread_create_entry_mapped[entry] = true;  // this walk found it mapped
+  }
+  void* real = reinterpret_cast<void*>(&pthread_create);
+  // A reload's fresh GOT holds the real pthread_create or, with lazy binding,
+  // the library's own PLT stub. Anything else was hooked by someone after us:
+  // leave it rather than take their interception away.
+  auto should_patch = [&](void** slot) {
+    if (slot == nullptr) return false;
+    void* current = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    return current != func && (!reload || current == real || lib->contains(current));
+  };
+  bool any_patch = false;
+  for (size_t index = 0; index < slot_count && !any_patch; index++) {
+    any_patch = should_patch(lib->findImport(im_pthread_create, index));
+  }
+  if (!any_patch) {
+    return;
+  }
+  if (!reload) {
+    if (_size >= MAX_NATIVE_LIBS) {
+      TEST_LOG("Patching: entry table full, %s is not routed through the hook", lib->name());
+      return;
+    }
+    // Only _lib is meaningful for pthread_create entries: the slots are found
+    // again through lib->findImport().
+    pthread_create_entry_mapped[_size] = true;
+    _patched_entries[_size++]._lib = lib;
+  }
+  TEST_LOG("Patching: %s", lib->name());
+  for (size_t index = 0; index < slot_count; index++) {
+    void** slot = lib->findImport(im_pthread_create, index);
+    if (should_patch(slot)) {
+      __atomic_store_n(slot, func, __ATOMIC_RELAXED);
+    }
+  }
 }
 
-void LibraryPatcher::unpatch_libraries() {
-  TEST_LOG("Restore libraries");
-  // Entries of unloaded libraries are dropped without being written.
-  LiveLibraryWalk walk(
-      [](void*) {
-        for (int index = 0; index < _size; index++) {
-          add_live_candidate(_patched_entries[index]._lib, index);
-        }
-      },
-      nullptr,
-      [](CodeCache* lib, int index) {
-        __atomic_store_n(_patched_entries[index]._location, _patched_entries[index]._func, __ATOMIC_RELAXED);
-      });
-  _size = 0;
+void LibraryPatcher::unpatch_recording_hooks() {
+  // Only the socket patches are per recording; pthread_create and sigaction
+  // stay installed for the process lifetime.
+  // Native I/O owners stop first; an owner still active keeps its patches.
+  TEST_LOG("Unpatch libraries: only socket hooks");
+  unpatch_socket_functions_if_inactive();
 }
+
+// The loader's dlpi_adds/dlpi_subs, or false if it does not report them. Not
+// with _lock held: dl_iterate_phdr() takes dl_load_write_lock (lock order above).
+struct LoaderCounts {
+  unsigned long long adds;
+  unsigned long long subs;
+};
+
+static bool loader_counts(LoaderCounts* counts) {
+  struct Result { bool known; LoaderCounts counts; } result = {false, {0, 0}};
+  dl_iterate_phdr(
+      [](struct dl_phdr_info* info, size_t size, void* data) -> int {
+        Result* r = static_cast<Result*>(data);
+        if (size >= offsetof(struct dl_phdr_info, dlpi_subs) + sizeof(info->dlpi_subs)) {
+          r->known = true;
+          r->counts.adds = info->dlpi_adds;
+          r->counts.subs = info->dlpi_subs;
+        }
+        return 1;  // the counters are global; the first object is enough
+      },
+      &result);
+  *counts = result.counts;
+  return result.known;
+}
+
+// The loader counts as of the last pass that re-checked the unmapped (adds) or
+// all (subs) patched libraries; ~0 before the first. Written without _lock: each
+// store is a count read before its walk, so one that loses a race only causes a
+// re-check.
+static std::atomic<unsigned long long> pthread_create_checked_adds{~0ULL};
+static std::atomic<unsigned long long> pthread_create_checked_subs{~0ULL};
 
 void LibraryPatcher::patch_pthread_create() {
-  LiveLibraryWalk walk(
-      [](void* ctx) {
-        const CodeCacheArray& native_libs = *(const CodeCacheArray*)ctx;
-        int num_of_libs = native_libs.count();
-        for (int index = 0; index < num_of_libs; index++) {
-          CodeCache* lib = native_libs.at(index);
-          // Filter out everything patch_library_unlocked() would decline, so that
-          // libraries never patched are not re-checked for liveness on every pass.
-          if (lib != nullptr && lib->peekImport(im_pthread_create) != nullptr
-              && !excluded_from_pthread_create_patch(lib)
-              && !has_entry_for(_patched_entries, _size, lib)) {
-            add_live_candidate(lib, 0);
+  // A patched library needs another look only once reloaded (an unload, then
+  // a load, possibly in later passes): after an unload re-check them all and
+  // note the unmapped; after a load re-check only those. musl never unmaps.
+  enum Recheck { NONE, UNMAPPED, ALL };
+  LoaderCounts counts = {0, 0};
+  bool counts_known = !OS::isMusl() && loader_counts(&counts);
+  Recheck recheck = NONE;
+  if (!OS::isMusl()) {
+    if (!counts_known ||
+        counts.subs != pthread_create_checked_subs.load(std::memory_order_acquire)) {
+      recheck = ALL;
+    } else if (counts.adds != pthread_create_checked_adds.load(std::memory_order_acquire)) {
+      recheck = UNMAPPED;
+    }
+  }
+
+  struct Context { const CodeCacheArray* native_libs; Recheck recheck; };
+  Context ctx = {&Libraries::instance()->native_libs(), recheck};
+  {
+    LiveLibraryWalk walk(
+        [](void* data) {
+          const Context& c = *static_cast<const Context*>(data);
+          for (int index = 0; index < _size; index++) {
+            pthread_create_entry_libs[index] = _patched_entries[index]._lib;
+            if (c.recheck == ALL) {
+              // patch_library_unlocked() sets it again if this walk visits it.
+              pthread_create_entry_mapped[index] = false;
+            } else if (c.recheck == NONE || pthread_create_entry_mapped[index]) {
+              continue;
+            }
+            add_live_candidate(_patched_entries[index]._lib, 0);
           }
-        }
-      },
-      (void*)&Libraries::instance()->native_libs(),
-      [](CodeCache* lib, int) { patch_library_unlocked(lib); });
-  // The walk still holds _lock; unpatch_libraries() resets _size under that lock.
-  TEST_LOG("%d libraries patched", _size);
+          CodeCache** libs_end = pthread_create_entry_libs + _size;
+          std::sort(pthread_create_entry_libs, libs_end);
+          int num_of_libs = c.native_libs->count();
+          for (int index = 0; index < num_of_libs; index++) {
+            CodeCache* lib = c.native_libs->at(index);
+            // Filter out everything patch_library_unlocked() would decline, so
+            // that libraries never patched are not re-checked for liveness on
+            // every pass.
+            if (lib != nullptr && lib->peekImport(im_pthread_create) != nullptr
+                && !excluded_from_pthread_create_patch(lib)
+                && !std::binary_search(pthread_create_entry_libs, libs_end, lib)) {
+              add_live_candidate(lib, 0);
+            }
+          }
+        },
+        &ctx,
+        [](CodeCache* lib, int) { patch_library_unlocked(lib); });
+    // The walk holds _lock until it is destroyed, so _size is stable here.
+    TEST_LOG("%d libraries patched", _size);
+  }
+  if (recheck != NONE && counts_known) {
+    pthread_create_checked_adds.store(counts.adds, std::memory_order_release);
+    if (recheck == ALL) {
+      pthread_create_checked_subs.store(counts.subs, std::memory_order_release);
+    }
+  }
 }
 
 // Patch sigaction in all libraries to prevent any library from overwriting

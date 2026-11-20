@@ -92,7 +92,7 @@ Uses BCI_* values directly as event identifiers:
   ```cpp
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
-                    u64 *recorded_call_trace_id = nullptr);
+                    const u32 *recording_session = nullptr);
   ```
   Sibling entry points take the same `jint event_type`: `recordSampleDelegated()`,
   `recordJVMTISample()`, `recordDeferredSample()` and `recordExternalSample()`.
@@ -106,9 +106,7 @@ Uses BCI_* values directly as event identifiers:
 - **Call sites pass BCI_* values**:
   ```cpp
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0, &event);
-  Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, call_trace_id,
-                                     &event, &recorded_call_trace_id);
-  Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
+  Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event, &session);
   ```
 
 ## Type Conversion

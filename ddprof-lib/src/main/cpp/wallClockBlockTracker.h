@@ -396,6 +396,9 @@ public:
     // Context boundaries clear missed instrumentation exits, not paired TASK_BLOCK runs.
     void clearActiveBlockRun(ThreadFilter::SlotID slot_id);
     bool hasActiveBlockRun(ThreadFilter::SlotID slot_id) const;
+    // Drops every pending unowned tail (trace id, weight and epoch segments);
+    // owned runs keep their state. Callers exclude signal handlers.
+    void resetUnownedBlockedTails();
     // Timer- and signal-side owned-block decisions. All of them read the
     // complete suppression payload and reject it if slot identity or block
     // lifecycle changes before final validation.

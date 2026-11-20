@@ -1590,7 +1590,7 @@ TEST_F(LibraryPatcherSocketTransactionTest,
 }
 
 TEST_F(LibraryPatcherSocketTransactionTest,
-       NonSocketLiveWalkRestoresOnlyItsImportsWhileSocketOwnerStaysActive) {
+       RecordingUnpatchKeepsActiveSocketOwnerAndPersistentThreadHook) {
   ASSERT_EXIT({
     initializeFixture();
     if (HasFatalFailure()) _exit(1);
@@ -1604,13 +1604,14 @@ TEST_F(LibraryPatcherSocketTransactionTest,
     u64 fingerprint = libraries[0]->imageFingerprint();
     ASSERT_NE(0ULL, fingerprint);
 
-    LibraryPatcher::initialize();
+    LibraryPatcher::initialize_persistent();
     LibraryPatcher::patch_libraries();
-    EXPECT_NE(thread_original, __atomic_load_n(thread_slot, __ATOMIC_ACQUIRE));
+    void* thread_hook = __atomic_load_n(thread_slot, __ATOMIC_ACQUIRE);
+    EXPECT_NE(thread_original, thread_hook);
     expectImports(true, 1);
     EXPECT_TRUE(NativeSocketInterposer::instance()->active());
-    LibraryPatcher::unpatch_libraries();
-    EXPECT_EQ(thread_original, __atomic_load_n(thread_slot, __ATOMIC_ACQUIRE));
+    LibraryPatcher::unpatch_recording_hooks();
+    EXPECT_EQ(thread_hook, __atomic_load_n(thread_slot, __ATOMIC_ACQUIRE));
     EXPECT_EQ(fingerprint, libraries[0]->imageFingerprint());
     expectImports(true, 1);
     EXPECT_TRUE(NativeSocketInterposer::instance()->active());

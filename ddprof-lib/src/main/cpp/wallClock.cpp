@@ -331,7 +331,7 @@ static bool recordAsgctWallSampleForTest(
   Profiler* profiler = Profiler::instance();
   // Capture on the synchronous JNI thread, outside the signal handler and stripe.
   u64 trace_id = profiler->recordJVMTISample(
-      1, request.tid, dump_test.thread, BCI_WALL, event, true);
+      1, request.tid, dump_test.thread, BCI_WALL, event, true, profiler->recordingSession());
   if (trace_id == 0) return false;
   request.trace_epoch = profiler->recordingEpoch();
   return profiler->recordWallSample(nullptr, 1, trace_id, event, request).ordinary_recorded;
@@ -396,7 +396,7 @@ bool BaseWallClock::seedUnownedWallTailForTest(jthread thread, OSThreadState sta
   WallPrecheckResult first = prepareWallPrecheck(current, true, true, state);
   if (first.suppress || !first.transaction.unowned_sample) return false;
   u64 trace_id = profiler->recordJVMTISample(
-      1, current->tid(), thread, BCI_WALL, &event, true);
+      1, current->tid(), thread, BCI_WALL, &event, true, profiler->recordingSession());
   first.transaction.trace_epoch = profiler->recordingEpoch();
   if (trace_id == 0 || !profiler->recordWallSample(
       nullptr, 1, trace_id, &event, first.transaction).ordinary_recorded) return false;
