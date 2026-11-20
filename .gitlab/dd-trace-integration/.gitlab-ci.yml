@@ -138,11 +138,11 @@ prepare-patched-agent:
 
         if [ "${JDK_LIBC}" = "musl" ]; then
           case "${JAVA_VERSION}" in
-            8)  LIBERICA_VERSION="8u482+10" ;;
-            11) LIBERICA_VERSION="11.0.30+9" ;;
-            17) LIBERICA_VERSION="17.0.18+10" ;;
-            21) LIBERICA_VERSION="21.0.10+10" ;;
-            25) LIBERICA_VERSION="25.0.2+12" ;;
+            8)  LIBERICA_VERSION="8u514+5" ;;
+            11) LIBERICA_VERSION="11.0.33+11" ;;
+            17) LIBERICA_VERSION="17.0.21+11" ;;
+            21) LIBERICA_VERSION="21.0.13+11" ;;
+            25) LIBERICA_VERSION="25.0.5+11" ;;
             *) echo "ERROR: Unsupported JDK version: ${JAVA_VERSION}"; exit 1 ;;
           esac
           case "${JDK_ARCH}" in
@@ -158,11 +158,60 @@ prepare-patched-agent:
           DOWNLOAD_URL="https://api.adoptium.net/v3/binary/latest/${JAVA_VERSION}/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
         fi
 
+        # A broken egress hop returns a short non-gzip body that fails tar inside
+        # `curl | tar` and is lost with the pipe. Download to a file, log curl's
+        # outcome, and dump the body on failure; a non-tar failure also traces the
+        # redirect chain once.
+        dump_jdk_body() {
+          ls -l "$1" || true
+          sha256sum "$1" || true
+          head -c 256 "$1" | od -c | head -20 || true
+        }
+        save_body() {
+          if [ "$(wc -c < "$1")" -le 1048576 ]; then
+            cp "$1" "$2" || true
+          else
+            echo "failure body larger than 1MB, not saved"
+          fi
+        }
+
         MAX_RETRIES=3
         for attempt in $(seq 1 $MAX_RETRIES); do
-          if curl -Lk --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" | tar xzf - -C /opt/java; then
+          JDK_TARBALL=$(mktemp /tmp/jdk-download.XXXXXXXX) || exit 1
+          CURL_STATUS=0
+          CURL_META=$(curl -Lk --retry 3 --retry-delay 5 -o "${JDK_TARBALL}" \
+            -w 'http_code=%{http_code} effective_url=%{url_effective} redirects=%{num_redirects} size=%{size_download}' \
+            "${DOWNLOAD_URL}") || CURL_STATUS=$?
+          echo "JDK download attempt ${attempt}/${MAX_RETRIES}: curl exit=${CURL_STATUS} ${CURL_META}"
+          # A 4xx is deterministic (e.g. a mistyped pin): dump the body and stop
+          # instead of burning the remaining retries on the same error.
+          HTTP_CODE=${CURL_META%% *}
+          HTTP_CODE=${HTTP_CODE#http_code=}
+          if [ "${HTTP_CODE:-0}" -ge 400 ] 2>/dev/null && [ "${HTTP_CODE:-0}" -lt 500 ]; then
+            echo "JDK download failed with HTTP ${HTTP_CODE}:"
+            dump_jdk_body "${JDK_TARBALL}"
+            save_body "${JDK_TARBALL}" /tmp/jdk-download-failed.bin
+            rm -f "${JDK_TARBALL}"
+            exit 1
+          fi
+          # Extract into a per-attempt staging dir: a failed tar must not leave a
+          # partial JDK tree that a later attempt would extract over. An empty
+          # extraction is a failed attempt, not a success.
+          STAGE_DIR=$(mktemp -d /opt/java/.jdk-stage.XXXXXXXX) || exit 1
+          if [ "${CURL_STATUS}" -eq 0 ] && tar xzf "${JDK_TARBALL}" -C "${STAGE_DIR}" && [ -n "$(ls -A "${STAGE_DIR}")" ]; then
+            mv "${STAGE_DIR}"/* /opt/java/
+            rm -rf "${STAGE_DIR}" "${JDK_TARBALL}"
             break
           fi
+          rm -rf "${STAGE_DIR}"
+          echo "JDK download attempt ${attempt} produced a non-tar or empty body:"
+          dump_jdk_body "${JDK_TARBALL}"
+          save_body "${JDK_TARBALL}" "/tmp/jdk-download-failed-attempt${attempt}.bin"
+          if [ "$attempt" -eq 1 ]; then
+            echo "JDK download probe (${DOWNLOAD_URL}):"
+            curl -sIL --max-redirs 5 "${DOWNLOAD_URL}" 2>&1 | head -100 || true
+          fi
+          rm -f "${JDK_TARBALL}"
           [ $attempt -lt $MAX_RETRIES ] && sleep 10 || exit 1
         done
 
