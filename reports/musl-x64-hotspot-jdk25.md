@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk25
 
 ## musl-x64-hotspot-jdk25 - ❌ FAIL
 
-**Date:** 2026-11-20 12:37:20 EST
+**Date:** 2026-11-20 12:39:29 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 59 |
-| CPU Cores (end) | 62 |
+| CPU Cores (start) | 87 |
+| CPU Cores (end) | 87 |
 | Throttling | 0% |
 
 ### Test Results
@@ -34,40 +34,40 @@ title: musl-x64-hotspot-jdk25
 | Threads | 0 |
 | Allocations | 0 |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 658 |
-| Sample Rate | 10.97/sec |
-| Health Score | 686% |
-| Threads | 11 |
-| Allocations | 467 |
+| Status | FAIL |
+| CPU Samples | 0 |
+| Sample Rate | 0.00/sec |
+| Health Score | 0% |
+| Threads | 0 |
+| Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (3 unique values: 57-62 cores)</summary>
+<summary>CPU Timeline (1 unique values: 87-87 cores)</summary>
 
 ```
-1795195954 59
-1795195959 59
-1795195964 59
-1795195969 59
-1795195974 59
-1795195979 59
-1795195984 59
-1795195989 59
-1795195994 59
-1795195999 59
-1795196004 59
-1795196009 59
-1795196014 59
-1795196019 59
-1795196024 59
-1795196029 59
-1795196034 57
-1795196039 57
-1795196044 59
-1795196049 59
+1795196094 87
+1795196099 87
+1795196104 87
+1795196109 87
+1795196114 87
+1795196119 87
+1795196124 87
+1795196129 87
+1795196134 87
+1795196139 87
+1795196144 87
+1795196149 87
+1795196154 87
+1795196159 87
+1795196164 87
+1795196169 87
+1795196174 87
+1795196179 87
+1795196184 87
+1795196189 87
 ```
 </details>
 
