@@ -515,7 +515,7 @@ protected:
         // Per-control geometry: B5 leaf->barrier, B6 compiled anchor over
         // an unresolvable frame, B7 stub-blob anchor with a differing cursor,
         // B8 invalid anchor -> entry-frame redirect, B9 identical cursor,
-        // B10 SP-only cursor change.
+        // B10 SP-only cursor change, B11 compiled frame replaced by the anchor.
         uintptr_t saved_leaf_pc_slot = 0, saved_chain_pc = 0, saved_chain_fp = 0;
         Anchor saved_anchor{};
         if (control == OneMountedFrameB5) {
@@ -585,7 +585,7 @@ protected:
         frame.pc() = native_origin ? reinterpret_cast<uintptr_t>(native_origin_pc)
                                     : reinterpret_cast<uintptr_t>(pc(0));
         frame.sp() = reinterpret_cast<uintptr_t>(&stack[native_origin ? 0 : 2]);
-        // B/B2/B4/B5/B6 seed a valid frame pointer so the DWARF rows walk the
+        // B/B2/B4/B5/B6/B11 seed a valid frame pointer so the DWARF rows walk the
         // native prefix toward the mounted frames; B3/C must fall back.
         frame.fp() = control == NativeCallFallbackB3 || control == NativeCallNoAnchorC
                 ? 0 : native_origin ? reinterpret_cast<uintptr_t>(&stack[0])
