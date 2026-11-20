@@ -31,10 +31,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   private static final long BLOCKER = 0x7301L;
   private static final long UNBLOCKING_SPAN_ID = 0x7302L;
+  private static final int MAX_RECORD_ATTEMPTS = 5;
 
   @Test
   public void pairedApiEmitsTaskBlockWithStack() throws Exception {
-    assertTrue(runEligibleBlock(BLOCKER));
+    recordEligibleBlock(BLOCKER);
     stopProfiler();
 
     JfrEvents events = verifyEvents("datadog.TaskBlock");
@@ -56,7 +57,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
             () -> profiler.execute(action + "," + getProfilerCommand()));
     assertEquals("Profiler already started", rejected.getMessage());
 
-    assertTrue(runEligibleBlock(BLOCKER));
+    recordEligibleBlock(BLOCKER);
     stopProfiler();
 
     TaskBlockAssertions.assertContains(
@@ -65,17 +66,20 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   @Test
   public void invalidAndNestedTokensDoNotLoseCurrentOwner() throws Exception {
-    AtomicBoolean recorded = new AtomicBoolean();
-    runWorker(
+    recordWithinAttempts(
         () -> {
-          long token = profiler.beginTaskBlock();
-          assertTrue(token != 0);
-          assertEquals(0L, profiler.beginTaskBlock());
-          assertFalse(profiler.endTaskBlock(token + 1, BLOCKER, UNBLOCKING_SPAN_ID));
-          Thread.sleep(200L);
-          recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+          AtomicBoolean recorded = new AtomicBoolean();
+          runWorker(
+              () -> {
+                long token = profiler.beginTaskBlock();
+                assertTrue(token != 0);
+                assertEquals(0L, profiler.beginTaskBlock());
+                assertFalse(profiler.endTaskBlock(token + 1, BLOCKER, UNBLOCKING_SPAN_ID));
+                Thread.sleep(200L);
+                recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+              });
+          return recorded.get();
         });
-    assertTrue(recorded.get());
   }
 
   @ParameterizedTest
@@ -217,6 +221,13 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   @Test
   public void liveDumpPreservesTaskBlockAfterEntrySample() throws Exception {
+    recordWithinAttempts(this::runLiveDumpBlock);
+    stopProfiler();
+    TaskBlockAssertions.assertContainsStackTrace(verifyEvents("datadog.TaskBlock"));
+  }
+
+  /** Dumps while the interval is armed, then reports whether its completion was recorded. */
+  private boolean runLiveDumpBlock() throws Exception {
     CountDownLatch armed = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
@@ -250,10 +261,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     worker.join(5_000L);
     assertFalse(worker.isAlive());
     if (error.get() != null) throw new AssertionError(error.get());
-    assertTrue(recorded.get());
-
-    stopProfiler();
-    TaskBlockAssertions.assertContainsStackTrace(verifyEvents("datadog.TaskBlock"));
+    return recorded.get();
   }
 
   @Override
@@ -266,16 +274,40 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     return "wall=1ms,filter=,wallprecheck=true";
   }
 
-  private boolean runEligibleBlock(long blocker) throws Exception {
-    AtomicBoolean result = new AtomicBoolean();
-    runWorker(
+  private void recordEligibleBlock(long blocker) throws Exception {
+    recordWithinAttempts(
         () -> {
-          long token = profiler.beginTaskBlock();
-          if (token == 0) throw new AssertionError("interval was not armed");
-          Thread.sleep(200L);
-          result.set(profiler.endTaskBlock(token, blocker, UNBLOCKING_SPAN_ID));
+          AtomicBoolean result = new AtomicBoolean();
+          runWorker(
+              () -> {
+                long token = profiler.beginTaskBlock();
+                if (token == 0) throw new AssertionError("interval was not armed");
+                Thread.sleep(200L);
+                result.set(profiler.endTaskBlock(token, blocker, UNBLOCKING_SPAN_ID));
+              });
+          return result.get();
         });
-    return result.get();
+  }
+
+  /**
+   * Repeats an eligible interval until one is recorded. The recorder is best-effort under stripe
+   * contention, so each rejected attempt must add exactly one task_block_record_failed.
+   */
+  private void recordWithinAttempts(Attempt attempt) throws Exception {
+    long before = TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters());
+    int rejected = 0;
+    while (!attempt.recorded()) {
+      rejected++;
+      assertEquals(
+          rejected,
+          TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters()) - before,
+          "endTaskBlock rejection not accounted as task_block_record_failed");
+      assertTrue(rejected < MAX_RECORD_ATTEMPTS, "no recorded interval in bounded attempts");
+    }
+    assertEquals(
+        rejected,
+        TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters()) - before,
+        "recorded interval also counted a recorder failure");
   }
 
   private void runWorker(ThrowingRunnable action) throws Exception {
@@ -309,6 +341,11 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       Thread.sleep(10L);
     }
     throw new AssertionError("Counter did not increase: " + name);
+  }
+
+  @FunctionalInterface
+  private interface Attempt {
+    boolean recorded() throws Exception;
   }
 
   @FunctionalInterface
