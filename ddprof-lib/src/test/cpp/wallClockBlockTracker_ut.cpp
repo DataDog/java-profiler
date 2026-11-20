@@ -609,6 +609,26 @@ TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFiel
 
 // stop() releases the call-trace storage; deferred epoch segments must not
 // survive into the next recording's tail.
+// Offsets 128..255 of a chunk must index their own cell (clang 14 aarch64 -O0 sign-extended them).
+TEST_F(UnownedContextSidecarTest, UpperHalfChunkOffsetsUseTheirOwnCell) {
+    int lower = -1;
+    int upper = -1;
+    for (int tid = 20000; tid < 20000 + ThreadFilter::kChunkSize && upper < 0; ++tid) {
+        const int id = filter->registerThread(tid);
+        ASSERT_GE(id, 0);
+        const int offset = id & ThreadFilter::kChunkMask;
+        if (offset < 128 && lower < 0) lower = id;
+        if (offset >= 128 && lower >= 0 && (id >> ThreadFilter::kChunkShift) == (lower >> ThreadFilter::kChunkShift)) upper = id;
+    }
+    ASSERT_GE(lower, 0);
+    ASSERT_GE(upper, 0) << "Registration never reached the upper half of a chunk";
+    ASSERT_TRUE(tracker->deferUnownedWeight(upper, 128));
+    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+    ASSERT_EQ(1U, tracker->copyUnownedWeightSegments(upper, segments));
+    EXPECT_EQ(128ULL, segments[0].epoch_start);
+    EXPECT_EQ(0U, tracker->copyUnownedWeightSegments(lower, segments));
+}
+
 TEST_F(UnownedContextSidecarTest, ResetUnownedBlockedTailsClearsEpochSegments) {
     const int id = filter->registerThread(9011);
     ASSERT_GE(id, 0);
