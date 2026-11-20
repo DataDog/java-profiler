@@ -56,12 +56,15 @@ if ! git rev-parse --verify --quiet origin/main >/dev/null; then
   echo "ERROR: origin/main is not available" >&2
   exit 1
 fi
-# First certified commit in rev-list --topo-order of origin/main. awk exits
-# 0 on both match and no-match, so the empty case falls through to the
-# guard below instead of tripping set -e / pipefail on a grep or head exit.
+# First certified commit in rev-list --topo-order of origin/main. rev-list
+# writes to a file so its failure aborts under set -e instead of silently
+# feeding awk an empty stream; awk exits 0 on both match and no-match, so
+# the empty case falls through to the guard below.
+MAIN_ORDER=$(mktemp)
+git rev-list origin/main --topo-order > "$MAIN_ORDER"
 NEWEST_CERTIFIED=$(awk 'NR==FNR { want[$1] = 1; next } $1 in want { print; exit }' \
-  "$CERT_LIST" <(git rev-list origin/main --topo-order))
-rm -f "$CERT_LIST"
+  "$CERT_LIST" "$MAIN_ORDER")
+rm -f "$CERT_LIST" "$MAIN_ORDER"
 if [ -z "$NEWEST_CERTIFIED" ]; then
   echo "none: no certified commit is reachable from origin/main"
   exit 10

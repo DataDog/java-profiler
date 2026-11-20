@@ -87,7 +87,7 @@ git commit -m "Bump java-profiler (ddprof) to ${VERSION}"
 if ! git push origin "$BRANCH" 2>"$WORK_DIR/push.err"; then
   if grep -qE 'non-fast-forward|fetch first' "$WORK_DIR/push.err"; then
     git push origin :"$BRANCH" || { echo "ERROR: failed to recreate $BRANCH" >&2; exit 1; }
-    git push origin "$BRANCH"
+    git push origin "$BRANCH" || { echo "ERROR: failed to push recreated $BRANCH" >&2; exit 1; }
   else
     cat "$WORK_DIR/push.err" >&2
     exit 1
