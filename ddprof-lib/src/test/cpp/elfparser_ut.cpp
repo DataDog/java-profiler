@@ -1283,6 +1283,48 @@ TEST_F(ElfTest, pltFallbackRejectsInvalidRelaent) {
     EXPECT_EQ(fp.second, fp.first);
 }
 
+// DT_PLTREL == DT_REL makes DT_JMPREL a table of 16-byte Elf64_Rel: the second entry
+// (no import in the first) is only reached at that stride, not at an Elf64_Rela one.
+TEST_F(ElfTest, pltRelRelUsesElf64RelStride) {
+    auto dyn = pltDyn();
+    dyn[5] = {DT_PLTRELSZ, {2 * sizeof(Elf64_Rel)}};
+    dyn[6] = {DT_PLTREL, {DT_REL}};
+    dyn.push_back({DT_NULL, {0}});
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    Elf64_Rel rel[2];
+    memset(rel, 0, sizeof(rel));
+    rel[1].r_offset = PLT_SLOT;
+    rel[1].r_info = ELF64_R_INFO(1, 0);
+    memcpy(image + DYN_JMPREL_OFF, rel, sizeof(rel));
+
+    EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
+
+    const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+    rel[1].r_offset = PLT_SLOT + 2 * sizeof(void*);
+    memcpy(image + DYN_JMPREL_OFF, rel, sizeof(rel));
+    EXPECT_NE(before, 0u);
+    EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image)), before);
+}
+
+// Without DT_PLTREL and DT_RELAENT, the DT_JMPREL stride falls back to DT_RELENT;
+// a stride of 0 would skip the table.
+TEST_F(ElfTest, pltFallbackUsesRelent) {
+    auto dyn = pltDyn();
+    dyn.pop_back();  // drop DT_PLTREL
+    dyn.push_back({DT_RELENT, {sizeof(Elf64_Rela)}});
+    dyn.push_back({DT_NULL, {0}});
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
+    auto fp = fingerprintAroundSlotMove(image);
+    EXPECT_NE(fp.first, 0u);
+    EXPECT_NE(fp.second, fp.first);
+}
+
 // .dynsym loads without any relocation table or entry-size tag, as in the vDSO.
 TEST_F(ElfTest, dynamicSymbolsWithoutRelocationTags) {
     constexpr uint64_t HASH_OFF = 0xc00;
