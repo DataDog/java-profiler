@@ -40,8 +40,6 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   private static final String[] FIELDS = {TAG_1, TAG_2, TAG_3};
   private static final String METHOD_SAMPLE = "datadog.MethodSample";
   private static volatile long spinSink;
-  // About 20 worker fallback cycles (10 observations) at wall=1ms, sampled in half the passes.
-  private static final long QUIET_ORIGIN_HOLD_MS = 400;
   private final AtomicLong workerNativeTid = new AtomicLong(-1);
 
   @Override
@@ -142,13 +140,8 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
                 .matched;
       }
       assertTrue(blockedSamples > 0, "No original worker samples across retained dumps");
-      String readiness = null;
-      if (!controlledTail()) {
-        // Unfiltered counters also move for other unowned threads, and dump/parse threads change
-        // the pool, closing epochs. A quiet A hold lets a full worker fallback cycle coalesce.
-        Thread.sleep(QUIET_ORIGIN_HOLD_MS);
-        readiness = awaitWorkerWeightedTailReady(workerFailure);
-      }
+      // The dumps closed epochs; wait for a weighted segment in the new one.
+      String readiness = controlledTail() ? null : awaitWorkerWeightedTailReady(workerFailure);
       releaseA.countDown();
       if (readiness != null) System.out.println(readiness);
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter B");
@@ -649,7 +642,6 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
 
   /** Old A weight may survive the span boundary: allow its drain, never new B growth. */
   private long assertPendingDoesNotGrow(long previous) {
-    if (!WallClockBlockTrackerTestSupport.available()) return previous;
     long pending =
         WallClockBlockTrackerTestSupport.pendingUnownedWeight((int) workerNativeTid.get());
     assertTrue(
@@ -659,52 +651,37 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   }
 
   /**
-   * Waits for a weighted pending tail: the worker's own slot in DEBUG, process-wide counters in
-   * release. Release must not dump: a dump rotates away the samples the caller's oracle reads and
-   * closes the epoch, splitting pending weight into unit segments that no weighted tail can show.
-   * Returns the readiness line for the caller to print after the transition: unfiltered, test
-   * output threads join the sampled pool, and a pool change closes the epoch.
+   * Waits for the worker's own slot to hold a weighted single-epoch tail. Must not dump: a dump
+   * closes the epoch, splitting pending weight into unit segments. Returns the readiness line for
+   * the caller to print after the transition, since unfiltered output threads change the pool.
    */
   private String awaitWorkerWeightedTailReady(AtomicReference<Throwable> failure) throws Exception {
-    Map<String, Long> base = profiler.getDebugCounters();
-    long suppressionTarget = -1;
+    int tid = (int) workerNativeTid.get();
+    assertTrue(tid > 0, "Worker did not publish its actual native TID");
+    long pending = 0;
+    long segment = 0;
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
     while (System.nanoTime() < deadline) {
       assertNull(failure.get(), "Worker failed before required weighted tail");
-      if (WallClockBlockTrackerTestSupport.available()) {
-        int tid = (int) workerNativeTid.get();
-        assertTrue(tid > 0, "Worker did not publish its actual native TID");
-        long pending = WallClockBlockTrackerTestSupport.pendingUnownedWeight(tid);
-        long segment = WallClockBlockTrackerTestSupport.maxPendingUnownedSegmentWeight(tid);
-        if (pending >= 2 && pending <= 5 && segment >= 2) {
-          return "Attribution worker tail ready: tid="
-              + tid
-              + ", pending="
-              + pending
-              + ", segment="
-              + segment;
-        }
-      } else {
-        // Ambient owners can move these counters too; the callers' oracles still require
-        // target-worker samples. A periodic record consumes earlier suppression: need two after.
-        Map<String, Long> counters = profiler.getDebugCounters();
-        long suppressed = counters.getOrDefault("wc_unowned_blocked_suppressed", 0L);
-        if (suppressionTarget < 0
-            && counters.getOrDefault("wc_unowned_blocked_recorded", 0L)
-                > base.getOrDefault("wc_unowned_blocked_recorded", 0L)) {
-          suppressionTarget = suppressed + 2;
-        }
-        if (suppressionTarget >= 0 && suppressed >= suppressionTarget) {
-          return "Attribution suppression ready: suppressed="
-              + suppressed
-              + ", target="
-              + suppressionTarget;
-        }
+      pending = WallClockBlockTrackerTestSupport.pendingUnownedWeight(tid);
+      segment = WallClockBlockTrackerTestSupport.maxPendingUnownedSegmentWeight(tid);
+      if (pending >= 2 && pending <= 5 && segment >= 2) {
+        return "Attribution worker tail ready: tid="
+            + tid
+            + ", pending="
+            + pending
+            + ", segment="
+            + segment;
       }
       Thread.sleep(1);
     }
     throw new AssertionError(
-        "No target-worker weighted-tail coverage within bounded readiness wait");
+        "Worker tid="
+            + tid
+            + " never held a weighted tail within 10s: last pending="
+            + pending
+            + ", segment="
+            + segment);
   }
 
   private static boolean isWorker(JfrEvent sample) {
@@ -735,7 +712,6 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   /** Keeps the acting thread in A until its real pending tail is ready for the transition. */
   private void blockedOriginA(CountDownLatch release) throws InterruptedException {
     release.await();
-    if (!WallClockBlockTrackerTestSupport.available()) return;
     int tid = WallClockBlockTrackerTestSupport.currentTid();
     assertEquals(workerNativeTid.get(), (long) tid, "Readiness must run on the actual A worker");
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);

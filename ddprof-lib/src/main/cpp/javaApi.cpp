@@ -1539,8 +1539,9 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
 
-#ifdef DEBUG
 // Read-only test observations: no registry allocation, state seeding or admission changes.
+// The tid and pending-weight reads are compiled in release too, so release tests can gate
+// on the target worker's own slot instead of process-wide counters.
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_currentTid0(
     JNIEnv* env, jclass unused) {
@@ -1548,15 +1549,33 @@ Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_currentTi
   return current != nullptr ? current->tid() : -1;
 }
 
-static WallClockBlockTracker::BlockState* existingWallBlockStateForTest(
-    jint tid, ThreadFilter::SlotID* out_slot_id = nullptr) {
+static WallClockBlockTracker::PendingUnownedWeight pendingUnownedWeightForTest(jint tid) {
+  if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return {};
+  Profiler* profiler = Profiler::instance();
+  return profiler->blockTracker()->pendingUnownedWeightForTest(*profiler->threadFilter(), tid);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_pendingUnownedWeight0(
+    JNIEnv* env, jclass unused, jint tid) {
+  return static_cast<jlong>(pendingUnownedWeightForTest(tid).total);
+}
+
+// A deferred wire event contains one epoch segment, not the aggregate pending weight.
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_maxPendingUnownedSegmentWeight0(
+    JNIEnv* env, jclass unused, jint tid) {
+  return static_cast<jlong>(pendingUnownedWeightForTest(tid).max_segment);
+}
+
+#ifdef DEBUG
+static WallClockBlockTracker::BlockState* existingWallBlockStateForTest(jint tid) {
   if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return nullptr;
   Profiler* profiler = Profiler::instance();
   ThreadFilter* registry = profiler->threadFilter();
   ThreadEntry entry{};
   entry.tid = tid;
   if (!registry->lookupThreadEntry(entry, registry->recordingEpoch())) return nullptr;
-  if (out_slot_id != nullptr) *out_slot_id = entry.slot_id;
   return profiler->blockTracker()->slotForId(entry.slot_id);
 }
 
@@ -1568,30 +1587,6 @@ Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_hasRegist
   ThreadEntry entry{};
   entry.tid = tid;
   return registry->lookupThreadEntry(entry, registry->recordingEpoch()) ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_pendingUnownedWeight0(
-    JNIEnv* env, jclass unused, jint tid) {
-  WallClockBlockTracker::BlockState* state = existingWallBlockStateForTest(tid);
-  return state != nullptr
-      ? static_cast<jlong>(state->unowned_blocked_pending_weight.load(std::memory_order_acquire))
-      : 0;
-}
-
-// A deferred wire event contains one epoch segment, not the aggregate pending weight.
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_maxPendingUnownedSegmentWeight0(
-    JNIEnv* env, jclass unused, jint tid) {
-  ThreadFilter::SlotID slot_id = -1;
-  if (existingWallBlockStateForTest(tid, &slot_id) == nullptr) return 0;
-  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
-  size_t count = Profiler::instance()->blockTracker()->copyUnownedWeightSegments(slot_id, segments);
-  u64 maximum = 0;
-  for (size_t i = 0; i < count; i++) {
-    if (segments[i].weight > maximum) maximum = segments[i].weight;
-  }
-  return static_cast<jlong>(maximum);
 }
 
 extern "C" DLLEXPORT jboolean JNICALL

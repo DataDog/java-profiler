@@ -574,6 +574,31 @@ TEST_F(UnownedContextSidecarTest, EpochStartsSkipSegmentsWithoutCachedRoot) {
     EXPECT_EQ((WallClockBlockTracker::EpochStarts{kRootedEpoch}), epochs);
 }
 
+TEST_F(UnownedContextSidecarTest, PendingUnownedWeightForTestResolvesRegisteredTid) {
+    const int target = filter->registerThread(7820);
+    const int other = filter->registerThread(7821);
+    ASSERT_GE(target, 0);
+    ASSERT_GE(other, 0);
+    ASSERT_TRUE(tracker->deferUnownedWeight(target, 0x1000));
+    ASSERT_TRUE(tracker->deferUnownedWeight(target, 0x1000));
+    ASSERT_TRUE(tracker->deferUnownedWeight(target, 0x2000));
+    ASSERT_TRUE(tracker->deferUnownedWeight(other, 0x1000));
+    // Aggregate and largest single-epoch segment differ, so neither can stand in for the other.
+    auto weight = tracker->pendingUnownedWeightForTest(*filter, 7820);
+    EXPECT_EQ(3ULL, weight.total);
+    EXPECT_EQ(2ULL, weight.max_segment);
+    weight = tracker->pendingUnownedWeightForTest(*filter, 7821);
+    EXPECT_EQ(1ULL, weight.total);
+    EXPECT_EQ(1ULL, weight.max_segment);
+    weight = tracker->pendingUnownedWeightForTest(*filter, 7899);
+    EXPECT_EQ(0ULL, weight.total);
+    EXPECT_EQ(0ULL, weight.max_segment);
+    filter->unregisterThread(target, 7820);
+    weight = tracker->pendingUnownedWeightForTest(*filter, 7820);
+    EXPECT_EQ(0ULL, weight.total);
+    EXPECT_EQ(0ULL, weight.max_segment);
+}
+
 TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFields) {
     for (int transition = 0; transition < 3; ++transition) {
         SCOPED_TRACE(transition);
