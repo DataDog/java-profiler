@@ -105,8 +105,10 @@ jobs:
         run: |
           # Only runs created after this moment can be the dispatch we just
           # triggered; an older workflow_dispatch run for the same candidate
-          # (a retried train, a manual pin) must not be picked up.
-          DISPATCH_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # (a retried train, a manual pin) is at least a week older. The
+          # 5-minute margin absorbs clock skew between the runner and
+          # GitHub's server-side createdAt stamp.
+          DISPATCH_TS=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
           gh workflow run release-validated.yml \
             --ref "$CANDIDATE" \
             -f release_type=minor \
