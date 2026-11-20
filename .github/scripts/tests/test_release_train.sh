@@ -93,9 +93,9 @@ run_pick() {
 
 C1=$(commit c1)
 
+CERTIFY_RC=0
 CONTENT=$(git fetch origin refs/notes/certification:refs/notes/certification 2>/dev/null; \
-  "$CERTIFY" "$C1" --run-url "https://example/run/1" --suite "suite-a" 2>"$TEMP_DIR/certify.err") \
-  && CERTIFY_RC=0 || CERTIFY_RC=$?
+  "$CERTIFY" "$C1" --run-url "https://example/run/1" --suite "suite-a" 2>"$TEMP_DIR/certify.err") || CERTIFY_RC=$?
 assert_eq "$CERTIFY_RC" "0" "certify.sh succeeds on first run"
 assert_contains "$CONTENT" "$C1" "certify.sh output names the commit"
 assert_contains "$CONTENT" "https://example/run/1" "certify.sh output carries the run URL"
@@ -107,15 +107,19 @@ NOTED=$(git notes --ref=certification list | awk '{print $2}' | head -1)
 assert_eq "$NOTED" "$C1" "certify.sh pushes a note on the commit"
 
 # Idempotent re-run: exit 0, exactly one note
-"$CERTIFY" "$C1" --run-url "https://example/run/2" >/dev/null 2>>"$TEMP_DIR/certify.err" \
-  && CERTIFY_RC2=0 || CERTIFY_RC2=$?
+if "$CERTIFY" "$C1" --run-url "https://example/run/2" >/dev/null 2>>"$TEMP_DIR/certify.err"; then
+  CERTIFY_RC2=0
+else
+  CERTIFY_RC2=$?
+fi
 assert_eq "$CERTIFY_RC2" "0" "certify.sh re-run is a no-op success"
 N_NOTES=$(git notes --ref=certification list | wc -l | tr -d ' ')
 assert_eq "$N_NOTES" "1" "certify.sh re-run does not duplicate the note"
 
 # Invalid commit fails
-"$CERTIFY" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --run-url x >/dev/null 2>&1 \
-  && fail "certify.sh must reject an unknown commit" || true
+if "$CERTIFY" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --run-url x >/dev/null 2>&1; then
+  fail "certify.sh must reject an unknown commit"
+fi
 pass
 
 # --- pick-release-candidate.sh -----------------------------------------------
