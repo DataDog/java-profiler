@@ -320,6 +320,12 @@ public abstract class AbstractProfilerTest {
         failure.addSuppressed(t);
       }
     }
+    // Cleared here, not in stopProfiler(): a test may stop and resume with its context still
+    // applied, but the context must not leak into the next test on this thread. profiler is
+    // null when a @BeforeEach assumption aborted before the recording started.
+    if (profiler != null) {
+      profiler.clearTraceContext();
+    }
     // Bookkeeping must run even when after() or stopProfiler() failed: skipping it
     // leaks recordings and hides sanitizer errors detected during the test.
     dumpSanitizerLogs();
@@ -411,7 +417,6 @@ public abstract class AbstractProfilerTest {
   public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
-      profiler.clearTraceContext();
       stopped = true;
       checkConfig();
     }
