@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-20 05:39:02 EST
+**Date:** 2026-11-20 05:51:35 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 543 |
-| Sample Rate | 9.05/sec |
-| Health Score | 566% |
+| CPU Samples | 144 |
+| Sample Rate | 2.40/sec |
+| Health Score | 150% |
 | Threads | 9 |
-| Allocations | 341 |
+| Allocations | 57 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 891 |
-| Sample Rate | 14.85/sec |
-| Health Score | 928% |
-| Threads | 10 |
-| Allocations | 468 |
+| CPU Samples | 13 |
+| Sample Rate | 0.22/sec |
+| Health Score | 14% |
+| Threads | 6 |
+| Allocations | 14 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 50-50 cores)</summary>
 
 ```
-1795170774 50
-1795170779 50
-1795170784 50
-1795170789 50
-1795170794 50
-1795170799 50
-1795170804 50
-1795170809 50
-1795170814 50
-1795170819 50
-1795170824 50
-1795170829 50
-1795170834 50
-1795170839 50
-1795170844 50
-1795170849 50
-1795170854 50
-1795170859 50
-1795170864 50
-1795170869 50
+1795171589 50
+1795171594 50
+1795171599 50
+1795171604 50
+1795171609 50
+1795171614 50
+1795171619 50
+1795171624 50
+1795171629 50
+1795171634 50
+1795171639 50
+1795171644 50
+1795171649 50
+1795171654 50
+1795171659 50
+1795171664 50
+1795171669 50
+1795171674 50
+1795171679 50
+1795171684 50
 ```
 </details>
 
