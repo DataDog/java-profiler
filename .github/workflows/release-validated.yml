@@ -34,6 +34,12 @@ on:
         type: string
         default: ""
 
+# Two dispatches for the same candidate (a retried train while the first
+# release run is still in flight) must not race the tag creation.
+concurrency:
+  group: release-${{ inputs.source_sha || github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   actions: read
@@ -78,7 +84,8 @@ jobs:
 
           # Branch validation. Major/minor require the release commit to be
           # on main; the pinned-commit path (train dispatch or a manual
-          # --commit selection) satisfies that via source_sha.
+          # --commit selection) satisfies that via source_sha. merge-base
+          # exits 1 for "not an ancestor" and >1 for errors; only 1 rejects.
           if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
             if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
               echo "::error::${TYPE^} can only be performed from 'release/*' branches (format: release/X.Y._)"
@@ -86,12 +93,24 @@ jobs:
             fi
             # A pinned source_sha must be on the release branch, not an
             # unrelated branch's commit.
-            if ! git merge-base --is-ancestor "$TARGET_SHA" "origin/$BRANCH" 2>/dev/null; then
+            RC=0
+            git merge-base --is-ancestor "$TARGET_SHA" "origin/$BRANCH" || RC=$?
+            if [ "$RC" -gt 1 ]; then
+              echo "::error::Cannot resolve $BRANCH to check the release commit" >&2
+              exit 1
+            fi
+            if [ "$RC" -ne 0 ]; then
               echo "::error::Patch/retag release commit must be an ancestor of $BRANCH"
               exit 1
             fi
           else
-            if ! git merge-base --is-ancestor "$TARGET_SHA" origin/main 2>/dev/null; then
+            RC=0
+            git merge-base --is-ancestor "$TARGET_SHA" origin/main || RC=$?
+            if [ "$RC" -gt 1 ]; then
+              echo "::error::Cannot resolve origin/main to check the release commit" >&2
+              exit 1
+            fi
+            if [ "$RC" -ne 0 ]; then
               echo "::error::Major or minor releases can only be performed from 'main' branch or a commit on main"
               exit 1
             fi

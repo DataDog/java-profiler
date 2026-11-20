@@ -82,7 +82,7 @@ fi
 # An open PR from a previous run means the bump is already tracked; a lookup
 # failure must abort — treating it as "no PR" could delete an existing PR's
 # head branch in the recreate fallback below.
-EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
 if [ -n "$EXISTING" ]; then
   echo "Open bump PR already exists: #$EXISTING"
   exit 0
