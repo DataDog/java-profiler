@@ -103,12 +103,6 @@ jobs:
           CANDIDATE: ${{ steps.candidate.outputs.candidate }}
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
-          # Only runs created after this moment can be the dispatch we just
-          # triggered; an older workflow_dispatch run for the same candidate
-          # (a retried train, a manual pin) is at least a week older. The
-          # 5-minute margin absorbs clock skew between the runner and
-          # GitHub's server-side createdAt stamp.
-          DISPATCH_TS=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
           gh workflow run release-validated.yml \
             --ref "$CANDIDATE" \
             -f release_type=minor \
@@ -117,15 +111,16 @@ jobs:
             -f request_id="release-train-${GITHUB_RUN_ID}" \
             -f source_sha="$CANDIDATE"
 
-          # Find the dispatched run: newest workflow_dispatch run whose head
-          # SHA is the candidate and that was created after the dispatch.
-          # The run record can lag the accepted dispatch by minutes; retry
-          # instead of failing over an unwatched release.
+          # Find the dispatched run. request_id is unique to this dispatch
+          # and appears in the run's title, so the lookup cannot pick up a
+          # concurrent manual dispatch or a retried train pinned to the same
+          # candidate. The run record can lag the accepted dispatch by
+          # minutes; retry instead of failing over an unwatched release.
           RUN_ID=""
           for attempt in $(seq 1 60); do
             RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
-              --limit 20 --json databaseId,headSha,createdAt \
-              --jq "[.[] | select(.headSha == \"$CANDIDATE\" and .createdAt >= \"$DISPATCH_TS\")] | sort_by(.createdAt) | last | .databaseId")
+              --limit 20 --json databaseId,headSha,displayTitle \
+              --jq "[.[] | select(.headSha == \"$CANDIDATE\" and (.displayTitle | endswith(\"release-train-${GITHUB_RUN_ID}\")))] | last | .databaseId")
             [ -n "$RUN_ID" ] && break
             echo "attempt $attempt/60: dispatched run not listed yet, retrying in 15s"
             sleep 15
