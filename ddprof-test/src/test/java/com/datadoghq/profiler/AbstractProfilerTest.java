@@ -170,14 +170,17 @@ public abstract class AbstractProfilerTest {
 
   private static List<Path> getSanitizerLogPaths() {
     List<Path> paths = new ArrayList<>();
-    String pid = String.valueOf(getPid());
     for (String envVar : new String[] {"ASAN_OPTIONS", "UBSAN_OPTIONS"}) {
       String options = System.getenv(envVar);
       if (options == null) continue;
       for (String opt : options.split(":")) {
         if (opt.startsWith("log_path=")) {
           String template = opt.substring("log_path=".length());
-          String path = template.replace("%p", pid);
+          // Resolve the pid lazily, only for a log_path template: ManagementFactory's first
+          // use initializes InetAddress.getLocalHost(), which pays a full DNS timeout on
+          // hosts whose hostname does not resolve (observed ~5s per uncached call, and the
+          // Gradle test worker's security manager defeats the lookup cache).
+          String path = template.replace("%p", String.valueOf(getPid()));
           paths.add(Paths.get(path));
         }
       }
@@ -642,25 +645,56 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void verifyStackTraces(Path recording, String eventType, String... patterns) {
-    Set<String> unmatched = new HashSet<>(Arrays.asList(patterns));
+    Set<String> unmatched = unmatchedPatterns(patterns);
     long[] cumulatedEvents = {0};
     try {
       // Stops parsing once every pattern has matched, instead of materializing every event of
       // eventType up front — see JfrEvents.load(Path, Predicate, Predicate).
-      JfrEvents.load(
-          recording,
-          eventType::equals,
-          item -> {
-            cumulatedEvents[0]++;
-            String stackTrace = item.getStackTraceString();
-            unmatched.removeIf(stackTrace::contains);
-            return unmatched.isEmpty();
-          });
+      JfrEvents.load(recording, eventType::equals, stackPatternMatcher(unmatched, cumulatedEvents));
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t, t);
     }
     assertNotEquals(0, cumulatedEvents[0], "no events found for " + eventType);
     assertTrue(unmatched.isEmpty(), "couldn't find " + eventType + " with " + unmatched);
+  }
+
+  /**
+   * Non-failing variant of {@link #verifyStackTraces}: {@code true} iff the recording holds at
+   * least one {@code eventType} event whose stack trace contains every pattern. Lets callers probe
+   * a recording (e.g. to size a workload adaptively) without failing the test; callers that assert
+   * use {@link #verifyStackTraces}.
+   */
+  protected boolean tryVerifyStackTraces(Path recording, String eventType, String... patterns) {
+    Set<String> unmatched = unmatchedPatterns(patterns);
+    long[] cumulatedEvents = {0};
+    try {
+      JfrEvents.load(recording, eventType::equals, stackPatternMatcher(unmatched, cumulatedEvents));
+    } catch (Error e) {
+      throw e;
+    } catch (Throwable t) {
+      // A parse/IO failure is not an under-sampled dump: propagate it so the caller fails
+      // with the real cause instead of retrying a broken recording as if it were empty.
+      throw new RuntimeException("Failed to read recording " + recording, t);
+    }
+    return cumulatedEvents[0] > 0 && unmatched.isEmpty();
+  }
+
+  private static Set<String> unmatchedPatterns(String... patterns) {
+    return new HashSet<>(Arrays.asList(patterns));
+  }
+
+  /**
+   * Per-event consumer for {@link JfrEvents#load(Path, Predicate, Predicate)}: resolves the event's
+   * stack trace, drops it from {@code unmatched} when it contains a still-unmatched pattern, counts
+   * processed events, and stops parsing once every pattern has matched.
+   */
+  private static Predicate<JfrEvent> stackPatternMatcher(Set<String> unmatched, long[] eventCount) {
+    return item -> {
+      eventCount[0]++;
+      String stackTrace = item.getStackTraceString();
+      unmatched.removeIf(stackTrace::contains);
+      return unmatched.isEmpty();
+    };
   }
 
   /**

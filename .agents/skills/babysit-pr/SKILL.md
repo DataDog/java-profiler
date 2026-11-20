@@ -19,11 +19,12 @@ written by it, and it dies with the session — its stop summary names what rema
 3. **Quiescence.** Confirm in chat that the session is done editing the PR branch
    before launching; a babysitter racing this session's commits corrupts both.
 4. **Worker.** Write `{"pr": <n>, "status": "running",
-   "bits_triggered": [...], "replied": [...]}` to `build/babysit-pr-<n>.json`
+   "bits_triggered": [...], "bits_rerequested": [...], "replied": [...]}` to `build/babysit-pr-<n>.json`
    **in the
    session's checkout** — no `branch`, no `scope`: the session copy is the
    dedupe record only and must not match the shape the pre-push guard gates
-   on, or the session's own pushes would be refused. Seed `bits_triggered`
+   on, or the session's own pushes would be refused. Seed `bits_triggered`,
+   `bits_rerequested`
    and `replied` from the previous marker's lists
    (the stopped copy, or the running copy when relaunching a dead run) when one
    exists (both records survive restarts), and pass the
@@ -32,9 +33,10 @@ written by it, and it dies with the session — its stop summary names what rema
    on start,
    write the worker's own marker `{"pr": <n>, "branch": "<local-branch>",
    "status": "running", "scope": [], "bits_triggered": [...],
+   "bits_rerequested": [...],
    "replied": [...]}` (seed `replied` from the previous marker too) **in its own
    worktree's `build/`**, seeded with the
-   list, and maintain it
+   lists, and maintain it
    there (the pushing checkout is the one the pre-push guard reads; write it
    atomically — temp file plus rename — so a concurrent guard read never sees a
    truncated JSON it would skip). The `branch` field names the local branch of
@@ -60,7 +62,7 @@ written by it, and it dies with the session — its stop summary names what rema
    session's work queue: the session fixes them itself — they are its files — or
    records them as follow-up tasks; a flagged P1/P2 is never dropped silently.
    Update the session's own dedupe marker copy to
-   `{"pr": <n>, "status": "stopped", "bits_triggered": [...], "replied": [...]}`
+   `{"pr": <n>, "status": "stopped", "bits_triggered": [...], "bits_rerequested": [...], "replied": [...]}`
    — the lists carried from the worker's stop report, so the next launch seeds its
    marker from them. The worker never writes this checkout.
    When the session is closing, say that babysitting stops with it.
@@ -123,7 +125,8 @@ the babysitter is.
 At stop, edit that same comment: flip the footer to
 `✅ *stopped <UTC time> · <one-line outcome: CI green / cap reached / blocked on X>*`
 and close the run log with the stop summary — commits pushed, findings
-flagged, threads left for the author, `bits_triggered` heads.
+flagged, threads left for the author, `bits_triggered` and `bits_rerequested`
+heads.
 
 1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
    `$GH pr view <n> --json state,reviews,comments,url,mergeable,mergeStateStatus`;
@@ -159,6 +162,17 @@ flagged, threads left for the author, `bits_triggered` heads.
    do not re-trigger Bits: the comment is required (same once-per-head record).
    Never post it in the PR body or an inline review thread; a plain top-level
    comment is what the bot reads.
+   A failing gate on a fully refuted review unblocks the same way. When
+   `bits-review/head` is failing on the current head, the latest Bits review is
+   from a trusted Bits bot (step 4's typing), every finding in it is refuted and
+   already replied to per step 4, and this run pushes no fix for that review,
+   post one `@datadog review` top-level comment to request a re-review of the
+   same head: a newer valid result on the same SHA replaces the FAIL (see
+   BitsReviewRedReviewRunbook.md). Record the head in the marker's
+   `bits_rerequested` list — seeded and reported like `bits_triggered` — once
+   per head, ever: if the fresh review fails again, do not re-request, flag the
+   head in the stop report. Skip the request when a fix push is coming: the new
+   head re-reviews on its own.
 2. **CI red.** One flaky rerun per underlying target: for GitHub Actions,
    one `$GH run rerun --failed <run>` per workflow RUN, not per failing check —
    when two checks fail in the same run, a second rerun is refused while the
@@ -290,12 +304,14 @@ flagged, threads left for the author, `bits_triggered` heads.
    stop earlier when any cap is hit
    (at most two fix-push rounds and two hours per run). Update the worker
    worktree's marker to `{"pr": <n>, "status": "stopped", "bits_triggered": [...],
-   "replied": [...]}` — keeping the triggered-heads and replied lists, which the
+   "bits_rerequested": [...], "replied": [...]}` — keeping the triggered,
+   rerequested and replied lists, which the
    stop report names so the session's
    handback copy carries it — remove the
    `dog-sitter` label, and edit the status comment per the run-signals rule:
    flip the status line to the stopped form and append the stop summary (commits
-   pushed, findings flagged, threads left, `bits_triggered` heads) under the
+   pushed, findings flagged, threads left, `bits_triggered` and
+   `bits_rerequested` heads) under the
    separator. The session
    updates its own dedupe copy at handback — the worker never writes the session's
    checkout.
