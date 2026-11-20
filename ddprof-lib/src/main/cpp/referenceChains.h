@@ -114,7 +114,9 @@ private:
   int _hop_cap;
   int _budget;
 
-  // Larger one-shot edge budget for the search's root-seeded first pass.
+  // Edge budget for each root/stack-ref enumeration (first pass and every interval-gated repeat),
+  // much larger than _budget: an exhausted budget truncates the enumeration. Expansion passes
+  // spend _effective_budget instead.
   int _first_pass_budget;
 
   // Wall-clock TTL for one search; <= 0 disables the cutoff.
@@ -334,9 +336,8 @@ private:
                 "batch descriptor capacity must track the batch upper bound");
   ReferenceChainBatchSet _batch_set;
 
-  // Search lifecycle state. _search_started distinguishes a search's first pass (seed
-  // FollowReferences from the heap roots) from a resumed pass (expand the persisted frontier, see
-  // expandFrontier()) - runPass() below.
+  // Search lifecycle state. _search_started marks a search's first pass, which always enumerates
+  // roots; later passes enumerate only once the interval elapses (see runPass()).
   bool _search_started;
   volatile u8 _search_state;
 
@@ -488,10 +489,8 @@ private:
     }
   } _priority_expand_set;
 
-  // A static holder richly referenced from the running graph is EXCLUDED from the static-anchor tier forever once its
-  // frontier entry is chain-attached (first admitted via a non-root path, or demoted by
-  // improveChain) - maybeUpgradeRootAttachedRootKind() refuses entries with parent_tag != 0 by
-  // design, so collectStaticFieldAnchorsForRotation() (parent_tag == 0 filter) can never select it.
+  // Holders reparented under a chain, or reached by a static edge while chain-attached, are queued
+  // for one first descend walk whatever their class shape (bounded by the FIFO and per-class caps).
   struct AtRiskAnchor {
     jlong tag;
     u32 klass_id;
@@ -511,22 +510,28 @@ private:
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
 
-  // Index of root-attached STATIC_FIELD/JNI_GLOBAL frontier entries, so
-  // collectStaticFieldAnchorsForRotation() iterates O(anchors) instead of scanning the full
-  // frontier table O(frontier_size).
+  // Index durable roots and local roots with unknown or container-shaped classes. Transient-only
+  // entries classified NON_CONTAINER are pruned during anchor compaction; durable roots are retained.
+  // Rotation walks this index instead of scanning the full frontier table.
   std::vector<jlong> _static_anchor_index;
 
-  // Parallel to _static_anchor_index: the OWN class tag of each anchor object (the class of the
-  // static field's VALUE, not the holder class).
-  std::vector<jlong> _static_anchor_own_class_tags;
-
-  // Dedup companion for _static_anchor_index (O(1) membership; the population is ~28k on a real JVM
-  // - see addToStaticAnchorIndex()'s own comment).
-  std::unordered_set<jlong> _static_anchor_index_tags;
+  // Runtime class tag and root durability per indexed holder, keyed by frontier tag. A later
+  // callback upgrades an unresolved class tag, while durable observations supersede transient ones.
+  struct StaticAnchorIndexEntry {
+    jlong class_tag;
+    bool transient_root;
+  };
+  std::unordered_map<jlong, StaticAnchorIndexEntry> _static_anchor_index_class_tags;
 
   // Shape of a class as an anchor candidate: does the class implement java/util/Collection or
-  // java/util/Map (directly or via superclasses/ interfaces)?
-  enum class AnchorClassShape : u8 { UNKNOWN = 0, CONTAINER = 1, NON_CONTAINER = 2 };
+  // java/util/Map (directly or via superclasses/interfaces)? UNKNOWN_TRUNCATED preserves a bounded
+  // hierarchy walk that ended before all distinct classes could be examined.
+  enum class AnchorClassShape : u8 {
+    UNKNOWN = 0,
+    CONTAINER = 1,
+    NON_CONTAINER = 2,
+    UNKNOWN_TRUNCATED = 3
+  };
 
   // class tag -> AnchorClassShape, process-lifetime (class tags are never reused - the shared
   // class-tag allocator is deliberately not reset by restartSearch()).
@@ -1046,13 +1051,8 @@ private:
   // attribution.
   std::vector<jlong> collectStaleRootKindEntriesForRotation(int max_count);
 
-  // Bounded rotating re-expansion for stale mutable fields: expandFrontier() observes an object's
-  // outgoing references exactly once (on the FollowReferences call that marks it EXPANDED) and
-  // never revisits it, so a field that is later reassigned to point at a different object - e.g.
-  // HashMap.table on resize - has its new value permanently unobserved once the map itself is
-  // EXPANDED; the old table array's own frontier entry eventually resolves to a dead object via
-  // GetObjectsWithTags and gets silently cleared with zero children, orphaning everything only
-  // reachable through the *current* table.
+  // Bounded rotating re-expansion for stale mutable fields. expandFrontier() marks each entry
+  // EXPANDED once, so this rotation is needed to observe replacements such as HashMap.table resize.
   std::vector<jlong> collectStaleExpandedEntriesForRotation(int max_count);
 
   // Bounded rotating re-expansion targeting the accumulation point of a klass LivenessTracker has
@@ -1076,29 +1076,34 @@ private:
                                  int *edges_admitted, bool *truncated,
                                  bool *frontier_cap_hit, u64 *safepoint_ns);
 
-  // Selects root-attached durable entries with a tiered cursor: leak-tagged, fresh, container-shaped,
-  // then everything else fairly.
+  // Selects durable roots and indexed collections (including reparented ones)
+  // with a tiered cursor: leak-tagged, fresh, containers, then other roots fairly.
   std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
+  bool isSelectableAnchor(const FrontierEntry &entry, jlong own_class_tag) const;
   // At-risk anchor push: deduped, capped, and quota-limited per klass.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   // Add `tag` to _static_anchor_index if its root_kind is a durable anchor-tier kind (STATIC_FIELD
   // or JNI_GLOBAL).
   void addToStaticAnchorIndex(jlong tag, jlong own_class_tag, u8 root_kind);
+  // Shared deduplicated index insertion for durable roots and local holders.
+  void indexAnchorForRotation(jlong tag, jlong own_class_tag,
+                              bool transient_root);
+  // Appends the drained at-risk anchors to the combined static-anchor selection, skipping tags the
+  // persistent tiers already selected. Static: no member state, exposed for the dedup test.
+  static void mergeAtRiskAnchors(std::vector<jlong> &selection,
+                                 const std::vector<AtRiskAnchor> &drained);
 
-  // True iff `klass` implements java/util/Collection or java/util/Map, directly or transitively
-  // (superclass chain + interfaces of every visited class, depth-bounded, visited set to survive
-  // interface diamonds).
-  bool classImplementsContainerOrMap(jvmtiEnv *jvmti, JNIEnv *jni,
-                                     jclass klass);
+  // Classifies whether `klass` implements java/util/Collection or java/util/Map. The bounded walk
+  // returns UNKNOWN_TRUNCATED rather than treating unvisited hierarchy nodes as a completed miss.
+  AnchorClassShape classImplementsContainerOrMap(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                 jclass klass);
 
   // Resolve _collection_iface_class_tag/_map_iface_class_tag once; returns false if the interfaces
   // cannot be resolved yet (leaves them at -1 so the next call retries).
   bool resolveContainerInterfaceTags(jvmtiEnv *jvmti, JNIEnv *jni);
 
-  // Lazy shape reconciliation for the anchor index: scans _static_anchor_own_class_tags for class
-  // tags not yet in _class_shape_cache, resolves up to ANCHOR_SHAPE_RECONCILE_BUDGET of them per
-  // pass via one GetObjectsWithTags call (class objects are tagged with their class tags) and
-  // classifies each.
+  // Reconcile up to ANCHOR_SHAPE_RECONCILE_BUDGET unknown anchor classes per pass.
+  // One GetObjectsWithTags call resolves their class objects before classification.
   void reconcileAnchorClassShapes(jvmtiEnv *jvmti, JNIEnv *jni);
   // Pops up to max_count AtRiskAnchor entries off _static_anchor_fifo's front into `out`
   // (appending), decrementing each popped entry's class occupancy in
@@ -1418,13 +1423,9 @@ public:
   // frontierTable()'s existing rationale.
   ClassTagTable *classTags() { return &_class_tags; }
 
-  // Runs exactly one bounded BFS pass and returns. The first call for a search seeds
-  // FollowReferences from the heap roots (heap_filter=0, klass=NULL, initial_object=NULL - see this
-  // method's own comment in referenceChains.cpp for why FollowReferences rather than
-  // IterateThroughHeap); every later call resumes from the persisted frontier via expandFrontier()
-  // instead of re-walking from the roots (see expandFrontier()'s comment for why - re-walking from
-  // the roots each call would re-traverse the entire already-discovered subgraph every pass,
-  // defeating the point of a per-pass budget).
+  // Runs exactly one bounded BFS pass and returns. Root/stack-ref enumeration is mandatory on a
+  // search's first pass and repeats once rootEnumIntervalFloorNs() has elapsed; every pass then
+  // expands the persisted frontier via expandFrontier() rather than re-walking the whole graph.
   bool runPass(jvmtiEnv *jvmti, JNIEnv *jni, bool *out_truncated = nullptr);
 
   // Serialized entry points used by threadLoop(), the BFS thread.
@@ -1546,17 +1547,9 @@ public:
   // (livenessTracker.h).
   jlong tagAsRootForTest(jvmtiEnv *jvmti, JNIEnv *jni, jobject obj);
 
-  // Test seam - not part of the production API. Since ReferenceChainTracker is a process-wide
-  // singleton (ExternalProcessReferenceChainTest's own class javadoc explains why that matters:
-  // only the *first* test to ever call runPass() in a shared JVM gets a real root-seeded walk,
-  // since runPass() only re-walks from the roots once per search's whole lifetime), an in-process
-  // test that needs its own genuine first-ever root walk calls this at the start of its test body
-  // to force exactly that - releasing any tags a previous test's search still held, then resetting
-  // search/frontier state to the same "brand-new tracker" state restartSearch()
-  // (referenceChains.cpp) produces, plus the target- dedup/pending-event state restartSearch()
-  // itself intentionally leaves for pollWatchedTargets()/drainPendingChainEvents() to self-clear
-  // (this is an immediate, out-of-band reset - there is no next real pass here to observe the
-  // change and clear them the ordinary way).
+  // Shared-JVM tests must reset this singleton before a fresh search or inherit earlier search state.
+  // This seam releases old tags and clears frontier, candidate, cache, and pending-event state.
+  // Call only between tests; it stops and restarts the BFS thread around the reset.
   void resetSearchStateForTest(jvmtiEnv *jvmti, JNIEnv *jni);
 
   // Test seam - not part of the production API. Diagnostic-only: reports how far a given
