@@ -291,12 +291,17 @@ jobs:
               raise SystemExit(0)
           with open("summary.txt") as f:
               summary = f.read()
+          run_url = (os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"]
+                     + "/actions/runs/" + os.environ["GITHUB_RUN_ID"])
+          # nightly.yml's receiver consumes {"scenarios", "failed_run_url"};
+          # send the same fields alongside text so one webhook serves both
+          # workflows (a plain Slack incoming webhook ignores the extras).
           payload = {
               "text": "java-profiler nightly certification FAILED on "
                       + os.environ["GITHUB_SHA"] + "\n"
-                      + summary + "\n"
-                      + os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"]
-                      + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
+                      + summary + "\n" + run_url,
+              "scenarios": summary,
+              "failed_run_url": run_url
           }
           req = urllib.request.Request(webhook,
                                        data=json.dumps(payload).encode(),
