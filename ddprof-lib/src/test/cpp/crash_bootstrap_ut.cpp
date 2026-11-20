@@ -415,6 +415,33 @@ TEST(CrashBootstrapTest, RegistryClearPreservesConcurrentReplacement) {
     }, ::testing::ExitedWithCode(0), "");
 }
 
+// The 64th probe position is searched by contains(); its 63 predecessors survive.
+TEST(CrashBootstrapTest, RegistryContainsFindsMarkAtLastProbe) {
+    EXPECT_EXIT({
+        ThreadExitRegistry::resetForTest();
+        for (int i = 0; i < 63; ++i) ThreadExitRegistry::markForTest(collision_tid + i * 4096);
+        ThreadExitRegistry::markForTest(collision_tid + 63 * 4096);
+        for (int i = 0; i < 63; ++i) {
+            if (!ThreadExitRegistry::contains(collision_tid + i * 4096)) _exit(116);
+        }
+        _exit(ThreadExitRegistry::contains(collision_tid + 63 * 4096) ? 0 : 117);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
+// The 64th probe position is searched by clear(); its 63 predecessors survive.
+TEST(CrashBootstrapTest, RegistryClearRemovesMarkAtLastProbe) {
+    EXPECT_EXIT({
+        ThreadExitRegistry::resetForTest();
+        for (int i = 0; i < 64; ++i) ThreadExitRegistry::markForTest(collision_tid + i * 4096);
+        ThreadExitRegistry::clear(collision_tid + 63 * 4096);
+        if (ThreadExitRegistry::contains(collision_tid + 63 * 4096)) _exit(118);
+        for (int i = 0; i < 63; ++i) {
+            if (!ThreadExitRegistry::contains(collision_tid + i * 4096)) _exit(119);
+        }
+        _exit(0);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
 TEST(CrashBootstrapTest, RegistryIdentityUsesRawSyscall) {
 #ifdef __linux__
     uint64_t raw_id = syscall(SYS_gettid);

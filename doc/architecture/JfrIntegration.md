@@ -259,7 +259,8 @@ dump delivers all retained chunks with their original clocks and constant pools.
 
 Write, patch and close failures quarantine the output. Stop shuts down producers
 and latches the profiler's non-restartable `ERROR` state. Recording buffers,
-dictionary roots and uncommitted wall tails stay owned.
+dictionary roots and uncommitted wall tails stay owned: stop skips
+`Profiler::releaseRecordingMemory()`.
 
 `FlightRecorder::outputQuarantined()` checks terminal state under its shared lock on normal threads.
 Stop checks after tail flush failures and before capacity retries, including failures raised by the flush.

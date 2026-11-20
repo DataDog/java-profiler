@@ -20,18 +20,19 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ## Quick Navigation
 
 ### Architecture
-- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, isolated liveness collectors, reusable unowned wall-stack roots, exact-copy failure handling and ASan-safe chunk reclamation
+- [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, recording-scoped tables (release/acquire), isolated liveness collectors, reusable unowned wall-stack roots, exact-copy failure handling and ASan-safe chunk reclamation
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer and independent DEBUG TaskBlock receipts: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, bounded stop-time thread-table capacity recovery, recordings, buffers, metadata, constant pools, terminal output quarantine and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation
-- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, raw-identity exit admission, loader-before-mutex Linux import-layout validation and allocation sampling
-- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; wall reservoir, retained-weight epoch provenance and retryable/terminal teardown-tail flush; bounded timer TID prechecks; lazy wall-block backing; [TaskBlock producer contract](architecture/ProfilingEngines.md#taskblock-producer-contract); allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
+- [MallocArenaWarning](architecture/MallocArenaWarning.md) - glibc malloc arena detector: arena walk, rule, and JFR events
+- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception (hooks installed per recording, restored on stop), raw-identity exit admission and allocation sampling
+- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; wall reservoir, retained-weight epoch provenance and retryable/terminal teardown-tail flush; bounded timer TID prechecks; lazy wall-block backing; [TaskBlock producer contract](architecture/ProfilingEngines.md#taskblock-producer-contract); allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), paired TaskBlock platform-thread classification and continuation completeness
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
-- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching; crash-handler bootstrap (raw-identity thread-exit registry, Linux-only fault/profiling-mask fence)
-- [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
+- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching (persistent sigaction/pthread_create hooks); crash-handler bootstrap (raw-identity thread-exit registry, Linux-only fault/profiling-mask fence)
+- [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, release, and rotation protocols; lazy storage
 - [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership, paired TaskBlock interval recovery and retained filtered/unfiltered unowned wall context
 
 ### Build System
@@ -45,7 +46,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
   - [Bounded local container runs](building/TestingGuide.md#bounded-local-container-runs) - Exact Git worktrees, offline cache-only execution, worker limits, and retained test artifacts
 
 ### Reference
-- [ProfilerMemoryRequirements](reference/ProfilerMemoryRequirements.md) - Memory usage and limits
+- [ProfilerMemoryRequirements](reference/ProfilerMemoryRequirements.md) - Memory usage and limits, including what an idle profiler holds
 - [EventTypeSystem](reference/EventTypeSystem.md) - Profiler event types
 - [RemoteSymbolication](reference/RemoteSymbolication.md) - Symbol resolution
 - [RemoteSymbolicationFrameTypes](reference/RemoteSymbolicationFrameTypes.md) - Frame type design for symbolication
@@ -54,6 +55,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 
 ### Design
 
+- [BitsReviewMergeGateDesign](BitsReviewMergeGateDesign.md) - Bits PASS merge gate: policy, implementation, trusted status publisher, and enforcement proposal pending separate approval
 - [ReferenceChainsCollectionSummary](ReferenceChainsCollectionSummary.md) - Short reference-chain overview and limits
 - [ReferenceChainsDesign](ReferenceChainsDesign.md) - Reference-chain design decision and trade-offs
 - [WorkTracking](WorkTracking.md) - Work-tracking phases: Intent, Design, Build and Test, Deploy
