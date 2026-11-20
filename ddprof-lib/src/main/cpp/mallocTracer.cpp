@@ -270,11 +270,12 @@ void MallocHooker::installHooks() {
     patchLibraries();
 }
 
-// Patch every relocation slot the library has for the import (PRIMARY and
-// SECONDARY), like CodeCache::patchImport(), recording each for restoration.
+// Patch every relocation slot the library has for the import (e.g. a JUMP_SLOT
+// and a GLOB_DAT), like CodeCache::patchImport(), recording each for restoration.
 void MallocHooker::patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn) {
-    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
-        patchSlot(cc, cc->findImport(id, static_cast<ImportType>(ty)), hook_fn, orig_fn);
+    size_t count = cc->importCount(id);
+    for (size_t index = 0; index < count; index++) {
+        patchSlot(cc, cc->findImport(id, index), hook_fn, orig_fn);
     }
 }
 

@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <jvmti.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
@@ -30,6 +31,8 @@ const int MAX_NATIVE_LIBS = 2048;
 
 enum ImportId {
   im_dlopen,
+  im_dup2,
+  im_dup3,
   im_pthread_create,
   im_pthread_exit,
   im_pthread_setspecific,
@@ -45,13 +48,18 @@ enum ImportId {
   im_recv,
   im_write,
   im_read,
+  im_close,
+  im_connect,
+  im_accept,
+  im_accept4,
+  im_recvfrom,
+  im_recvmsg,
+  im_epoll_wait,
+  im_epoll_pwait,
+  im_ppoll,
+  im_select,
+  im_pselect,
   NUM_IMPORTS
-};
-
-enum ImportType {
-    PRIMARY,
-    SECONDARY,
-    NUM_IMPORT_TYPES
 };
 
 enum Mark {
@@ -151,6 +159,15 @@ public:
 
 class CodeCache {
 private:
+  static_assert(NUM_IMPORTS <= 64, "import completeness mask must cover every import");
+
+  struct ImportLocation {
+    ImportId _id;
+    void** _location;
+    // Recording order, which finalizeImports() keeps within each import.
+    size_t _order;
+  };
+
   char *_name;
   short _lib_index;
   const void *_min_address;
@@ -168,8 +185,13 @@ private:
   u64 _file_id;              // Backing file identity, see makeFileId(); 0 if unknown
   u64 _image_fingerprint;    // Symbols::imageFingerprint() of the mapped image; 0 if unknown
 
-  void **_imports[NUM_IMPORTS][NUM_IMPORT_TYPES];
-  bool _imports_patchable;
+  std::vector<ImportLocation> _imports;
+  size_t _import_offsets[NUM_IMPORTS + 1];
+  size_t _import_sequence;
+  u64 _incomplete_imports;
+  bool _imports_finalized;
+  // LibraryPatcher and MallocHooker protect import writes with different locks.
+  std::atomic<bool> _imports_patchable{false};
   bool _debug_symbols;
 
   FrameDesc *_dwarf_table;
@@ -215,7 +237,9 @@ private:
   // the assert loads it with acquire — without a formal data race.
   std::atomic<bool> _published;
 
-  void makeImportsPatchable();
+  void expand();
+  void finalizeImports();
+  bool makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
   void copyFrom(const CodeCache& other);
 
@@ -285,7 +309,10 @@ public:
   // Mark this cache as published into a CodeCacheArray. Call before the array
   // makes the pointer visible to readers; afterwards add()/prepareAdd()/
   // commitAdd()/setDwarfTable() must not be called (see _published).
-  void markPublished() { _published.store(true, std::memory_order_release); }
+  void markPublished() {
+    finalizeImports();
+    _published.store(true, std::memory_order_release);
+  }
 
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);
@@ -349,21 +376,18 @@ public:
   }
 
   void addImport(void **entry, const char *name);
-  void **findImport(ImportId id);
-  // A symbol can have a second relocation slot (e.g. both a JUMP_SLOT and a
-  // GLOB_DAT); patching must cover both, as patchImport() does.
-  void **findImport(ImportId id, ImportType type);
-  // Like findImport(), but never makes the GOT writable, so it does not touch
-  // the library's memory. For bookkeeping only; patch through findImport().
-  void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
-  // Makes the import slots writable even if they were made so before: when the
-  // library was unloaded and reloaded at the same address, the new mapping's
-  // GOT is read-only again under full RELRO.
-  void makeImportsWritable() {
-    makeImportsPatchable();
-    _imports_patchable = true;
-  }
-  void patchImport(ImportId, void *hook_func);
+  size_t importCount(ImportId id);
+  bool importsComplete(ImportId id) const;
+#ifdef UNIT_TEST
+  void markImportIncompleteForTest(ImportId id) { _incomplete_imports |= 1ULL << id; }
+#endif
+  bool prepareImportsForPatch();
+  // Index 0 is the JUMP_SLOT when the library has one (see finalizeImports()).
+  void **findImport(ImportId id, size_t index = 0);
+  bool patchImport(ImportId, void *hook_func);
+  // Import lookup without making the library writable.
+  void **peekImport(ImportId id);
+  bool makeImportsWritable() { return makeImportsPatchable(); }
 
   CodeBlob *findBlob(const char *name);
   CodeBlob *findBlobByAddress(const void *address);

@@ -92,6 +92,7 @@ protected:
         registry->init("", true);
         current = ProfiledThread::initCurrentThreadSignalSafe();
         ASSERT_NE(nullptr, current);
+        current->setJvmInternalThread(false);
         current->setFilterSlotId(-1);
     }
 

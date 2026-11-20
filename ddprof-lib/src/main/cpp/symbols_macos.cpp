@@ -29,6 +29,32 @@ UnloadProtection::~UnloadProtection() {
     }
 }
 
+UnloadProtection::UnloadProtection(UnloadProtection&& other) noexcept
+    : _lib_handle(other._lib_handle), _valid(other._valid) {
+    other._lib_handle = NULL;
+    other._valid = false;
+}
+
+UnloadProtection& UnloadProtection::operator=(UnloadProtection&& other) noexcept {
+    if (this != &other) {
+        if (_lib_handle != NULL) {
+            dlclose(_lib_handle);
+        }
+        _lib_handle = other._lib_handle;
+        _valid = other._valid;
+        other._lib_handle = NULL;
+        other._valid = false;
+    }
+    return *this;
+}
+
+void* UnloadProtection::release() {
+    void* handle = _lib_handle;
+    _lib_handle = NULL;
+    _valid = false;
+    return handle;
+}
+
 class MachOParser {
   private:
     CodeCache* _cc;

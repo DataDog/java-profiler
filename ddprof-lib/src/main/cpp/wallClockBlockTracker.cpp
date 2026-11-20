@@ -348,7 +348,9 @@ bool WallClockBlockTracker::ownedBlockGeneration(ThreadFilter* registry,
         return false;
     }
     generation = block_generation;
-    already_sampled = sampled_generation == block_generation;
+    // A first wall signal can interrupt native I/O before its completion hook.
+    // Native owners capture synchronously at exit, unlike Java/JVMTI owners.
+    already_sampled = owner == BlockRunOwner::NATIVE || sampled_generation == block_generation;
     return true;
 }
 
@@ -497,6 +499,23 @@ size_t WallClockBlockTracker::copyUnownedWeightSegments(ThreadFilter::SlotID slo
         }
     }
     return count;
+}
+
+WallClockBlockTracker::PendingUnownedWeight WallClockBlockTracker::pendingUnownedWeightForTest(
+        const ThreadFilter& registry, int tid) const {
+    PendingUnownedWeight result;
+    ThreadEntry entry{};
+    entry.tid = tid;
+    if (!registry.lookupThreadEntry(entry, registry.recordingEpoch())) return result;
+    auto* block = slotForId(entry.slot_id);
+    if (block == nullptr) return result;
+    result.total = block->unowned_blocked_pending_weight.load(std::memory_order_acquire);
+    WeightSegment segments[kMaxWeightSegments];
+    size_t count = copyUnownedWeightSegments(entry.slot_id, segments);
+    for (size_t i = 0; i < count; ++i) {
+        result.max_segment = std::max(result.max_segment, segments[i].weight);
+    }
+    return result;
 }
 
 bool WallClockBlockTracker::unownedWeightMatchesEpoch(ThreadFilter::SlotID slot_id,

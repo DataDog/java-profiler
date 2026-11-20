@@ -859,6 +859,9 @@ public:
 #ifdef UNIT_TEST
   using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
+  bool setTaskBlockEnabledForTest(bool enabled) {
+    return _task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
+  }
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
   enum class TaskBlockActivityStage {
@@ -914,7 +917,7 @@ public:
   bool taskBlockRotationActiveForTest() const {
     return (_task_block_activity_state.load(std::memory_order_acquire) & TASK_BLOCK_CLOSED) != 0;
   }
-  int taskBlockInflightForTest() const {
+  u64 taskBlockInflightForTest() const {
     return _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
   }
 

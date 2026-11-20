@@ -128,8 +128,8 @@ platform implementations of `patchLibraries()` / `unpatchLibraries()` live in
    itself.
 
 4. **`MallocHooker::patchLibraries()`** — writes the hook addresses into the GOT of
-   every native library from index `_patched_libs` on, covering both relocation slots
-   a symbol can have (`findImport(id, PRIMARY/SECONDARY)`), and records each written
+   every native library from index `_patched_libs` on, covering every relocation slot
+   a symbol has (`findImport(id, index)` for each of `importCount(id)`), and records each written
    slot (library, slot address, hook, original pointer) in `_entries` so `stop()` can
    restore it. A slot that cannot be recorded (table full) is left unhooked rather than
    hooked for good. On Linux the patching runs inside a

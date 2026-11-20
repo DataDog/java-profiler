@@ -294,6 +294,29 @@ it is not a whole-profiler memory limit or an accepted resource budget.
 `NativeMem::record()` tracks logical live bytes, not allocator overhead.
 See [TLSContext.md](../architecture/TLSContext.md) for publication and lifetime rules.
 
+### 10. Native I/O FD-Type Caches (Linux)
+
+**What it is:**
+- `NativeSocketSampler` and `NativeSocketInterposer` each own one `NativeFdClassifier`
+- Each classifier caches SO_TYPE verdicts in a low-FD and a high-FD table, each with two banks
+
+**Memory cost:**
+```
+Per classifier:
+- 2 banks × (65,536 low-FD + 4,096 high-FD) entries × 8 bytes = 1,114,112 bytes (1088 KiB)
+
+Both classifiers: 2,228,224 bytes (2176 KiB)
+```
+
+**Lifecycle:**
+- Allocated and zero-filled on the first classification by an active owner
+- Never freed: both owners are process-lifetime singletons, and `stop()` only
+  invalidates the cache epoch
+- This is an exception to the rule that recording-scoped memory is freed at `stop()`
+- Not counted by the `native_mem_*` counters
+
+See [NativeIoHooks.md](../architecture/NativeIoHooks.md#fd-type-and-lifecycle) for the cache design.
+
 ### Idle Profiler (after `stop()`)
 
 Recording-scoped memory is freed when a recording stops: the call-trace tables and
@@ -306,8 +329,9 @@ since it was patched (see [Stopping](../architecture/NativeMemoryProfiling.md#st
 What stays: the context-value dictionary (so the `dictionary` gauge stays non-zero),
 per-thread state (`thread_local`), parsed native symbols (`native_symbols`), the thread
 filter, the wall-clock block tracker's slots and retained-context chunks
-(`wall_block_tracker`, once a thread-registry registration allocated them), the persistent
-`pthread_create`/`sigaction` GOT hooks, and `PerfEvents`' per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
+(`wall_block_tracker`, once a thread-registry registration allocated them), the native I/O
+FD-type caches (section 10), the persistent `pthread_create`/`sigaction` GOT hooks, and
+`PerfEvents`' per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
 `line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
 counters, read 0 after every `stop()`. A stop whose JFR output failed is the exception:
 the retained recording keeps its buffers and this recording-scoped memory, and the
@@ -333,6 +357,7 @@ ThreadIdTable arrays               32 KB (fixed)
 MethodMap                          100 KB - 1 MB
 Native owners/context              sizeof-based, including reserved pool owners
 Retained wall-context backing      0-262,144 bytes, plus lazy SlotStorage
+Native I/O FD-type caches          1088 KiB per owner once used, max 2176 KiB (never freed)
 ─────────────────────────────────────────────────────
 ```
 
@@ -350,6 +375,7 @@ ThreadIdTable arrays               32 KB (fixed)
 MethodMap                          1-10 MB
 Native owners/context              sizeof-based, including reserved pool owners
 Retained wall-context backing      0-262,144 bytes, plus lazy SlotStorage
+Native I/O FD-type caches          1088 KiB per owner once used, max 2176 KiB (never freed)
 ─────────────────────────────────────────────────────
 ```
 
@@ -724,6 +750,11 @@ Paths are relative to `ddprof-lib/src/main/cpp/`.
 - `context.h` - Aligned normalized snapshot with ten tag encodings
 - `wallClockBlockTracker.{h,cpp}` - Lazy backing and `NM_WALL_BLOCK_TRACKER` accounting
 - Context strings are stored in `_context_value_map`
+
+**10. Native I/O FD-type caches:**
+- `nativeFdClassifier.h`, `nativeFdClassifier_linux.cpp` - `FD_TYPE_CACHE_SIZE = 65536`, `HIGH_FD_TYPE_CACHE_SIZE = 4096`,
+  `CACHE_BANKS = 2`, `ensureCachesAllocated()`
+- `nativeSocketSampler.h` / `nativeSocketInterposer.h` - the two `_fd_classifier` owners
 
 **Native-memory accounting:**
 - `nativeMem.h` - categories and live/avg/max tracking
