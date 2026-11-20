@@ -69,7 +69,8 @@ Copied markers from a User account are ignored.
 
 A dismissed FAIL is not a PASS. Resolving findings, replying to them, or receiving
 human approval does not clear FAIL. A new valid Bits PASS or an existing authorized
-admin bypass is needed.
+admin bypass is needed. The developer procedure for a red review, including one whose
+findings are all refuted, is in [BitsReviewRedReviewRunbook](BitsReviewRedReviewRunbook.md).
 
 ## Architecture
 

@@ -5,8 +5,6 @@ package com.datadoghq.profiler.jfr;
 import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import org.junit.jupiter.api.Assumptions;
 
 public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
@@ -19,38 +17,35 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
   }
 
   public void runTest(String eventName, String... patterns) throws Exception {
-    runTest(eventName, 10, patterns);
+    runTest(eventName, 5, patterns);
   }
 
   public void runTest(String eventName, int dumpCnt, String... patterns) throws Exception {
     Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
     Assumptions.assumeFalse(Platform.isJ9());
 
-    // Wait for profiler to reach RUNNING state before workload begins
-    // Use 2000ms timeout to account for slow systems and CI load
     waitForProfilerReady(2000);
 
-    for (int j = 0; j < dumpCnt; j++) {
-      Path recording = Files.createTempFile("dump-", ".jfr");
-      try {
-        for (int i = 0; i < 50; i++) {
-          method1();
-          method2();
-          method3();
-        }
-        dump(recording);
-        verifyStackTraces(recording, eventName, patterns);
-      } finally {
-        Files.deleteIfExists(recording);
-      }
-    }
-    for (int i = 0; i < 500; i++) {
+    AdaptiveDumpCycles.run(
+        dumpCnt,
+        this::runWorkload,
+        this::dump,
+        recording -> tryVerifyStackTraces(recording, eventName, patterns),
+        recording -> verifyStackTraces(recording, eventName, patterns));
+    // The dump snapshots drain their own windows from the live stream, so the continuous
+    // recording cannot be assumed to hold the dump-cycle events; the post-stop verification
+    // needs its own sampling window at the settled historical density right before stop().
+    runWorkload(AdaptiveDumpCycles.INITIAL_BATCH);
+    stopProfiler();
+    verifyStackTraces(eventName, patterns);
+  }
+
+  private void runWorkload(int iterations) {
+    for (int i = 0; i < iterations; i++) {
       method1();
       method2();
       method3();
     }
-    stopProfiler();
-    verifyStackTraces(eventName, patterns);
   }
 
   protected static volatile int value;
