@@ -96,7 +96,8 @@ static bool hasFreezeThawConfig(const char* name) {
 }
 
 // freeze<Config<...>>(JavaThread*, long) and thaw<Config<...>>(long, JavaThread*, int) are
-// static templates: their symbols have internal linkage (_ZL), so a stripped libjvm lacks them.
+// static templates, so HotSpot names them with internal linkage (_ZL) and a stripped libjvm lacks
+// them; the external-linkage spelling (_Z) is accepted as well.
 static bool isFreezeEntry(const char* name) {
     return starts_with(name, "_ZL6freezeI") || starts_with(name, "_Z6freezeI");
 }
