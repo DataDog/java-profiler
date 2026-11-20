@@ -18,6 +18,7 @@
 #include "callTraceStorage.h"
 #include "counters.h"
 #include "signalSafety.h"
+#include <algorithm>
 #include <memory>
 #include <new>
 
@@ -25,13 +26,13 @@ WallClockBlockTracker::~WallClockBlockTracker() {
     SlotStorage* storage = _storage.exchange(nullptr, std::memory_order_acq_rel);
     if (storage != nullptr) {
         delete storage;
-        NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(SlotStorage)));
+        NativeMem::record(NM_WALL_BLOCK_TRACKER, -static_cast<long long>(sizeof(SlotStorage)));
     }
     for (auto& pointer : _context_chunks) {
         UnownedContextChunk* chunk = pointer.exchange(nullptr, std::memory_order_acq_rel);
         if (chunk != nullptr) {
             delete chunk;
-            NativeMem::record(NM_WALLCLOCK, -static_cast<long long>(sizeof(UnownedContextChunk)));
+            NativeMem::record(NM_WALL_BLOCK_TRACKER, -static_cast<long long>(sizeof(UnownedContextChunk)));
         }
     }
 }
@@ -60,7 +61,7 @@ bool WallClockBlockTracker::ensureAllocated() {
     if (_storage.compare_exchange_strong(expected, fresh.get(), std::memory_order_acq_rel,
                                          std::memory_order_acquire)) {
         fresh.release();
-        NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(SlotStorage)));
+        NativeMem::record(NM_WALL_BLOCK_TRACKER, static_cast<long long>(sizeof(SlotStorage)));
     }
     return true;
 }
@@ -191,12 +192,13 @@ bool WallClockBlockTracker::snapshotAndExitBlockedRun(ThreadFilter* registry,
     return true;
 }
 
-bool WallClockBlockTracker::flushUnownedTail(ThreadFilter::SlotID slot_id, int tid) {
+bool WallClockBlockTracker::flushUnownedTail(ThreadFilter::SlotID slot_id, int tid,
+                                             bool blocking) {
     auto* block = slotForId(slot_id);
     if (block == nullptr ||
         block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
     // Standalone trackers have no recorder; their synthetic state needs no emission.
-    return !_tail_flush || _tail_flush(slot_id, tid);
+    return !_tail_flush || _tail_flush(slot_id, tid, blocking);
 }
 
 #if defined(DEBUG) || defined(UNIT_TEST)
@@ -263,16 +265,19 @@ void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
     }
 }
 
-void WallClockBlockTracker::resetUnownedBlockedTails() {
+u64 WallClockBlockTracker::resetUnownedBlockedTails() {
     SlotStorage* storage = _storage.load(std::memory_order_acquire);
     if (storage == nullptr) {
-        return;
+        return 0;
     }
+    u64 dropped = 0;
     for (ThreadFilter::SlotID id = 0; id < ThreadFilter::kMaxThreads; ++id) {
+        dropped += storage->slots[id].unowned_blocked_pending_weight.load(std::memory_order_acquire);
         storage->slots[id].resetUnownedBlockedSampling();
         // Segments outlive a reset tail; their epochs belong to the released recording.
         clearUnownedWeightSegments(id);
     }
+    return dropped;
 }
 
 bool WallClockBlockTracker::hasActiveBlockRun(ThreadFilter::SlotID slot_id) const {
@@ -383,15 +388,21 @@ bool WallClockBlockTracker::ensureUnownedContextAllocated(ThreadFilter::SlotID s
     auto& pointer = _context_chunks[slot_id >> ThreadFilter::kChunkShift];
     if (pointer.load(std::memory_order_acquire) != nullptr) return true;
 #ifdef UNIT_TEST
-    if (_context_allocation_failure.load(std::memory_order_acquire)) return false;
+    if (_context_allocation_failure.load(std::memory_order_acquire)) {
+        Counters::increment(WC_UNOWNED_CONTEXT_ALLOCATION_FAILED);
+        return false;
+    }
 #endif
     std::unique_ptr<UnownedContextChunk> fresh(new (std::nothrow) UnownedContextChunk());
-    if (!fresh) return false;
+    if (!fresh) {
+        Counters::increment(WC_UNOWNED_CONTEXT_ALLOCATION_FAILED);
+        return false;
+    }
     // All callers hold the same registry mutex (or are quiescent tests).
     // No competing allocator or fallible operation follows allocation, so no
     // rejected allocation needs freeing inside the registry critical section.
     pointer.store(fresh.release(), std::memory_order_release);
-    NativeMem::record(NM_WALLCLOCK, static_cast<long long>(sizeof(UnownedContextChunk)));
+    NativeMem::record(NM_WALL_BLOCK_TRACKER, static_cast<long long>(sizeof(UnownedContextChunk)));
     return true;
 }
 
@@ -399,10 +410,10 @@ WallClockBlockTracker::UnownedContextCell* WallClockBlockTracker::unownedContext
         ThreadFilter::SlotID slot_id) const {
     if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
     auto* chunk = _context_chunks[slot_id >> ThreadFilter::kChunkShift].load(std::memory_order_acquire);
-    // Clang 14/aarch64 UBSan sign-extends signed masked subscripts at 128..255.
-    // Keep the index unsigned while that compiler remains supported.
-    unsigned index = static_cast<unsigned>(slot_id) & ThreadFilter::kChunkMask;
-    return chunk != nullptr ? &chunk->cells[index] : nullptr;
+    // Unsigned: clang 14 at -O0 on aarch64 folds the signed mask into a sign-extending
+    // byte load, so offsets 128..255 index cells[-128..-1]. Drop once clang 15+ is the floor.
+    const u32 cell_index = static_cast<u32>(slot_id) & ThreadFilter::kChunkMask;
+    return chunk != nullptr ? &chunk->cells[cell_index] : nullptr;
 }
 
 bool WallClockBlockTracker::canPublishUnownedContext(ThreadFilter::SlotID slot_id) const {
@@ -423,8 +434,8 @@ bool WallClockBlockTracker::readUnownedContext(ThreadFilter::SlotID slot_id, Con
     if (before == 0 || (before & 1) != 0) return false;
     context.spanId = cell->words[0].load(std::memory_order_acquire);
     context.rootSpanId = cell->words[1].load(std::memory_order_acquire);
-    for (int i = 0; i < 5; ++i) {
-        u64 pair = cell->words[i + 2].load(std::memory_order_acquire);
+    for (int i = 0; i < kContextTagWords; ++i) {
+        u64 pair = cell->words[i + kContextIdWords].load(std::memory_order_acquire);
         context.setTag(i * 2, static_cast<u32>(pair));
         context.setTag(i * 2 + 1, static_cast<u32>(pair >> 32));
     }
@@ -538,10 +549,10 @@ bool WallClockBlockTracker::publishUnownedTrace(ThreadFilter::SlotID slot_id, u6
 #ifdef UNIT_TEST
     if (_context_publication_hook != nullptr) _context_publication_hook(0, _context_publication_hook_arg);
 #endif
-    for (int word = 0; word < 7; ++word) {
+    for (int word = 0; word < kContextWords; ++word) {
         u64 value = word == 0 ? context.spanId : context.rootSpanId;
-        if (word >= 2) {
-            int tag = (word - 2) * 2;
+        if (word >= kContextIdWords) {
+            int tag = (word - kContextIdWords) * 2;
             value = static_cast<u64>(context.getTag(tag)) |
                     (static_cast<u64>(context.getTag(tag + 1)) << 32);
         }
@@ -589,7 +600,7 @@ void WallClockBlockTracker::collectLiveTraceIds(CallTraceIdSet& live) {
     }
 }
 
-void WallClockBlockTracker::collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const {
+void WallClockBlockTracker::collectUnownedEpochStarts(EpochStarts& epochs) const {
     DEBUG_ASSERT_NOT_IN_SIGNAL();
     SlotStorage* storage = _storage.load(std::memory_order_acquire);
     if (storage == nullptr) return;
@@ -600,11 +611,13 @@ void WallClockBlockTracker::collectUnownedEpochStarts(std::unordered_set<u64>& e
             if (storage->slots[slot_id].unowned_blocked_call_trace_id.load(std::memory_order_acquire) != 0) {
                 WeightSegment segments[kMaxWeightSegments];
                 size_t count = copyUnownedWeightSegments(slot_id, segments);
-                for (size_t i = 0; i < count; ++i) epochs.insert(segments[i].epoch_start);
+                for (size_t i = 0; i < count; ++i) epochs.push_back(segments[i].epoch_start);
             }
             bits &= bits - 1;
         }
     }
+    std::sort(epochs.begin(), epochs.end());
+    epochs.erase(std::unique(epochs.begin(), epochs.end()), epochs.end());
 }
 
 void WallClockBlockTracker::onUnpreservedTraceIds(const CallTraceIdSet& failed) {

@@ -22,6 +22,7 @@
 #include "threadFilter.h"
 #include "arch.h"
 #include "counters.h"
+#include "log.h"
 #include "nativeMem.h"
 #include "os.h"
 #include "signalSafety.h"
@@ -967,6 +968,9 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
         if (unfiltered_tracking || context_filter) {
             ensureTidIndexLocked();
         }
+        if (context_filter && _block_tracker != nullptr) {
+            ensureLiveOwnerContextsLocked();
+        }
     }
     RecordingEpoch epoch = 0;
     if (unfiltered_tracking) {
@@ -985,6 +989,22 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     _enabled.store(context_filter, std::memory_order_release);
 }
 
+void ThreadFilter::ensureLiveOwnerContextsLocked() {
+    // Retained owners reuse slots through ensureOwnerSlot() without registering.
+    const SlotID assigned = std::min<SlotID>(_next_index.load(std::memory_order_acquire), kMaxThreads);
+    bool failed = false;
+    for (SlotID first = 0; first < assigned; first += kChunkSize) {
+        const SlotID end = std::min<SlotID>(first + kChunkSize, assigned);
+        for (SlotID id = first; id < end; ++id) {
+            if (slotForId(id)->nativeTid() >= 0) {
+                failed |= !_block_tracker->ensureUnownedContextAllocated(first);
+                break;
+            }
+        }
+    }
+    if (failed) Log::warn("Unowned wall context unavailable for some retained threads");
+}
+
 bool ThreadFilter::enabled() const {
     return _enabled.load(std::memory_order_acquire);
 }
@@ -1001,7 +1021,7 @@ ThreadFilter::RecordingEpoch ThreadFilter::recordingEpoch() const {
     return _recording_epoch.load(std::memory_order_acquire);
 }
 
-bool ThreadFilter::flushUnownedTails() {
+bool ThreadFilter::flushUnownedTails(bool blocking) {
     DEBUG_ASSERT_NOT_IN_SIGNAL();
     std::lock_guard<std::mutex> lock(_registry_lock);
     if (_block_tracker == nullptr) return true;
@@ -1012,7 +1032,7 @@ bool ThreadFilter::flushUnownedTails() {
         if (slot == nullptr) continue;
         int tid = slot->nativeTid();
         if (tid < 0) tid = slot->retiring_tid.load(std::memory_order_acquire);
-        if (!_block_tracker->flushUnownedTail(id, tid)) flushed = false;
+        if (!_block_tracker->flushUnownedTail(id, tid, blocking)) flushed = false;
     }
     drainRetiredLocked();
     return flushed;

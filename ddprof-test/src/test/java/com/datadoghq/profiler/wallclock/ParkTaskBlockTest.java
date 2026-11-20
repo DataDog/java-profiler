@@ -60,10 +60,24 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
       profiler.clearTraceContext();
       profiler.removeThread();
     }
+    // Positive control in the same recording: the same thread's park outside the window emits.
+    long controlBlocker = 0x3104L;
+    assertTrue(
+        ProfilerOwnedBlockHooks.parkEnter(profiler), "Platform park hook must acquire an owner");
+    try {
+      parkForMillis(200);
+    } finally {
+      ProfilerOwnedBlockHooks.parkExit(profiler, controlBlocker, UNBLOCKING_SPAN_ID);
+    }
     stopProfiler();
 
+    // Scoped by blocker: unrelated JVM threads may emit their own monitor TaskBlocks.
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    assertTrue(
+        TaskBlockAssertions.containsBlocker(events, controlBlocker),
+        "platform control park was not produced");
     assertFalse(
-        verifyEvents("datadog.TaskBlock", false).hasItems(),
+        TaskBlockAssertions.containsBlocker(events, BLOCKER),
         "A park inside the context window must remain ordinary wall-clock data");
   }
 

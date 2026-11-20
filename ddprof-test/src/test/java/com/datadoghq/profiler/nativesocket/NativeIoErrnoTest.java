@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 /** Qualifies errno across all four real installed imports and actual sampled JFR recording. */
 public class NativeIoErrnoTest extends AbstractProfilerTest {
-  private static final int INSUFFICIENT_FILE_DESCRIPTOR_LIMIT = -2;
+  private static final int HIGH_FD_PASS_SKIPPED = -2;
 
   @Override
   protected boolean isPlatformSupported() {
@@ -49,11 +49,9 @@ public class NativeIoErrnoTest extends AbstractProfilerTest {
   @Test
   public void preservesErrnoDuringPreOriginalLoggingAndSampledRecording() throws Exception {
     int result = exerciseImports();
-    assumeTrue(
-        result != INSUFFICIENT_FILE_DESCRIPTOR_LIMIT,
-        "requires RLIMIT_NOFILE > 65536; runner hard limit is at most 65536"
-            + " — see the CI runner image configuration");
-    assertEquals(0, result, "native import/errno qualification failure code");
+    if (result != HIGH_FD_PASS_SKIPPED) {
+      assertEquals(0, result, "native import/errno qualification failure code");
+    }
     stopProfiler();
     Set<String> operations = new HashSet<>();
     for (JfrEvent event : verifyEvents("datadog.NativeSocketEvent")) {
@@ -62,8 +60,15 @@ public class NativeIoErrnoTest extends AbstractProfilerTest {
     assertTrue(
         operations.containsAll(Arrays.asList("SEND", "RECV", "WRITE", "READ")),
         "Each actual sampled hook must record, observed: " + operations);
+    assumeTrue(
+        result != HIGH_FD_PASS_SKIPPED,
+        "high-FD pass requires RLIMIT_NOFILE > 65536; runner hard limit is at most 65536"
+            + " — see the CI runner image configuration");
   }
 
-  /** Returns -2 for a hard FD limit at most 65536; other nonzero codes fail qualification. */
+  /**
+   * Returns -2 when the hard FD limit is at most 65536 and only the passing low-FD pass ran; other
+   * nonzero codes fail qualification.
+   */
   private static native int exerciseImports();
 }

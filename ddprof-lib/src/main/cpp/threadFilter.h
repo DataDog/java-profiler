@@ -239,7 +239,8 @@ public:
     bool lookupThreadEntry(ThreadEntry& entry, RecordingEpoch epoch) const;
     // Stop calls this after draining sampling signals, before JFR teardown.
     // Failed writes retain both live and retired tail custody for a retry.
-    bool flushUnownedTails();
+    // blocking=true waits for each exact stripe; the caller must hold none of them.
+    bool flushUnownedTails(bool blocking = false);
     void deactivateRecording();
     SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
 
@@ -342,6 +343,8 @@ private:
     // Caller holds _registry_lock. Failed tail writes stay retired; only
     // successfully flushed slots are reset and moved to the free list.
     void drainRetiredLocked();
+    // Allocates unowned context chunks that hold a live owner; caller holds _registry_lock.
+    void ensureLiveOwnerContextsLocked();
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
     void rollbackFailedIndex(Slot& slot);

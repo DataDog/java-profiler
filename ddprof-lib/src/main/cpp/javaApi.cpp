@@ -675,6 +675,12 @@ Java_com_datadoghq_profiler_JavaProfiler_taskBlockSupportedForTest0(
   return Profiler::instance()->taskBlockSupportedForTest(env, thread) ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_platformThreadForTest0(
+    JNIEnv* env, jclass unused, jthread thread) {
+  return JVMSupport::isPlatformThread(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jboolean isVirtual, jint state) {
