@@ -14,14 +14,15 @@ public class LoadLibraryTest extends AbstractProfilerTest {
   @RetryingTest(3)
   public void testLoadLibrary() throws InterruptedException {
     Assumptions.assumeFalse(Platform.isJ9());
-    for (int i = 0; i < 200; i++) {
-      Thread.sleep(10);
-    }
+    // Wait for the engines to be ready, then late-load libmanagement.so via the first
+    // ClassLoadingMXBean touch below. Sampling window sized so the cpu=1ms engine reliably
+    // captures Java_sun_management frames (RetryingTest(3) tolerates a transient miss).
+    waitForProfilerReady(2000);
     // Late load of libmanagement.so
     ClassLoadingMXBean bean = ManagementFactory.getClassLoadingMXBean();
 
     long n = 0;
-    long tsLimit = System.nanoTime() + 3_000_000_000L; //  3 seconds
+    long tsLimit = System.nanoTime() + 1_500_000_000L; // 1.5 seconds
     while (System.nanoTime() < tsLimit) {
       n += bean.getLoadedClassCount();
       n += bean.getTotalLoadedClassCount();
