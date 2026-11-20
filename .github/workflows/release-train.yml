@@ -103,6 +103,10 @@ jobs:
           CANDIDATE: ${{ steps.candidate.outputs.candidate }}
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
+          # Only runs created after this moment can be the dispatch we just
+          # triggered; an older workflow_dispatch run for the same candidate
+          # (a retried train, a manual pin) must not be picked up.
+          DISPATCH_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           gh workflow run release-validated.yml \
             --ref "$CANDIDATE" \
             -f release_type=minor \
@@ -112,20 +116,21 @@ jobs:
             -f source_sha="$CANDIDATE"
 
           # Find the dispatched run: newest workflow_dispatch run whose head
-          # SHA is the candidate. The run record can lag the accepted
-          # dispatch by minutes; retry instead of failing over an unwatched
-          # release.
+          # SHA is the candidate and that was created after the dispatch.
+          # The run record can lag the accepted dispatch by minutes; retry
+          # instead of failing over an unwatched release.
           RUN_ID=""
-          for attempt in $(seq 1 12); do
+          for attempt in $(seq 1 60); do
             RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
               --limit 20 --json databaseId,headSha,createdAt \
-              --jq "[.[] | select(.headSha == \"$CANDIDATE\")] | sort_by(.createdAt) | last | .databaseId")
+              --jq "[.[] | select(.headSha == \"$CANDIDATE\" and .createdAt >= \"$DISPATCH_TS\")] | sort_by(.createdAt) | last | .databaseId")
             [ -n "$RUN_ID" ] && break
-            echo "attempt $attempt/12: dispatched run not listed yet, retrying in 15s"
+            echo "attempt $attempt/60: dispatched run not listed yet, retrying in 15s"
             sleep 15
           done
           if [ -z "$RUN_ID" ]; then
             echo "::error::Could not locate the dispatched release run for $CANDIDATE"
+            echo "::error::Check ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions?query=event%3Aworkflow_dispatch+release-validated — the dispatch was accepted and the release may be running unwatched"
             exit 1
           fi
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
@@ -135,7 +140,10 @@ jobs:
           # train's checkout (main HEAD, which may already be ahead).
           WT=$(mktemp -d)
           git worktree add --detach "$WT" "$CANDIDATE" >/dev/null 2>&1
-          VERSION=$( (cd "$WT" && "$GITHUB_WORKSPACE/utils/compute-version.sh" --release --minor) || echo unknown)
+          VERSION=$( (cd "$WT" && "$GITHUB_WORKSPACE/utils/compute-version.sh" --release --minor) ) || {
+            echo "::warning::could not compute the release version at $CANDIDATE"
+            VERSION="UNKNOWN (computation failed)"
+          }
           git worktree remove --force "$WT" >/dev/null 2>&1 || true
           echo "release_version=v_${VERSION}" >> "$GITHUB_OUTPUT"
           {
@@ -160,7 +168,7 @@ jobs:
           fi
 
       - name: Report release outcome
-        if: ${{ steps.dispatch.outputs.run_id != '' }}
+        if: ${{ !cancelled() && steps.dispatch.outputs.run_id != '' }}
         env:
           CONCLUSION: ${{ steps.wait.outputs.conclusion }}
           CANDIDATE: ${{ steps.candidate.outputs.candidate }}

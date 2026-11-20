@@ -175,4 +175,17 @@ PICK_RC=$(cat "$TEMP_DIR/pick.rc")
 assert_eq "$PICK_RC" "0" "pick returns the certified commit when no tags exist"
 assert_eq "$OUT" "$C1" "pick candidate without tags"
 
+# 7. Several certified commits at once -> the tip-most one by history
+#    position, not by committer date or SHA (guards the pipefail/SIGPIPE
+#    failure mode of the rev-list|grep|head pipeline)
+"$CERTIFY" "$C2" --run-url "https://example/run/6" >/dev/null 2>&1
+"$CERTIFY" "$C3" --run-url "https://example/run/7" >/dev/null 2>&1
+N_NOTES=$(git notes --ref=certification list | wc -l | tr -d ' ')
+assert_eq "$N_NOTES" "3" "three certification notes accumulated"
+run_pick
+OUT=$(cat "$TEMP_DIR/pick.out")
+PICK_RC=$(cat "$TEMP_DIR/pick.rc")
+assert_eq "$PICK_RC" "0" "pick survives multiple certified commits"
+assert_eq "$OUT" "$C3" "pick candidate is the tip-most certified commit"
+
 echo "PASS: $TESTS assertions"

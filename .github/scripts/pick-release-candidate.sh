@@ -25,11 +25,17 @@ NOTES_REF="refs/notes/certification"
 # train skip a release that should run. '+' allows non-fast-forward notes
 # updates, which are routine for git notes.
 if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
-  if git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1; then
-    echo "ERROR: failed to fetch $NOTES_REF from origin" >&2
+  # ls-remote exit 2 means the ref is absent on origin (normal before the
+  # first certification); any other status is a transport failure and must
+  # fail loudly, else the candidate choice runs against a stale ref.
+  LS_RC=0
+  git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1 || LS_RC=$?
+  if [ "$LS_RC" -eq 2 ]; then
+    echo "No certification notes on origin yet"
+  else
+    echo "ERROR: failed to fetch $NOTES_REF from origin (ls-remote rc=$LS_RC)" >&2
     exit 1
   fi
-  echo "No certification notes on origin yet"
 fi
 
 # Certified commits known to this clone.
@@ -46,7 +52,15 @@ fi
 # commits unreachable from origin/main cannot be candidates.
 CERT_LIST=$(mktemp)
 printf '%s\n' "$CERTIFIED" > "$CERT_LIST"
-NEWEST_CERTIFIED=$(git rev-list origin/main --topo-order | grep -Fx -f "$CERT_LIST" | head -1)
+if ! git rev-parse --verify --quiet origin/main >/dev/null; then
+  echo "ERROR: origin/main is not available" >&2
+  exit 1
+fi
+# First certified commit in rev-list --topo-order of origin/main. awk exits
+# 0 on both match and no-match, so the empty case falls through to the
+# guard below instead of tripping set -e / pipefail on a grep or head exit.
+NEWEST_CERTIFIED=$(awk 'NR==FNR { want[$1] = 1; next } $1 in want { print; exit }' \
+  "$CERT_LIST" <(git rev-list origin/main --topo-order))
 rm -f "$CERT_LIST"
 if [ -z "$NEWEST_CERTIFIED" ]; then
   echo "none: no certified commit is reachable from origin/main"
