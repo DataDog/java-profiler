@@ -15,6 +15,12 @@ permissions:
   contents: write
   actions: read
 
+# Two runs for the same tag (tag push + manual dispatch) race the asset
+# uploads and the --latest flag; serialize them per tag.
+concurrency:
+  group: update-assets-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   update-assets-and-releaase:
     if: (startsWith(github.event.ref, 'refs/tags/v_') || inputs.release_tag != '') && !endsWith(github.event.ref, '-SNAPSHOT')
@@ -67,3 +73,41 @@ jobs:
           TAG="v_${VERSION}"
           gh release upload "${TAG}" assets/ddprof*.jar assets/*.so --clobber
           gh release edit "${TAG}" --draft=false --latest
+
+  bump-dd-trace-java:
+    # Open the dd-trace-java dependency-bump PR once the release artifacts
+    # are live on Maven Central and the GitHub release is published. Needs a
+    # token with contents:write + pull_requests:write on DataDog/dd-trace-java.
+    needs: update-assets-and-releaase
+    if: ${{ needs.update-assets-and-releaase.result == 'success' }}
+    # A tag-triggered run and a manual run for the same version can both
+    # pass the open-PR lookup; serialized here, the later run observes the
+    # opened PR instead of deleting its head branch on push rejection.
+    concurrency:
+      group: dd-trace-java-bump
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Open bump PR on dd-trace-java
+        env:
+          DDTRACE_GH_TOKEN: ${{ secrets.DDTRACE_GH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ -z "${RELEASE_TAG}" ]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${RELEASE_TAG#v_}"
+          NOTES_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+          set +e
+          .github/scripts/bump-ddtrace.sh "$VERSION" "$NOTES_URL"
+          RC=$?
+          set -e
+          # Exit 3 is the documented no-token skip, not a failure; the
+          # release and assets are already published at this point.
+          if [ "$RC" -eq 3 ]; then
+            echo "::warning::dd-trace-java bump skipped: DDTRACE_GH_TOKEN is not configured"
+            exit 0
+          fi
+          exit $RC

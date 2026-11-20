@@ -1,0 +1,260 @@
+name: Release Train
+run-name: "Weekly release from certified ${{ inputs.sha || 'commit' }}"
+
+# Weekly automated minor release. Picks the newest commit certified by the
+# nightly Release Certification workflow that the train has not released yet,
+# and dispatches the Validated Release workflow pinned to that commit.
+# Skips (with a Slack note) when no certified commit is unreleased.
+# Major and patch releases stay manual.
+
+on:
+  schedule:
+    # Friday 11:00 UTC = 12:00 CET (winter); 13:00 CEST in summer
+    - cron: '0 11 * * 5'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Override: certified commit SHA to release (must carry a certification note)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Dry-run the dispatched release (no tag, no GitLab trigger)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-train
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Pick certified candidate
+        id: candidate
+        env:
+          OVERRIDE_SHA: ${{ inputs.sha }}
+        run: |
+          if [ -n "$OVERRIDE_SHA" ]; then
+            git fetch origin refs/notes/certification:refs/notes/certification 2>/dev/null || \
+              { echo "::error::No certification notes exist and an override SHA was requested" >&2; exit 1; }
+            git rev-parse --verify --quiet "$OVERRIDE_SHA^{commit}" >/dev/null || \
+              { echo "::error::Override SHA $OVERRIDE_SHA is not a commit" >&2; exit 1; }
+            if ! git notes --ref=certification list 2>/dev/null | awk '{print $2}' | grep -qx "$(git rev-parse "$OVERRIDE_SHA^{commit}")"; then
+              echo "::error::Override SHA $OVERRIDE_SHA carries no certification note" >&2
+              exit 1
+            fi
+            CANDIDATE=$(git rev-parse "$OVERRIDE_SHA^{commit}")
+            # Same reachability rule as the scheduled path: only commits on
+            # main qualify; a note on an unmerged or rebased-away commit must
+            # not be releasable by an override.
+            if ! git merge-base --is-ancestor "$CANDIDATE" origin/main; then
+              echo "::error::Override SHA $CANDIDATE is not reachable from origin/main" >&2
+              exit 1
+            fi
+          else
+            OUT=$(.github/scripts/pick-release-candidate.sh) && RC=0 || RC=$?
+            if [ "$RC" -ne 0 ]; then
+              if [ "$RC" -eq 10 ]; then
+                echo "skip-reason=$OUT" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "::error::pick-release-candidate.sh failed: $OUT" >&2
+              exit 1
+            fi
+            CANDIDATE="$OUT"
+          fi
+
+          # The same release-position rule the scheduled train applies: the
+          # candidate must be newer than the newest mainline release tag, so
+          # an operator override cannot release an older certified commit
+          # after a newer one.
+          LAST_MAINLINE_TAG=$(git tag --list 'v_*' | sed 's/^v_//' | \
+            sort -t. -k1,1n -k2,2n -k3,3n | awk '{a[NR]=$0} END {for (i=NR; i>=1; i--) print a[i]}' | \
+            while read -r t; do
+              c=$(git rev-parse --verify --quiet "v_${t}^{commit}" || true)
+              if [ -n "$c" ] && git merge-base --is-ancestor "$c" origin/main; then echo "v_${t}"; break; fi
+            done)
+          if [ -n "$LAST_MAINLINE_TAG" ]; then
+            TAG_COMMIT=$(git rev-parse "$LAST_MAINLINE_TAG^{commit}")
+            if [ "$TAG_COMMIT" == "$CANDIDATE" ]; then
+              echo "::error::Candidate $CANDIDATE is already released ($LAST_MAINLINE_TAG)" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$TAG_COMMIT" "$CANDIDATE"; then
+              echo "::error::Candidate $CANDIDATE predates the last release $LAST_MAINLINE_TAG" >&2
+              exit 1
+            fi
+          fi
+
+          # Hard guard against two releases from the same certified commit:
+          # refuse when any existing v_* tag points at the candidate.
+          for tag in $(git tag --list 'v_*'); do
+            if [ "$(git rev-parse "$tag^{commit}")" == "$CANDIDATE" ]; then
+              echo "::error::Candidate $CANDIDATE already carries a release tag ($tag)"
+              exit 1
+            fi
+          done
+
+          echo "candidate=$CANDIDATE" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release train candidate"
+            echo "- Commit: $CANDIDATE"
+            git notes --ref=certification show "$CANDIDATE" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report skip
+        if: ${{ steps.candidate.outputs.skip-reason != '' }}
+        env:
+          REASON: ${{ steps.candidate.outputs.skip-reason }}
+        run: |
+          echo "## Release train skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "$REASON" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch Validated Release
+        if: ${{ steps.candidate.outputs.candidate != '' }}
+        id: dispatch
+        env:
+          CANDIDATE: ${{ steps.candidate.outputs.candidate }}
+          DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
+        run: |
+          # The workflow_dispatch API takes a branch/tag ref, not a SHA; the
+          # certified commit is pinned through source_sha, which
+          # release-validated.yml validates and checks out.
+          gh workflow run release-validated.yml \
+            --ref main \
+            -f release_type=minor \
+            -f dry_run=$DRY_RUN \
+            -f skip_tests=false \
+            -f request_id="release-train-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            -f source_sha="$CANDIDATE"
+
+          # Find the dispatched run. request_id is unique to this dispatch
+          # and appears in the run's title, so the lookup cannot pick up a
+          # concurrent manual dispatch or a retried train pinned to the same
+          # candidate. The run record can lag the accepted dispatch by
+          # minutes; retry instead of failing over an unwatched release.
+          RUN_ID=""
+          for attempt in $(seq 1 60); do
+            RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
+              --limit 20 --json databaseId,displayTitle \
+              --jq "[.[] | select(.displayTitle | contains(\"release-train-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}]\"))] | last | .databaseId // empty")
+            [ -n "$RUN_ID" ] && break
+            echo "attempt $attempt/60: dispatched run not listed yet, retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Could not locate the dispatched release run for $CANDIDATE"
+            echo "::error::Check ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions?query=event%3Aworkflow_dispatch+release-validated — the dispatch was accepted and the release may be running unwatched"
+            exit 1
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "run_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" >> "$GITHUB_OUTPUT"
+          # The version the release run tags: compute-version reads the tags
+          # reachable from HEAD, so run it at the candidate, not at the
+          # train's checkout (main HEAD, which may already be ahead).
+          WT=$(mktemp -d)
+          git worktree add --detach "$WT" "$CANDIDATE" >/dev/null 2>&1
+          VERSION=$( (cd "$WT" && "$GITHUB_WORKSPACE/utils/compute-version.sh" --release --minor) ) || {
+            echo "::warning::could not compute the release version at $CANDIDATE"
+            VERSION="UNKNOWN (computation failed)"
+          }
+          git worktree remove --force "$WT" >/dev/null 2>&1 || true
+          echo "release_version=v_${VERSION}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release run"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for release completion
+        if: ${{ steps.dispatch.outputs.run_id != '' }}
+        id: wait
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          CONCLUSION=$(gh run watch "$RUN_ID" --exit-status --interval 60 >/dev/null 2>&1 && echo success || \
+            gh run view "$RUN_ID" --json conclusion --jq '.conclusion')
+          echo "conclusion=$CONCLUSION" >> "$GITHUB_OUTPUT"
+          if [ "$CONCLUSION" != "success" ]; then
+            # A ::error:: annotation alone does not fail the step; the train
+            # must report the failed release so the Slack step fires.
+            echo "::error::Release run $RUN_ID finished with conclusion: $CONCLUSION"
+            exit 1
+          fi
+
+      - name: Report release outcome
+        if: ${{ !cancelled() && steps.dispatch.outputs.run_id != '' }}
+        env:
+          CONCLUSION: ${{ steps.wait.outputs.conclusion }}
+          CANDIDATE: ${{ steps.candidate.outputs.candidate }}
+          RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          RELEASE_VERSION: ${{ steps.dispatch.outputs.release_version }}
+        run: |
+          {
+            echo "## Release train result"
+            echo "- Candidate: $CANDIDATE"
+            echo "- Version: $RELEASE_VERSION"
+            echo "- Release run: $RUN_URL"
+            echo "- Conclusion: $CONCLUSION"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Release train: $RELEASE_VERSION from $CANDIDATE ($CONCLUSION) — $RUN_URL"
+
+      - name: Notify Slack on skip or failure
+        if: ${{ !cancelled() && (steps.candidate.outputs.skip-reason != '' || failure()) }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SKIP_REASON: ${{ steps.candidate.outputs.skip-reason }}
+          CANDIDATE: ${{ steps.candidate.outputs.candidate }}
+          RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          RELEASE_VERSION: ${{ steps.dispatch.outputs.release_version }}
+          CONCLUSION: ${{ steps.wait.outputs.conclusion }}
+        run: |
+          # Compose from explicit outputs: a failure of an earlier step leaves
+          # the run summary incomplete, and the Slack message must still carry
+          # the decision-relevant lines.
+          python3 - <<'PY'
+          import json, os, urllib.request
+          webhook = os.environ.get("SLACK_WEBHOOK", "")
+          if not webhook:
+              print("SLACK_WEBHOOK not configured, skipping notification")
+              raise SystemExit(0)
+          e = os.environ
+          if e.get("SKIP_REASON"):
+              body = "Release train skipped: " + e["SKIP_REASON"]
+          else:
+              body = ("Release train result\n"
+                      + "- Candidate: " + e.get("CANDIDATE", "unknown") + "\n"
+                      + "- Version: " + e.get("RELEASE_VERSION", "unknown") + "\n"
+                      + "- Release run: " + e.get("RUN_URL", "n/a") + "\n"
+                      + "- Conclusion: " + e.get("CONCLUSION", "unknown"))
+          # nightly.yml's receiver consumes {"scenarios", "failed_run_url"};
+          # send the same fields alongside text so one webhook serves both
+          # workflows (a plain Slack incoming webhook ignores the extras).
+          payload = {"text": "java-profiler release train\n" + body}
+          # The nightly receiver treats {scenarios, failed_run_url} as a
+          # failure report; a benign skip (e.g. no new certified commit)
+          # must not look like one, so only failures carry those fields.
+          if not e.get("SKIP_REASON"):
+              payload["scenarios"] = body
+              payload["failed_run_url"] = e.get("RUN_URL") or (
+                  e["GITHUB_SERVER_URL"] + "/" + e["GITHUB_REPOSITORY"]
+                  + "/actions/runs/" + e["GITHUB_RUN_ID"])
+          req = urllib.request.Request(webhook, data=json.dumps(payload).encode(),
+                                       headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req):
+              pass
+          PY
