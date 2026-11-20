@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.datadoghq.profiler.wallclock.TaskBlockAssertions;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -389,6 +390,8 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
   /** Verifies that a pre-JNI-load worker emits a TaskBlock through its first monitor callback. */
   private void assertPreExistingMonitorCallback(String target, String expectedState)
       throws Exception {
+    // Monitor producers classify through JNI, which fails closed on non-HotSpot JDK 19+.
+    assumeTrue(TaskBlockAssertions.platformThreadClassificationSupported());
     Path recording = Files.createTempFile("preexisting-monitor-callback-", ".jfr");
     try {
       AtomicReference<String> resultLine = new AtomicReference<>();
