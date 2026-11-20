@@ -18,7 +18,6 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <algorithm>
-#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -1308,14 +1307,14 @@ void expectPltStride(std::vector<Elf64_Dyn> dyn, uint64_t stride, bool found) {
     second.r_offset = PLT_SLOT;
     second.r_info = ELF64_R_INFO(1, 0);
     memset(image + DYN_JMPREL_OFF, 0, stride);
-    memcpy(image + DYN_JMPREL_OFF + stride, &second, sizeof(second));
+    memcpy(image + DYN_JMPREL_OFF + stride, &second, std::min<size_t>(stride, sizeof(second)));
 
     EXPECT_EQ(parsedPthreadCreateImport(image),
               found ? reinterpret_cast<void**>(image + PLT_SLOT) : nullptr);
     const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
     const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
     second.r_offset = PLT_SLOT + 2 * sizeof(void*);
-    memcpy(image + DYN_JMPREL_OFF + stride, &second, sizeof(second));
+    memcpy(image + DYN_JMPREL_OFF + stride, &second, std::min<size_t>(stride, sizeof(second)));
     const u64 after = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
     EXPECT_NE(before, 0u);
     if (found) EXPECT_NE(after, before);
