@@ -84,12 +84,12 @@ git commit -m "Bump java-profiler (ddprof) to ${VERSION}"
 # non-fast-forward reject (a stale branch from a closed previous run)
 # recreates it, so a concurrent PR on the branch is not deleted by accident
 # and a delete failure is not hidden.
-if ! git push origin "$BRANCH" 2>"$TEMP_DIR/push.err"; then
-  if grep -qE 'non-fast-forward|fetch first' "$TEMP_DIR/push.err"; then
+if ! git push origin "$BRANCH" 2>"$WORK_DIR/push.err"; then
+  if grep -qE 'non-fast-forward|fetch first' "$WORK_DIR/push.err"; then
     git push origin :"$BRANCH" || { echo "ERROR: failed to recreate $BRANCH" >&2; exit 1; }
     git push origin "$BRANCH"
   else
-    cat "$TEMP_DIR/push.err" >&2
+    cat "$WORK_DIR/push.err" >&2
     exit 1
   fi
 fi
