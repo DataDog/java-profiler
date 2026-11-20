@@ -160,11 +160,19 @@ prepare-patched-agent:
 
         # A broken egress hop returns a short non-gzip body that fails tar inside
         # `curl | tar` and is lost with the pipe. Download to a file, log curl's
-        # outcome, and dump the body plus the redirect chain on failure.
+        # outcome, and dump the body on failure; a non-tar failure also traces the
+        # redirect chain once.
         dump_jdk_body() {
           ls -l "$1" || true
           sha256sum "$1" || true
           head -c 256 "$1" | od -c | head -20 || true
+        }
+        save_body() {
+          if [ "$(wc -c < "$1")" -le 1048576 ]; then
+            cp "$1" "$2" || true
+          else
+            echo "failure body larger than 1MB, not saved"
+          fi
         }
 
         MAX_RETRIES=3
@@ -182,13 +190,15 @@ prepare-patched-agent:
           if [ "${HTTP_CODE:-0}" -ge 400 ] 2>/dev/null && [ "${HTTP_CODE:-0}" -lt 500 ]; then
             echo "JDK download failed with HTTP ${HTTP_CODE}:"
             dump_jdk_body "${JDK_TARBALL}"
-            [ "$(wc -c < "${JDK_TARBALL}")" -le 1048576 ] && cp "${JDK_TARBALL}" /tmp/jdk-download-failed.bin || true
+            save_body "${JDK_TARBALL}" /tmp/jdk-download-failed.bin
+            rm -f "${JDK_TARBALL}"
             exit 1
           fi
           # Extract into a per-attempt staging dir: a failed tar must not leave a
-          # partial JDK tree that a later attempt would extract over.
+          # partial JDK tree that a later attempt would extract over. An empty
+          # extraction is a failed attempt, not a success.
           STAGE_DIR=$(mktemp -d /opt/java/.jdk-stage.XXXXXXXX) || exit 1
-          if [ "${CURL_STATUS}" -eq 0 ] && tar xzf "${JDK_TARBALL}" -C "${STAGE_DIR}"; then
+          if [ "${CURL_STATUS}" -eq 0 ] && tar xzf "${JDK_TARBALL}" -C "${STAGE_DIR}" && [ -n "$(ls -A "${STAGE_DIR}")" ]; then
             mv "${STAGE_DIR}"/* /opt/java/
             rm -rf "${STAGE_DIR}" "${JDK_TARBALL}"
             break
@@ -196,7 +206,7 @@ prepare-patched-agent:
           rm -rf "${STAGE_DIR}"
           echo "JDK download attempt ${attempt} produced a non-tar body:"
           dump_jdk_body "${JDK_TARBALL}"
-          [ "$(wc -c < "${JDK_TARBALL}")" -le 1048576 ] && cp "${JDK_TARBALL}" "/tmp/jdk-download-failed-attempt${attempt}.bin" || true
+          save_body "${JDK_TARBALL}" "/tmp/jdk-download-failed-attempt${attempt}.bin"
           if [ "$attempt" -eq 1 ]; then
             echo "JDK download probe (${DOWNLOAD_URL}):"
             curl -sIL --max-redirs 5 "${DOWNLOAD_URL}" 2>&1 | head -100 || true

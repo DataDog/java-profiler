@@ -50,6 +50,13 @@ if [ ! -x "${JDK_CACHE_DIR}/bin/java" ]; then
     sha256sum "$1" || true
     head -c 256 "$1" | od -c | head -20 || true
   }
+  save_test_jdk_body() {
+    if [ "$(wc -c < "$1")" -le 1048576 ]; then
+      cp "$1" "$2" || true
+    else
+      echo "failure body larger than 1MB, not saved"
+    fi
+  }
   MAX_RETRIES=3
   for attempt in $(seq 1 $MAX_RETRIES); do
     rm -rf "${JDK_CACHE_DIR}"
@@ -66,7 +73,8 @@ if [ ! -x "${JDK_CACHE_DIR}/bin/java" ]; then
     if [ "${HTTP_CODE:-0}" -ge 400 ] 2>/dev/null && [ "${HTTP_CODE:-0}" -lt 500 ]; then
       echo "TEST_JDK ${TEST_JDK} download failed with HTTP ${HTTP_CODE}:"
       dump_test_jdk_body "${TEST_JDK_TARBALL}"
-      [ "$(wc -c < "${TEST_JDK_TARBALL}")" -le 1048576 ] && cp "${TEST_JDK_TARBALL}" /tmp/test-jdk-failed.bin || true
+      save_test_jdk_body "${TEST_JDK_TARBALL}" /tmp/test-jdk-failed.bin
+      rm -f "${TEST_JDK_TARBALL}"
       exit 1
     fi
     if [ "${CURL_STATUS}" -eq 0 ] && tar -xzf "${TEST_JDK_TARBALL}" -C "${JDK_CACHE_DIR}" --strip-components=1; then
@@ -75,7 +83,7 @@ if [ ! -x "${JDK_CACHE_DIR}/bin/java" ]; then
     fi
     echo "TEST_JDK ${TEST_JDK} download attempt ${attempt} produced a non-tar body:"
     dump_test_jdk_body "${TEST_JDK_TARBALL}"
-    [ "$(wc -c < "${TEST_JDK_TARBALL}")" -le 1048576 ] && cp "${TEST_JDK_TARBALL}" /tmp/test-jdk-failed.bin || true
+    save_test_jdk_body "${TEST_JDK_TARBALL}" /tmp/test-jdk-failed.bin
     if [ "$attempt" -eq 1 ]; then
       echo "TEST_JDK ${TEST_JDK} download probe (${TEST_JDK_URL}):"
       curl -sIL --max-redirs 5 "${TEST_JDK_URL}" 2>&1 | head -100 || true
