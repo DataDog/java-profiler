@@ -17,6 +17,7 @@
 #include "threadExitRegistry.h"
 
 #include <algorithm>
+#include <iterator>
 #include <assert.h>
 #include <dlfcn.h>
 #include <link.h>
@@ -1235,14 +1236,17 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     Log::warn("native I/O hooks disabled: all original symbol lookups failed");
     return disable_and_unpatch();
   }
-  bool epoll_pwait2_original =
-      cached_originals[NativeSocketInterposer::HOOK_EPOLL_PWAIT2] != nullptr;
+  void* originals[NativeSocketInterposer::NUM_NATIVE_IO_HOOKS];
+  std::copy(std::begin(cached_originals), std::end(cached_originals), originals);
 #ifdef UNIT_TEST
-  if (socket_missing_original_for_test.load(std::memory_order_acquire) ==
-      NativeSocketInterposer::HOOK_EPOLL_PWAIT2) {
-    epoll_pwait2_original = false;
+  // Simulates a libc without this symbol; the call_once cache itself stays intact.
+  const int missing = socket_missing_original_for_test.load(std::memory_order_acquire);
+  if (missing >= 0 && missing < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS) {
+    originals[missing] = nullptr;
   }
 #endif
+  const bool epoll_pwait2_original =
+      originals[NativeSocketInterposer::HOOK_EPOLL_PWAIT2] != nullptr;
   // Before glibc 2.35 libc has no epoll_pwait2. Its optional imports, including
   // non-NULL lazy-binding stubs, then stay untouched instead of disabling the hooks.
   const int unhooked_index =
@@ -1351,7 +1355,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
         }
         if (count == 0) continue;
       }
-      if (cached_originals[hook_index] == nullptr) {
+      if (originals[hook_index] == nullptr) {
         Log::warn("native I/O hooks disabled: no original for imported %s in %s",
                   hooks[hook_index].name, lib->name());
         return disable_and_unpatch();
