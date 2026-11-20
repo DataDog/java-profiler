@@ -144,7 +144,10 @@ public class NativememDdprofExclusionLifecycleTest extends AbstractProcessProfil
   // forwarding hook in the profiler's own malloc slot. The cached start must
   // reject. Restoring the original slot values must allow a later start and
   // sampling again; the stand-in's saved-slot snapshot must remain unchanged
-  // across the rejected attempt (AC-7, AC-8, AC-13).
+  // across the rejected attempt (AC-7, AC-8, AC-13). The install/restore
+  // window runs with a background workload active: the stand-in must wire its
+  // forwarding targets before publishing any hook, so a callback allocating
+  // through the profiler's GOT during the rewrite cannot reach a null target.
   @Test
   void cachedConflictRejectsThenRestorationAllowsSampling() throws Exception {
     Path first = newRecording();
@@ -156,16 +159,28 @@ public class NativememDdprofExclusionLifecycleTest extends AbstractProcessProfil
                 + "START:start,nativemem=0,file="
                 + first
                 + ";ALLOC:1000;STOP;"
-                + "INSTALL;SAVEDMALLOC;START:start,nativemem=0,file="
+                + "SPINSTART;INSTALL;SAVEDMALLOC;START:start,nativemem=0,file="
                 + rejected
                 + ";SAVEDMALLOC;"
-                + "RESTORE;START:start,nativemem=0,file="
+                + "RESTORE;SPINSTOP;START:start,nativemem=0,file="
                 + afterRestore
                 + ";ALLOC:1000;STOP;MARKERS");
 
     assertEquals(
         Arrays.asList("[start] ok", "[start] error=" + DDPROF_LITERAL, "[start] ok"),
         startLines(lines));
+    assertTrue(
+        lines.contains("[spin] started")
+            && lines.stream().anyMatch(line -> line.startsWith("[spin] stopped rounds=")),
+        "the install/restore window must run with the background workload active");
+    long spinRounds =
+        lines.stream()
+            .filter(line -> line.startsWith("[spin] stopped rounds="))
+            .mapToLong(line -> Long.parseLong(line.substring("[spin] stopped rounds=".length())))
+            .findFirst()
+            .orElse(0L);
+    assertTrue(
+        spinRounds > 0, "the background workload must complete rounds while the window steps run");
     assertNativeAllocationEvents(first);
     assertNativeAllocationEvents(afterRestore);
 

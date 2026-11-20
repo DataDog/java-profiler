@@ -311,22 +311,29 @@ static int rewriteSlots(void* const* new_values, int save_existing) {
   if (dl_iterate_phdr(findProfilerImage, &image) == 0) return -1;
   if (locateOperationSlots(&image) != 0) return -1;
 
-  for (int op = 0; op < 5; op++) {
-    for (int i = 0; i < operation_slot_count[op]; i++) {
-      void** slot = operation_slots[op][i];
-      if (makeSlotWritable(slot) != 0) return -1;
-      if (save_existing) {
-        operation_saved[op][i] = *slot;
-      }
-      *slot = (void*)new_values[op];
-    }
-  }
+  /* Snapshot every original and wire the saved_* forwarder targets before
+   * any hook is published: a concurrent JVM thread that allocates after a
+   * hook became visible would otherwise reach a still-null target. The
+   * plain stores rely on the same word-store visibility the GOT rewrite
+   * itself relies on, as the production patchers do. */
   if (save_existing) {
+    for (int op = 0; op < 5; op++) {
+      for (int i = 0; i < operation_slot_count[op]; i++) {
+        operation_saved[op][i] = *operation_slots[op][i];
+      }
+    }
     saved_malloc = (void* (*)(size_t))operation_saved[0][0];
     saved_calloc = (void* (*)(size_t, size_t))operation_saved[1][0];
     saved_realloc = (void* (*)(void*, size_t))operation_saved[2][0];
     saved_posix_memalign = (int (*)(void**, size_t, size_t))operation_saved[3][0];
     saved_aligned_alloc = (void* (*)(size_t, size_t))operation_saved[4][0];
+  }
+  for (int op = 0; op < 5; op++) {
+    for (int i = 0; i < operation_slot_count[op]; i++) {
+      void** slot = operation_slots[op][i];
+      if (makeSlotWritable(slot) != 0) return -1;
+      *slot = (void*)new_values[op];
+    }
   }
   return 0;
 }
