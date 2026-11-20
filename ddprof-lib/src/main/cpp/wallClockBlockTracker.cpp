@@ -191,12 +191,13 @@ bool WallClockBlockTracker::snapshotAndExitBlockedRun(ThreadFilter* registry,
     return true;
 }
 
-bool WallClockBlockTracker::flushUnownedTail(ThreadFilter::SlotID slot_id, int tid) {
+bool WallClockBlockTracker::flushUnownedTail(ThreadFilter::SlotID slot_id, int tid,
+                                             bool blocking) {
     auto* block = slotForId(slot_id);
     if (block == nullptr ||
         block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
     // Standalone trackers have no recorder; their synthetic state needs no emission.
-    return !_tail_flush || _tail_flush(slot_id, tid);
+    return !_tail_flush || _tail_flush(slot_id, tid, blocking);
 }
 
 #if defined(DEBUG) || defined(UNIT_TEST)
@@ -263,16 +264,19 @@ void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
     }
 }
 
-void WallClockBlockTracker::resetUnownedBlockedTails() {
+u64 WallClockBlockTracker::resetUnownedBlockedTails() {
     SlotStorage* storage = _storage.load(std::memory_order_acquire);
     if (storage == nullptr) {
-        return;
+        return 0;
     }
+    u64 dropped = 0;
     for (ThreadFilter::SlotID id = 0; id < ThreadFilter::kMaxThreads; ++id) {
+        dropped += storage->slots[id].unowned_blocked_pending_weight.load(std::memory_order_acquire);
         storage->slots[id].resetUnownedBlockedSampling();
         // Segments outlive a reset tail; their epochs belong to the released recording.
         clearUnownedWeightSegments(id);
     }
+    return dropped;
 }
 
 bool WallClockBlockTracker::hasActiveBlockRun(ThreadFilter::SlotID slot_id) const {

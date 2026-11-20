@@ -964,7 +964,7 @@ ThreadFilter::RecordingEpoch ThreadFilter::recordingEpoch() const {
     return _recording_epoch.load(std::memory_order_acquire);
 }
 
-bool ThreadFilter::flushUnownedTails() {
+bool ThreadFilter::flushUnownedTails(bool blocking) {
     DEBUG_ASSERT_NOT_IN_SIGNAL();
     std::lock_guard<std::mutex> lock(_registry_lock);
     if (_block_tracker == nullptr) return true;
@@ -975,7 +975,7 @@ bool ThreadFilter::flushUnownedTails() {
         if (slot == nullptr) continue;
         int tid = slot->nativeTid();
         if (tid < 0) tid = slot->retiring_tid.load(std::memory_order_acquire);
-        if (!_block_tracker->flushUnownedTail(id, tid)) flushed = false;
+        if (!_block_tracker->flushUnownedTail(id, tid, blocking)) flushed = false;
     }
     drainRetiredLocked();
     return flushed;

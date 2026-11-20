@@ -974,12 +974,47 @@ WallClockBlockTracker::BlockState* Profiler::wallSampleSlot(const WallSampleRequ
   return _block_tracker.slotForId(request.slot_id);
 }
 
-bool Profiler::flushWallTail(ThreadFilter::SlotID slot_id, int tid) {
+bool Profiler::flushWallTail(ThreadFilter::SlotID slot_id, int tid, bool blocking) {
   if (tid < 0) return false;
   // Stop and owner teardown can race; the same TID must use one exact stripe.
   // Signal writers have drained at stop, or lost registry visibility at retirement.
-  RecordingStripe stripe(_locks, getLockIndex(tid), false);
+  u32 index = getLockIndex(tid);
+  if (blocking) {
+    ExclusiveLockGuard stripe(&_locks[index]);
+    return flushWallTailLocked(index, tid, slot_id, false);
+  }
+  RecordingStripe stripe(_locks, index, false);
   return stripe.owned() && flushWallTailLocked(stripe.index(), tid, slot_id, false);
+}
+
+void Profiler::flushUnownedTailsAtStop() {
+  // The wall timer closes epochs (exclusive _rec_lock) only under this mutex, and _state_lock
+  // excludes dump(), so _rec_lock stays shareable. Signal writers are drained and the stop
+  // thread holds no stripe, so waiting for one only waits out a normal-thread writer.
+  auto epoch_lock = BaseWallClock::samplingEpochLock();
+  bool flushed = _thread_filter.flushUnownedTails(true);
+  // Reuse full tables without losing old event references; bound retries against concurrent refills.
+  constexpr int max_capacity_retries = 1 + ThreadFilter::kMaxThreads / ThreadIdTable::capacity();
+  // A retiring owner publishes retiring_tid right after unpublishing its tid; give it time.
+  constexpr int max_backoffs = 3;
+  constexpr u64 backoff_ns = 1000000;
+  int backoffs = 0;
+  for (int retry = 0; !flushed && retry < max_capacity_retries; ++retry) {
+    if (!_jfr.recoverThreadTableCapacity()) {
+      if (++backoffs > max_backoffs) break;
+#ifdef UNIT_TEST
+      if (stopTailBackoffHookForTest != nullptr) stopTailBackoffHookForTest(stopTailBackoffHookArgForTest);
+#endif
+      OS::sleep(backoff_ns);
+    }
+    flushed = _thread_filter.flushUnownedTails(true);
+  }
+  if (!flushed) {
+    // Every stripe excludes a concurrent retirement flush, so no tail is both written and dropped.
+    AllStripesLock stripes(this);
+    u64 dropped = _block_tracker.resetUnownedBlockedTails();
+    if (dropped != 0) Counters::increment(WC_UNOWNED_TAIL_DROPPED_AT_STOP, dropped);
+  }
 }
 
 bool Profiler::flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
@@ -2702,17 +2737,7 @@ Error Profiler::stop() {
     return Error("task-block rotation did not drain; teardown skipped, retry stop()");
   }
 
-  bool tails_flushed = _thread_filter.flushUnownedTails();
-  // Reuse full tables without losing old event references; bound retries against concurrent refills.
-  constexpr int max_capacity_retries = 1 + ThreadFilter::kMaxThreads / ThreadIdTable::capacity();
-  for (int retry = 0; !tails_flushed && retry < max_capacity_retries; ++retry) {
-    if (!_jfr.recoverThreadTableCapacity()) break;
-    tails_flushed = _thread_filter.flushUnownedTails();
-  }
-  if (!tails_flushed) {
-    endTaskBlockRotation();
-    return Error("pending wall-clock tails could not be written; teardown skipped");
-  }
+  flushUnownedTailsAtStop();
 
   // Close the registration gate and wait for the calls already past it, so no
   // thread arms a timer or opens an fd after the engines below stop.

@@ -89,7 +89,7 @@ rejects a thread-pool insertion failure before it appends event bytes.
 
 Stop retries full thread tables without a dump. Under exclusive `_rec_lock`, it archives
 full tables' IDs before clearing their slots. A bounded retry admits retained tails into
-fresh capacity; `writeThreads()` unions archived IDs with current IDs without duplicates.
+fresh capacity, and stop counts a tail it still cannot write as dropped; `writeThreads()` unions archived IDs with current IDs without duplicates.
 
 The archive vector is allocated only during recovery and charged to `NM_JFR_BUFFERS`.
 Serialization clears its IDs; recording destruction frees its capacity before the next start.

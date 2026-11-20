@@ -237,7 +237,8 @@ public:
     bool lookupThreadEntry(ThreadEntry& entry, RecordingEpoch epoch) const;
     // Stop calls this after draining sampling signals, before JFR teardown.
     // Failed writes retain both live and retired tail custody for a retry.
-    bool flushUnownedTails();
+    // blocking=true waits for each exact stripe; the caller must hold none of them.
+    bool flushUnownedTails(bool blocking = false);
     void deactivateRecording();
     SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
 

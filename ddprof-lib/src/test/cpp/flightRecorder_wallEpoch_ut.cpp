@@ -9,6 +9,8 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <functional>
+#include <mutex>
 #include <thread>
 #include <unistd.h>
 #include <map>
@@ -38,6 +40,10 @@ public:
   static u32 stripe(int tid) { return Profiler::instance()->getLockIndex(tid); }
   static bool recordTaskBlock(u32 stripe, int tid, TaskBlockEvent* event) {
     return Profiler::instance()->_jfr.recordTaskBlock(stripe, tid, event);
+  }
+  static SpinLock& recLock() { return Profiler::instance()->_jfr._rec_lock; }
+  static SpinLock& stripeLock(int tid) {
+    return Profiler::instance()->_locks[Profiler::instance()->getLockIndex(tid)];
   }
 };
 
@@ -616,3 +622,145 @@ TEST_P(WallEpochRecordingTest, StopRecoversFullStripeForLowNativeTid) {
 }
 
 INSTANTIATE_TEST_SUITE_P(PopulationChanges, WallEpochRecordingTest, ::testing::Bool());
+
+// Full stop() over a fresh recording that holds one deferred unowned tail.
+class WallTailStopTest : public WallEpochRecordingTest {
+protected:
+  WallEpochFile file;
+  u64 epoch_start = 0;
+  long long dropped_before = 0;
+
+  Error stopWithPendingTail(const std::function<void()>& before_stop = [] {}) {
+    EXPECT_GE(file.fd, 0);
+    Arguments args;
+    args._jfr_options = JFR_SYNC_OPTS;
+    const int recording_fd = dup(file.fd);
+    EXPECT_GE(recording_fd, 0);
+    struct StopRecording {
+      Recording* previous = ProfilerTestAccessor::recording();
+      State state = ProfilerTestAccessor::exchangeState(RUNNING);
+      explicit StopRecording(Recording* recording) {
+        NativeMem::record(NM_JFR_BUFFERS, sizeof(Recording));
+        ProfilerTestAccessor::recording() = recording;
+      }
+      ~StopRecording() {
+        if (ProfilerTestAccessor::recording() != nullptr) {
+          delete ProfilerTestAccessor::recording();
+          NativeMem::record(NM_JFR_BUFFERS, -static_cast<long long>(sizeof(Recording)));
+        }
+        ProfilerTestAccessor::recording() = previous;
+        ProfilerTestAccessor::exchangeState(state);
+      }
+    } recording(new Recording(recording_fd, args));
+    WallClockEpochEvent epoch(epoch_start);
+    profiler->recordWallClockEpoch(request.tid, &epoch, epoch_start + 1);
+    dropped_before = Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP);
+    before_stop();
+    Error error = profiler->stop();
+    EXPECT_FALSE(profiler->isRunning());
+    EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
+    EXPECT_EQ(nullptr, ProfilerTestAccessor::recording()) << "JFR teardown must run";
+    return error;
+  }
+
+  void SetUp() override {
+    WallEpochRecordingTest::SetUp();
+    profiler->sampleWriteHookForTest = nullptr;
+    epoch_start = TSC::ticks();
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, epoch_start));
+  }
+
+  u64 pendingWeight() {
+    return profiler->blockTracker()->slotForId(slot)->unowned_blocked_pending_weight.load();
+  }
+};
+
+// Param: true models the wall timer closing an epoch, false a normal-thread stripe writer.
+class WallTailStopContentionTest : public WallTailStopTest {};
+
+TEST_P(WallTailStopContentionTest, StopWaitsOutContentionAndWritesTail) {
+  std::atomic<bool> held{false};
+  std::atomic<bool> released{false};
+  std::atomic<bool> reached{false};
+  std::thread holder;
+  int backoffs = 0;
+  profiler->stopTailBackoffHookArgForTest = &backoffs;
+  profiler->stopTailBackoffHookForTest = +[](void* arg) { ++*static_cast<int*>(arg); };
+  Error error = stopWithPendingTail([&] {
+    holder = std::thread([&] {
+      std::unique_lock<std::mutex> epoch_lock;
+      if (GetParam()) epoch_lock = BaseWallClock::samplingEpochLock();
+      SpinLock& lock = GetParam() ? ProfilerTestAccessor::recLock()
+                                  : ProfilerTestAccessor::stripeLock(request.tid);
+      lock.lock();
+      held = true;
+      // Hold until stop() has drained its writers and reached the tail flush.
+      for (int i = 0; i < 5000 && !profiler->taskBlockRotationActiveForTest(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      reached = profiler->taskBlockRotationActiveForTest();
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      released = true;
+      lock.unlock();
+    });
+    while (!held.load()) std::this_thread::yield();
+  });
+  const bool waited = released.load();
+  holder.join();
+  profiler->stopTailBackoffHookForTest = nullptr;
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_TRUE(reached.load()) << "contention must overlap the stop-time tail flush";
+  EXPECT_TRUE(waited) << "stop() must wait out the holder instead of dropping the tail";
+  // A first flush attempt racing the holder would fail and back off.
+  EXPECT_EQ(0, backoffs) << "stop() must not attempt the flush while the holder runs";
+  EXPECT_EQ(0ULL, pendingWeight());
+  EXPECT_EQ(dropped_before, Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP));
+  const auto decoded = decodeWallEpochs(file.fd);
+  ASSERT_EQ(1U, decoded.weights.count(epoch_start));
+  EXPECT_EQ(1ULL, decoded.weights.at(epoch_start));
+}
+
+INSTANTIATE_TEST_SUITE_P(EpochCloseOrStripeWriter, WallTailStopContentionTest, ::testing::Bool());
+
+// Param: true publishes retiring_tid during the first stop backoff, false never does.
+class WallTailStopRetirementGapTest : public WallTailStopTest {};
+
+TEST_P(WallTailStopRetirementGapTest, StopWritesOrCountsTailClaimedBeforeRetiringTidPublication) {
+  auto* identity = profiler->threadFilter()->slotForId(slot);
+  // Quiescent injection of retireThreadByTid's window between its tid claim and retiring_tid store.
+  identity->tid.store(-1, std::memory_order_release);
+  struct Retirement {
+    decltype(identity) identity;
+    int tid;
+    bool publish;
+    int backoffs = 0;
+  } retirement{identity, request.tid, GetParam()};
+  profiler->stopTailBackoffHookArgForTest = &retirement;
+  profiler->stopTailBackoffHookForTest = +[](void* arg) {
+    auto* state = static_cast<Retirement*>(arg);
+    if (state->backoffs++ == 0 && state->publish) {
+      state->identity->retiring_tid.store(state->tid, std::memory_order_release);
+    }
+  };
+  Error error = stopWithPendingTail();
+  profiler->stopTailBackoffHookForTest = nullptr;
+  identity->retiring_tid.store(-1, std::memory_order_release);
+  identity->tid.store(request.tid, std::memory_order_release);
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_EQ(GetParam() ? 1 : 3, retirement.backoffs);
+  EXPECT_EQ(0ULL, pendingWeight());
+  EXPECT_EQ(dropped_before + (GetParam() ? 0 : 1), Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP));
+  const auto decoded = decodeWallEpochs(file.fd);
+  EXPECT_EQ(GetParam() ? 1U : 0U, decoded.weights.count(epoch_start));
+}
+
+INSTANTIATE_TEST_SUITE_P(RetiringTidPublication, WallTailStopRetirementGapTest, ::testing::Bool());
+
+TEST_F(WallTailStopTest, PermanentWriteFailureCountsDroppedTailAndCompletesTeardown) {
+  profiler->sampleWriteHookArgForTest = this;
+  profiler->sampleWriteHookForTest = +[](u32, u64, Event*, const Context*, void*) { return false; };
+  Error error = stopWithPendingTail();
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_EQ(0ULL, pendingWeight());
+  EXPECT_EQ(dropped_before + 1, Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP));
+}

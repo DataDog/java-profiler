@@ -369,12 +369,13 @@ public:
     bool snapshotAndExitBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                                    u64 generation, BlockRunSnapshot* snapshot
                                    TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* origin = nullptr));
-    using TailFlush = std::function<bool(ThreadFilter::SlotID, int)>;
-    // Wired once before registry use; lock contention must retain the tail, not wait.
+    using TailFlush = std::function<bool(ThreadFilter::SlotID, int, bool)>;
+    // Wired once before registry use. Only the drained stop path passes blocking=true;
+    // elsewhere lock contention must retain the tail, not wait.
     // Profiler wires this during static initialization, before TLS keys are guaranteed ready.
     void setTailFlush(TailFlush flush) { _tail_flush = std::move(flush); }
     // Teardown retains failed writes; registry reclamation must wait for success.
-    bool flushUnownedTail(ThreadFilter::SlotID slot_id, int tid);
+    bool flushUnownedTail(ThreadFilter::SlotID slot_id, int tid, bool blocking = false);
     bool retireSlot(ThreadFilter::SlotID slot_id, int tid);
     // Generation-checked exits preserve retained unowned context and epoch segments.
     // Clears stale suppression state so a new/reused slot cannot inherit a
@@ -391,7 +392,8 @@ public:
     bool hasActiveBlockRun(ThreadFilter::SlotID slot_id) const;
     // Drops every pending unowned tail (trace id, weight and epoch segments);
     // owned runs keep their state. Callers exclude signal handlers.
-    void resetUnownedBlockedTails();
+    // Returns the pending weight it discarded.
+    u64 resetUnownedBlockedTails();
     // Timer- and signal-side owned-block decisions. All of them read the
     // complete suppression payload and reject it if slot identity or block
     // lifecycle changes before final validation.

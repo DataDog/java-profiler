@@ -299,7 +299,9 @@ private:
   // Partial writes consume only accepted segments, retaining the original payload for retries.
   bool flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
                            bool preserve_cadence);
-  bool flushWallTail(ThreadFilter::SlotID slot_id, int tid);
+  bool flushWallTail(ThreadFilter::SlotID slot_id, int tid, bool blocking);
+  // Never fails: each retained tail is written or counted as dropped.
+  void flushUnownedTailsAtStop();
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -502,8 +504,8 @@ public:
       _calltrace_buffer[i] = NULL;
     }
     _thread_filter.setBlockTracker(&_block_tracker);
-    _block_tracker.setTailFlush([this](ThreadFilter::SlotID slot_id, int tid) {
-      return flushWallTail(slot_id, tid);
+    _block_tracker.setTailFlush([this](ThreadFilter::SlotID slot_id, int tid, bool blocking) {
+      return flushWallTail(slot_id, tid, blocking);
     });
     _call_trace_storage.registerLivenessChecker(
         [this](CallTraceIdSet& live) { _block_tracker.collectLiveTraceIds(live); },
@@ -525,6 +527,9 @@ public:
   using SampleWriteHook = bool (*)(u32, u64, Event*, const Context*, void*);
   SampleWriteHook sampleWriteHookForTest = nullptr;
   void* sampleWriteHookArgForTest = nullptr;
+  // Runs before each stop-time tail flush backoff sleep.
+  void (*stopTailBackoffHookForTest)(void*) = nullptr;
+  void* stopTailBackoffHookArgForTest = nullptr;
   RecordingLocks recordingLocksForTest() { return RecordingLocks(this); }
   u32 exchangeNumContextAttributesForTest(u32 count);
 #endif
