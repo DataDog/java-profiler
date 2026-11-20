@@ -438,13 +438,6 @@ const char *Profiler::asgctError(int code) {
   }
 }
 
-u32 Profiler::getLockIndex(int tid) {
-  u32 lock_index = tid;
-  lock_index ^= lock_index >> 8;
-  lock_index ^= lock_index >> 4;
-  return lock_index % CONCURRENCY_LEVEL;
-}
-
 void Profiler::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;
   strcpy(buf, "_ZN");
@@ -1274,16 +1267,35 @@ void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 nex
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   SignalBlocker signals;
   auto publish = [&] {
-    _jfr.wallClockEpoch(getLockIndex(tid), event);
+    bool prune_due = _jfr.wallClockEpoch(getLockIndex(tid), event);
     // Publish the successor before dump can prune this epoch without pending units.
     WallClockCounters::beginSamplingEpoch(next_epoch_start);
+    return prune_due;
   };
   if (stripes_held) {
+    // Only chunk sealing holds every stripe, and switchChunk() prunes next.
     publish();
-  } else {
-    ExclusiveLockGuard stripe(&_locks[getLockIndex(tid)]);
-    publish();
+    return;
   }
+  bool prune_due;
+  {
+    ExclusiveLockGuard stripe(&_locks[getLockIndex(tid)]);
+    prune_due = publish();
+  }
+  if (prune_due) pruneClosedWallEpochs();
+}
+
+void Profiler::pruneClosedWallEpochs() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  // A deferral reads the epoch and commits its segment under one stripe. Once the
+  // successor is published, cycling each stripe waits out deferrals of closed epochs.
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    ExclusiveLockGuard stripe(&_locks[i]);
+  }
+  // The threshold spaces prunes thousands of closes apart, so this buffer is rare.
+  WallClockBlockTracker::EpochStarts pending;
+  _block_tracker.collectUnownedEpochStarts(pending);
+  _jfr.pruneWallEpochs(pending);
 }
 
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {

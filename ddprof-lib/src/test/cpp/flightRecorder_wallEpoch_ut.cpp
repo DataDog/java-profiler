@@ -37,18 +37,18 @@ public:
   static Engine*& wall() { return Profiler::instance()->_wall_engine; }
   static Recording*& recording() { return Profiler::instance()->_jfr._rec; }
   static State exchangeState(State state) { return Profiler::instance()->_state.exchange(state); }
-  static u32 stripe(int tid) { return Profiler::instance()->getLockIndex(tid); }
+  static u32 lockIndex(int tid) { return Profiler::instance()->getLockIndex(tid); }
+  static SpinLock& stripeLockAt(u32 index) { return Profiler::instance()->_locks[index]; }
+  static SpinLock& stripeLock(int tid) { return stripeLockAt(lockIndex(tid)); }
   static bool recordTaskBlock(u32 stripe, int tid, TaskBlockEvent* event) {
     return Profiler::instance()->_jfr.recordTaskBlock(stripe, tid, event);
   }
   static SpinLock& recLock() { return Profiler::instance()->_jfr._rec_lock; }
-  static SpinLock& stripeLock(int tid) {
-    return Profiler::instance()->_locks[Profiler::instance()->getLockIndex(tid)];
-  }
 };
 
 class RecordingTestAccessor {
 public:
+  static constexpr size_t kPruneFloor = Recording::kMinWallEpochPruneThreshold;
   static size_t epochCount(const Recording& recording) { return recording._wall_epochs.size(); }
   static bool hasEpoch(const Recording& recording, u64 start) { return recording._wall_epochs.count(start) != 0; }
 };
@@ -388,6 +388,89 @@ TEST_P(WallEpochRecordingTest, ZeroPendingPeriodicRequestKeepsOrdinaryTimestampA
   checkOrdinaryAfterEpochRotation(false);
 }
 
+struct RecorderRestore {
+  Recording* saved_recording = ProfilerTestAccessor::recording();
+  u64 saved_epoch = WallClockCounters::samplingEpochStart();
+  ~RecorderRestore() {
+    WallClockCounters::beginSamplingEpoch(saved_epoch);
+    ProfilerTestAccessor::recording() = saved_recording;
+  }
+};
+
+// Closes epochs through the timer's Profiler path; returns the next epoch start.
+static u64 closeEpochs(Profiler* profiler, int tid, u64 start, u64 count) {
+  for (u64 i = 0; i < count; ++i, ++start) {
+    WallClockEpochEvent epoch(start);
+    epoch.endEpoch(1);
+    profiler->recordWallClockEpoch(tid, &epoch, start + 1, false);
+  }
+  return start;
+}
+
+TEST_P(WallEpochRecordingTest, ClosedEpochsWithoutRetainedSegmentsDoNotAccumulate) {
+  WallEpochFile continuous;
+  ASSERT_GE(continuous.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  const int recording_fd = dup(continuous.fd);
+  ASSERT_GE(recording_fd, 0);
+  Recording recording(recording_fd, args);
+  target = &recording;
+  RecorderRestore restore;
+  ProfilerTestAccessor::recording() = &recording;
+  const u64 retained = TSC::ticks();
+  ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, retained));
+  constexpr u64 kClosedEpochs = 3 * RecordingTestAccessor::kPruneFloor;
+  const u64 next = closeEpochs(profiler, request.tid, retained, kClosedEpochs);
+  EXPECT_EQ(next, WallClockCounters::samplingEpochStart());
+  EXPECT_LT(RecordingTestAccessor::epochCount(recording), RecordingTestAccessor::kPruneFloor)
+      << "Closed epochs without retained segments must be pruned between dumps";
+  EXPECT_TRUE(RecordingTestAccessor::hasEpoch(recording, retained))
+      << "An epoch referenced by a retained segment must survive close-time pruning";
+}
+
+// A deferral on another stripe read the closing epoch before its successor was
+// published. Pruning must wait for its commit instead of dropping the epoch first.
+TEST_P(WallEpochRecordingTest, ClosePruneWaitsForInFlightDeferral) {
+  WallEpochFile continuous;
+  ASSERT_GE(continuous.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  const int recording_fd = dup(continuous.fd);
+  ASSERT_GE(recording_fd, 0);
+  Recording recording(recording_fd, args);
+  target = &recording;
+  RecorderRestore restore;
+  ProfilerTestAccessor::recording() = &recording;
+  const u64 first = TSC::ticks();
+  const u64 closing = closeEpochs(profiler, request.tid, first,
+                                  RecordingTestAccessor::kPruneFloor - 1);
+  ASSERT_EQ(RecordingTestAccessor::kPruneFloor - 1, RecordingTestAccessor::epochCount(recording));
+  const u32 timer_stripe = ProfilerTestAccessor::lockIndex(request.tid);
+  SpinLock& deferral_stripe = ProfilerTestAccessor::stripeLockAt((timer_stripe + 1) % CONCURRENCY_LEVEL);
+  std::atomic<bool> holding{false};
+  std::atomic<bool> closed{false};
+  std::thread deferral([&] {
+    ExclusiveLockGuard stripe(&deferral_stripe);
+    const u64 read_epoch = WallClockCounters::samplingEpochStart();
+    holding.store(true, std::memory_order_release);
+    // The close publishes the successor without this stripe; only the prune waits.
+    while (WallClockCounters::samplingEpochStart() == read_epoch) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(closed.load(std::memory_order_acquire)) << "Prune finished while a deferral held a stripe";
+    EXPECT_TRUE(profiler->blockTracker()->deferUnownedWeight(slot, read_epoch));
+  });
+  while (!holding.load(std::memory_order_acquire)) std::this_thread::yield();
+  ASSERT_EQ(closing, WallClockCounters::samplingEpochStart());
+  closeEpochs(profiler, request.tid, closing, 1);
+  closed.store(true, std::memory_order_release);
+  deferral.join();
+  EXPECT_LT(RecordingTestAccessor::epochCount(recording), RecordingTestAccessor::kPruneFloor)
+      << "The threshold-reaching close must prune";
+  EXPECT_TRUE(RecordingTestAccessor::hasEpoch(recording, closing))
+      << "A closed epoch read by an in-flight deferral must survive pruning";
+}
+
 class WallEpochTimer : public BaseWallClock {
 public:
   std::atomic<int> passes{0};
@@ -548,7 +631,7 @@ void WallEpochRecordingTest::checkStopRecoversFullStripe(int tid) {
     }
   } recording(new Recording(recording_fd, args));
   profiler->sampleWriteHookForTest = nullptr;
-  const u32 stripe = ProfilerTestAccessor::stripe(request.tid);
+  const u32 stripe = ProfilerTestAccessor::lockIndex(request.tid);
   TaskBlockEvent event{};
   event._start = 1;
   event._end = 2;
@@ -568,7 +651,7 @@ void WallEpochRecordingTest::checkStopRecoversFullStripe(int tid) {
   } tails{profiler->threadFilter(), {}};
   const int extra_tails = GetParam() ? 300 : 0;
   for (int tid = 100000; tails.slots.size() < static_cast<size_t>(extra_tails); ++tid) {
-    if (tid == request.tid || ProfilerTestAccessor::stripe(tid) != stripe) continue;
+    if (tid == request.tid || ProfilerTestAccessor::lockIndex(tid) != stripe) continue;
     const int id = profiler->threadFilter()->registerThread(tid);
     ASSERT_GE(id, 0);
     tails.slots.emplace_back(id, tid);

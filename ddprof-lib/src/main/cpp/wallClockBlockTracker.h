@@ -22,11 +22,13 @@
 #include <cstdint>
 #include <functional>
 #include <utility>
+#include <vector>
 
 #include "arch.h"
 #include "taskBlockDiagnostics.h"
 #include "counters.h"
 #include "callTraceHashTable.h"
+#include "countingAllocator.h"
 #include "context.h"
 #include "threadFilter.h"
 #include "threadState.h"
@@ -327,7 +329,9 @@ public:
 #endif
     // Normal-thread callbacks; all recording stripes must exclude publication.
     void collectLiveTraceIds(CallTraceIdSet& live);
-    void collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const;
+    using EpochStarts = std::vector<u64, CountingAllocator<u64, NM_WALLCLOCK>>;
+    // Appends the epoch starts of root slots' pending segments, sorted and unique.
+    void collectUnownedEpochStarts(EpochStarts& epochs) const;
     void onUnpreservedTraceIds(const CallTraceIdSet& failed);
 
     // Returns nullptr if slot_id is out of range or storage is not yet
@@ -450,8 +454,13 @@ private:
     bool ownedBlockGeneration(ThreadFilter* registry, const ThreadEntry& entry,
                               u64& generation, bool& already_sampled) const;
 
+    // Span and root ids, then each pair of 32-bit tags packed into one word.
+    static constexpr int kContextIdWords = 2;
+    static constexpr int kContextTagWords = static_cast<int>(DD_TAGS_CAPACITY / 2);
+    static constexpr int kContextWords = kContextIdWords + kContextTagWords;
+    static_assert(DD_TAGS_CAPACITY % 2 == 0, "Unowned context packs tags in pairs");
     struct alignas(DEFAULT_CACHE_LINE_SIZE) UnownedContextCell {
-        std::atomic<u64> words[7]{};
+        std::atomic<u64> words[kContextWords]{};
         std::atomic<u64> publication{0};
         struct {
             std::atomic<u64> epoch_start{0};

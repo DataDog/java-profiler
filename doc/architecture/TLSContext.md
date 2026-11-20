@@ -209,7 +209,8 @@ Suppression requires matching current/retained fields and a revalidated native
 identity and recording epoch. Missing backing, unstable publication or terminal
 sequence forces ordinary sampling and increments
 `wc_unowned_context_snapshot_unavailable`; normal first capture and an empty
-captured context are not failures. Known active spans bypass unowned accumulation
+captured context are not failures. A failed context chunk allocation increments
+`wc_unowned_context_allocation_failed`. Known active spans bypass unowned accumulation
 without consuming the old origin.
 
 Pending units retain the start tick of their `WallClockSamplingEpoch` window.
