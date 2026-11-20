@@ -63,10 +63,12 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       exerciseBothWorkers(fixture, name + "-timed");
     }
     stopProfiler();
-    JfrEvents events = verifyEvents("datadog.TaskBlock", false);
-    assertEpollTaskBlock(events, name, "io.netty.", recordFailures() - failuresBefore);
-    assertTimedEpollTaskBlocks(
-        events, name + "-timed", "io.netty.", recordFailures() - failuresBefore);
+    assertBothEpollWorkers(
+        verifyEvents("datadog.TaskBlock", false),
+        name,
+        name + "-timed",
+        "io.netty.",
+        recordFailures() - failuresBefore);
   }
 
   /** Relocates real classes and lets Netty extract and delete its own renamed native image. */
@@ -95,14 +97,9 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
           TimeUnit.SECONDS.toNanos(5));
     }
     stopProfiler();
-    JfrEvents events = verifyEvents("datadog.TaskBlock", false);
-    assertEpollTaskBlock(
-        events,
+    assertBothEpollWorkers(
+        verifyEvents("datadog.TaskBlock", false),
         name,
-        ShadedNettyClassLoader.PREFIX + "io.netty.",
-        recordFailures() - failuresBefore);
-    assertTimedEpollTaskBlocks(
-        events,
         name + "-timed",
         ShadedNettyClassLoader.PREFIX + "io.netty.",
         recordFailures() - failuresBefore);
@@ -133,10 +130,12 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
           exerciseBothWorkers(fixture, name + "-timed");
           profiler.stop();
           running = false;
-          JfrEvents events = verifyEvents(recording, "datadog.TaskBlock", false);
-          assertEpollTaskBlock(events, name, "io.netty.", recordFailures() - failuresBefore);
-          assertTimedEpollTaskBlocks(
-              events, name + "-timed", "io.netty.", recordFailures() - failuresBefore);
+          assertBothEpollWorkers(
+              verifyEvents(recording, "datadog.TaskBlock", false),
+              name,
+              name + "-timed",
+              "io.netty.",
+              recordFailures() - failuresBefore);
           assertEquals(-9, fixture.invalidDescriptorErrno(), "restored JNI must preserve EBADF");
           assertEquals(
               -9, fixture.invalidTimedDescriptorErrno(), "restored timed JNI must preserve EBADF");
@@ -210,12 +209,10 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       }
       JfrEvents oldEvents = verifyEvents(first, "datadog.TaskBlock", false);
       JfrEvents newEvents = verifyEvents(second, "datadog.TaskBlock", false);
-      assertEpollTaskBlock(oldEvents, name, "io.netty.", firstRecordFailures);
-      assertTimedEpollTaskBlocks(
-          oldEvents, name + "-timed-first", "io.netty.", firstRecordFailures);
-      assertEpollTaskBlock(newEvents, name, "io.netty.", secondRecordFailures);
-      assertTimedEpollTaskBlocks(
-          newEvents, name + "-timed-second", "io.netty.", secondRecordFailures);
+      assertBothEpollWorkers(
+          oldEvents, name, name + "-timed-first", "io.netty.", firstRecordFailures);
+      assertBothEpollWorkers(
+          newEvents, name, name + "-timed-second", "io.netty.", secondRecordFailures);
       assertEquals(0, TaskBlockAssertions.countEventsForThread(oldEvents, name + "-survivor"));
       assertEquals(
           interruptSurvivor ? 1 : 0,
@@ -378,7 +375,21 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
   /** Checks explicit JNI intervals, allowing only counter-accounted recorder rejection. */
   public static void assertTimedEpollTaskBlocks(
       Iterable<JfrEvent> events, String name, String packagePrefix, long recordFailures) {
-    assertEpollTaskBlocks(events, name, packagePrefix, true, recordFailures);
+    TaskBlockRecorderTestSupport.assertCompletedIntervals(
+        recordFailures, epollIntervals(events, name, packagePrefix, true));
+  }
+
+  /** Checks the loop and timed workers of one window against their shared rejection delta. */
+  public static void assertBothEpollWorkers(
+      Iterable<JfrEvent> events,
+      String loopName,
+      String timedName,
+      String packagePrefix,
+      long recordFailures) {
+    TaskBlockRecorderTestSupport.assertCompletedIntervals(
+        recordFailures,
+        epollIntervals(events, loopName, packagePrefix, false),
+        epollIntervals(events, timedName, packagePrefix, true));
   }
 
   private long recordFailures() {
@@ -402,16 +413,19 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
   /** Checks Netty epoll waits without accepting unrelated blocks on that worker. */
   public static void assertEpollTaskBlock(
       Iterable<JfrEvent> events, String name, String packagePrefix, long recordFailures) {
-    assertEpollTaskBlocks(events, name, packagePrefix, false, recordFailures);
+    TaskBlockRecorderTestSupport.assertCompletedIntervals(
+        recordFailures, epollIntervals(events, name, packagePrefix, false));
   }
 
-  private static void assertEpollTaskBlocks(
-      Iterable<JfrEvent> events,
-      String name,
-      String packagePrefix,
-      boolean timed,
-      long recordFailures) {
+  /**
+   * Validates and counts the worker's matching TaskBlocks against its five waits. The description
+   * names the first same-thread event without the epoll frames, so a lost frame is diagnosable.
+   */
+  private static TaskBlockRecorderTestSupport.WorkerIntervals epollIntervals(
+      Iterable<JfrEvent> events, String name, String packagePrefix, boolean timed) {
     int matched = 0;
+    int excluded = 0;
+    String firstExcluded = null;
     Set<Long> intervalStarts = new HashSet<>();
     for (JfrEvent event : events) {
       if (!name.equals(event.getThreadName("eventThread"))) {
@@ -433,6 +447,7 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
                     || frame.methodName().startsWith("lambda$timedNativeWaits"));
       }
       if (!epollFrame || (timed && !timedFrame)) {
+        if (excluded++ == 0) firstExcluded = event.getStackTraceString();
         continue;
       }
       assertTrue(event.has("observedBlockingState"), "missing TaskBlock state");
@@ -451,12 +466,14 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
     if (timed) {
       assertTrue(matched <= 5, "more than five distinct timedNativeWait intervals on " + name);
     }
-    TaskBlockRecorderTestSupport.assertCompletedIntervals(
-        matched,
-        5,
-        recordFailures,
+    return TaskBlockRecorderTestSupport.worker(
         "expected five "
             + (timed ? "timedNativeWait intervals on " : "IO_WAIT TaskBlocks on ")
-            + name);
+            + name
+            + (excluded == 0
+                ? ""
+                : " (" + excluded + " excluded, first stack: " + firstExcluded + ")"),
+        matched,
+        5);
   }
 }

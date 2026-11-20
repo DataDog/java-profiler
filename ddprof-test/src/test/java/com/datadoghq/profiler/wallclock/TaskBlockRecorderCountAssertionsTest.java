@@ -3,6 +3,7 @@ package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -38,6 +39,48 @@ class TaskBlockRecorderCountAssertionsTest {
         AssertionError.class,
         () -> TaskBlockRecorderTestSupport.assertCompletedIntervals(0, 5, 4, "short by one"));
     TaskBlockRecorderTestSupport.assertCompletedIntervals(0, 1, 1, "selector rejection");
+  }
+
+  @Test
+  void sharedBudgetCoversShortfallsAcrossWorkers() {
+    TaskBlockRecorderTestSupport.assertCompletedIntervals(
+        2,
+        TaskBlockRecorderTestSupport.worker("loop", 4, 5),
+        TaskBlockRecorderTestSupport.worker("timed", 4, 5));
+  }
+
+  @Test
+  void oneRejectionCannotExcuseAShortfallOnEachWorker() {
+    AssertionError failure =
+        assertThrows(
+            AssertionError.class,
+            () ->
+                TaskBlockRecorderTestSupport.assertCompletedIntervals(
+                    1,
+                    TaskBlockRecorderTestSupport.worker("loop", 4, 5),
+                    TaskBlockRecorderTestSupport.worker("timed", 4, 5)));
+    assertTrue(
+        failure.getMessage().startsWith("loop: observed=4, timed: observed=4, record_failed=1"),
+        failure.getMessage());
+  }
+
+  @Test
+  void completeWorkersNeedNoRejection() {
+    TaskBlockRecorderTestSupport.assertCompletedIntervals(
+        0,
+        TaskBlockRecorderTestSupport.worker("loop", 5, 5),
+        TaskBlockRecorderTestSupport.worker("timed", 5, 5));
+  }
+
+  @Test
+  void surplusOnOneWorkerDoesNotCoverAnother() {
+    assertThrows(
+        AssertionError.class,
+        () ->
+            TaskBlockRecorderTestSupport.assertCompletedIntervals(
+                0,
+                TaskBlockRecorderTestSupport.worker("loop", 6, 5),
+                TaskBlockRecorderTestSupport.worker("timed", 4, 5)));
   }
 
   @Test

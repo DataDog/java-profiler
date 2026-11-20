@@ -6,6 +6,7 @@
 package com.datadoghq.profiler;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.wallclock.NettyEpollTaskBlockTest;
 import java.util.ArrayList;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
 /** Synthetic controls keep ordinary event-loop waits from satisfying the timed JNI oracle. */
 public class NettyEpollTaskBlockAssertionsTest {
   private static final String WORKER = "netty-timed-worker";
+  private static final String TIMED_WORKER = "netty-timed-worker-timed";
 
   /** Ordinary Native.epollWait frames remain valid only for the default-loop oracle. */
   @Test
@@ -170,18 +172,65 @@ public class NettyEpollTaskBlockAssertionsTest {
     }
   }
 
+  /** One rejection in the shared window cannot excuse a missing interval on both workers. */
+  @Test
+  public void bothWorkersShareOneRejectionBudget() {
+    List<JfrEvent> events = waits("io.netty.", false, 4);
+    events.addAll(waits(TIMED_WORKER, "io.netty.", true, 4));
+    NettyEpollTaskBlockTest.assertBothEpollWorkers(events, WORKER, TIMED_WORKER, "io.netty.", 2);
+    AssertionError failure =
+        assertThrows(
+            AssertionError.class,
+            () ->
+                NettyEpollTaskBlockTest.assertBothEpollWorkers(
+                    events, WORKER, TIMED_WORKER, "io.netty.", 1));
+    assertTrue(failure.getMessage().contains("record_failed=1"), failure.getMessage());
+  }
+
+  /** A same-thread event that lost its epoll frames is named in the shortfall message. */
+  @Test
+  public void shortfallNamesExcludedSameThreadStack() {
+    List<JfrEvent> events = waits("io.netty.", true, 4);
+    JfrEvent lost = wait(WORKER, "io.netty.", true, 99);
+    lost.raw()
+        .put(
+            "stackTrace",
+            Collections.singletonMap(
+                "frames",
+                new Object[] {
+                  frame("", "<unloaded>"),
+                  frame("io.netty.channel.epoll.ProfilerEpollFixture", "timedNativeWait")
+                }));
+    events.add(lost);
+    AssertionError failure =
+        assertThrows(
+            AssertionError.class,
+            () ->
+                NettyEpollTaskBlockTest.assertTimedEpollTaskBlocks(events, WORKER, "io.netty.", 0));
+    assertTrue(failure.getMessage().contains("1 excluded"), failure.getMessage());
+    assertTrue(failure.getMessage().contains("<unloaded>"), failure.getMessage());
+  }
+
   private static List<JfrEvent> waits(String prefix, boolean timed, int count) {
+    return waits(WORKER, prefix, timed, count);
+  }
+
+  private static List<JfrEvent> waits(String name, String prefix, boolean timed, int count) {
     List<JfrEvent> events = new ArrayList<>();
-    for (int i = 0; i < count; i++) events.add(wait(prefix, timed, i + 1));
+    for (int i = 0; i < count; i++) events.add(wait(name, prefix, timed, i + 1));
     return events;
   }
 
   private static JfrEvent wait(String prefix, boolean timed, long start) {
+    return wait(WORKER, prefix, timed, start);
+  }
+
+  private static JfrEvent wait(String name, String prefix, boolean timed, long start) {
     List<Map<String, Object>> frames = new ArrayList<>();
     frames.add(frame(prefix + "channel.epoll.Native", "epollWait"));
     if (timed) frames.add(frame(prefix + "channel.epoll.ProfilerEpollFixture", "timedNativeWait"));
     Map<String, Object> values = new HashMap<>();
-    values.put("eventThread", Collections.singletonMap("osName", WORKER));
+    values.put("eventThread", Collections.singletonMap("osName", name));
     values.put("stackTrace", Collections.singletonMap("frames", frames.toArray()));
     values.put("observedBlockingState", "IO_WAIT");
     values.put("duration", 300_000_000L);

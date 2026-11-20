@@ -29,9 +29,38 @@ final class TaskBlockRecorderTestSupport {
   /** Only recorder rejection, not stack, duration or lifecycle drops, can explain a shortfall. */
   static void assertCompletedIntervals(
       int observed, int expected, long recordFailures, String description) {
-    assertTrue(
-        observed + recordFailures >= expected,
-        () -> description + ": observed=" + observed + ", record_failed=" + recordFailures);
+    assertCompletedIntervals(recordFailures, worker(description, observed, expected));
+  }
+
+  /** One worker's emitted intervals against the intervals its workload must complete. */
+  static final class WorkerIntervals {
+    final String description;
+    final int observed;
+    final int expected;
+
+    private WorkerIntervals(String description, int observed, int expected) {
+      this.description = description;
+      this.observed = observed;
+      this.expected = expected;
+    }
+  }
+
+  static WorkerIntervals worker(String description, int observed, int expected) {
+    return new WorkerIntervals(description, observed, expected);
+  }
+
+  /**
+   * Workers measured over one record_failed delta share it: each rejection excuses one missing
+   * interval on one worker, and one worker's surplus cannot cover another's shortfall.
+   */
+  static void assertCompletedIntervals(long recordFailures, WorkerIntervals... workers) {
+    long shortfall = 0;
+    StringBuilder detail = new StringBuilder();
+    for (WorkerIntervals worker : workers) {
+      shortfall += Math.max(0, worker.expected - worker.observed);
+      detail.append(worker.description).append(": observed=").append(worker.observed).append(", ");
+    }
+    assertTrue(shortfall <= recordFailures, () -> detail + "record_failed=" + recordFailures);
   }
 
   static final int MAX_RECORD_ATTEMPTS = 5;
