@@ -81,8 +81,9 @@ jobs:
           # passes --verify but, kept raw, would defeat the duplicate-release
           # guard (which compares commit IDs) and flow into the checkout
           # command in the release job as dispatcher-controlled text.
+          REQUESTED_SHA="$TARGET_SHA"
           if ! TARGET_SHA=$(git rev-parse --verify --quiet "$TARGET_SHA^{commit}"); then
-            echo "::error::Requested source SHA does not resolve to a commit: $TARGET_SHA" >&2
+            echo "::error::Requested source SHA does not resolve to a commit: $REQUESTED_SHA" >&2
             exit 1
           fi
 

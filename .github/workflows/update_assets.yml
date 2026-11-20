@@ -15,6 +15,12 @@ permissions:
   contents: write
   actions: read
 
+# Two runs for the same tag (tag push + manual dispatch) race the asset
+# uploads and the --latest flag; serialize them per tag.
+concurrency:
+  group: update-assets-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   update-assets-and-releaase:
     if: (startsWith(github.event.ref, 'refs/tags/v_') || inputs.release_tag != '') && !endsWith(github.event.ref, '-SNAPSHOT')
