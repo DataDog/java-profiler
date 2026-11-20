@@ -62,7 +62,7 @@ protected:
     uintptr_t decode(uintptr_t base, int shift) {
         VMStructsTestAccessor::base() = reinterpret_cast<char*>(base);
         VMStructsTestAccessor::shift() = shift;
-        // Decoded addresses are opaque: protected casts must not probe synthetic Klass memory.
+        // fromOop reads the header and probes the decoded Klass, as walkVM does under crash protection.
         sigjmp_buf ctx;
         JmpCtxScope scope(ProfiledThread::current());
         if (sigsetjmp(ctx, 1) != 0) {
@@ -76,24 +76,27 @@ protected:
     }
 };
 
-TEST_F(VMKlassFromOopTest, ZeroBaseWithNonzeroEncodedKlass) {
+// Decoded Klass addresses must be readable, so the nonzero-base cases aim at real storage.
+alignas(16) uintptr_t klass_storage[2];
+const uintptr_t KLASS = reinterpret_cast<uintptr_t>(klass_storage);
+
+TEST_F(VMKlassFromOopTest, ZeroBaseRejectsUnmappedDecodedKlass) {
     header.klass = 0x12340;
-    EXPECT_EQ(0x12340u, decode(0, 0));
-    EXPECT_EQ(0x91a00u, decode(0, 3));
+    EXPECT_EQ(0u, decode(0, 0));
+    EXPECT_EQ(0u, decode(0, 3));
 }
 
 TEST_F(VMKlassFromOopTest, NonzeroBaseWithNonzeroEncodedKlass) {
     header.klass = 0x12340;
-    EXPECT_EQ(0x112340u, decode(0x100000, 0));
-    EXPECT_EQ(0x191a00u, decode(0x100000, 3));
+    EXPECT_EQ(KLASS, decode(KLASS - 0x12340, 0));
+    EXPECT_EQ(KLASS, decode(KLASS - (uintptr_t(0x12340) << 3), 3));
 }
 
-TEST_F(VMKlassFromOopTest, ZeroEncodedKlassPreservesAddressAlgebra) {
+TEST_F(VMKlassFromOopTest, ZeroEncodedKlassIsNull) {
     header.klass = 0;
     EXPECT_EQ(0u, decode(0, 0));
-    EXPECT_EQ(0u, decode(0, 3));
-    EXPECT_EQ(0x100000u, decode(0x100000, 0));
-    EXPECT_EQ(0x100000u, decode(0x100000, 3));
+    EXPECT_EQ(0u, decode(KLASS, 0));
+    EXPECT_EQ(0u, decode(KLASS, 3));
 }
 
 TEST_F(VMKlassFromOopTest, UncompressedKlassUsesFullPointer) {
@@ -105,9 +108,9 @@ TEST_F(VMKlassFromOopTest, OrdinaryCompactHeaderUsesSameAddressReconstruction) {
     VMStructsTestAccessor::compact() = true;
     header.mark = (uintptr_t(0x12340) << 32) | 1;
     header.klass = 0xbad;
-    EXPECT_EQ(0x12340u, decode(0, 0));
-    EXPECT_EQ(0x91a00u, decode(0, 3));
-    EXPECT_EQ(0x191a00u, decode(0x100000, 3));
+    EXPECT_EQ(KLASS, decode(KLASS - 0x12340, 0));
+    EXPECT_EQ(KLASS, decode(KLASS - (uintptr_t(0x12340) << 3), 3));
+    EXPECT_EQ(0u, decode(0, 3));
 }
 
 } // namespace
