@@ -10,11 +10,17 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /** Reads bounded native receipts without using the JFR writer or clearing diagnostic history. */
 final class TaskBlockRecorderTestSupport {
   private TaskBlockRecorderTestSupport() {}
+
+  /** Builds without counters report zero, so no rejection credit is available there. */
+  static long recordFailures(Map<String, Long> counters) {
+    return counters.getOrDefault("task_block_record_failed", 0L);
+  }
 
   static native long cursor0();
 
