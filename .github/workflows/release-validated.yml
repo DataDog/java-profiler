@@ -68,7 +68,9 @@ jobs:
             exit 1
           fi
 
-          # Branch validation
+          # Branch validation. Major/minor also accept a pinned commit that
+          # is an ancestor of origin/main — the release train dispatches with
+          # a certified SHA as the ref.
           if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
             if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
               echo "::error::${TYPE^} can only be performed from 'release/*' branches (format: release/X.Y._)"
@@ -76,8 +78,11 @@ jobs:
             fi
           else
             if [ "$BRANCH" != "main" ]; then
-              echo "::error::Major or minor releases can only be performed from 'main' branch"
-              exit 1
+              if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main 2>/dev/null; then
+                echo "::error::Major or minor releases can only be performed from 'main' branch or a commit on main"
+                exit 1
+              fi
+              echo "Pinned commit on main: $GITHUB_SHA"
             fi
           fi
 
@@ -120,9 +125,19 @@ jobs:
           echo "Release version: $RELEASE_VERSION"
           echo "Release branch: $RELEASE_BRANCH"
 
+          # Base branch to check out and report in tag messages: the ref name
+          # for patch/retag, 'main' for major/minor (including pinned
+          # certified-commit dispatches, which carry a SHA as the ref name).
+          if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
+            BASE_BRANCH="$BRANCH"
+          else
+            BASE_BRANCH="main"
+          fi
+
           # Set outputs
           echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
           echo "release_branch=$RELEASE_BRANCH" >> $GITHUB_OUTPUT
+          echo "base_branch=$BASE_BRANCH" >> $GITHUB_OUTPUT
 
           # Output summary
           echo "## Release Validation" >> $GITHUB_STEP_SUMMARY
@@ -184,7 +199,7 @@ jobs:
           cd java-profiler
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          git checkout -B "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          git checkout -B "${{ needs.validate-inputs.outputs.base_branch }}" "$GITHUB_SHA"
 
       - name: Create release
         id: create-release
@@ -200,6 +215,7 @@ jobs:
           fi
 
           TYPE="${{ inputs.release_type }}"
+          RELEASE_BASE_BRANCH="${{ needs.validate-inputs.outputs.base_branch }}"
           ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN
 
       - name: Output Release Summary

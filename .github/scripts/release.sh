@@ -13,11 +13,17 @@ set -euo pipefail
 # TYPE: MINOR | MAJOR | PATCH | RETAG
 #
 # Branch rules:
-#   MINOR/MAJOR: must be run from 'main'
+#   MINOR/MAJOR: must be run from 'main' (or a pinned main commit — the
+#                release train dispatches with a certified SHA as the ref)
 #   PATCH/RETAG: must be run from 'release/X.Y._'
 
 TYPE=$1
 DRYRUN=""
+
+# Base branch override supplied by release-validated.yml for pinned
+# certified-commit dispatches, where the checked-out branch name is not
+# meaningful. Unset in interactive and manual flows.
+BRANCH="${RELEASE_BASE_BRANCH:-$(git branch --show-current)}"
 
 # Parse remaining args for --dry-run
 shift
@@ -28,7 +34,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-BRANCH=$(git branch --show-current)
 SOURCE_SHA=$(git rev-parse HEAD)
 RELEASE_BRANCH=
 RELEASE_VERSION=
