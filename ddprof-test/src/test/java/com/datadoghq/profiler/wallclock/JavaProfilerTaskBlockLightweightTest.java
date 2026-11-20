@@ -26,8 +26,12 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
   public void suppressedWallSamplesAreReplacedByAStacklessTaskBlock() throws Exception {
     long suppressedBefore =
         profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
+    // JVMTI monitor TaskBlocks on other threads share task_block_record_failed.
     TaskBlockRecorderTestSupport.recordWithinAttempts(
-        profiler::getDebugCounters, this::runSuppressedBlock);
+        profiler::getDebugCounters,
+        TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+        "stackless interval",
+        this::runSuppressedBlock);
 
     stopProfiler();
     JfrEvents events = verifyEvents("datadog.TaskBlock");

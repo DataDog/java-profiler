@@ -50,8 +50,11 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
   /** Verifies that the first post-start TaskBlock call initializes carrier-local TLS. */
   @Test
   public void preExistingThreadCanRecordTaskBlockAfterProfilerStart() throws Exception {
+    // JVMTI monitor TaskBlocks on other threads share task_block_record_failed.
     TaskBlockRecorderTestSupport.recordWithinAttempts(
         profiler::getDebugCounters,
+        TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+        "pre-existing thread interval",
         () -> {
           Future<Boolean> recorded =
               preExistingWorker.submit(

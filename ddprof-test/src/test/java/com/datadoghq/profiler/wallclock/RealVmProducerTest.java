@@ -156,17 +156,26 @@ abstract class RealVmProducerTest extends AbstractProfilerTest {
         }
       }
     }
-    long token = profiler.beginTaskBlock();
     if (expectsOpenJ9()) {
+      long token = profiler.beginTaskBlock();
       assertEquals(0L, token, "J9 wall engine must not activate unfiltered block tracking");
       assertFalse(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
     } else {
-      assertNotEquals(0L, token, "HotSpot platform-thread JNI admission was rejected");
-      Thread.sleep(50L);
-      assertTrue(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-      assertFalse(
-          profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID),
-          "A token must close only once");
+      // A rejected close emits no TaskBlock, so assertPairedBlock's exactly-one still holds.
+      TaskBlockRecorderTestSupport.recordWithinAttempts(
+          profiler::getDebugCounters,
+          TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+          "paired producer close",
+          () -> {
+            long token = profiler.beginTaskBlock();
+            assertNotEquals(0L, token, "HotSpot platform-thread JNI admission was rejected");
+            Thread.sleep(50L);
+            boolean recorded = profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID);
+            assertFalse(
+                profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID),
+                "A token must close only once");
+            return recorded;
+          });
     }
     return Thread.currentThread().getId();
   }

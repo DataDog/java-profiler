@@ -471,34 +471,18 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         });
   }
 
-  /**
-   * Repeats an eligible interval until one is recorded. Each rejection must be covered by a
-   * task_block_record_failed increment; park and monitor TaskBlocks on other JVM threads can also
-   * increment it, so the delta is a lower bound, not an exact per-worker count.
-   */
+  /** JVM-wide monitor TaskBlocks share task_block_record_failed, so credit is a lower bound. */
   private void recordWithinAttempts(TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
     recordWithinAttempts("eligible interval", attempt);
   }
 
   private void recordWithinAttempts(
       String description, TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
-    long before = TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters());
-    int rejected = 0;
-    while (!attempt.recorded()) {
-      rejected++;
-      long failures =
-          TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters()) - before;
-      assertTrue(
-          failures >= rejected,
-          description
-              + ": endTaskBlock rejection not accounted as task_block_record_failed: rejected="
-              + rejected
-              + ", record_failed="
-              + failures);
-      assertTrue(
-          rejected < TaskBlockRecorderTestSupport.MAX_RECORD_ATTEMPTS,
-          description + ": no recorded interval in bounded attempts");
-    }
+    TaskBlockRecorderTestSupport.recordWithinAttempts(
+        profiler::getDebugCounters,
+        TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+        description,
+        attempt);
   }
 
   private void runWorker(ThrowingRunnable action) throws Exception {
