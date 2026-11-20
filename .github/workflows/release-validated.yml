@@ -64,11 +64,12 @@ jobs:
           # release train dispatches with ref=main and the certified SHA as
           # source_sha — the workflow_dispatch API takes a branch/tag ref, so
           # pinning goes through the input), else the dispatch ref's HEAD.
-          TARGET_SHA="${{ inputs.source_sha }}"
-          if [ -z "$TARGET_SHA" ]; then
-            TARGET_SHA="$GITHUB_SHA"
-          elif ! git rev-parse --verify --quiet "$TARGET_SHA^{commit}" >/dev/null; then
-            echo "::error::Requested source SHA does not resolve to a commit: $TARGET_SHA"
+          # The input reaches the script through env: interpolating it into
+          # the shell program would execute dispatcher-controlled text.
+          SOURCE_SHA_INPUT="${{ inputs.source_sha }}"
+          TARGET_SHA="${SOURCE_SHA_INPUT:-$GITHUB_SHA}"
+          if ! git rev-parse --verify --quiet "$TARGET_SHA^{commit}" >/dev/null; then
+            echo "::error::Requested source SHA does not resolve to a commit: $TARGET_SHA" >&2
             exit 1
           fi
 
@@ -169,6 +170,7 @@ jobs:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["debug", "asan"]'
+      ref: ${{ needs.validate-inputs.outputs.target_sha }}
 
   pre-release-slow-tests:
     needs: validate-inputs
@@ -177,6 +179,7 @@ jobs:
     with:
       configuration: '["debug", "asan"]'
       slow_tests: true
+      ref: ${{ needs.validate-inputs.outputs.target_sha }}
 
   create-release:
     needs: [validate-inputs, pre-release-tests, pre-release-slow-tests]
