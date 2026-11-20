@@ -82,9 +82,11 @@ public class GCGenerationsTest extends AbstractProfilerTest {
   }
 
   @Test
-  public void shouldRejectHistoricalOnlySamples() throws Exception {
+  public void shouldNotReportPreviousRecordingAdmissions() throws Exception {
     MemLeakTarget first = new MemLeakTarget();
     MemLeakTarget second = new MemLeakTarget();
+    MemLeakTarget third = new MemLeakTarget();
+    MemLeakTarget fourth = new MemLeakTarget();
     long started = epochNanos();
     try {
       runWorkers(first, second);
@@ -93,12 +95,16 @@ public class GCGenerationsTest extends AbstractProfilerTest {
       long firstFinished = epochNanos() + 1_000_000;
       assertCurrentSamples(currentSamples(started, firstFinished));
 
-      // The native tracking table survives stop/start; retain this cohort into a new recording.
+      // Disjoint admission windows: the first cohort's window ends before the second's starts.
+      while (epochNanos() <= firstFinished) {
+        Thread.sleep(1);
+      }
       setupProfiler(testInfo);
       long restarted = epochNanos();
+      runWorkers(third, fourth);
       collect();
       stopProfiler();
-      long historical =
+      long previous =
           reduceEvents(
               LIVE_EVENT,
               () -> new long[1],
@@ -107,15 +113,18 @@ public class GCGenerationsTest extends AbstractProfilerTest {
                   matches[0]++;
                 }
               })[0];
-      assertTrue(historical > 0, "retained entries from the previous recording are present");
-      long current = currentSamples(restarted, epochNanos() + 1_000_000);
-      assertEquals(0, current, "the second recording has no new workload allocations");
-      assertThrows(AssertionError.class, () -> assertCurrentSamples(current));
+      // Liveness state is released at stop, so the still-reachable first cohort is not reported.
+      assertEquals(0, previous, "entries admitted by the previous recording are not retained");
+      assertCurrentSamples(currentSamples(restarted, epochNanos() + 1_000_000));
       first.assertReachable(true);
       second.assertReachable(true);
+      third.assertReachable(true);
+      fourth.assertReachable(true);
     } finally {
       first.release();
       second.release();
+      third.release();
+      fourth.release();
     }
   }
 

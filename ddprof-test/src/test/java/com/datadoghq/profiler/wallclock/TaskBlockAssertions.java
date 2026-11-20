@@ -81,7 +81,7 @@ final class TaskBlockAssertions {
    */
   static final int OSTHREAD_STATE_SLEEPING = 7;
 
-  /** {@code java.vm.name} substrings that native {@code VM::init()} treats as HotSpot. */
+  /** {@code java.vm.name} substrings that native {@code VM::initShared()} treats as HotSpot. */
   private static final String[] HOTSPOT_VM_NAME_MARKERS = {
     "OpenJDK", "HotSpot", "GraalVM", "Dynamic Code Evolution"
   };

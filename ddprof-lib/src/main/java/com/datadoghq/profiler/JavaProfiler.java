@@ -578,6 +578,11 @@ public final class JavaProfiler {
     return taskBlockSupportedForTest0(Thread.currentThread());
   }
 
+  /** Test-only probe of the native platform-thread classification of the calling thread. */
+  boolean platformThreadForTest() {
+    return platformThreadForTest0(Thread.currentThread());
+  }
+
   /**
    * Test-only hook exercising {@link #beginTaskBlock0} with an explicit {@code thread}, to cover
    * the rejection path when it does not identify the calling thread.
@@ -700,6 +705,8 @@ public final class JavaProfiler {
       boolean isVirtual, long token, long blocker, long unblockingSpanId);
 
   private static native boolean taskBlockSupportedForTest0(Thread thread);
+
+  private static native boolean platformThreadForTest0(Thread thread);
 
   private static native long beginTaskBlock0(Thread thread);
 

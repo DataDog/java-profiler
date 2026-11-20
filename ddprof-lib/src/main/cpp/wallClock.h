@@ -232,13 +232,16 @@ class BaseWallClock : public Engine {
         // Units already coalesced across an unchanged-pool success-ratio change
         // cannot be split retroactively.
         if (!pool_changed && outcomes_changed) closeSamplingEpoch(pass_start);
+        const bool opens_epoch = !_have_epoch_stats || pool_changed || outcomes_changed;
         _have_epoch_stats = true;
         epoch.updateNumSamplableThreads(num_samplable_threads);
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
-        epoch.addNumSuppressedOwnedBlock(WallClockCounters::drainSuppressedOwnedBlock());
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
+        epoch.addNumSuppressedOwnedBlock(WallClockCounters::drainSuppressedOwnedBlock());
+        // The statistics that open an epoch must not close it in the same pass.
+        if (opens_epoch) epoch.clean();
 #ifdef UNIT_TEST
         observeEpochForTest(epoch);
 #endif
@@ -277,8 +280,8 @@ class BaseWallClock : public Engine {
       }
       _timer_phases = phases;
 
-      // Retract only this timer's backing allocation. The tracker and any other
-      // timers account for their own storage in the same category.
+      // Retract only this timer's backing allocation; other timers account for
+      // their own storage in the same category.
       NativeMem::record(NM_WALLCLOCK,
                         -static_cast<long long>(accounted_capacity * sizeof(ThreadType)));
     }
