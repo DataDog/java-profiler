@@ -399,7 +399,7 @@ class VMStructs {
     typedef bool (*IsValidMethodFunc)(void *);
 
   protected:
-    enum { MONITOR_BIT = 2 };
+    enum { MONITOR_BIT = 2, LOCK_MASK = 3 };
 
     static CodeCache* _libjvm;
 
@@ -411,6 +411,30 @@ class VMStructs {
     static bool _has_native_thread_id;
     static bool _can_dereference_jmethod_id;
     static bool _compact_object_headers;
+    // What an inflated compact mark holds, derived from the UseObjectMonitorTable flag.
+    enum class InflatedMark { Unknown, MonitorPointer, Header };
+    enum class BoolFlag { Absent, NotBool, False, True };
+    static InflatedMark _inflated_mark;
+    static BoolFlag readBoolFlag(const char* name);
+    static constexpr int kFirstJdkWithObjectMonitorTableFlag = 24;
+    static constexpr int kLastJdkWithObjectMonitorTableFlag = 25;
+    // Without the flag, an older JVM predates the monitor table and a newer one always uses
+    // it. A missing flag where it must exist, or a non-bool flag, leaves the layout Unknown.
+    static InflatedMark inflatedMarkFor(BoolFlag object_monitor_table, int hotspot_version) {
+        switch (object_monitor_table) {
+        case BoolFlag::Absent:
+            if (hotspot_version < kFirstJdkWithObjectMonitorTableFlag) return InflatedMark::MonitorPointer;
+            if (hotspot_version > kLastJdkWithObjectMonitorTableFlag) return InflatedMark::Header;
+            break;
+        case BoolFlag::True:
+            return InflatedMark::Header;
+        case BoolFlag::False:
+            return InflatedMark::MonitorPointer;
+        case BoolFlag::NotBool:
+            break;
+        }
+        return InflatedMark::Unknown;
+    }
     
     static int _narrow_klass_shift;
     static char* _code_heap[3];
@@ -730,12 +754,21 @@ DECLARE(VMKlass)
         return VMKlass::cast((const void*)handle);
     }
 
+    // Reads the oop header with SafeAccess and validates the decoded klass, so unreadable
+    // memory yields nullptr instead of faulting the caller's stack walk. SafeAccess returns
+    // 0 on a fault; a valid mark word or narrow klass is never 0.
     static VMKlass* fromOop(uintptr_t oop) {
         if (_narrow_klass_shift >= 0) {
             uintptr_t narrow_klass;
             if (_compact_object_headers) {
-                uintptr_t mark = *(uintptr_t*)oop;
-                if (mark & MONITOR_BIT) {
+                uintptr_t mark = reinterpret_cast<uintptr_t>(SafeAccess::load(reinterpret_cast<void**>(oop)));
+                uintptr_t lock = mark & LOCK_MASK;
+                // A marked header's upper bits are a GC pointer; an Unknown inflated mark may be one.
+                if (lock == LOCK_MASK || (lock == MONITOR_BIT && _inflated_mark == InflatedMark::Unknown)) {
+                    return nullptr;
+                }
+                // A MonitorPointer mark points to the ObjectMonitor holding the displaced header.
+                if (lock == MONITOR_BIT && _inflated_mark == InflatedMark::MonitorPointer) {
                     // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
                     // reading the mark word and dereferencing the monitor pointer. Use
                     // safeFetch64 so a concurrent deflation/free does not crash here.
@@ -757,11 +790,15 @@ DECLARE(VMKlass)
                 }
                 narrow_klass = mark >> _markWord_klass_shift;
             } else {
-                narrow_klass = *(unsigned int*)(oop + _oop_klass_offset);
+                narrow_klass = static_cast<uint32_t>(
+                    SafeAccess::load32(reinterpret_cast<int32_t*>(oop + _oop_klass_offset)));
             }
-            return VMKlass::cast((const void*)(_narrow_klass_base + (narrow_klass << _narrow_klass_shift)));
+            if (narrow_klass == 0) {
+                return nullptr;
+            }
+            return VMKlass::cast_or_null(_narrow_klass_base + (narrow_klass << _narrow_klass_shift));
         } else {
-            return VMKlass::load_then_cast((const void*)(oop + _oop_klass_offset));
+            return VMKlass::cast_or_null(SafeAccess::load(reinterpret_cast<void**>(oop + _oop_klass_offset)));
         }
     }
 

@@ -107,6 +107,11 @@ typedef struct KlassPopulationEntry {
   // without this counter it gets reported as a leak candidate almost as
   // often as a real leak does.
   u8 consecutive_positive;
+#ifdef DEBUG
+  // Explicit JNI test seeds own their class trend. Real GC folds preserve it
+  // until the test resets the population table or the entry is evicted.
+  bool test_seeded_history;
+#endif
   // Slope (regression value at the ring's newest sample minus the value at
   // its oldest sample - see ringWindowStats, livenessTracker.cpp) as of the
   // last push, computed and cached by hasQualifyingGrowth() alongside
@@ -1430,6 +1435,7 @@ public:
     _klass_population_size--;
   }
 
+  // Ordinary algorithm-test histories remain subject to GC updates and decay.
   jweak klassPopulationRecordForTest(u32 klass_id, u32 count, u64 epoch,
                                       int *out_slot, bool *out_created,
                                       jweak *out_evicted = nullptr,
@@ -1445,6 +1451,30 @@ public:
     _table_lock.unlock();
     return evicted;
   }
+
+#ifdef DEBUG
+  /**
+   * Protects explicit fixture class history from real GC updates.
+   * Later explicit seeds update the same ring and qualification counters.
+   */
+  void seedKlassPopulationSampleForTest(
+      u32 klass_id, u32 count, u64 epoch, jweak *out_evicted = nullptr,
+      int *out_evicted_count = nullptr, int max_evicted = 0) {
+    ExclusiveLockGuard guard(&_table_lock);
+    klass_id = resolveTestKlassAliasLocked(klass_id);
+    for (int i = 0; i < _klass_population_size; i++) {
+      if (_klass_population[i].klass_id == klass_id) {
+        _klass_population[i].test_seeded_history = false;
+        break;
+      }
+    }
+    int slot;
+    bool created;
+    recordKlassPopulationSampleLocked(klass_id, count, epoch, &slot, &created,
+                                      out_evicted, out_evicted_count, max_evicted);
+    _klass_population[slot].test_seeded_history = true;
+  }
+#endif
 
   // Seeds one per-tid trend sample for tests/scenarios: pushes `count` as
   // tid's epoch sample on klass_id's KlassPopulationEntry, marking the
