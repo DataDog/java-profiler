@@ -108,6 +108,11 @@ TEST(ContRuntimeCapabilityTest, RequiresBothExecutableEntryFamilies) {
                           "_Z4thawI6ConfigIL8oop_kind0E12G1BarrierSetEEPlP10JavaThreadic1"}));
     EXPECT_FALSE(classify({"_Z6freezeI6ConfigIL8oop_kind0E12G1BarrierSetEEiP10JavaThreadPlc2"}));
     EXPECT_FALSE(classify({"_Z4thawI6ConfigIL8oop_kind0E12G1BarrierSetEEPlP10JavaThreadic2"}));
+    // Exact Temurin 25 and 27 libjvm names: the static entry templates have internal linkage.
+    EXPECT_TRUE(classify({"_ZL6freezeI6ConfigIL8oop_kind0E12G1BarrierSetEEiP10JavaThreadPl",
+                          "_ZL4thawI6ConfigIL8oop_kind0E12G1BarrierSetEEPlP10JavaThreadi"}));
+    EXPECT_FALSE(classify({"_ZL6freezeI6ConfigIL8oop_kind0E12G1BarrierSetEEiP10JavaThreadPl"}));
+    EXPECT_FALSE(classify({"_ZL4thawI6ConfigIL8oop_kind0E12G1BarrierSetEEPlP10JavaThreadi"}));
     EXPECT_FALSE(classify({"_ZN13SharedRuntime18_cont_doYield_stubEc3"}));
     EXPECT_FALSE(classify({"_ZN12Continuation12freeze_entryEvc4", "_ZN12Continuation10thaw_entryEvc4"}));
     EXPECT_FALSE(classify({}));
