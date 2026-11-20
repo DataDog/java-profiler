@@ -526,6 +526,69 @@ private:
 
 NettyReadSlotFailure* NettyReadSlotFailure::_current = nullptr;
 
+// Fails one patcher step ("pin" or "writable") for the target image only.
+class NettyImageFailure {
+public:
+  NettyImageFailure(CodeCache* target, const char* step) : _target(target), _step(step) {
+    _current = this;
+    _previous = LibraryPatcher::exchangeSocketImageFailureForTest(fail);
+  }
+  ~NettyImageFailure() {
+    LibraryPatcher::exchangeSocketImageFailureForTest(_previous);
+    _current = nullptr;
+  }
+  NettyImageFailure(const NettyImageFailure&) = delete;
+  NettyImageFailure& operator=(const NettyImageFailure&) = delete;
+
+  int calls = 0;
+
+private:
+  static bool fail(CodeCache* lib, const char* step) {
+    if (_current == nullptr || lib != _current->_target || strcmp(step, _current->_step) != 0) {
+      return false;
+    }
+    _current->calls++;
+    return true;
+  }
+
+  static NettyImageFailure* _current;
+  CodeCache* _target;
+  const char* _step;
+  LibraryPatcher::SocketImageFailureForTest _previous = nullptr;
+};
+
+NettyImageFailure* NettyImageFailure::_current = nullptr;
+
+// Runs an action once, at the first discovery mapping lookup, outside the patch lock.
+class ActAtMappingLookup {
+public:
+  explicit ActAtMappingLookup(void (*action)()) {
+    _action = action;
+    reached = false;
+    LibraryPatcher::setSocketPatchObserverForTest(observe);
+  }
+  ~ActAtMappingLookup() {
+    LibraryPatcher::setSocketPatchObserverForTest(nullptr);
+    _action = nullptr;
+  }
+  ActAtMappingLookup(const ActAtMappingLookup&) = delete;
+  ActAtMappingLookup& operator=(const ActAtMappingLookup&) = delete;
+
+  static bool reached;
+
+private:
+  static void observe(const char* phase) {
+    if (strcmp(phase, "mapping_lookup") != 0 || reached) return;
+    reached = true;
+    _action();
+  }
+
+  static void (*_action)();
+};
+
+bool ActAtMappingLookup::reached = false;
+void (*ActAtMappingLookup::_action)() = nullptr;
+
 // Models a libc without epoll_pwait2 regardless of the host glibc.
 class MissingEpollPwait2Original {
 public:
@@ -737,6 +800,71 @@ TEST_P(NettyEpollImageSkipTest, MissingEpollPwait2OriginalLeavesLazySlotUntouche
     EXPECT_EQ(lazy_stub, __atomic_load_n(slots[index], __ATOMIC_ACQUIRE));
     __atomic_store_n(slots[index], originals[index], __ATOMIC_RELEASE);
   }
+}
+
+TEST_P(NettyEpollImageSkipTest, FullSkipTableFailsClosedDuringDiscovery) {
+  netty->markImportIncompleteForTest(im_read);
+  LibraryPatcher::fill_socket_skipped_images_for_test();
+  EXPECT_FALSE(LibraryPatcher::patch_socket_functions());
+  expectFailedClosed();
+}
+
+TEST_P(NettyEpollImageSkipTest, FullSkipTableFailsClosedDuringCommit) {
+  NettyReadSlotFailure failure(netty, 1);
+  LibraryPatcher::fill_socket_skipped_images_for_test();
+  EXPECT_FALSE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(1, failure.calls);
+  expectFailedClosed();
+}
+
+TEST_P(NettyEpollImageSkipTest, PinFailureOnMappedImageSkipsImage) {
+  NettyImageFailure failure(netty, "pin");
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  // The cached pathname can already fail on its own; the loader-name pin then fails here.
+  EXPECT_GE(failure.calls, 1);
+  EXPECT_EQ(1, skipped());
+  expectOnlyNettySkipped();
+  expectNettyImageNotPinned();
+}
+
+TEST_P(NettyEpollImageSkipTest, UnwritableImportsSkipImage) {
+  NettyImageFailure failure(netty, "writable");
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(1, failure.calls);
+  EXPECT_EQ(1, skipped());
+  expectOnlyNettySkipped();
+  expectNettyImageNotPinned();
+}
+
+TEST_P(NettyEpollImageSkipTest, StaleGenerationDiscoveryRecordsNoSkip) {
+  netty->markImportIncompleteForTest(im_read);
+  {
+    ActAtMappingLookup restart([]() { LibraryPatcher::unpatch_socket_functions(); });
+    EXPECT_FALSE(LibraryPatcher::patch_socket_functions());
+    ASSERT_TRUE(ActAtMappingLookup::reached);
+  }
+  EXPECT_EQ(0, skipped());
+  // The same discovery in the current generation records the skip.
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  EXPECT_EQ(1, skipped());
+  expectOnlyNettySkipped();
+}
+
+TEST_P(NettyEpollImageSkipTest, InactiveRefreshRecordsNoSkip) {
+  ASSERT_TRUE(LibraryPatcher::patch_socket_functions());
+  netty->markImportIncompleteForTest(im_read);
+  {
+    // Deactivates without a generation bump, isolating the require_active check.
+    ActAtMappingLookup deactivate([]() {
+      LibraryPatcher::_socket_active.store(false, std::memory_order_release);
+    });
+    LibraryPatcher::install_socket_hooks();
+    ASSERT_TRUE(ActAtMappingLookup::reached);
+  }
+  EXPECT_EQ(0, skipped());
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  LibraryPatcher::install_socket_hooks();
+  EXPECT_EQ(1, skipped());
 }
 
 INSTANTIATE_TEST_SUITE_P(ParsedBeforeUnlink, NettyEpollImageSkipTest, ::testing::Bool());

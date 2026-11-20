@@ -187,10 +187,12 @@ new hook fault or of successful EFAULT recovery.
 - `LibraryPatcherSocketTransactionTest.OwnerRestartMakesReloadedFullRelroImportsWritable`:
   production owner start/stop, actual unmap/reload at the same base, read-only GOT
   precondition, restarted installation/forwarding and restored originals.
-- `NettyEpollImageSkipTest`: a missing slot or incomplete imports skip only the
+- `NettyEpollImageSkipTest`: a missing slot, incomplete imports, a failed pin of a
+  mapped image or a GOT that cannot be made writable skip only the
   Netty image beside a patched JDK libnet, with both owners active, the counter,
   no retained pin and no retry before the next installation. A Netty failure after
-  validation, or a libnet failure, still fails closed. A missing libc `epoll_pwait2`
+  validation, a libnet failure or a full skip table still fails closed. A stale
+  generation or an inactive refresh records no skip. A missing libc `epoll_pwait2`
   leaves a non-NULL Netty slot untouched and keeps the other hooks.
 - `NettyEpollAliasDiscoveryTest`: removed loader symlinks with live/deleted backing
   files, forwarding/restoration, final-close retention and unload before fallback pin.

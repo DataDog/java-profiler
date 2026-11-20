@@ -179,9 +179,14 @@ public:
   using SocketImportFailureForTest = bool (*)(CodeCache*, ImportId, size_t);
   static SocketImportFailureForTest exchangeSocketImportFailureForTest(
       SocketImportFailureForTest failure);
+  // Return true to fail `step` ("pin" outside _lock, "writable" under it) for that image.
+  using SocketImageFailureForTest = bool (*)(CodeCache*, const char* step);
+  static SocketImageFailureForTest exchangeSocketImageFailureForTest(
+      SocketImageFailureForTest failure);
   // Treats the libc original of hook_index as missing for later installs; -1 clears.
   // Only HOOK_EPOLL_PWAIT2 is honored.
   static int exchangeSocketMissingOriginalForTest(int hook_index);
+  static void fill_socket_skipped_images_for_test();
   static int patch_socket_import_for_test(CodeCache* lib, ImportId import_id,
                                           void* hook, const char* name,
                                           bool retain_library = false);

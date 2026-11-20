@@ -202,7 +202,15 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
 #ifdef UNIT_TEST
 static std::atomic<LibraryPatcher::SocketImportFailureForTest>
     socket_import_failure_for_test{nullptr};
+static std::atomic<LibraryPatcher::SocketImageFailureForTest>
+    socket_image_failure_for_test{nullptr};
 static std::atomic<int> socket_missing_original_for_test{-1};
+
+static bool socket_image_fails_for_test(CodeCache* lib, const char* step) {
+  LibraryPatcher::SocketImageFailureForTest failure =
+      socket_image_failure_for_test.load(std::memory_order_acquire);
+  return failure != nullptr && failure(lib, step);
+}
 #endif
 
 static_assert(SOCKET_BASE_TABLE_SIZE > 0 &&
@@ -1075,6 +1083,24 @@ static bool socket_import_slots_present(CodeCache* lib,
   return true;
 }
 
+static bool socket_image_pinned(CodeCache* lib, UnloadProtection& protection) {
+#ifdef UNIT_TEST
+  // Models a mapped image that dlopen(RTLD_NOLOAD) rejects.
+  if (protection.isValid() && socket_image_fails_for_test(lib, "pin")) {
+    void* handle = protection.release();
+    if (handle != nullptr) dlclose(handle);
+  }
+#endif
+  return protection.isValid();
+}
+
+static bool socket_imports_writable(CodeCache* lib) {
+#ifdef UNIT_TEST
+  if (socket_image_fails_for_test(lib, "writable")) return false;
+#endif
+  return lib->makeImportsWritable();
+}
+
 // The loader walk owns the headers and pathname until the callback returns.
 static bool mappingMatches(const CodeCache* lib, char* loader_name = nullptr) {
   if (lib->imageBase() == nullptr || lib->imageFingerprint() == 0) return false;
@@ -1273,7 +1299,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
 
     // Optional weak GOT entries may be NULL; retain the image before reading them.
     UnloadProtection protection(lib);
-    if (!protection.isValid()) {
+    if (!socket_image_pinned(lib, protection)) {
       char loader_name[PATH_MAX] = {};
       if (!mappingMatches(lib, loader_name)) continue;
 #ifdef UNIT_TEST
@@ -1282,7 +1308,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
       // NOLOAD needs the loader's alias when the cached maps pathname is gone.
       // Copy it outside _lock, then revalidate identity after acquiring the pin.
       if (loader_name[0] != '\0') protection = UnloadProtection(lib, loader_name);
-      if (!protection.isValid()) {
+      if (!socket_image_pinned(lib, protection)) {
         if (!mappingMatches(lib)) continue;
         if (netty_image) {
           if (!skip_socket_image(lib, generation, require_active, "cannot retain mapped DSO")) {
@@ -1377,7 +1403,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
       const char* failure = nullptr;
       // A released pin permits an identical-base reload whose full-RELRO GOT
       // is read-only again, even though this append-only cache says writable.
-      if (!lib->makeImportsWritable()) {
+      if (!socket_imports_writable(lib)) {
         failure = "cannot make imports writable";
       } else if (netty_image && !socket_import_slots_present(lib, hooks, unhooked_index)) {
         failure = "missing import slot";
@@ -1499,8 +1525,21 @@ LibraryPatcher::exchangeSocketImportFailureForTest(SocketImportFailureForTest fa
   return socket_import_failure_for_test.exchange(failure, std::memory_order_acq_rel);
 }
 
+LibraryPatcher::SocketImageFailureForTest
+LibraryPatcher::exchangeSocketImageFailureForTest(SocketImageFailureForTest failure) {
+  return socket_image_failure_for_test.exchange(failure, std::memory_order_acq_rel);
+}
+
 int LibraryPatcher::exchangeSocketMissingOriginalForTest(int hook_index) {
   return socket_missing_original_for_test.exchange(hook_index, std::memory_order_acq_rel);
+}
+
+void LibraryPatcher::fill_socket_skipped_images_for_test() {
+  ExclusiveLockGuard locker(&_lock);
+  // A NULL base with fingerprint 0 never matches a validated image.
+  while (_socket_skipped_image_count < SOCKET_SKIPPED_IMAGE_CAPACITY) {
+    _socket_skipped_images[_socket_skipped_image_count++] = {nullptr, 0};
+  }
 }
 
 int LibraryPatcher::patch_socket_import_for_test(CodeCache* lib, ImportId import_id,
