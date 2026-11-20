@@ -207,6 +207,7 @@ jobs:
     with:
       configuration: '["debug", "asan"]'
       ref: ${{ needs.validate-inputs.outputs.target_sha }}
+      artifact_suffix: pre-release-regular
 
   pre-release-slow-tests:
     needs: validate-inputs
@@ -216,6 +217,7 @@ jobs:
       configuration: '["debug", "asan"]'
       slow_tests: true
       ref: ${{ needs.validate-inputs.outputs.target_sha }}
+      artifact_suffix: pre-release-slow
 
   create-release:
     needs: [validate-inputs, pre-release-tests, pre-release-slow-tests]
