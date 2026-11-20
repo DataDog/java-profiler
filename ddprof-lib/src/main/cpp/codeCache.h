@@ -227,8 +227,9 @@ public:
                      bool imports_patchable = false);
   // Copy constructor
   CodeCache(const CodeCache &other);
-  // Copy assignment operator
-  CodeCache &operator=(const CodeCache &other);
+  // Not copy-assignable: nothing assigns a CodeCache, and a correct
+  // operator= would have to release every blob name the target owns.
+  CodeCache &operator=(const CodeCache &other) = delete;
 
   ~CodeCache();
 
@@ -349,6 +350,9 @@ public:
 
   void addImport(void **entry, const char *name);
   void **findImport(ImportId id);
+  // A symbol can have a second relocation slot (e.g. both a JUMP_SLOT and a
+  // GLOB_DAT); patching must cover both, as patchImport() does.
+  void **findImport(ImportId id, ImportType type);
   // Like findImport(), but never makes the GOT writable, so it does not touch
   // the library's memory. For bookkeeping only; patch through findImport().
   void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
@@ -481,6 +485,26 @@ public:
     }
     return total;
   }
+
+#ifdef UNIT_TEST
+  // Test teardown only: deletes every CodeCache and empties the array.
+  // Must not race add(): a publisher would spin on _count after the reset
+  // or store its pointer past the memset.
+  void freeForTest() {
+    for (int i = 0; i < count(); i++) {
+      CodeCache *lib = at(i);
+      if (lib != nullptr) {
+        NativeMem::record(NM_NATIVE_SYMBOLS, -lib->memoryUsage());
+        NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, -lib->nameOverhead());
+        delete lib;
+      }
+    }
+    memset(_libs, 0, sizeof(_libs));
+    _reserved = 0;
+    _count = 0;
+    _overflow_reported = false;
+  }
+#endif
 };
 
 #endif // _CODECACHE_H

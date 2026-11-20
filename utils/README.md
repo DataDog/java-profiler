@@ -83,10 +83,9 @@ Only `failure` and `startup_failure` are labelled as workflow failures.
 
 `.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
 test. It validates release tag/branch creation, version computation,
-trivial-PR authorization, and recovery from workflow monitoring errors using
-temporary local Git repositories and a GitHub CLI fixture. It does not load
-credentials or contact GitHub, so it cannot publish, tag, push, or merge
-anything remotely.
+and recovery from workflow monitoring errors using temporary local Git
+repositories and a GitHub CLI fixture. It does not load credentials or contact
+GitHub, so it cannot publish, tag, push, or merge anything remotely.
 The terminal interaction tests require Python 3.
 
 ```bash
@@ -230,16 +229,17 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-sigsetjmp-shape.py` | Every `sigsetjmp()` has a `JmpCtxScope` in effect, `savemask` 1, and a landing pad that starts with `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();` then `<scope>.restore();` (the `guards.h` pattern). The glibc cancellation buffer in `libraryPatcher_linux.cpp` is the one exception. |
 | `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
 | `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
-| `check-claude-md.py` | `CLAUDE.md` is the canonical redirect stub to `AGENTS.md`; `--write` restores it. |
+| `check-claude-md.py` | `CLAUDE.md` is the canonical stub that imports `AGENTS.md`, or the redirect to `AGENTS.md`; `--write` restores the stub. |
 | `check-knowledgebase.py` | Every tracked `.knowledgebase/memories/` file carries cairn's required memory frontmatter. |
 | `check-skills.py` | Every tracked `.agents/skills/` skill has loadable frontmatter, `.claude/skills` links to it, and `AGENTS.md` names only existing skills. |
+| `check-native-agents.py` | The native-code instruction file named in `.pi/native-agents.json` reaches Claude Code and Pi from the same directory list: each listed directory has a `CLAUDE.md` stub that imports the file, every nested `CLAUDE.md` is listed, and the root `AGENTS.md` names the file and each directory. |
 
-`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch.
+`.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch. A push to a branch with an open PR that passes those gates warns to re-verify the PR description against the pushed commits; the warning never blocks.
 
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all seven; run by CI (ci.yml source-invariant-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all nine; run by CI (ci.yml source-invariant-checks job)
 ```
 
 CI runs every `utils/tests/*.sh` suite in the `script-tests` job of `.github/workflows/ci.yml`, with Node.js 22 for the Pi adapter cases.
@@ -289,15 +289,19 @@ Core diff analysis and report generation for contribution candidate detection.
 Records that the agentic pre-PR review covered a branch, and checks it. Used by the `pre-pr-review` skill, `.githooks/pre-push` and the `require-fresh-review` hook, which runs in Claude Code (`.claude/hooks/`) and, through the thin adapter `.pi/extensions/require-fresh-review.ts`, in Pi. Pi loads project extensions only after project trust is granted.
 
 - The marker certifies commits: `write` refuses uncommitted tracked changes and records the `git patch-id --verbatim` (git 2.39+) of the diff from the merge base to `HEAD`. An advancing base or a clean rebase keeps it fresh, unless the base changed lines next to the branch's hunks (context lines anchor each hunk's position, so this errs toward stale). Any change to the branch's diff, whitespace or position included, makes it stale. Untracked files are ignored.
+- The hook gates only this repository's PRs. It lets through a command that, as typed, is one plain `gh [-R OWNER/REPO] pr create|new|ready` call made only of letters, digits, spaces and `._:/=@'",+-` (no expansion, operator, redirection, comment, line continuation or flag cluster), whose single `-R`/`--repo`, or for `ready` an `https://github.com/.../pull/N` URL, names a repository that shares neither owner/repo, repo name nor GitHub fork network with `DataDog/java-profiler` or any of the checkout's remotes (every fetch and push URL git uses, after `insteadOf`, all of which must be `github.com` URLs). Flags the hook does not know keep the command gated. Everything else, including `GH_REPO` and `cd`, stays gated.
 - Markers live in `<git-common-dir>/review-markers/` (one file per branch, named by hash), shared by all worktrees and never committed.
 - `install-hook` writes a shim to `<git-common-dir>/hooks/pre-push` that runs `.githooks/pre-push` as of `refs/remotes/origin/main`, which loads `review-marker.py` from the same ref; the Claude Code hook loads it from there too. All run with `python3 -I`, so files in the checkout, which may be an untrusted branch (e.g. a fork PR), are not executed or imported. When that ref lacks the scripts (the gate is not merged yet, or there is no `origin` remote), both hooks allow everything. Out of scope: Claude Code runs `.claude/` hooks from the session's own checkout under its workspace-trust model. It never sets `core.hooksPath`, which would replace global hooks such as Datadog's secret scanner; those chain to `.git/hooks`.
 - The same shim also runs `check-copyright.py` and `check-claude-md.py` from that ref (see Source quality checks).
 - For `gh pr create`, the Claude Code hook also runs `.github/scripts/check_pr_ticket.py` from that ref on the PR title and body; a command it cannot judge passes, and the CI `PR ticket reference` workflow checks it.
+- For `gh pr ready`, after the marker check passes the hook also blocks when the PR description was last edited before the PR's head commit. One GraphQL `node(id:)` query reuses the PR gh itself resolved and compares the body's `lastEditedAt` (`createdAt` fallback) with the head commit's date from `commits(last: 1)`, pinned by the query's own `headRefOid` matching the marker-approved commit: GitHub's `updatedAt` also moves on comments and pushed commits, `commits` returns only its first page, and a PR that moved between the two calls cannot be dated. A head commit dated in the future (a broken committer clock) fails open, since no description edit can postdate it. The probes fail open.
 - Exit codes: 0 fresh, written or installed; 1 missing or stale; 2 usage or environment error (e.g. missing base ref, git older than 2.39).
 - Known limits, all accepted:
   - An edit moved between two places whose surrounding lines are identical keeps the same digest, because hunk positions are left out so that rebases stay fresh.
-  - A fresh marker skips the network, so `pre-push` does not notice an open PR retargeted to a base other than the marker's.
+  - The marker check itself always runs on every gated push and every gated ready command; a fresh marker only avoids the block. Neither hook notices an open PR retargeted to a base other than the marker's; `pre-push` probes gh for an open PR on every branch push that updates an existing remote ref, so a fresh marker does not skip the network entirely.
   - A branch pushed under another name (`git push origin fix:topic`) is found by `pre-push` but not by `gh pr ready`, which blocks rather than allows.
+  - A rebase or `git push --force-with-lease` replay rewrites commit dates, so the head commit is newer than the description and `gh pr ready` blocks until the body is re-saved (re-saving the identical body moves `lastEditedAt` and clears it).
+  - The description gate dates the head commit by its committer timestamp, which is backdatable (`GIT_COMMITTER_DATE`) and old when an existing older commit is force-pushed as head; such a head passes the freshness gate even though the pushed code predates the description edit.
 
 **Usage:**
 ```bash

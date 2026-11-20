@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "referenceChainFrontier.h"
+#include "referenceChainBatchSet.h"
 
 // Incremental reference-chain search driven by a dedicated JVMTI agent thread.
 class ReferenceChainTracker {
@@ -325,6 +326,13 @@ private:
   // from resolving a single object.
   static constexpr size_t GOTW_MAX_BATCH = 512;
   static constexpr size_t GOTW_MIN_BATCH = 8;
+
+  // The per-batch membership/resolution/completion descriptor is a tracker member, not an
+  // expandFrontier() local: its ~9 KiB must not sit on the BFS thread's default stack. Used only
+  // under _engine_lock (runPassSerialized()) or by single-threaded test seams.
+  static_assert(ReferenceChainBatchSet::CAPACITY == GOTW_MAX_BATCH,
+                "batch descriptor capacity must track the batch upper bound");
+  ReferenceChainBatchSet _batch_set;
 
   // Search lifecycle state. _search_started distinguishes a search's first pass (seed
   // FollowReferences from the heap roots) from a resumed pass (expand the persisted frontier, see
@@ -787,6 +795,12 @@ private:
   // attempt, restartSearch(), and resetSearchStateForTest(). At MAX_CONSECUTIVE_ENUM_ERRORS the
   // ladder abandons the search (ROOT_ENUM_ERROR) - the only bound when ttl=0.
   u32 _consecutive_enum_errors = 0;
+
+  // JNI tests toggle this flag while the BFS thread can read it; keep accesses atomic.
+  // DEBUG-only: no release code reads it, so it is compiled out entirely.
+#ifdef DEBUG
+  std::atomic<bool> _root_enum_error_injection{false};
+#endif
 
   ReferenceChainTracker()
       : _enabled(false),
@@ -1298,6 +1312,13 @@ public:
         : OS::nanotime() - (u64)ms_since_last_enum * 1000000ULL;
     _last_root_enum_safepoint_ms = last_enum_cost_ms;
   }
+  // Takes effect when an enumeration attempt reads the flag; it does not cancel an in-flight walk.
+  // Tests must disable injection before resetting the shared search.
+#ifdef DEBUG
+  void setRootEnumErrorInjectionForTest(bool enabled) {
+    _root_enum_error_injection.store(enabled, std::memory_order_release);
+  }
+#endif
   bool shouldRunRootEnumForTest(u64 now_ns, bool manual_first_pass) const {
     MutexLocker engine_guard(_engine_lock);
     return shouldRunRootEnum(now_ns, manual_first_pass);

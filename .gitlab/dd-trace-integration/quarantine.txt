@@ -1,0 +1,36 @@
+# Scenarios in the dd-trace-integration matrix whose failures do not turn CI
+# red. Validated by validate-quarantine.sh; consumed by post-pr-comment.sh.
+# On main/scheduled runs there is no PR comment, so a quarantined flake there
+# is green and Slack-silent - keep the PR comment (and this file) as the
+# record of what is muted.
+#
+# FORMAT - one entry per line, five fields separated by "|", whitespace around
+# each field ignored. Blank lines and lines starting with "#" are ignored.
+#
+#   <cell-glob>/<scenario> | ticket | added | review_by | reason
+#
+#   cell-glob   Bash glob against a known matrix cell
+#               <libc>-<arch>-<jvm>-jdk<version> (e.g. glibc-x64-openj9-jdk25).
+#               Must match at least one known cell or validation fails - a
+#               glob naming a cell CI never builds quarantines nothing.
+#               Prefer the narrowest glob with evidence: the same flake on the
+#               cell's other scenario, or on sibling cells, still gates.
+#   scenario    Exactly "profiler-only" or "tracer-profiler" (the validation-log
+#               filename prefixes post-pr-comment.sh reads).
+#   ticket      PROF-<number>. Required - a quarantine without a ticket is just
+#               a test nobody runs.
+#   added       YYYY-MM-DD, the day it went in.
+#   review_by   YYYY-MM-DD. CI FAILS on and after this date, so staying
+#               quarantined is a decision somebody renews rather than the
+#               default. 90 days is the usual span; more than 120 is rejected.
+#   reason      Free text - what is unreliable and how often. Last field, so
+#               it may contain "|".
+#
+# A quarantined scenario STILL RUNS and still reports: post-pr-comment.sh
+# renders it as quarantined in the PR comment. Only the gating is suspended.
+# Quarantine is for a scenario that fails intermittently and that nobody has
+# time to fix right now. It is not for a scenario that is simply wrong - fix
+# that one. The intended exit from this file is a fix and a deleted line.
+#
+# Example (commented out - delete this paragraph when the first entry lands):
+# glibc-x64-openj9-jdk25/profiler-only | PROF-16618 | 2026-11-12 | 2027-02-10 | VALIDATION_FAILED on tracer patch verification, 1 in ~5 runs

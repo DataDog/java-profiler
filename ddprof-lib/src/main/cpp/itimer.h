@@ -21,6 +21,8 @@
 #include <signal.h>
 
 class ITimer : public Engine {
+  friend class ITimerTestAccessor;
+
 private:
   static bool _enabled;
   static long _interval;
@@ -34,6 +36,8 @@ public:
   const char *name() { return "ITimer"; }
 
   long interval() const { return _interval; }
+
+  bool enforcesCpuSamplerInterval() const { return true; }
 
   Error check(Arguments &args);
   Error start(Arguments &args);
@@ -52,6 +56,8 @@ public:
 // any thread, nullptr is passed as ucontext so the JVM uses safepoint-based
 // stack walking rather than relying on the signal-frame PC.
 class ITimerJvmti : public Engine {
+  friend class ITimerTestAccessor;
+
 private:
   static bool _enabled;
   static long _interval;
@@ -62,6 +68,8 @@ public:
   const char *units() { return "ns"; }
   const char *name()  { return "ITimerJvmti"; }
   long interval() const { return _interval; }
+
+  bool enforcesCpuSamplerInterval() const { return true; }
 
   Error check(Arguments &args);
   Error start(Arguments &args);

@@ -24,29 +24,38 @@ index).
 > **⛔ MANDATORY — KEEP THIS FILE CURRENT.** Any change to the architecture — a new
 > subsystem, a removed or disabled subsystem, a changed subsystem contract (buffering
 > scheme, engine, storage layout, build system, module list, JDK pattern, CI layout) —
-> REQUIRES updating this file in the same change set: the affected table row/section
-> here, the linked `doc/` detail page, and the [doc/README.md](doc/README.md) index
-> entry (add or remove). An architecture change that lands without its AGENTS.md/doc
-> update is an incomplete change — treat it as a failing check, not a nice-to-have.
+> REQUIRES updating this file in the same change set: the affected section here or in
+> `ddprof-lib/src/main/cpp/AGENTS.md` (native code), the linked `doc/` detail page,
+> and the [doc/README.md](doc/README.md) index entry (add or remove). An architecture
+> change that lands without its AGENTS.md/doc update is an incomplete change — treat it
+> as a failing check, not a nice-to-have.
 
 **What stays inline vs. what moves to `doc/`** — apply this test when updating this
-file. Inline (this file): rules that must shape behavior at unpredictable moments —
-invariants whose violation causes crashes/leaks/lockups, the obligations that trigger
-a procedure (review before PR, load a writing skill), rules for writing code and code
+file. Inline (this file, or `ddprof-lib/src/main/cpp/AGENTS.md` for rules that bind
+only native code): rules that must shape behavior at unpredictable moments —
+invariants whose violation causes crashes/leaks/lockups, rules for writing code and code
 comments. Externalized (`doc/`): reference material read only when
 working on a specific subsystem — architecture pages, build/task references,
 analyses. Procedures run at a known moment go in skills (`.agents/skills/`, which
 load fresh when invoked); enforcement goes in scripts, hooks and CI — text here is
-advisory and cannot gate anything. Rules stay inline even when needed only once per
+advisory and cannot gate anything. A skill's `description` carries the obligation to
+run it; this file points to a skill only when a test drive shows that the description
+alone does not load it. Rules stay inline even when needed only once per
 task if that moment is end-of-task and no skill carries them.
+This layering and the work-tracking process follow the Datadog AI Native SDLC Playbook,
+a Datadog-internal Confluence page. Read it only when planning tracked work, changing
+the process, or changing the agent configuration (`AGENTS.md`, `.agents/skills/`,
+`.claude/`, `.pi/`, `.githooks/`). Agents find it with the Atlassian Confluence tools
+by its title; without Datadog access, skip it.
 Skipping a linked page silently is forbidden: if you touched code covered by a
 `doc/` page you did not read (context pressure, time), you MUST disclose it in the
 task summary with an explicit `SUBSYSTEM DOC NOT READ: <path>` line — the user,
 not you, decides whether to compact and redo the work with the rules in context,
 or accept the risk. The same applies to any instruction in this file you could not
 follow: surface it, never absorb it.
-Hoist a section only when it grows with examples or scope; leave a one-line
-mandatory pointer behind.
+Hoist a section only when it grows with examples or scope. Leave a one-line mandatory
+pointer behind when it moves to `doc/`; a section that moves into a skill follows the
+skill-pointer rule above.
 Update this file from repeated failures: when an agent repeats a mistake or needs
 the same undocumented explanation twice, it proposes a concise correction here
 (or to the affected `doc/` page or skill); the responsible team reviews it, and
@@ -105,13 +114,21 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `tasks --all`. Do not use the bare `assemble` task.
 - Single Java test: `-Ptests=ClassName` / `-Ptests=ClassName.methodName` / `-Ptests="*.Pattern"`
   — unified across glibc, macOS and musl platforms.
+- Flaky native gtests: the Tier 1 GitLab jobs gate through `ddprof-test/quarantine.txt`
+  with cell `glibc-<config>-<arch>` (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md),
+  Tier 1) — a flaky gtest gets an entry with a PROF ticket, same as the Java cells.
+- Flaky dd-trace-integration cells: the Tier 3 GitLab jobs gate through
+  `post-pr-comment.sh`, and a flaky cell+scenario is quarantined in
+  `.gitlab/dd-trace-integration/quarantine.txt` with a PROF ticket and an expiry
+  (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md), Tier 3).
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
   extraction and stripping happen unconditionally inside `linkRelease`.
 - Code quality: `spotlessApply` before committing (CI fails on `spotlessCheck`),
-  `qualityChecks` (source invariants, copyright headers, `CLAUDE.md`), `scanBuild` (Linux only),
-  `:ddprof-stresstest:runStressTests`, `:ddprof-lib:runBenchmarks`.
+  `qualityChecks` (source invariants, copyright headers, `CLAUDE.md` and the native-code
+  stubs), `scanBuild` (Linux only), `:ddprof-stresstest:runStressTests`,
+  `:ddprof-lib:runBenchmarks`.
 - Container-based testing (ASan, aarch64, musl, CI repro): `./utils/run-containers-tests.sh`
   — defaults to podman; on macOS use either podman or Docker through colima
   (`--container=docker` after `colima start` — check availability with
@@ -140,235 +157,26 @@ extraction, artifact layout),
 [doc/building/Versioning.md](doc/building/Versioning.md) (version from git tags),
 [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md) (JDK upgrade touchpoints).
 
-## Architecture — Subsystem Index
+## Architecture
 
-Every subsystem has a detail page under `doc/`. One-line summaries only; read the page
-before working on a subsystem.
+[doc/README.md](doc/README.md) indexes the detail page of every subsystem. Read the page
+before you change its subsystem.
 
-| Subsystem | Details |
-|---|---|
-| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation) | [doc/architecture/CallTraceStorage.md](doc/architecture/CallTraceStorage.md) |
-| String dictionary (arena chunks, rotation/clear protocols) | [doc/architecture/StringDictionary.md](doc/architecture/StringDictionary.md) |
-| RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](doc/architecture/RefCountGuard.md) |
-| TLS context (thread-local tracing context, distributed tracing) | [doc/architecture/TLSContext.md](doc/architecture/TLSContext.md) |
-| Profiling engines (CPU, wall-clock, allocation, native memory, liveness; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](doc/architecture/ProfilingEngines.md) |
-| JFR integration (FlightRecorder, metadata, constant pools, buffers) | [doc/architecture/JfrIntegration.md](doc/architecture/JfrIntegration.md) |
-| Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](doc/ReferenceChainsCollectionSummary.md) |
-| Native memory profiling (malloc/free interception, sampling) | [doc/architecture/NativeMemoryProfiling.md](doc/architecture/NativeMemoryProfiling.md) |
-| Startup sanity checks | [doc/architecture/SanityChecks.md](doc/architecture/SanityChecks.md) |
-| SIGSEGV-safe library patching | [doc/architecture/SigsegvPatching.md](doc/architecture/SigsegvPatching.md) |
-| Event type system | [doc/reference/EventTypeSystem.md](doc/reference/EventTypeSystem.md) |
-| Memory requirements & budgets | [doc/reference/ProfilerMemoryRequirements.md](doc/reference/ProfilerMemoryRequirements.md) |
-| Remote symbolication (+frame types) | [doc/reference/RemoteSymbolication.md](doc/reference/RemoteSymbolication.md), [doc/reference/RemoteSymbolicationFrameTypes.md](doc/reference/RemoteSymbolicationFrameTypes.md) |
-| Per-sampler perf counters (`-PenableSamplerPerf`) | [doc/reference/SamplerPerfCounters.md](doc/reference/SamplerPerfCounters.md) |
-| Test flakiness analysis | [doc/reference/TestFlakinessAnalysis.md](doc/reference/TestFlakinessAnalysis.md) |
-| Demo leak app (`demo-java-leak`: self-driven HTTP server with a strong-ref leak cache and post-GC watermark flush; no profiler dependency) | [doc/architecture/DemoJavaLeakApp.md](doc/architecture/DemoJavaLeakApp.md) |
+**Native code.** Before you change code in `ddprof-lib/src/main/cpp`,
+`ddprof-lib/src/test/cpp`, `ddprof-lib/src/test/fuzz` or `malloc-shim/src`, read
+[ddprof-lib/src/main/cpp/AGENTS.md](ddprof-lib/src/main/cpp/AGENTS.md) unless it is
+already in your context. It holds the Critical Invariants and the index of the native
+subsystems.
 
 Key source locations: Java API `ddprof-lib/src/main/java/com/datadoghq/profiler/JavaProfiler.java`;
 C++ engine `ddprof-lib/src/main/cpp/` (implementation-specific code under `hotspot/`, `j9/`,
 `zing/`); native libraries `ddprof-lib/build/lib/main/{config}/{os}/{arch}/`; gtest tests
 `ddprof-lib/src/test/cpp/`; Java tests `ddprof-test/src/test/java/`.
 
-## Critical Invariants
-
-These rules are load-bearing and cross-cutting: they bind any code reachable from a
-signal handler or allocation hook, not only the engine handlers. Violations show up
-as deadlocks, JVM crashes with our library on the hs_err stack, leaks, or arm64-only
-lockups — usually only under production load, rarely in local tests.
-
-**Async-signal safety.** Applies to everything reachable from a profiling signal
-handler (SIGPROF = CPU engines, SIGVTALRM = wall clock), the SIGSEGV/SIGBUS handler,
-or a malloc/free hook — that includes `Profiler::recordSample*`, the stack
-walkers, `CallTraceStorage::put`, the JFR record paths and `CodeCache` lookups. Such
-code can interrupt any thread at any instruction: inside the allocator, the dynamic
-loader, the JVM at a safepoint, or our own code on the same thread. Socket hooks
-(`send/recv/write/read` interceptors) are the deliberate exception: they run on the
-calling thread, not in signal context (`nativeSocketSampler.h`), so allocation,
-locking, logging and `initCurrentThreadSignalSafe()` are legal there. In
-signal-reachable code, never:
-- allocate: `malloc`/`new`/`free`, allocating `std::` containers or strings,
-  `ProfiledThread::initCurrentThread*()`;
-- block: `pthread_mutex_*`, `Mutex`/`MutexLocker`, `SpinLock::lock()`/`lockShared()`,
-  `SharedLockGuard`/`ExclusiveLockGuard`. Only try-and-drop is legal —
-  `SpinLock::tryLock()`, `OptionalSharedLockGuard` — because the interrupted frame on
-  the same thread may already hold the lock;
-- touch `thread_local`/`__thread` or a function-local static with dynamic init: the
-  lazy TLS (DTV) slot and the static-init guard can `malloc` or lock (Graal aarch64
-  deadlock, documented in `guards.h`). Per-thread state goes in `ProfiledThread`;
-  singletons are constructed before handlers are installed;
-- log: `Log::*`, `LOG_WARN`, `printf`/`snprintf`. `TEST_LOG` is async-signal-safe;
-- enter the loader or the JVM: `dlopen`/`dlsym`/`dladdr`/`dl_iterate_phdr`,
-  `backtrace()`, JNI functions, JVMTI — except the purpose-built ASGCT and HotSpot
-  `RequestStackTrace` entry points. `VM::jni()` (`GetEnv`) is only allowed where the
-  existing walk paths already call it: on HotSpot only after `VMThread::current()`
-  passes `isThreadAccessible()` (JDK-8132510).
-
-Handlers run on the interrupted thread's own stack (no `sigaltstack`): keep frames
-small and put frame arrays in the pre-allocated per-stripe `CallTraceBuffer`. Mark new
-async-signal-unsafe functions with `DEBUG_ASSERT_NOT_IN_SIGNAL()` (`signalSafety.h`,
-active in debug and ASan builds).
-
-**Signal-handler skeleton.** New or changed handlers follow the shared skeleton in
-[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#common-signal-handler-contract):
-`ErrnoPreserver` as the first local → origin check (`OS::shouldProcessSignal()` with a
-`SignalCookie`; forward foreign signals via `OS::forwardForeignSignal()`) →
-`SIGNAL_HANDLER_GUARD_OR_DROP()` → `InflightGuard` → `CriticalSection` → `_enabled`
-acquire-load → work. Do not hand-roll `acquireCurrent()` in a handler: the macro also
-maintains the per-thread signal depth that `Profiler::dlopen_hook()` uses to keep
-`Libraries::refresh()` (Mutex + malloc) off the signal path. Handlers nest (SIGVTALRM
-can interrupt SIGPROF; SIGSEGV is `SA_NODEFER` and can hit inside either), so:
-- per-thread state shared between a handler and the code it interrupted needs a single
-  atomic RMW (a handler can land between a load and a store);
-- plain fields shared that way need `volatile` or `__atomic_*` so the compiler doesn't
-  cache or tear them. Hardware ordering is irrelevant on the same thread.
-
-The profiling signals (SIGPROF, SIGVTALRM) are hard-coded in `SignalBlocker` and
-`blockProfilingForExit()`; a new profiling signal must be added to both.
-
-**ProfiledThread acquisition.** A sampled thread must have a `ProfiledThread` in TLS —
-it owns the `sigjmp_buf` landing pad, the `CriticalSection` flag and the signal depth.
-Without one, drop the sample and count `SAMPLES_DROPPED_THREAD_LOCAL`. Pick the
-accessor by context:
-- signal handlers: `SIGNAL_HANDLER_GUARD_OR_DROP()` (non-sampling handlers:
-  `SIGNAL_HANDLER_GUARD_NO_SAMPLE()`), then `SIGNAL_HANDLER_CURRENT_THREAD()`;
-- malloc/free hooks and stack walkers: `ProfiledThread::acquireCurrent()` —
-  claims a slot from a pre-allocated pool, never allocates, may return null;
-- JNI entry points, JVMTI callbacks, non-signal samplers, socket hooks:
-  `ProfiledThread::initCurrentThreadSignalSafe()`. Despite the name it is **not**
-  async-signal-safe: it `new`s a `ProfiledThread` with profiling signals blocked. Never
-  call it from a handler or a malloc hook;
-- thread teardown and read-only checks: `ProfiledThread::current()` (never creates).
-
-**Crash protection.** Stack walks and VM-structure reads fault by design. Recovery is
-done by our SIGSEGV/SIGBUS handler, which is installed **only on HotSpot and OpenJ9**
-(`Profiler::setupSignalHandlers()`); elsewhere treat any fault in profiler code as
-fatal.
-- Single reads/writes of untrusted memory: `SafeAccess::load*/store*/safeCopy`. They
-  must stay `NOINLINE` (the fault is matched by PC).
-- Whole walks: `sigsetjmp` + `JmpCtxScope` (`guards.h`), used exactly as documented
-  there — construct the scope before `sigsetjmp(ctx, 1)` (savemask must be 1); at the
-  landing pad call `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()` then `restore()` before
-  anything else; locals written after `sigsetjmp` and read at the landing pad must be
-  `volatile`. `Profiler::checkFault()` only `siglongjmp`s when the faulting PC is
-  inside `libjavaProfiler`. A fault in libc (`memcpy`, `strlen`, or a compiler-emitted
-  `memcpy` for a struct copy) or in JVM code inside a protected region is **not**
-  recovered and crashes the JVM. Use inline loads or `SafeAccess::safeCopy` on
-  untrusted memory. Enforced in CI: the `qualityChecks` task verifies every
-  `sigsetjmp` site uses the `JmpCtxScope` shape (scope before the call, savemask 1,
-  `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()` + `restore()` at the landing pad).
-- `siglongjmp` skips every C++ destructor between the fault and the landing pad. No
-  RAII guard, held lock, or counter may be live across it unless the landing pad
-  compensates. Call `SIGNAL_HANDLER_GUARD_RELEASE()` before chaining to a foreign
-  SIGSEGV handler (J9's may `siglongjmp` past us).
-
-**Lifetime under live signals.** A handler may be mid-flight on any thread when the
-profiler stops or rotates. Never free, reset, or reuse memory a handler can reach
-until (a) the owning engine's `_enabled` flag is cleared with release semantics and
-(b) `SignalInflight::drain()` has succeeded — on timeout, do not tear down (see
-`Profiler::stop()`). Structures that rotate while recording (call-trace storage,
-string dictionaries) drain their signal-context readers with
-[RefCountGuard](doc/architecture/RefCountGuard.md). Every handler that can write JFR
-holds an `InflightGuard`.
-
-**Thread termination.** An exiting thread calls `blockProfilingForExit()` before
-unregistering from the engines and before releasing its `ProfiledThread`
-(`Profiler::onThreadEnd()`, `unregister_and_release()` in `libraryPatcher_linux.cpp`).
-Otherwise a signal can sample a half-torn-down thread, or re-acquire a
-`ProfiledThread` that is never freed. The block is never undone: calling it on a
-thread that keeps running silently stops profiling that thread — use `SignalBlocker`
-for a temporary window.
-
-**Thread registration.** Thread hooks (`pthread_create`, JVMTI `ThreadStart`/`ThreadEnd`)
-run without `_state_lock` and overlap `start()`/`stop()`. Reach engines only through
-`Profiler::registerThread()`/`unregisterThread()`, never `_cpu_engine->…` directly. An
-engine with a per-thread table sizes it before `openThreadRegistration()` and frees or
-replaces it only under `ThreadTablesFreeze`; that freeze closes unregistration only around
-the replacement, never for a whole `start()`. Details:
-[ProfilingEngines.md](doc/architecture/ProfilingEngines.md#thread-registration).
-
-**JVMTI callbacks.** Callbacks run on whichever JVM thread triggers the event —
-including compiler, VM and GC threads that never went through our `pthread_create`
-hook — so call `ProfiledThread::initCurrentThreadSignalSafe()` first.
-`GarbageCollectionStart`/`Finish` run while the VM is stopped: no JNI, and no JVMTI
-beyond the raw-monitor, memory-management and environment-local-storage functions
-(JVMTI spec). Keep them to lock-free bookkeeping and defer work to a profiler thread
-(see `ReferenceChainTracker::onGCStart()`). Profiler threads that need JNI attach with
-`VM::attachThread()` and call `VM::detachThread()` before they exit.
-
-**JNI/JVMTI resource cleanup.** Release every JNI local reference and JVMTI-allocated
-buffer (e.g. the `GetAllThreads()` array, freed with `Deallocate`) on every exit path —
-break, early return, skip — not only on the main path. On long-lived native threads (e.g.
-the reference-chain BFS thread) local refs are not freed until detach.
-
-**Clocks.** Use a monotonic clock for deadlines, TTLs and elapsed time, and convert with
-the helper matching the clock that produced the timestamp (`OS::nanotime()` values are
-nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two.
-
-**Recording lifecycle (stop/start/restart).** State that outlives `Profiler::stop()`
-(caches, frontier/tracking tables, cached class-map ids, clocks and deadlines, JNI global
-refs) must either be cleared in `stop()`/`start()` or be tagged with a generation and
-re-validated on use. `Profiler::start()` clears `_class_map` only on a reset start
-(`ACTION_START` or the first start); `ACTION_RESUME` keeps it. A cleared dictionary
-invalidates every stored class id, so state that caches ids must be re-validated on a
-reset start. If the `RefCountGuard` drain times out, `clearAll()` leaves the dictionary
-unchanged. Events queued since the last `dump()` must be written before
-`stop()` discards them.
-
-**Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
-bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering
-(`__ATOMIC_ACQUIRE` / `std::memory_order_acquire`), including loads of pointers published
-by a release `compare_exchange`; relaxed only with a proof of no ordering dependency,
-stated in a comment. Cross-thread writes: `__ATOMIC_RELEASE`, including `volatile` or plain
-flags (e.g. `_running`) and configuration fields written in `start()` — a plain `volatile`
-access emits no barrier on arm64, so use `__atomic_store_n(..., __ATOMIC_RELEASE)` and
-`__atomic_load_n(..., __ATOMIC_ACQUIRE)`. Match every release store with an acquire load of
-the same variable. Count + pointer two-phase publication: both the count load and the
-pointer load need acquire semantics. Default stance: acquire for loads, release for
-stores; `acq_rel` only on read-modify-write operations that both consume and publish
-data; relaxed only for counters or flags with no dependent data, with a comment saying so. Beyond ordering: return addresses can carry
-PAC bits — pass them through `stripPointer()` (`arch.h`) before comparing, looking up or
-recording. At the sampled leaf the return address is still in LR (take it from the
-`ucontext`). On Linux aarch64 there is no red zone, so memory below the sampled SP may be
-overwritten by signal delivery.
-
-**Resource discipline.** Minimize allocations — we fight malloc-arena fragmentation. This
-applies to Java code on context/sampling paths too: avoid string concatenation, boxing and
-varargs there, including when building error or label strings. O(N)
-linear scans only for small sets (cutoff ~256 elements); larger sets need an index or binary
-search. Do not resolve symbols or line tables eagerly in hot paths.
-
-**Concurrent data structure iteration.** When iterating a concurrent array (e.g.
-`CodeCacheArray`), NULL-check every slot — a slot may be count-allocated but
-pointer-not-yet-stored. Never permanently advance an iteration cursor past NULL gaps; stop
-at the first NULL or track the last contiguous non-NULL entry so missing entries are
-retried.
-
-**Stack completeness.** A successful carrier crossing does not establish a complete
-virtual-thread stack. Preserve walker-reported truncation through JFR serialization;
-see [JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md#continuation-completeness).
-
-**JVM abstraction.** Shared code must not refer to JVM-implementation-specific code directly,
-only through the abstraction files: `jvmSupport.{h,inline.h,cpp}`, `jvmThread.{h,cpp}`,
-`vmEntry.{h,cpp}`, `javaApi.cpp`. Implementation-specific code lives under `hotspot/`,
-`j9/`, `zing/`. When analyzing profiler issues, consult the OpenJDK sources; for OpenJ9,
-the OpenJ9 GitHub project. A few legacy files (`profiler.cpp`, `flightRecorder.cpp`,
-`livenessTracker.cpp`, `sanityCheck.cpp`) directly include implementation headers — the
-list is in [JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md#known-boundary-exceptions);
-do not add new ones and do not refactor existing ones unless asked. Enforced in CI:
-the `qualityChecks` task fails on any boundary include outside the documented
-exception list.
-
-**Test logging.** `TEST_LOG` (`common.h`, debug builds only) logs lines that
-`ddprof-test` can assert on; it is async-signal-safe.
-
 ## Development Guidelines
 
 - Never replace the code you work on with stubs. Never "fix" tests by testing constants
-  against constants. Never claim success until all affected tests pass: `testDebug` for
-  Java-visible behaviour, `:ddprof-lib:gtestDebug` for C++. For changes to
-  signal-handler paths, atomics, crash protection or thread lifecycle, also run the ASan
-  configuration where available (`gtestAsan`, `testAsan`) and, without arm64 hardware,
-  the aarch64 container (`./utils/run-containers-tests.sh --arch=aarch64`).
+  against constants. Never claim success until all affected tests pass.
   `assert()` is compiled out of release builds (`-DNDEBUG`): never rely on it for safety
   and never put side effects in it.
 - Platform-specific code goes in per-OS implementation files (`os_linux.cpp`,
@@ -403,6 +211,9 @@ exception list.
 - Keep code lean and easy to follow; factor self-contained code into short functions with
   explicit names. Datadog-specific extensions are integrated directly into base files (e.g.
   `stackWalker.h`); exclude `ddprof-lib/build/async-profiler` from usage searches.
+- Java code on context and sampling paths (e.g. `ContextValueCache`, `ContextSetter`)
+  minimizes allocations: no string concatenation, boxing or varargs there, also when
+  building error or label strings.
 - Copyright: new source files (including tests) start with the short header
   `Copyright <current year>, Datadog, Inc.` — no full license text block. When modifying
   an existing Datadog copyright, update the end year (e.g. `2025, 2026, Datadog`) in every
@@ -420,10 +231,6 @@ exception list.
   not add code with no production caller (stage it in the PR that needs it), and do not
   delete passing tests without stating why. When a change alters behavior described in
   `doc/` or in comments, update those in the same PR.
-- Before requesting review, self-check the diff for unused variables, unused or duplicated
-  macros, dead code (methods, JNI entry points, fields, no-op functions, empty files left
-  without callers; test-only helpers stay only if marked as such) and misspelled
-  identifiers/comments.
 - C/C++ style: match the surrounding indentation and spacing exactly; don't split inline
   logic into helpers unless reused or genuinely hard to follow; extract code that appears a
   second time (e.g. in copy constructors, assignment operators) into one shared helper; use
@@ -438,8 +245,8 @@ exception list.
   mechanism, invariant, or consequence) the reader could not get from the code. A
   longer comment needs a reason a reviewer would accept; prefer cutting — a verbose
   comment is review surface, not safety. The same cut applies to `doc/` paragraphs and
-  PR descriptions. No tool enforces this, because it takes judgment; the agentic review
-  checks it (see Agentic Code Review).
+  PR descriptions. No tool enforces this, because it takes judgment; the `pre-pr-review`
+  skill checks it.
 - Comments: "why" comments must reference concrete mechanisms (e.g. "ASAN's allocator
   lock is reentrant"), never speculative claims about HotSpot/glibc/ASAN/ISA internals — if
   unsure, describe the observable symptom. Describe current behavior, not history; cite no
@@ -497,48 +304,10 @@ it must be disclosed per the rule at the top of this file. These rules always ap
   a GitHub issue `#<n>`. Enforced in CI: the `PR ticket reference` workflow
   (`.github/workflows/pr-ticket.yml`) fails the PR otherwise; bot PRs are exempt.
 
+The `bits-review-gate` workflow publishes the `bits-review/head` commit status
+for PR heads targeting `main`; see [doc/BitsReviewMergeGateDesign.md](doc/BitsReviewMergeGateDesign.md)
+for the design and its current activation status.
+
 Isolation, parallel sessions and the rest of the tracking contract are in
 [doc/WorkTracking.md](doc/WorkTracking.md) and enforced by review discipline. Existing
 production-change guidelines and review rules still apply in full.
-
-## Agentic Code Review (mandatory before opening a PR)
-
-No pull request is opened, marked ready, or updated with fixes until an agentic code
-review of the full change set has completed and its Critical/High findings are fixed
-or explicitly waived by the user. Run the `pre-pr-review` skill
-([.agents/skills/pre-pr-review/SKILL.md](.agents/skills/pre-pr-review/SKILL.md)): it
-picks the reviewer, adds the judgment checks no tool can make (comment budget, no
-plan/spec references), and records the result with `utils/review-marker.py`. If the
-harness has no review capability, say so and get explicit user sign-off — never
-silently skip it. While the marker is stale, `.githooks/pre-push` refuses pushes to
-a branch with an open PR (install with `utils/review-marker.py install-hook`, never
-via `core.hooksPath`), and in Claude Code and Pi (`.pi/extensions/`) the
-`require-fresh-review` hook blocks `gh pr create`/`gh pr ready`.
-
-## Pull Request Descriptions, Comments and Commits
-
-Before writing or editing a PR title or description, a PR comment or review reply, a
-Jira comment or a commit message, load the `pr-writing` skill
-([.agents/skills/pr-writing/SKILL.md](.agents/skills/pr-writing/SKILL.md)).
-
-## CI / Automation Script Changes
-
-- Before rewriting or replacing a script invoked from `.gitlab-ci.yml`, `.gitlab/**/*.yml`,
-  `.github/workflows/*.yml`, or any CI job, run `git log -p -- <script>` (or diff against the
-  version being replaced) and enumerate every behavior branch it has — fallbacks,
-  env-var-driven paths, error exits. Preserve all of them unless explicitly asked to drop
-  one; do not silently narrow behavior while refactoring.
-- Grep the calling CI files for how the script is invoked (env vars set, exit codes expected)
-  and confirm the rewrite still satisfies every caller, not just the common/local case.
-- When removing an item from a default list or config (an antagonist, a test tag, a feature
-  flag) or deleting a script or file, grep the whole repo (including `.gitlab/**`) and cite
-  the exact file/line proving it is inert or unused in that context before removing it —
-  never remove based on assumption alone.
-- After changing a CI-invoked script, run a syntax check (e.g. `bash -n <script>`) and trace
-  through each CI job that calls it before considering the change complete.
-
-## Documentation Rules
-
-Before creating, editing, renaming or deleting a file under `doc/`, load the
-`doc-writing` skill ([.agents/skills/doc-writing/SKILL.md](.agents/skills/doc-writing/SKILL.md)).
-CI (`qualityChecks`) checks doc naming and the `doc/README.md` index.
