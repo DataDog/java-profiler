@@ -84,8 +84,22 @@ struct ProfilerImage {
   ElfW(Half) phnum;
 };
 
+// Checked arithmetic without __builtin_*_overflow: libddproftest also builds
+// on EL7, whose stock gcc 4.8.5 predates those builtins (GCC 5).
+static int checkedAdd(uintptr_t a, uintptr_t b, uintptr_t* out) {
+  if (UINTPTR_MAX - a < b) return -1;
+  *out = a + b;
+  return 0;
+}
+
+static int checkedMul(size_t a, size_t b, size_t* out) {
+  if (a != 0 && SIZE_MAX / a < b) return -1;
+  *out = a * b;
+  return 0;
+}
+
 static int imageAddress(const struct ProfilerImage* image, uintptr_t vaddr, uintptr_t* address) {
-  return __builtin_add_overflow(image->bias, vaddr, address) ? -1 : 0;
+  return checkedAdd(image->bias, vaddr, address) ? -1 : 0;
 }
 
 // Check ranges by subtraction so neither segment nor address end arithmetic can wrap.
@@ -95,7 +109,7 @@ static int readableRange(const struct ProfilerImage* image, uintptr_t address, s
     uintptr_t start;
     uintptr_t end;
     if (ph->p_type != PT_LOAD || (ph->p_flags & PF_R) == 0 || imageAddress(image, ph->p_vaddr, &start) != 0
-        || __builtin_add_overflow(start, (uintptr_t)ph->p_filesz, &end) || address < start || address > end) {
+        || checkedAdd(start, (uintptr_t)ph->p_filesz, &end) != 0 || address < start || address > end) {
       continue;
     }
     uintptr_t offset = address - start;
@@ -242,7 +256,7 @@ static int locateOperationSlots(struct ProfilerImage* image) {
   if (strtab_addr <= symtab_addr) return -1;
   size_t nsyms = (size_t)((strtab_addr - symtab_addr) / sizeof(*symtab));
   size_t symtab_size;
-  if (nsyms == 0 || __builtin_mul_overflow(nsyms, sizeof(*symtab), &symtab_size)
+  if (nsyms == 0 || checkedMul(nsyms, sizeof(*symtab), &symtab_size) != 0
       || !readableRange(image, symtab_addr, symtab_size) || !readableRange(image, strtab_addr, strsz)) {
     return -1;
   }
