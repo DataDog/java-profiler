@@ -40,6 +40,8 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   private static final String[] FIELDS = {TAG_1, TAG_2, TAG_3};
   private static final String METHOD_SAMPLE = "datadog.MethodSample";
   private static volatile long spinSink;
+  // About 20 worker fallback cycles (10 observations) at wall=1ms, sampled in half the passes.
+  private static final long QUIET_ORIGIN_HOLD_MS = 400;
   private final AtomicLong workerNativeTid = new AtomicLong(-1);
 
   @Override
@@ -111,7 +113,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     try {
       assertTrue(ready.await(10, TimeUnit.SECONDS), "Worker did not register");
       assertNull(workerFailure.get(), "Worker failed before origin setup");
-      if (!controlledTail()) awaitWorkerWeightedTailReady(workerFailure);
+      if (!controlledTail()) System.out.println(awaitWorkerWeightedTailReady(workerFailure));
       int blockedSamples = 0;
       for (int i = 0; i < snapshots.length; i++) {
         snapshots[i] =
@@ -140,8 +142,15 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
                 .matched;
       }
       assertTrue(blockedSamples > 0, "No original worker samples across retained dumps");
-      if (!controlledTail()) awaitWorkerWeightedTailReady(workerFailure);
+      String readiness = null;
+      if (!controlledTail()) {
+        // Unfiltered counters also move for other unowned threads, and dump/parse threads change
+        // the pool, closing epochs. A quiet A hold lets a full worker fallback cycle coalesce.
+        Thread.sleep(QUIET_ORIGIN_HOLD_MS);
+        readiness = awaitWorkerWeightedTailReady(workerFailure);
+      }
       releaseA.countDown();
+      if (readiness != null) System.out.println(readiness);
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter B");
       assertNull(workerFailure.get(), "Worker failed during transition");
       Thread.sleep(300);
@@ -243,8 +252,9 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     try {
       assertTrue(readyA.await(10, TimeUnit.SECONDS), "Worker did not register A");
       assertNull(workerFailure.get(), "Worker failed before origin setup");
-      if (!controlledTail()) awaitWorkerWeightedTailReady(workerFailure);
+      String readiness = controlledTail() ? null : awaitWorkerWeightedTailReady(workerFailure);
       releaseA.countDown();
+      if (readiness != null) System.out.println(readiness);
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter traced B");
       assertNull(workerFailure.get(), "Worker failed before traced B");
       long retainedPending =
@@ -390,7 +400,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     worker.start();
     try {
       assertTrue(readyA.await(10, TimeUnit.SECONDS), "Worker did not register A");
-      awaitWorkerWeightedTailReady(workerFailure);
+      System.out.println(awaitWorkerWeightedTailReady(workerFailure));
       stopProfiler();
       releaseA.countDown();
       assertTrue(readyInactive.await(10, TimeUnit.SECONDS), "Worker did not survive stop");
@@ -498,6 +508,15 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     long weight = sample.getLong(WEIGHT, 0);
     Long time = sample.getLong("startTime");
     assertNotNull(time, "Worker sample has no capture time");
+    if (stack.contains("blockedOriginA")
+        && stack.contains("CountDownLatch.await()")
+        && "PARKED".equals(state)) {
+      // Unit tail segments emitted after the transition must keep A too; only weighted ones count.
+      assertTrue(time < transitionStart, "Deferred A must keep its original epoch timestamp");
+      assertTags(sample, tagsA);
+      assertEquals(0L, sample.getLong(SPAN_ID, -1));
+      assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
+    }
     if (stack.contains("blockedOriginA") && "PARKED".equals(state) && weight > 1) {
       acc.matched++;
       System.out.println(
@@ -513,10 +532,6 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
               + sample.getString(TAG_2)
               + ";"
               + sample.getString(TAG_3));
-      assertTrue(time < transitionStart, "Deferred A must keep its original epoch timestamp");
-      assertTags(sample, tagsA);
-      assertEquals(0L, sample.getLong(SPAN_ID, -1));
-      assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
     }
     if ("RUNNABLE".equals(state) && stack.contains("runnableContextB")) {
       assertEquals(1L, weight, "B must not acquire already suppressed A time");
@@ -647,8 +662,10 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
    * Waits for a weighted pending tail: the worker's own slot in DEBUG, process-wide counters in
    * release. Release must not dump: a dump rotates away the samples the caller's oracle reads and
    * closes the epoch, splitting pending weight into unit segments that no weighted tail can show.
+   * Returns the readiness line for the caller to print after the transition: unfiltered, test
+   * output threads join the sampled pool, and a pool change closes the epoch.
    */
-  private void awaitWorkerWeightedTailReady(AtomicReference<Throwable> failure) throws Exception {
+  private String awaitWorkerWeightedTailReady(AtomicReference<Throwable> failure) throws Exception {
     Map<String, Long> base = profiler.getDebugCounters();
     long suppressionTarget = -1;
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
@@ -660,14 +677,12 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
         long pending = WallClockBlockTrackerTestSupport.pendingUnownedWeight(tid);
         long segment = WallClockBlockTrackerTestSupport.maxPendingUnownedSegmentWeight(tid);
         if (pending >= 2 && pending <= 5 && segment >= 2) {
-          System.out.println(
-              "Attribution worker tail ready: tid="
-                  + tid
-                  + ", pending="
-                  + pending
-                  + ", segment="
-                  + segment);
-          return;
+          return "Attribution worker tail ready: tid="
+              + tid
+              + ", pending="
+              + pending
+              + ", segment="
+              + segment;
         }
       } else {
         // Ambient owners can move these counters too; the callers' oracles still require
@@ -680,12 +695,10 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
           suppressionTarget = suppressed + 2;
         }
         if (suppressionTarget >= 0 && suppressed >= suppressionTarget) {
-          System.out.println(
-              "Attribution suppression ready: suppressed="
-                  + suppressed
-                  + ", target="
-                  + suppressionTarget);
-          return;
+          return "Attribution suppression ready: suppressed="
+              + suppressed
+              + ", target="
+              + suppressionTarget;
         }
       }
       Thread.sleep(1);
