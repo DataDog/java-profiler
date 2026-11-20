@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Testing Guide
 
 This document describes the complete test strategy for the java-profiler project:
@@ -383,6 +385,27 @@ it rebuilds the base image and the JDK image built on it.
 # Drop into a shell inside the container (SYS_PTRACE enabled for gdb)
 ./utils/run-containers-tests.sh --shell
 ```
+
+### Container toolchain checks
+
+Glibc uses Ubuntu 22.04 with matched Clang/Clang++ 17, compiler-rt and llvm-cov.
+Both architectures use `-clang17-cov1` tags to avoid older compiler/coverage recipes.
+Musl retains its distro toolchain.
+
+Check generated recipes and cache selection without containers or downloads:
+
+```bash
+bash utils/tests/test_run_containers_tests.sh
+```
+
+Inside a Linux glibc image, run the standalone masked-index sanitizer probe:
+
+```bash
+bash utils/tests/manual/test_masked_index_compiler.sh clang++
+```
+
+Clang 14.0.0 on aarch64 reports an invalid negative index; Clang 17 passes all
+2048 valid slots. This probe does not replace native or Java integration tests.
 
 ### Running the chaos harness locally
 

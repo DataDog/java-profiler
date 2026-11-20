@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Datadog Java Profiler Library
 _Based on [async-profiler 2.8.3](https://github.com/async-profiler/async-profiler/releases/tag/v2.8.3)_
 
@@ -156,8 +158,8 @@ The project includes both Java and C++ unit tests. You can run them using:
 
 ### Container-Based Testing (musl/glibc)
 Run tests in containers to test on different libc implementations. The script defaults to Podman; on macOS use Docker via colima (`--container=docker`) — podman's credential-helper lookup for the Datadog registries (ddtool) fails outside the CI network and aborts container commands. Uses two-level container image caching for fast subsequent runs:
-1. **Base image** (`java-profiler-base:<libc>-<arch>`) - OS with all build tools + sanitizers
-2. **JDK image** (`java-profiler-test:<libc>-jdk<version>-<arch>`) - Adds JDK + Gradle
+1. **Base image** - OS with build tools + sanitizers: `java-profiler-base:glibc-<arch>-clang17-cov1` or `java-profiler-base:musl-<arch>`
+2. **JDK image** - Adds JDK + Gradle: `java-profiler-test:glibc-jdk<version>-<arch>-clang17-cov1` or `java-profiler-test:musl-jdk<version>-<arch>`
 
 By default, the script clones the repository at the current commit for clean builds. Use `--mount` to mount the local directory instead (faster but may have stale artifacts).
 
@@ -186,7 +188,7 @@ By default, the script clones the repository at the current commit for clean bui
 # Force rebuild of all cached container images
 ./utils/run-containers-tests.sh --libc=musl --jdk=21 --rebuild
 
-# Force rebuild of base image only (useful after Alpine/Ubuntu updates)
+# Rebuild the base and selected dependent JDK image
 ./utils/run-containers-tests.sh --libc=musl --rebuild-base
 
 # Preview all supported musl cells (sanitizer configs are skipped, matching CI policy)
@@ -217,7 +219,7 @@ Supported options:
 - `--shell` (interactive shell instead of running tests)
 - `--mount` (mount local repo instead of cloning - faster but may have stale artifacts)
 - `--rebuild` (force rebuild of all container images)
-- `--rebuild-base` (force rebuild of base image only)
+- `--rebuild-base` (rebuild the base and selected dependent JDK image)
 - `--matrix` (preview a full test matrix; unset dimensions expand to `all`)
 - `--run` (execute an inferred matrix without prompting)
 - `--fail-fast` (stop matrix execution on first failure)

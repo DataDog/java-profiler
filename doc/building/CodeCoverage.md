@@ -103,11 +103,9 @@ failing gtest stops the build before the report.
 
 ## Containers
 
-`utils/run-containers-tests.sh` base images include gcovr from PyPI, and `llvm` on
-glibc for the unversioned `llvm-cov`. The script reuses cached images, so a base image
-cached before these packages were added lacks them, and so does every JDK test image
-built on it. Pass `--rebuild-base` once: it rebuilds the base image and the JDK image
-on top of it.
+`utils/run-containers-tests.sh` images include PyPI gcovr; glibc selects matching Clang/llvm-cov 17.
+Cached images can lack these tools. `--rebuild-base` rebuilds the base and selected
+JDK image together.
 
 The script's `--config` does not accept `coverage`. Open a shell in the container and
 run the task there:
