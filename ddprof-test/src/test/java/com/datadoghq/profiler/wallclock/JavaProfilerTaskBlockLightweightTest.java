@@ -24,6 +24,29 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
 
   @Test
   public void suppressedWallSamplesAreReplacedByAStacklessTaskBlock() throws Exception {
+    long suppressedBefore =
+        profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
+    TaskBlockRecorderTestSupport.recordWithinAttempts(
+        profiler::getDebugCounters, this::runSuppressedBlock);
+
+    stopProfiler();
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    assertEquals(1L, events.count());
+    TaskBlockAssertions.assertContainsNoStackTrace(events);
+    TaskBlockAssertions.assertNoAnchorFields(events);
+    TaskBlockAssertions.assertNoCorrelationId(events);
+    TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
+    TaskBlockAssertions.assertContainsObservedState(events, "SLEEPING");
+    assertTrue(getRecordedCounterValue("wc_signals_suppressed_owned_block") > suppressedBefore);
+    assertEquals(1L, getRecordedCounterValue("task_block_emitted"));
+    assertEquals(0L, getRecordedCounterValue("task_block_stack_capture_failed"));
+  }
+
+  /**
+   * Runs one suppressed interval and returns endTaskBlock's result. A rejected attempt emits no
+   * event and no task_block_emitted, so the exact counts after stop span all attempts.
+   */
+  private boolean runSuppressedBlock() throws Exception {
     CountDownLatch armed = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
@@ -54,19 +77,7 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
     worker.join(5_000L);
     assertFalse(worker.isAlive());
     if (error.get() != null) throw new AssertionError(error.get());
-    assertTrue(recorded.get(), "Expected stackless TaskBlock event to be recorded");
-
-    stopProfiler();
-    JfrEvents events = verifyEvents("datadog.TaskBlock");
-    assertEquals(1L, events.count());
-    TaskBlockAssertions.assertContainsNoStackTrace(events);
-    TaskBlockAssertions.assertNoAnchorFields(events);
-    TaskBlockAssertions.assertNoCorrelationId(events);
-    TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
-    TaskBlockAssertions.assertContainsObservedState(events, "SLEEPING");
-    assertTrue(getRecordedCounterValue("wc_signals_suppressed_owned_block") > suppressedBefore);
-    assertEquals(1L, getRecordedCounterValue("task_block_emitted"));
-    assertEquals(0L, getRecordedCounterValue("task_block_stack_capture_failed"));
+    return recorded.get();
   }
 
   private void waitForCounterAbove(String name, long baseline, long timeoutMillis)

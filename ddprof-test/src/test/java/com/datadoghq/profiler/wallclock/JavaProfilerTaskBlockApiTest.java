@@ -31,7 +31,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   private static final long BLOCKER = 0x7301L;
   private static final long UNBLOCKING_SPAN_ID = 0x7302L;
-  private static final int MAX_RECORD_ATTEMPTS = 5;
 
   @Test
   public void pairedApiEmitsTaskBlockWithStack() throws Exception {
@@ -289,25 +288,8 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         });
   }
 
-  /**
-   * Repeats an eligible interval until one is recorded. The recorder is best-effort under stripe
-   * contention, so each rejected attempt must add exactly one task_block_record_failed.
-   */
-  private void recordWithinAttempts(Attempt attempt) throws Exception {
-    long before = TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters());
-    int rejected = 0;
-    while (!attempt.recorded()) {
-      rejected++;
-      assertEquals(
-          rejected,
-          TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters()) - before,
-          "endTaskBlock rejection not accounted as task_block_record_failed");
-      assertTrue(rejected < MAX_RECORD_ATTEMPTS, "no recorded interval in bounded attempts");
-    }
-    assertEquals(
-        rejected,
-        TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters()) - before,
-        "recorded interval also counted a recorder failure");
+  private void recordWithinAttempts(TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
+    TaskBlockRecorderTestSupport.recordWithinAttempts(profiler::getDebugCounters, attempt);
   }
 
   private void runWorker(ThrowingRunnable action) throws Exception {
@@ -341,11 +323,6 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       Thread.sleep(10L);
     }
     throw new AssertionError("Counter did not increase: " + name);
-  }
-
-  @FunctionalInterface
-  private interface Attempt {
-    boolean recorded() throws Exception;
   }
 
   @FunctionalInterface
