@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Set;
 
 /** Assertions for the synchronous {@code datadog.TaskBlock} event contract. */
-final class TaskBlockAssertions {
+public final class TaskBlockAssertions {
   private static final String BLOCKER = "blocker";
   private static final String UNBLOCKING_SPAN_ID = "unblockingSpanId";
   private static final String ANCHOR_SAMPLE_ID = "anchorSampleId";
@@ -76,6 +76,18 @@ final class TaskBlockAssertions {
   }
 
   /**
+   * Probes the wall engine's unfiltered owner tracking that park producers need; unlike {@link
+   * #isSupported()}, it does not require JNI platform-thread classification.
+   */
+  static boolean parkSupported() {
+    try {
+      return ProfilerOwnedBlockHooks.wallRegistryTrackingSupported(JavaProfiler.getInstance());
+    } catch (IOException e) {
+      throw new IllegalStateException("Could not load profiler for park capability probe", e);
+    }
+  }
+
+  /**
    * Value of {@code OSThreadState::SLEEPING} in {@code ddprof-lib/src/main/cpp/threadState.h}. Keep
    * in sync with that enum: the native {@code blockEnter0} decodes this int via {@code
    * decodeJavaBlockState}, so a renumbered enum would silently arm a different OS thread state
@@ -96,7 +108,7 @@ final class TaskBlockAssertions {
    * Whether native {@code JVMSupport::isPlatformThread()} can accept a thread on this JVM: it fails
    * closed on non-HotSpot JVMs at JDK 19+, and any unrecognized VM name counts as non-HotSpot.
    */
-  static boolean platformThreadClassificationSupported() {
+  public static boolean platformThreadClassificationSupported() {
     return !Platform.isJavaVersionAtLeast(19)
         || isHotspotVmName(System.getProperty("java.vm.name"));
   }

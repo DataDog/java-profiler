@@ -589,6 +589,11 @@ public final class JavaProfiler {
     return taskBlockSupportedForTest0(Thread.currentThread());
   }
 
+  /** Test-only probe of default wall-engine owner tracking, without thread classification. */
+  boolean wallRegistryTrackingSupportedForTest() {
+    return wallRegistryTrackingSupportedForTest0();
+  }
+
   /** Test-only probe of the native platform-thread classification of the calling thread. */
   boolean platformThreadForTest() {
     return platformThreadForTest0(Thread.currentThread());
@@ -716,6 +721,8 @@ public final class JavaProfiler {
       boolean isVirtual, long token, long blocker, long unblockingSpanId);
 
   private static native boolean taskBlockSupportedForTest0(Thread thread);
+
+  private static native boolean wallRegistryTrackingSupportedForTest0();
 
   private static native boolean platformThreadForTest0(Thread thread);
 

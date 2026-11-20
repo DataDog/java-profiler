@@ -417,10 +417,10 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertNoCorrelationId(events);
   }
 
-  /** Monitor producers classify through JNI, which fails closed on non-HotSpot JDK 19+. */
+  /** Monitor producers need both the wall engine's TaskBlock support and JNI classification. */
   @Override
   protected boolean isPlatformSupported() {
-    return TaskBlockAssertions.platformThreadClassificationSupported();
+    return TaskBlockAssertions.isSupported();
   }
 
   @Override

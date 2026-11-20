@@ -544,6 +544,9 @@ public:
 #endif
   // Test-only capability probe for the default synchronous wall-clock API tests.
   bool taskBlockSupportedForTest(JNIEnv* env, jthread thread);
+  // Test-only probe: whether the default wall engine can track unfiltered owners,
+  // which park producers need; it does not classify the calling thread.
+  bool wallRegistryTrackingSupportedForTest();
 
   static inline Profiler *instance() {
     return _instance;

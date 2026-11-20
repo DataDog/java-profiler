@@ -1193,6 +1193,14 @@ off_t Recording::finishChunkContents(bool end_recording, bool do_cleanup) {
   return chunk_end;
 }
 
+#ifdef UNIT_TEST
+void (*Recording::continuationHookForTest)(Recording::ContinuationStage) = nullptr;
+#define runContinuationHookForTest(stage) \
+  do { if (continuationHookForTest != nullptr) continuationHookForTest(stage); } while (0)
+#else
+#define runContinuationHookForTest(stage) do {} while (0)
+#endif
+
 // Finish the current chunk and consume the qualified destination descriptor.
 // Failed delivery retains every sealed chunk in the source; new observations
 // begin a new chunk after that retained prefix, not inside its patched header.
@@ -1210,10 +1218,16 @@ RecordingOutput::Delivery Recording::switchChunk(int fd) {
   RecordingOutput::Delivery delivery = _output.deliverAndClose(fd, _first_retained_chunk, _chunk_sequence);
   if (!_output.good()) return {};
   if (delivery) {
-    if (!_output.restart()) return {};
+    // Delivered chunks leave this recording's custody even if the source cannot restart.
+    _first_retained_chunk = _chunk_sequence + 1;
+    runContinuationHookForTest(ContinuationStage::BEFORE_RESTART);
+    if (!_output.restart()) {
+      delivery.continuation_failed = true;
+      return delivery;
+    }
+    runContinuationHookForTest(ContinuationStage::AFTER_RESTART);
     _chunk_start = 0;
     _bytes_written = 0;
-    _first_retained_chunk = _chunk_sequence + 1;
   } else {
     _chunk_start = end;
   }
@@ -1252,7 +1266,7 @@ RecordingOutput::Delivery Recording::switchChunk(int fd) {
     }
     flush(_buf);
   } catch (const OutputFailure&) {
-    delivery = {};
+    delivery.continuation_failed = static_cast<bool>(delivery);
   }
   _cold_io = false;
   return delivery;
@@ -3131,6 +3145,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
                (unsigned long long)delivery.last_chunk,
                (unsigned long long)delivery.bytes,
                (unsigned long long)delivery.inherited_prefix_bytes);
+      if (delivery.continuation_failed) return Error("Recording delivered; continuing the recording failed");
       return Error::OK;
     }
     return Error(

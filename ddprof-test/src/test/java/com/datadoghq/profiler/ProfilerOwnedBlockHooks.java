@@ -35,6 +35,11 @@ public final class ProfilerOwnedBlockHooks {
     return profiler.taskBlockSupportedForTest();
   }
 
+  /** Returns whether the default wall engine tracks unfiltered owners, as park producers need. */
+  public static boolean wallRegistryTrackingSupported(JavaProfiler profiler) {
+    return profiler.wallRegistryTrackingSupportedForTest();
+  }
+
   /** Returns the native platform-thread classification of the calling thread. */
   public static boolean platformThread(JavaProfiler profiler) {
     return profiler.platformThreadForTest();

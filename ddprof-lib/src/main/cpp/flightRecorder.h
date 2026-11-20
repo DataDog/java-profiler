@@ -400,6 +400,10 @@ public:
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
   // Consumes fd, retaining sealed source chunks on failed delivery.
   RecordingOutput::Delivery switchChunk(int fd);
+#ifdef UNIT_TEST
+  enum class ContinuationStage { BEFORE_RESTART, AFTER_RESTART };
+  static void (*continuationHookForTest)(ContinuationStage stage);
+#endif
   bool outputGood() const { return _output.good(); }
   bool prepareDumpTarget(int fd) const { return _output.prepareTarget(fd); }
   // Caller holds _rec_lock exclusively; pending is sorted and covers every

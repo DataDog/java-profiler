@@ -55,6 +55,8 @@ public:
   static constexpr size_t kPruneFloor = Recording::kMinWallEpochPruneThreshold;
   static size_t epochCount(const Recording& recording) { return recording._wall_epochs.size(); }
   static bool hasEpoch(const Recording& recording, u64 start) { return recording._wall_epochs.count(start) != 0; }
+  static u64 firstRetainedChunk(const Recording& recording) { return recording._first_retained_chunk; }
+  static u64 chunkSequence(const Recording& recording) { return recording._chunk_sequence; }
 };
 
 // Recording needs VM services even when serializing native-only events.
@@ -919,4 +921,74 @@ TEST_F(WallEpochDumpTest, DeliveredDumpForgetsExitedThreadNames) {
   Error error = dumpTo(target);
   ASSERT_FALSE(error) << error.message();
   EXPECT_EQ("", profiler->threadNameForTest(kExitedTid));
+}
+
+namespace {
+RecordingWriteFailureFixture* continuation_output = nullptr;
+Recording::ContinuationStage continuation_failure_stage;
+bool continuation_failure_injected = false;
+
+// Fails source writes after the destination copy and close completed.
+struct ContinuationFailure {
+  ContinuationFailure(RecordingWriteFailureFixture* output, Recording::ContinuationStage stage) {
+    continuation_output = output;
+    continuation_failure_stage = stage;
+    continuation_failure_injected = false;
+    Recording::continuationHookForTest = +[](Recording::ContinuationStage stage) {
+      if (stage != continuation_failure_stage) return;
+      continuation_failure_injected = continuation_output->failWrites();
+    };
+  }
+  ~ContinuationFailure() {
+    Recording::continuationHookForTest = nullptr;
+    continuation_output = nullptr;
+  }
+  ContinuationFailure(const ContinuationFailure&) = delete;
+  ContinuationFailure& operator=(const ContinuationFailure&) = delete;
+};
+} // namespace
+
+class WallEpochContinuationFailureTest : public WallEpochDumpTest {
+protected:
+  void checkDeliveredDespiteContinuationFailure(Recording::ContinuationStage stage) {
+    RecordingWriteFailureFixture output;
+    ASSERT_TRUE(output.valid());
+    Arguments args;
+    args._jfr_options = JFR_SYNC_OPTS;
+    Recording recording(output.fd(), args);
+    DumpRecording running(&recording);
+    WallEpochFile target;
+    ASSERT_GE(target.fd, 0);
+    ASSERT_EQ(1ULL, RecordingTestAccessor::chunkSequence(recording));
+    const long long certified_before = Counters::getCounter(JFR_DELIVERIES_CERTIFIED);
+
+    Error error = Error::OK;
+    {
+      ContinuationFailure failure(&output, stage);
+      error = dumpTo(target);
+    }
+    ASSERT_TRUE(continuation_failure_injected) << "the dump must reach the injected continuation failure";
+    ASSERT_TRUE(error);
+    EXPECT_STREQ("Recording delivered; continuing the recording failed", error.message());
+    EXPECT_EQ(certified_before + 1, Counters::getCounter(JFR_DELIVERIES_CERTIFIED));
+    EXPECT_NO_THROW(decodeWallEpochs(target.fd)) << "the delivered chunk must be complete and sealed";
+    EXPECT_GT(RecordingTestAccessor::firstRetainedChunk(recording), 1ULL)
+        << "the delivered chunk must not stay retained by the source";
+    EXPECT_FALSE(recording.outputGood());
+
+    WallEpochFile second;
+    ASSERT_GE(second.fd, 0);
+    error = dumpTo(second);
+    ASSERT_TRUE(error);
+    EXPECT_STREQ("Incomplete recording output is still owned", error.message());
+    EXPECT_EQ(certified_before + 1, Counters::getCounter(JFR_DELIVERIES_CERTIFIED));
+  }
+};
+
+TEST_F(WallEpochContinuationFailureTest, FailedSourceRestartStillCertifiesDeliveredChunk) {
+  checkDeliveredDespiteContinuationFailure(Recording::ContinuationStage::BEFORE_RESTART);
+}
+
+TEST_F(WallEpochContinuationFailureTest, FailedNextChunkHeaderStillCertifiesDeliveredChunk) {
+  checkDeliveredDespiteContinuationFailure(Recording::ContinuationStage::AFTER_RESTART);
 }

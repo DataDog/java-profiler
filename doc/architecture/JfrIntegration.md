@@ -261,6 +261,10 @@ completion, not consumer decoding or receiving credit.
 Dump rejects aliases to the source before truncating the destination. A failed
 copy keeps sealed chunks and starts the next chunk after them. A later successful
 dump delivers all retained chunks with their original clocks and constant pools.
+If the copy and close succeed but the source cannot truncate or write the next
+chunk header, dump still certifies the delivered chunks, which leave the
+recording's custody, then returns "Recording delivered; continuing the recording
+failed" with the output quarantined.
 
 Write, patch and close failures quarantine the output. Stop shuts down producers
 and latches the profiler's non-restartable `ERROR` state. Recording buffers,

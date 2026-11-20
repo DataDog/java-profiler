@@ -35,6 +35,9 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
     Assumptions.assumeTrue(
         !"paired".equals(producer) || TaskBlockAssertions.platformThreadClassificationSupported(),
         "paired API classification fails closed on non-HotSpot JDK 19+");
+    Assumptions.assumeTrue(
+        !"park".equals(producer) || TaskBlockAssertions.parkSupported(),
+        "park admission needs the wall engine's unfiltered owner tracking");
     ExecutorService worker = Executors.newSingleThreadExecutor();
     Path recording = Files.createTempFile("taskblock-producer-restart-", ".jfr");
     boolean started = false;
