@@ -500,7 +500,7 @@ loop while _running:
   sample = ReservoirSampler(threads)   at most _reservoir_size threads
   for each: sampleThreads(t)    OS::sendSignalWithCookie(tid, SIGVTALRM,
                                 SignalCookie::wallclock())
-  update WallClockEpochEvent; emit it on change or every >= 1 s
+  update WallClockEpochEvent; emit it on a pool or outcome change, or every >= 1 s
   advance monotonic opportunity deadline by the dithered interval
   OS::sleep(remaining time)             overdue deadline -> now + interval
 ```
@@ -516,7 +516,8 @@ size. Suppressed selections consume capacity and count in `numSuccessfulSamples`
 just like signals suppressed by the handler; failed sends do not count. This keeps
 `samplePoolSize / numSuccessfulSamples` upscaling consistent with selection
 probability. `samplePoolSize` includes all collected candidates, and
-`numSuppressedOwnedBlock` reports owned suppression separately. There is no backfill.
+`numSuppressedOwnedBlock` reports owned suppression separately. It is the total for
+all passes of the epoch. A suppression never closes an epoch. There is no backfill.
 Retained blocked units keep each epoch window's start tick and serialize at that
 tick. This requires consumers to scale by the sample timestamp's epoch, not flush
 time. Mixed-window tails serialize separately; same-window periodic weights can
