@@ -1303,7 +1303,7 @@ TEST(WallClockSamplingEpochTest, EachStatisticsChangeClosesOneEpoch) {
         pool_changes += current._num_samplable_threads == 8 && next._num_samplable_threads == 16;
         outcome_changes += current._num_failed_samples == 0 && next._num_failed_samples == 1;
         if (current._num_samplable_threads == 8 && next._num_samplable_threads == 16) {
-            EXPECT_EQ(1u, next._num_suppressed_sampled_run) << "The opening pass keeps its suppression";
+            EXPECT_EQ(1u, next._num_suppressed_owned_block) << "The opening pass keeps its suppression";
         }
     }
     EXPECT_EQ(1, pool_changes);
