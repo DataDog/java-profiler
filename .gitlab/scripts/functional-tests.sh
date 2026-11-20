@@ -42,11 +42,26 @@ echo "Using Java (build) @ ${JAVA_HOME}"
 # a Gradle version that runs on each of them.
 JDK_CACHE_DIR="${REPO_ROOT}/.jdk-cache/${TEST_JDK}"
 if [ ! -x "${JDK_CACHE_DIR}/bin/java" ]; then
+  # Same body-capture diagnostics as the integration-test JDK download: an egress
+  # failure surfaces as a short non-gzip body that tar rejects and the pipe loses.
+  TEST_JDK_URL="https://api.adoptium.net/v3/binary/latest/${TEST_JDK}/ga/linux/x64/jdk/hotspot/normal/eclipse"
   rm -rf "${JDK_CACHE_DIR}"
   mkdir -p "${JDK_CACHE_DIR}"
-  curl -sL "https://api.adoptium.net/v3/binary/latest/${TEST_JDK}/ga/linux/x64/jdk/hotspot/normal/eclipse" \
-    -o /tmp/test-jdk.tar.gz
-  tar -xzf /tmp/test-jdk.tar.gz -C "${JDK_CACHE_DIR}" --strip-components=1
+  echo "TEST_JDK ${TEST_JDK} download probe (${TEST_JDK_URL}):"
+  curl -sIL --max-redirs 5 "${TEST_JDK_URL}" 2>&1 | head -60 || true
+  CURL_STATUS=0
+  CURL_META=$(curl -sL -o /tmp/test-jdk.tar.gz \
+    -w 'http_code=%{http_code} effective_url=%{url_effective} redirects=%{num_redirects} size=%{size_download}' \
+    "${TEST_JDK_URL}") || CURL_STATUS=$?
+  echo "TEST_JDK ${TEST_JDK} download: curl exit=${CURL_STATUS} ${CURL_META}"
+  if ! tar -xzf /tmp/test-jdk.tar.gz -C "${JDK_CACHE_DIR}" --strip-components=1; then
+    echo "TEST_JDK ${TEST_JDK} download produced a non-tar body:"
+    ls -l /tmp/test-jdk.tar.gz || true
+    sha256sum /tmp/test-jdk.tar.gz || true
+    head -c 256 /tmp/test-jdk.tar.gz | od -c | head -20 || true
+    cp /tmp/test-jdk.tar.gz /tmp/test-jdk-failed.bin || true
+    exit 1
+  fi
   rm -f /tmp/test-jdk.tar.gz
 fi
 export JAVA_TEST_HOME="${JDK_CACHE_DIR}"

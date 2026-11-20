@@ -158,11 +158,31 @@ prepare-patched-agent:
           DOWNLOAD_URL="https://api.adoptium.net/v3/binary/latest/${JAVA_VERSION}/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
         fi
 
+        # A broken egress hop returns a short non-gzip body that fails tar inside
+        # `curl | tar` and is lost with the pipe. Download to a file, log the curl
+        # outcome (exit code, HTTP code, effective URL, redirect count) and dump the
+        # body on failure so the failing hop can be identified from the job log.
+        echo "JDK download probe (${DOWNLOAD_URL}):"
+        curl -sIL --max-redirs 5 "${DOWNLOAD_URL}" 2>&1 | head -60 || true
+
         MAX_RETRIES=3
         for attempt in $(seq 1 $MAX_RETRIES); do
-          if curl -Lk --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" | tar xzf - -C /opt/java; then
+          JDK_TARBALL=$(mktemp /tmp/jdk-download.XXXXXX.tar.gz)
+          CURL_STATUS=0
+          CURL_META=$(curl -Lk --retry 3 --retry-delay 5 -o "${JDK_TARBALL}" \
+            -w 'http_code=%{http_code} effective_url=%{url_effective} redirects=%{num_redirects} size=%{size_download}' \
+            "${DOWNLOAD_URL}") || CURL_STATUS=$?
+          echo "JDK download attempt ${attempt}/${MAX_RETRIES}: curl exit=${CURL_STATUS} ${CURL_META}"
+          if tar xzf "${JDK_TARBALL}" -C /opt/java; then
+            rm -f "${JDK_TARBALL}"
             break
           fi
+          echo "JDK download attempt ${attempt} produced a non-tar body:"
+          ls -l "${JDK_TARBALL}" || true
+          sha256sum "${JDK_TARBALL}" || true
+          head -c 256 "${JDK_TARBALL}" | od -c | head -20 || true
+          cp "${JDK_TARBALL}" "/tmp/jdk-download-failed-attempt${attempt}.bin" || true
+          rm -f "${JDK_TARBALL}"
           [ $attempt -lt $MAX_RETRIES ] && sleep 10 || exit 1
         done
 
