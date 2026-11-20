@@ -233,9 +233,10 @@ that recovered PC.
 
 Normal prologue/epilogue phase recovery applies only to the exact sampled PC.
 Apart from recognized VM-leaf resolver layouts, recovered return addresses keep
-the existing continuation-entry metadata and stack-argument recovery. On x64, the
-exact entry return PC skips the phase decoders: its entry is still published, so a
-decoder rejection cannot discard the exported entry chain. During
+the existing continuation-entry metadata and stack-argument recovery. On x64, a
+return to the exact entry return PC skips the phase decoders because its entry is
+still published. Another return the decoders reject uses the exported chain only
+when the next entry starts at SP, where `enterSpecial` publishes it. During
 entry publication and removal, `JavaThread::_cont_entry` can name the enclosing
 entry; a sampled entry only advances the nested-entry cursor when the published
 entry matches its own saved-register slots. The carrier validation and

@@ -230,7 +230,8 @@ protected:
         X64ExceptionNativePrefix, X64ExceptionMalformed, X64ExceptionReturnPcAfterPop,
         X64ExceptionInvalidCarrierPc, X64ExceptionFarCall, X64ExceptionFarCallNativePrefix,
         X64ExceptionBadBranch, X64ExceptionTruncatedCode, X64ExceptionInteriorPc, X64ExceptionInteriorReturnPc,
-        X64ExceptionByteTest, X64ExceptionByteTestNativePrefix, ReturnPcUndecodableFrameExported, ReturnPcLazyEntryNMethod
+        X64ExceptionByteTest, X64ExceptionByteTestNativePrefix, ReturnPcUndecodableFrameExported, ReturnPcLazyEntryNMethod,
+        ReturnInsideEntryPublishedAtSp, ReturnInsideEntryUnlinked
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -254,7 +255,9 @@ protected:
                 test_case == EntryCase::X64ExceptionMalformed || test_case == EntryCase::X64ExceptionInvalidCarrierPc || x64_far_call || x64_byte_test ||
                 test_case == EntryCase::X64ExceptionBadBranch || test_case == EntryCase::X64ExceptionTruncatedCode || test_case == EntryCase::X64ExceptionInteriorPc;
         bool tracked_child = test_case == EntryCase::LeafSpillNativePrefixExportedTrackedChild;
-        bool undecodable_return = test_case == EntryCase::ReturnPcUndecodableFrameExported;
+        bool unlinked_return = test_case == EntryCase::ReturnInsideEntryUnlinked;
+        bool undecodable_return = test_case == EntryCase::ReturnPcUndecodableFrameExported || unlinked_return ||
+                test_case == EntryCase::ReturnInsideEntryPublishedAtSp;
         bool lazy_entry_nm = test_case == EntryCase::ReturnPcLazyEntryNMethod;
         bool invalid_exported_size = test_case == EntryCase::LeafSpillNativePrefixExportedInvalidSize;
         bool leaf_native_prefix = test_case == EntryCase::LeafSpillNativePrefix ||
@@ -487,7 +490,8 @@ protected:
         ScopedValue<int> parent_offset(_cont_entry_parent_offset, 0);
         ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported_entry ? (invalid_exported_size ? 80 : 64) : 0);
         if (exported_entry) thread.entry = exported_parent ? &stack[16] : nullptr;
-        if (undecodable_return) thread.entry = stack; // 64-byte entry whose entryFP() is &stack[8]
+        // A 64-byte entry at SP has entryFP() &stack[8]; an unlinked child leaves its parent published.
+        if (undecodable_return) thread.entry = unlinked_return ? &stack[16] : stack;
         ScopedValue<uint64_t> type_size(TYPE_SIZE_NAME(VMNMethod), sizeof(NMethod));
         ScopedValue<uint64_t> method_size(TYPE_SIZE_NAME(VMMethod), sizeof(Method));
         ScopedValue<uint64_t> constmethod_size(TYPE_SIZE_NAME(VMConstMethod), sizeof(ConstMethod));
@@ -522,7 +526,8 @@ protected:
         }
 #endif
         ScopedValue<const void*> return_pc(_cont_entry_return_pc,
-                test_case == EntryCase::ReturnPc || undecodable_return || lazy_entry_nm ? sampled_pc : tracked_child ? blob.nm.code + 31 : _cont_entry_return_pc);
+                test_case == EntryCase::ReturnPc || test_case == EntryCase::ReturnPcUndecodableFrameExported || lazy_entry_nm
+                ? sampled_pc : tracked_child ? blob.nm.code + 31 : _cont_entry_return_pc);
         VMTestAccessor::install(true, exported_entry ? 27 : 21);
 
         bool nonpointer_fp = test_case == EntryCase::CompiledNonPointerFp ||
@@ -649,7 +654,7 @@ protected:
         features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot;
         bool truncated = false;
         int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
-        // A wrapper generated after initialization is looked up once, then reused.
+        // A wrapper generated after initialization is published for later walks.
         if (lazy_entry_nm) EXPECT_EQ(reinterpret_cast<VMNMethod*>(&blob.nm), _enter_special_nm);
         if (barrier_interior) {
             if (test_case == EntryCase::BarrierInteriorNativePrefix) assertCarrier(depth);
@@ -679,6 +684,13 @@ protected:
                 }
                 EXPECT_FALSE(truncated);
             }
+            return;
+        }
+        if (unlinked_return) {
+            ASSERT_EQ(2, depth);
+            EXPECT_EQ(BCI_ERROR, frames[1].bci);
+            EXPECT_STREQ("break_cont_entry_fp", (const char*)frames[1].method_id);
+            EXPECT_TRUE(truncated);
             return;
         }
         if (undecodable_return) {
@@ -1338,10 +1350,6 @@ TEST_F(ContinuationWalkTest, VerifiedReturnPcDoesNotRequireSampledFp) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPc);
 }
 
-TEST_F(ContinuationWalkTest, EntryReturnPcUsesExportedEntryWhenPhaseDecodingRejects) {
-    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPcUndecodableFrameExported);
-}
-
 TEST_F(ContinuationWalkTest, LateEntryWrapperLookupIsPublished) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPcLazyEntryNMethod);
 }
@@ -1486,6 +1494,18 @@ TEST_F(ContinuationWalkTest, X64ExceptionOlderReturnPcCannotBorrowSampledRdx) {
 
 TEST_F(ContinuationWalkTest, X64ExceptionFinalJumpRejectsInvalidReturnPc) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::X64ExceptionInvalidCarrierPc, 169);
+}
+
+TEST_F(ContinuationWalkTest, X64EntryReturnPcUsesExportedEntryWhenPhaseDecodingRejects) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPcUndecodableFrameExported);
+}
+
+TEST_F(ContinuationWalkTest, X64UndecodedReturnUsesEntryPublishedAtSp) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnInsideEntryPublishedAtSp);
+}
+
+TEST_F(ContinuationWalkTest, X64UndecodedReturnRejectsUnlinkedEntry) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnInsideEntryUnlinked);
 }
 #endif
 

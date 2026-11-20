@@ -474,19 +474,26 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         bool saved_fp = words >= 2;
         bool exception_entry = false;
 #ifdef __x86_64__
-        // The exact entry return PC precedes cleanup, so its entry is still published.
-        // It keeps the metadata recovery below even when the phase decoders reject the code.
-        if (in_entry_nm && (sampled_entry || !VMStructs::isContEntryReturnPc(walk_pc.raw()))) {
+        // A return to the exact entry return PC precedes cleanup, so its entry is still
+        // published; it keeps the metadata recovery below without phase decoding.
+        if (sampled_entry || (in_entry_nm && !VMStructs::isContEntryReturnPc(walk_pc.raw()))) {
             if (!sampled_entry) words = frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw());
             if (words < 0) {
                 HotspotStackFrame::ContinuationEntryLayout layout;
                 if (!HotspotStackFrame::continuationEntryExceptionLayout(continuation_entry_nm, walk_pc.raw(), !sampled_entry, layout)) {
-                    fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
-                    return false;
+                    // enterSpecial publishes its entry at SP, and cleanup unlinks it, so
+                    // the exported chain remains valid for an undecoded return only then.
+                    VMContinuationEntry* next_entry = sampled_entry || VMContinuationEntry::type_size() == 0 ? nullptr
+                            : cont_entry != nullptr ? cont_entry->parent() : vm_thread->contEntry();
+                    if (next_entry == nullptr || reinterpret_cast<uintptr_t>(next_entry) != sp) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
+                        return false;
+                    }
+                } else {
+                    exception_entry = true;
+                    words = layout.words;
+                    saved_fp = layout.saved_fp;
                 }
-                exception_entry = true;
-                words = layout.words;
-                saved_fp = layout.saved_fp;
             }
         }
 #endif
