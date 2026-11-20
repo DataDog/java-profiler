@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Set;
 
 /** Assertions for the synchronous {@code datadog.TaskBlock} event contract. */
-final class TaskBlockAssertions {
+public final class TaskBlockAssertions {
   private static final String BLOCKER = "blocker";
   private static final String UNBLOCKING_SPAN_ID = "unblockingSpanId";
   private static final String ANCHOR_SAMPLE_ID = "anchorSampleId";
@@ -96,7 +96,7 @@ final class TaskBlockAssertions {
    * Whether native {@code JVMSupport::isPlatformThread()} can accept a thread on this JVM: it fails
    * closed on non-HotSpot JVMs at JDK 19+, and any unrecognized VM name counts as non-HotSpot.
    */
-  static boolean platformThreadClassificationSupported() {
+  public static boolean platformThreadClassificationSupported() {
     return !Platform.isJavaVersionAtLeast(19)
         || isHotspotVmName(System.getProperty("java.vm.name"));
   }
