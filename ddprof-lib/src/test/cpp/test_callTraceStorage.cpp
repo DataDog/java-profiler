@@ -1144,7 +1144,7 @@ static void expectWaiterGetsPublishedTrace(bool preparing) {
 
     u64 id = stack.put();
 
-    EXPECT_GE(owner.calls(), 1) << "put() never waited on the slot";
+    EXPECT_EQ(owner.calls(), 1) << "put() did not stop waiting once the trace was published";
     ASSERT_TRUE(isRealTraceId(published));
     EXPECT_EQ(id, published);
     EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
@@ -1177,7 +1177,7 @@ static void expectWaiterTakesOverAbandonedSlot(bool preparing) {
 
     u64 id = stack.put();
 
-    EXPECT_GE(owner.calls(), 1) << "put() never waited on the claimed slot";
+    EXPECT_EQ(owner.calls(), 1) << "put() did not stop waiting once the key was cleared";
     EXPECT_TRUE(isRealTraceId(id)) << "trace id " << id;
     EXPECT_EQ(stack.put(), id) << "the waiter did not store the stack";
     EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
@@ -1211,7 +1211,7 @@ TEST(CallTraceHashTableWaitTest, PutIgnoresTracePublishedByReclaimingStack) {
 
     u64 id = stack.put();
 
-    EXPECT_GE(owner.calls(), 1) << "put() never waited on the PREPARING slot";
+    EXPECT_EQ(owner.calls(), 1) << "put() did not stop waiting once the slot was reclaimed";
     ASSERT_TRUE(isRealTraceId(foreign));
     EXPECT_NE(id, foreign) << "put() returned the reclaiming stack's trace";
     EXPECT_TRUE(isRealTraceId(id)) << "trace id " << id;
@@ -1235,7 +1235,7 @@ TEST(CallTraceHashTableWaitTest, PutKeepsWaitingAfterSpinLimit) {
 
     u64 id = stack.put();
 
-    EXPECT_GE(owner.calls(), publish_call);
+    EXPECT_EQ(owner.calls(), publish_call);
     ASSERT_TRUE(isRealTraceId(published));
     EXPECT_EQ(id, published);
 }
