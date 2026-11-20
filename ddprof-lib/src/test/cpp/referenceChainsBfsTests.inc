@@ -5,6 +5,7 @@
 
 #include "referenceChainsTestAccessors.h"
 #include "referenceChainsMockHeap.h"
+#include "referenceChainInternal.h"
 #include "tsc.h"
 
 
@@ -536,6 +537,122 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     EXPECT_FALSE(event._hops[0].edge_label.empty());
     EXPECT_FALSE(event._hops[1].edge_label.empty());
 
+    tracker->stop();
+}
+
+// A qualifying population must be watched before the first walk can decide the
+// search is complete. Polling only afterwards loses the frontier and tags.
+TEST_F(ReferenceChainsBfsTest, FirstPassWatchesQualifiedLeakBeforeCompleting) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    LivenessTracker *liveness = LivenessTracker::instance();
+    liveness->klassPopulationResetForTest();
+    liveness->setGcGenerationsForTest(true);
+    liveness->classMapGenerationSetForTest(
+        Profiler::instance()->classMap()->generation());
+    for (int epoch = 1; epoch <= 20; epoch++) {
+        int slot;
+        bool created;
+        liveness->klassPopulationRecordForTest(1, epoch, epoch, &slot, &created);
+        liveness->tidTrendRecordForTest(1, 4242, epoch, epoch);
+    }
+    // Production mints this from the sampled class; the gtest population seam
+    // has no live JVM from which to resolve it.
+    liveness->klassPopulationSetStableClassTagForTest(1, -41);
+    int root = addNode();
+    script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, root, -1}};
+
+    // Do not explicitly poll: this is the ordering exercised by the production
+    // first pass, including a walk that drains its entire ordinary queue.
+    EXPECT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni));
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::candidateCountForTest());
+    EXPECT_NE(0, node_tags[root]);
+
+    liveness->klassPopulationResetForTest();
+    liveness->setGcGenerationsForTest(false);
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, RootContainerRemainsWalkableAfterReparentingAndMutation) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    int holder = addNode();
+    int parent = addNode();
+    int table = addNode();
+    int payload = addNode();
+    node_tags[holder] = tracker->nextTag();
+    node_tags[parent] = tracker->nextTag();
+    const jlong container_class_tag = -101;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(-102, false);
+    for (int node : {holder, parent}) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            tracker->frontierTable(), node_tags[node], 0, 0,
+            FrontierEntryState::EXPANDED, JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    }
+    {
+        // The caller-side scope owns the journal lease: the callbacks only record, and the flush
+        // after the direct callback calls is the boundary that applies them. It must be gone before
+        // the walk facade below binds its own scope.
+        ReferenceChainAnchorObservationScope scope(tracker);
+        ReferenceChainPassContext ctx(scope);
+        ctx.tracker = tracker;
+        ctx.frontier = tracker->frontierTable();
+        ctx.hop_cap = 64;
+        ctx.budget = 1000;
+        ctx.edges_admitted = 0;
+        ctx.truncated = false;
+        ctx.frontier_cap_hit = false;
+        for (int repeat = 0; repeat < 2; repeat++) {
+            ReferenceChainsTestAccessor::reportHeapRootForTest(
+                JVMTI_HEAP_ROOT_STACK_LOCAL, container_class_tag,
+                &node_tags[holder], &ctx);
+            ReferenceChainsTestAccessor::reportHeapRootForTest(
+                JVMTI_HEAP_ROOT_STACK_LOCAL, -102, &node_tags[parent], &ctx);
+        }
+        scope.flush();
+    }
+    // Classification runs outside the heap callback. Unknown transient roots
+    // must not get a descend walk before being confirmed as containers.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4).empty());
+    // Neither holder is indexed yet: the unclassified one waits in the pending buffer, the
+    // classified non-container is never indexed.
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    // Stand-in for reconcileAnchorClassShapes() + the resolve step that follows it in a pass.
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class_tag, true);
+    ReferenceChainsTestAccessor::resolvePendingLocalAnchorsForTest();
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+    // A deeper retaining path replaces the initial local-root attribution.
+    // The container still needs repeated walks when its backing storage changes.
+    ASSERT_TRUE(tracker->frontierTable()->improveChain(
+        node_tags[holder], node_tags[parent], 0, 1, 0));
+    ReferenceChainsTestAccessor::clearPriorityExpand();
+    auto selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    EXPECT_EQ(std::vector<jlong>{node_tags[holder]}, selected);
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+
+    // Mutate AFTER that first walk. No second root callback re-admits the
+    // holder, and the fresh-anchor lane has already consumed its first look.
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+    node_tags[payload] = leak_tag;
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, holder, table, -1},
+        {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, table, payload, -1},
+    };
+    selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    EXPECT_EQ(std::vector<jlong>{node_tags[holder]}, selected);
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+    EXPECT_GT(tags_ever_assigned[table], 0);
+    EXPECT_GT(tags_ever_assigned[payload], 0);
+    EXPECT_NE(leak_tag, node_tags[payload]);
     tracker->stop();
 }
 
@@ -1675,3 +1792,314 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 // harness (design node: design-pod-in-a-jar-harness; meta-whackamole-analysis): the REAL tracker
 // loop (shouldRunPass -> runPass -> pollWatchedTargets, the exact threadLoop body) driven over the
 // scripted mock heap, asserting SYSTEM INVARIANTS instead of unit symptoms.
+
+// PROF-16316: an improveChain() deeper-path invalidation must REPLACE a resolved leak chain, never
+// erase it. Sequence from the late-TL RCA: a leak-correlated chain is cached, a later pass re-reaches
+// its source through a strictly deeper path (improveChain() queues a deferred invalidation), the
+// search then terminates (candidate/discovered slots zeroed, so no poll path can rebuild from
+// them), and the next dump drains the pending invalidations. The source is still live, so the dump
+// must keep re-emitting its chain, and the BFS-thread poll rebuilds it from the intact frontier.
+TEST_F(ReferenceChainsBfsTest, ImprovedPathInvalidationKeepsLeakChainAcrossTerminalReset) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 4242;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 7;
+    const u32 kStamp = LivenessTracker::instance()->leakTagIncarnation(kLeakTag);
+
+    int parentNode = addNode();
+    int leakNode = addNode();
+    script = {{JVMTI_HEAP_REFERENCE_FIELD, parentNode, leakNode, -1}};
+    node_tags[leakNode] = 105;
+    node_tags[parentNode] = 104;
+    // Leak-correlated source 105, first resolved root-attached (depth 0, static field). Parent 104
+    // is a durable root whose expansion delivers the deeper (depth 1) path to 105.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    frontier->setLeakTag(105, kLeakTag, kStamp);
+
+    ReferenceChainEvent resolved;
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, 105, &resolved));
+    ASSERT_EQ((u64)kLeakTag, resolved._target_tag);
+    ASSERT_EQ(0u, resolved._depth);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(105, std::move(resolved), 105,
+                                                        kSearchNs));
+
+    // Real improveChain() path: heapReferenceCallback() sees the already-tagged 105 via 104.
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(104);
+    int edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni, &edges);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(105, &entry));
+    ASSERT_EQ(104, entry.parent_tag);
+    ASSERT_EQ(1u, entry.depth);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    // Terminal reset (runPass()'s canary early-termination branch).
+    ReferenceChainsTestAccessor::setCandidateCountForTest(0);
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0);
+
+    // Dump: the still-live leak chain must survive the drain.
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size()) << "improveChain invalidation erased a live leak chain";
+    EXPECT_EQ((u64)kLeakTag, dump[0]._target_tag);
+    EXPECT_EQ(kStamp, dump[0]._leak_tag_incarnation);
+
+    // BFS-thread poll: rebuilds the chain from the intact frontier with the deeper path.
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    dump.clear();
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ((u64)kLeakTag, dump[0]._target_tag);
+    EXPECT_EQ(1u, dump[0]._depth) << "rebuild must pick up the improved (deeper) path";
+
+    tracker->stop();
+}
+
+// PROF-16316 split semantics: the dump path applies only EVICT (noise eviction still erases at
+// dump time, exactly as before), EVICT wins over a REBUILD queued for the same tag, and REBUILD is
+// left for the BFS-thread poll, which keeps the old chain when the frontier cannot rebuild it.
+TEST_F(ReferenceChainsBfsTest, DumpDrainAppliesEvictAndLeavesRebuildToPoll) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    const u64 kSearchNs = 777;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    for (jlong tag = 1; tag <= 3; tag++) {
+        ReferenceChainEvent event;
+        event._target_tag = (u64)tag;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(tag, std::move(event), tag,
+                                                            kSearchNs));
+    }
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(1, snapshot);  // noise eviction
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot, true);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(3, snapshot, true);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(3, snapshot);  // EVICT wins
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot, true);  // deduped
+    EXPECT_EQ(3u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1))
+        << "noise-evicted chain must still be erased at dump time";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(3))
+        << "EVICT queued after REBUILD must erase, not keep, the chain";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ(2u, dump[0]._target_tag);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "REBUILD stays pending for the BFS thread";
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::drainingChainInvalidationCount());
+
+    // No frontier entry for tag 2: the poll's rebuild fails and the old chain is kept.
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(3));
+
+    tracker->stop();
+}
+
+// The pending-invalidation buffers encode the kind in-band: a REBUILD tag is stored complemented
+// (negative), an EVICT tag as itself. A NEGATIVE source tag's EVICT encoding therefore lands in
+// the REBUILD band and decodes to a different tag - the reason deferResolvedChainInvalidation()
+// refuses negative source tags (assert in debug builds, guard in release).
+TEST_F(ReferenceChainsBfsTest, PendingInvalidationEncodingAliasesNegativeSourceTags) {
+    EXPECT_EQ(42, ReferenceChainsTestAccessor::pendingChainInvalidationTag(
+                      ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+                          42, /*rebuild=*/false)));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::isPendingChainRebuild(
+                     ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+                         42, /*rebuild=*/false)));
+    jlong rebuild = ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+        42, /*rebuild=*/true);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isPendingChainRebuild(rebuild));
+    EXPECT_EQ(42, ReferenceChainsTestAccessor::pendingChainInvalidationTag(rebuild));
+
+    jlong negative = ReferenceChainsTestAccessor::encodePendingChainInvalidationForTest(
+        -1, /*rebuild=*/false);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::isPendingChainRebuild(negative))
+        << "a negative source tag's EVICT encoding collides with the REBUILD band";
+    EXPECT_NE(-1, ReferenceChainsTestAccessor::pendingChainInvalidationTag(negative));
+}
+
+// A REBUILD queued for a chain cached by an EARLIER search generation must not be rebuilt:
+// restartSearch() reassigns tag numbers, so a same-numbered chain from a previous search
+// describes a different object, and a path change on the new object says nothing about it. The
+// stale chain must survive the poll intact - and must not be erased by a suppressed-shape rebuild
+// the scan was never supposed to run.
+TEST_F(ReferenceChainsBfsTest, RebuildScanLeavesStaleGenerationChainAlone) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kOldNs = 1000, kNewNs = 2000;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kOldNs);
+    ReferenceChainEvent stale;
+    stale._target_tag = (u64)2;
+    stale._depth = 3;
+    stale._root_kind = (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(2, std::move(stale), 2, kOldNs));
+
+    // The new generation's frontier holds a deeper STACK_LOCAL-rooted path under the same numeric
+    // tag: rebuilding it would produce a depth-1 transient-root event - a shape the discovered-
+    // chain gate suppresses, i.e. a rebuild here would ERASE the stale chain instead of replacing
+    // it. The scan's generation condition is what keeps that rebuild from running at all.
+    // (The rebuilt event's root kind is the chain's TERMINAL entry's, so the transient kind goes
+    // on the root entry 1.)
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kNewNs);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 1, 1, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(2, snapshot, /*rebuild=*/true);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "stale-generation REBUILD must be dropped, not left pending";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2))
+        << "stale-generation chain must not be erased by a suppressed-shape rebuild";
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ((u64)2, dump[0]._target_tag);
+    EXPECT_EQ(3u, dump[0]._depth) << "stale chain must be emitted unchanged";
+
+    tracker->stop();
+}
+
+#ifdef DEBUG
+// The debug hook evicts a cached entry after the REBUILD scan but before write-back. This verifies
+// that the replacement does not resurrect an entry removed in that window.
+TEST_F(ReferenceChainsBfsTest, RebuildWritebackNeverResurrectsDumpEvictedEntry) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 555;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    ReferenceChainEvent cached;
+    cached._target_tag = (u64)7;
+    cached._depth = 4;
+    cached._root_kind = (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(7, std::move(cached), 7, kSearchNs));
+    // Frontier entry intact and deep enough that the rebuilt event is not a suppressed shape -
+    // the write-back recheck, not suppression, is what must keep the evicted entry dead.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 7, 0, 4, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(7, snapshot, /*rebuild=*/true);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    ReferenceChainsTestAccessor::setBetweenInvalidationScanAndWritebackForTest([] {
+        ReferenceChainsTestAccessor::invalidateResolvedChainForTest(7);
+    });
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    ReferenceChainsTestAccessor::setBetweenInvalidationScanAndWritebackForTest(nullptr);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7))
+        << "a rebuild must never resurrect an entry evicted after the scan";
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    EXPECT_EQ(0u, dump.size());
+
+    tracker->stop();
+}
+#endif
+
+// heapRootCallback()'s local-holder guard: only a positive tag with a class tag may reach
+// noteLocalRootHolder(). A non-positive tag identifies no allocatable object; a leak tag can never
+// reach the guard at all (a successful frontier conversion rewrites *tag_ptr to the fresh frontier
+// tag, a failed one aborts the walk first), so the guard's leak-tag check is defense in depth.
+TEST_F(ReferenceChainsBfsTest, LocalRootHolderGuardRejectsLeakAndNonPositiveTags) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const jlong kClassTag = -301;
+    ReferenceChainAnchorObservationScope scope(tracker);
+    ReferenceChainPassContext ctx(scope);
+    ctx.tracker = tracker;
+    ctx.frontier = tracker->frontierTable();
+    ctx.hop_cap = 64;
+    ctx.budget = 1000;
+    ctx.edges_admitted = 0;
+    ctx.truncated = false;
+    ctx.frontier_cap_hit = false;
+
+    // Non-positive tags: admitObject() treats any non-zero tag as already admitted, so these
+    // reach the guard with their original value.
+    jlong negative_tag = -5;
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, kClassTag, &negative_tag, &ctx);
+    // No class tag: nothing to classify, so no holder to remember.
+    jlong classless_tag = tracker->nextTag();
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, 0, &classless_tag, &ctx);
+    scope.flush();
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    // Leak tag whose frontier conversion fails (frontier table disabled): the conversion-failure
+    // branch aborts the walk before the local-holder guard, so *tag_ptr keeps the leak tag and
+    // nothing is parked under it.
+    tracker->frontierTable()->resetCapacityForTest(0);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 3;
+    jlong leak_tag = kLeakTag;
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, kClassTag, &leak_tag, &ctx);
+    EXPECT_EQ(kLeakTag, leak_tag) << "conversion must fail on a disabled frontier table";
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::anchorIndexSizeForTest());
+
+    // Control: a positive, non-leak tag with a class tag is parked for classification. Fresh
+    // context: the aborted report above set ctx.truncated, which would abort every later report.
+    ctx.truncated = false;
+    tracker->frontierTable()->resetCapacityForTest(1024);
+    jlong plain_tag = tracker->nextTag();
+    ReferenceChainsTestAccessor::reportHeapRootForTest(
+        JVMTI_HEAP_ROOT_STACK_LOCAL, kClassTag, &plain_tag, &ctx);
+    scope.flush();
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingLocalAnchorCountForTest());
+
+    tracker->stop();
+}

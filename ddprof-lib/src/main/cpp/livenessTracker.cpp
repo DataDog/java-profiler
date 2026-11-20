@@ -843,51 +843,6 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
   return tagged;
 }
 
-void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
-                                      jint tid, u32 age) {
-  // Find or create the thread entry for this tid
-  for (int i = 0; i < scratch.thread_count; i++) {
-    if (scratch.threads[i].tid == tid) {
-      // Insert age into the thread's sorted distinct-age array
-      auto &t = scratch.threads[i];
-      // Every surviving object counts toward the per-tid retained-count
-      // bar (TID_RETAINED_COUNT_BAR) BEFORE the age-dedup early return
-      // below: the count is per-instance, the ages are per-cohort.
-      t.count++;
-      for (u32 j = 0; j < t.age_count; j++) {
-        if (t.ages[j] == age) {
-          return; // age already counted for this thread
-        }
-      }
-      if (t.age_count < KlassCountScratch::MAX_AGES_PER_THREAD) {
-        // Insert sorted (small array, linear scan + shift)
-        u32 pos = t.age_count;
-        for (u32 j = 0; j < t.age_count; j++) {
-          if (age < t.ages[j]) {
-            pos = j;
-            break;
-          }
-        }
-        for (u32 j = t.age_count; j > pos; j--) {
-          t.ages[j] = t.ages[j - 1];
-        }
-        t.ages[pos] = age;
-        t.age_count++;
-      }
-      return;
-    }
-  }
-  if (scratch.thread_count < KlassCountScratch::MAX_THREADS_PER_KLASS) {
-    int idx = scratch.thread_count++;
-    scratch.threads[idx].tid = tid;
-    scratch.threads[idx].ages[0] = age;
-    scratch.threads[idx].age_count = 1;
-    scratch.threads[idx].count = 1; // this object is the tid's first this epoch
-  }
-  // else: thread table full — additional threads are not tracked, but
-  // the oldest[] array still captures instances from all threads.
-}
-
 void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
                                            jweak sample_source,
                                            jint tid) {
@@ -933,6 +888,7 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
     slot.ages.push_back((u32)age);
     slot.oldest_count = 0;
     slot.thread_count = 0;
+    slot.challenger_count = 0;
     insertOldestSample(slot, sample_source, (u32)age, tid);
     insertThreadGen(slot, tid, (u32)age);
   }
@@ -1350,123 +1306,6 @@ bool LivenessTracker::tidPushQualifies(
     return true;
   }
   return hasQualifyingTidGrowth(trend);
-}
-
-void LivenessTracker::recordTidTrendSamplesLocked(
-    int slot, const KlassCountScratch &scratch) {
-  if (slot < 0 || slot >= _klass_population_size) {
-    return;
-  }
-  KlassPopulationEntry &entry = _klass_population[slot];
-  // Present tids first: find-or-create their trend and push this epoch's
-  // distinct-age count. (KlassCountScratch threads always carry >=1
-  // surviving instance, so every scratch thread has a real claim on a
-  // slot; a zero-count tid never reaches this fold.)
-  for (int ti = 0; ti < scratch.thread_count; ti++) {
-    jint tid = scratch.threads[ti].tid;
-    KlassPopulationEntry::TidTrend *trend = nullptr;
-    for (int i = 0; i < entry.tid_trend_count; i++) {
-      if (entry.tid_trends[i].tid == tid) {
-        trend = &entry.tid_trends[i];
-        break;
-      }
-    }
-    if (trend != nullptr && trend->synthetic) {
-      // Seam-owned history: the test maintains this ramp itself
-      // (seedTidTrendSample0), and a real fold interleaving its own low
-      // count for the same tid would reset the trend's hysteresis every
-      // System.gc() the scenario runs between rounds. Production data has
-      // no synthetic trends, so this exemption is inert there.
-      continue;
-    }
-    if (trend == nullptr) {
-      if (entry.tid_trend_count < KlassPopulationEntry::MAX_TID_TRENDS) {
-        trend = &entry.tid_trends[entry.tid_trend_count++];
-      } else {
-        // Full: evict the WEAKEST non-synthetic trend (lowest
-        // consecutive_positive, then lowest ring_fill) - a genuinely rising
-        // leak tid accumulates hysteresis fast and resists eviction, while
-        // machinery tids never build any. Synthetic (test-seeded) trends
-        // are never evicted by real data. If every slot is synthetic, the
-        // new tid is simply dropped - production data never marks
-        // anything synthetic, so this only caps a scenario's own seeding.
-        int victim = -1;
-        for (int i = 0; i < entry.tid_trend_count; i++) {
-          if (entry.tid_trends[i].synthetic) {
-            continue;
-          }
-          if (victim < 0 ||
-              (entry.tid_trends[i].consecutive_positive <
-               entry.tid_trends[victim].consecutive_positive) ||
-              (entry.tid_trends[i].consecutive_positive ==
-                   entry.tid_trends[victim].consecutive_positive &&
-               entry.tid_trends[i].ring_fill <
-                   entry.tid_trends[victim].ring_fill)) {
-            victim = i;
-          }
-        }
-        if (victim < 0) {
-          continue; // all slots synthetic - drop this tid's sample
-        }
-        trend = &entry.tid_trends[victim];
-      }
-      trend->tid = tid;
-      trend->ring_head = 0;
-      trend->ring_fill = 0;
-      trend->consecutive_positive = 0;
-      trend->synthetic = false;
-    }
-    trend->ring[trend->ring_head] = (u8)scratch.threads[ti].age_count;
-    trend->count_ring[trend->ring_head] =
-        (u8)std::min<u32>(scratch.threads[ti].count, UINT8_MAX);
-    trend->ring_head = (u8)((trend->ring_head + 1) %
-                            KlassPopulationEntry::TID_TREND_RING_SIZE);
-    if (trend->ring_fill < KlassPopulationEntry::TID_TREND_RING_SIZE) {
-      trend->ring_fill++;
-    }
-    if (tidPushQualifies(*trend, scratch.threads[ti].count)) {
-      if (trend->consecutive_positive < UINT8_MAX) {
-        trend->consecutive_positive++;
-      }
-    } else {
-      trend->consecutive_positive = 0;
-    }
-  }
-  // Tracked tids ABSENT this epoch: a thread whose instances all died
-  // must not keep a stale rising ring - push 0 so the next
-  // hasQualifyingTidGrowth() fails and the trend's hysteresis resets (the
-  // per-tid analogue of the population simply stopping). Synthetic
-  // (test-seeded) trends are exempt: scenarios interleave real
-  // System.gc()-driven folds with their seeded ramps, and without the
-  // exemption every real fold would wipe the seeded qualification before
-  // the test could ever use it (see TidTrend::synthetic's own comment).
-  for (int i = 0; i < entry.tid_trend_count; i++) {
-    KlassPopulationEntry::TidTrend &trend = entry.tid_trends[i];
-    if (trend.synthetic) {
-      continue;
-    }
-    bool present = false;
-    for (int ti = 0; ti < scratch.thread_count; ti++) {
-      if (scratch.threads[ti].tid == trend.tid) {
-        present = true;
-        break;
-      }
-    }
-    if (present) {
-      continue;
-    }
-    trend.ring[trend.ring_head] = 0;
-    trend.count_ring[trend.ring_head] = 0;
-    trend.ring_head = (u8)((trend.ring_head + 1) %
-                          KlassPopulationEntry::TID_TREND_RING_SIZE);
-    if (trend.ring_fill < KlassPopulationEntry::TID_TREND_RING_SIZE) {
-      trend.ring_fill++;
-    }
-    // A 0-count epoch cannot qualify as a rise - reset now rather than
-    // deferring to the next push, so a long-absent tid does not keep
-    // hysteresis from before its population died.
-    trend.consecutive_positive = 0;
-  }
 }
 
 u64 LivenessTracker::newestHeapFloorSample(u64 *seq_out) const {

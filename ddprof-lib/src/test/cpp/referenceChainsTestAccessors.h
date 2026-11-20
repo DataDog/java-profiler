@@ -12,12 +12,14 @@
 #ifndef REFERENCE_CHAINS_TEST_ACCESSORS_H
 #define REFERENCE_CHAINS_TEST_ACCESSORS_H
 
+#include <algorithm>
 #include <deque>
 #include <cstring>
 #include <utility>
 #include <vector>
 
 #include "classTagAllocator.h"
+#include "referenceChainInternal.h"
 #include "referenceChains.h"
 #include "vmEntry.h"
 
@@ -55,6 +57,10 @@ public:
         t->_search_started = false;
         t->_tags_released = true;
         t->_root_enum_incomplete = false;
+        t->_last_root_enum_attempt_id = 0;
+        t->_root_report_attempt_sequence = 0;
+        t->_static_field_retry_chunk_start = -1;
+        t->_static_field_retry_attempt_id = 0;
         t->_consecutive_enum_errors = 0;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;
@@ -96,6 +102,18 @@ public:
         t->_static_anchor_index.clear();
         t->_static_anchor_own_class_tags.clear();
         t->_static_anchor_index_tags.clear();
+        t->_local_anchor_tags.clear();
+        t->_pending_local_anchors.clear();
+        t->_pending_local_anchor_tags.clear();
+        t->_local_compact_backoff = 0;
+        t->_durable_anchor_resweep_gen = 0;
+        t->_static_field_sweep_lap_request_gen = 0;
+        t->_static_field_sweep_served_gen = 0;
+        t->_pending_local_evict_cursor = 0;
+        t->_pending_local_evictable_count = 0;
+#ifdef UNIT_TEST
+        t->_local_staging_budget_override_for_test = 0;
+#endif
         t->_anchor_container_cursor = 0;
         t->_anchor_other_cursor = 0;
         t->_class_shape_cache.clear();
@@ -116,6 +134,39 @@ public:
         t->_gotw_batch_size = 0;
         t->_pass_deadline_ns = 0;
         t->_expand_lane_prefer_priority = true;
+#ifdef DEBUG
+        t->_between_invalidation_scan_and_writeback_for_test = nullptr;
+        t->_join_thread_for_test = nullptr;
+#endif
+        // A failed-join test leaves the worker marked unjoined; no thread exists at fixture setup.
+        t->_thread_joined = true;
+        t->_anchor_observations.reset();
+    }
+
+    // Anchor-observation journal: accepted-record count and the lifecycle epoch reset() advances.
+    static u32 journalCountForTest() {
+        return ReferenceChainTracker::instance()->_anchor_observations.count();
+    }
+    // Pre-fills the active scope to a total record count without replay effects.
+    static size_t fillAnchorJournalForTest(ReferenceChainPassContext &ctx,
+                                           size_t target_count) {
+        size_t filled = journalCountForTest();
+        for (; filled < target_count; filled++) {
+            AnchorObservationReservation reservation = ctx.anchor_scope.reserve();
+            if (!reservation.held()) {
+                break;
+            }
+            AnchorObservation record{};
+            record.actions = AnchorObservation::DURABLE_ADD;
+            reservation.commit(record);
+        }
+        return filled;
+    }
+    static u64 journalEpochForTest() {
+        return ReferenceChainTracker::instance()->_anchor_observations.epoch();
+    }
+    static bool threadJoinedForTest() {
+        return ReferenceChainTracker::instance()->_thread_joined;
     }
 
     static bool canAffordNewSearch(u64 now_ns) {
@@ -146,6 +197,15 @@ public:
 
     static void setCandidateCountForTest(int n) {
         ReferenceChainTracker::instance()->setCandidateCountForTest(n);
+    }
+
+#ifdef UNIT_TEST
+    static void setLocalStagingBudgetOverrideForTest(u32 budget) {
+        ReferenceChainTracker::instance()->setLocalStagingBudgetOverrideForTest(budget);
+    }
+#endif
+    static jlong leakTagForTest(u32 index) {
+        return ReferenceChainTracker::LEAK_TAG_BASE + index;
     }
 
     // Canary-lane backoff state wrappers - see _canary_backoff_mult's own comment
@@ -302,10 +362,14 @@ public:
         return std::vector<jlong>(tags, tags + count);
     }
 
+    // Defaults to EVICT (noise-eviction semantics); pass rebuild=true for the improveChain/
+    // reparent/root-kind-upgrade REBUILD kind.
     static void deferResolvedChainInvalidation(
-        jlong tag, const std::vector<jlong> &snapshot) {
+        jlong tag, const std::vector<jlong> &snapshot, bool rebuild = false) {
         ReferenceChainTracker::instance()->deferResolvedChainInvalidation(
-            tag, snapshot.data(), (int)snapshot.size());
+            tag, snapshot.data(), (int)snapshot.size(),
+            rebuild ? ReferenceChainTracker::ChainInvalidationKind::REBUILD
+                    : ReferenceChainTracker::ChainInvalidationKind::EVICT);
     }
 
     static size_t pendingChainInvalidationCount() {
@@ -331,6 +395,69 @@ public:
     static void drainPendingChainInvalidations() {
         ReferenceChainTracker::instance()->drainPendingChainInvalidations();
     }
+
+    static void applyPendingChainInvalidationsForTest(u64 search_ns) {
+        ReferenceChainTracker::instance()->applyPendingChainInvalidations(nullptr, nullptr,
+                                                                          search_ns);
+    }
+
+    static void invalidateResolvedChainForTest(jlong tag) {
+        ReferenceChainTracker::instance()->invalidateResolvedChain(tag);
+    }
+
+    // Raw pending-buffer encoding probes: lets a test pin the in-band kind encoding's negative-tag
+    // hazard (the reason deferResolvedChainInvalidation() refuses negative source tags).
+    static jlong encodePendingChainInvalidationForTest(jlong tag, bool rebuild) {
+        return ReferenceChainTracker::encodePendingChainInvalidation(
+            tag, rebuild ? ReferenceChainTracker::ChainInvalidationKind::REBUILD
+                         : ReferenceChainTracker::ChainInvalidationKind::EVICT);
+    }
+
+    static bool isPendingChainRebuild(jlong encoded) {
+        return ReferenceChainTracker::isPendingChainRebuild(encoded);
+    }
+
+    static jlong pendingChainInvalidationTag(jlong encoded) {
+        return ReferenceChainTracker::pendingChainInvalidationTag(encoded);
+    }
+
+#ifdef DEBUG
+    // Sets/clears the debug-only write-back recheck hook.
+    static void setBetweenInvalidationScanAndWritebackForTest(void (*hook)()) {
+        ReferenceChainTracker::instance()->_between_invalidation_scan_and_writeback_for_test =
+            hook;
+    }
+#endif
+
+#ifdef DEBUG
+    // Join-result injection: stopThread()'s pthread_join() is replaced by a stub that returns the
+    // configured result (0 = success) without joining a real thread, and counts its calls.
+    static inline int s_join_result = 0;
+    static inline int s_join_calls = 0;
+    static int injectedJoinForTest(pthread_t, void **) {
+        s_join_calls++;
+        return s_join_result;
+    }
+    static void setJoinResultForTest(int result) {
+        s_join_result = result;
+        s_join_calls = 0;
+        ReferenceChainTracker::instance()->_join_thread_for_test = &injectedJoinForTest;
+    }
+    static void clearJoinResultForTest() {
+        ReferenceChainTracker::instance()->_join_thread_for_test = nullptr;
+    }
+    static int joinCallCountForTest() { return s_join_calls; }
+    // Installs a caller-owned join stub (same signature as the injected one) so a test can
+    // observe Profiler state at join time - e.g. that stop() closes the reference-chain gate
+    // before it joins the BFS worker.
+    static void setJoinHookForTest(int (*hook)(pthread_t, void **)) {
+        ReferenceChainTracker::instance()->_join_thread_for_test = hook;
+    }
+    // Marks a worker as started-but-unjoined, the state a failed join leaves.
+    static void setThreadUnjoinedForTest() {
+        ReferenceChainTracker::instance()->_thread_joined = false;
+    }
+#endif
 
     static bool hasResolvedChainForTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
@@ -529,7 +656,146 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return t->_static_anchor_index.empty() &&
                t->_static_anchor_own_class_tags.empty() &&
-               t->_static_anchor_index_tags.empty();
+               t->_static_anchor_index_tags.empty() &&
+               t->_local_anchor_tags.empty() &&
+               t->_pending_local_anchors.empty() &&
+               t->_pending_local_anchor_tags.empty() &&
+               t->_static_anchor_fresh_queue.empty() &&
+               t->_local_compact_backoff == 0 &&
+               t->_durable_anchor_resweep_gen == t->_static_field_sweep_served_gen &&
+               t->_pending_local_evict_cursor == 0 &&
+               t->_pending_local_evictable_count == 0
+#ifdef UNIT_TEST
+               && t->_local_staging_budget_override_for_test == 0
+#endif
+               ;
+    }
+
+    // Local-root anchor seams (see noteLocalRootHolder()/resolvePendingLocalAnchors()).
+    static void noteLocalRootHolderForTest(jlong tag, jlong class_tag) {
+        ReferenceChainTracker::instance()->noteLocalRootHolder(tag, class_tag);
+    }
+    static void resolvePendingLocalAnchorsForTest() {
+        ReferenceChainTracker::instance()->resolvePendingLocalAnchors();
+    }
+    static size_t anchorIndexSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_index.size();
+    }
+    static size_t localAnchorCountForTest() {
+        return ReferenceChainTracker::instance()->_local_anchor_tags.size();
+    }
+    // Durable share: indexed tags minus the capped local share.
+    static size_t durableAnchorCountForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return t->_static_anchor_index_tags.size() - t->_local_anchor_tags.size();
+    }
+    static bool localAnchorTagsAreIndexedForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        for (const auto &local : t->_local_anchor_tags) {
+            if (t->_static_anchor_index_tags.count(local.first) == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+    static bool anchorIndexContainsForTest(jlong tag) {
+        return ReferenceChainTracker::instance()->_static_anchor_index_tags.count(tag) > 0;
+    }
+    // Caller keeps idx < anchorIndexSizeForTest().
+    static jlong anchorIndexTagForTest(size_t idx) {
+        return ReferenceChainTracker::instance()->_static_anchor_index[idx];
+    }
+    static size_t anchorOwnClassTagsSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_own_class_tags.size();
+    }
+    static size_t pendingLocalAnchorCountForTest() {
+        return ReferenceChainTracker::instance()->_pending_local_anchors.size();
+    }
+    static size_t freshAnchorQueueSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_fresh_queue.size();
+    }
+    static size_t freshAnchorQueueCapForTest() {
+        return ReferenceChainTracker::STATIC_ANCHOR_FRESH_CAP;
+    }
+    static bool freshAnchorQueueContainsForTest(jlong tag) {
+        const auto &queue =
+            ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
+        return std::find_if(queue.begin(), queue.end(),
+                            [tag](const auto &entry) {
+                                return entry.tag == tag;
+                            }) != queue.end();
+    }
+    // Snapshot of the fresh queue in FIFO order (front first) - pins the cross-pass service order.
+    static std::vector<jlong> freshQueueTagsForTest() {
+        const auto &queue =
+            ReferenceChainTracker::instance()->_static_anchor_fresh_queue;
+        std::vector<jlong> tags;
+        tags.reserve(queue.size());
+        for (const auto &entry : queue) {
+            tags.push_back(entry.tag);
+        }
+        return tags;
+    }
+    // The static sweep resweep request (set by durable-share eviction, served and cleared by a
+    // full sweep lap): runPassManualWalk() runs admitStaticFieldRoots() while this is pending or
+    // the class-count memo is stale.
+    // The static sweep resweep-request state (see _durable_anchor_resweep_gen): runPassManualWalk()
+    // runs admitStaticFieldRoots() while a generation is unserved or the class-count memo is stale.
+    static bool durableAnchorResweepUnservedForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return t->_static_field_sweep_served_gen != t->_durable_anchor_resweep_gen;
+    }
+    static u64 durableAnchorResweepGenForTest() {
+        return ReferenceChainTracker::instance()->_durable_anchor_resweep_gen;
+    }
+    static void setStaticFieldSweepMemoForTest(int count) {
+        ReferenceChainTracker::instance()->_last_static_field_class_count = count;
+    }
+    static void setStaticFieldSweepCursorForTest(int cursor) {
+        ReferenceChainTracker::instance()->_static_field_sweep_cursor = cursor;
+    }
+    static int staticFieldSweepCursorForTest() {
+        return ReferenceChainTracker::instance()->_static_field_sweep_cursor;
+    }
+    static constexpr size_t kLocalAnchorIndexCap =
+        ReferenceChainTracker::LOCAL_ANCHOR_INDEX_CAP;
+    static constexpr size_t kDurableAnchorIndexCap =
+        ReferenceChainTracker::DURABLE_ANCHOR_INDEX_CAP;
+    static constexpr size_t kDurableAnchorEvictBatch =
+        ReferenceChainTracker::DURABLE_ANCHOR_EVICT_BATCH;
+    static constexpr size_t kPendingLocalAnchorCap =
+        ReferenceChainTracker::PENDING_LOCAL_ANCHOR_CAP;
+    static constexpr int kLocalCompactBackoff =
+        ReferenceChainTracker::LOCAL_ANCHOR_COMPACT_BACKOFF;
+    static constexpr size_t kLocalCompactMinReclaim =
+        ReferenceChainTracker::LOCAL_ANCHOR_COMPACT_MIN_RECLAIM;
+    static int localCompactBackoffForTest() {
+        return ReferenceChainTracker::instance()->_local_compact_backoff;
+    }
+    static size_t pendingLocalEvictCursorForTest() {
+        return ReferenceChainTracker::instance()->_pending_local_evict_cursor;
+    }
+    static u32 localStagingAbsorbableForTest() {
+        return ReferenceChainTracker::instance()->localStagingAbsorbable();
+    }
+    static void preparePendingLocalAnchorEvictionCursorForTest() {
+        ReferenceChainTracker::instance()->preparePendingLocalAnchorEvictionCursor();
+    }
+    // Caller keeps idx < pendingLocalAnchorCountForTest().
+    static jlong pendingLocalAnchorTagForTest(size_t idx) {
+        return ReferenceChainTracker::instance()->_pending_local_anchors[idx].tag;
+    }
+    static bool pendingLocalAnchorContainsForTest(jlong tag) {
+        return ReferenceChainTracker::instance()
+                   ->_pending_local_anchor_tags.count(tag) > 0;
+    }
+
+    // Reconcile collection step (see collectUnclassifiedAnchorClassTags()).
+    static constexpr int kAnchorShapeReconcileBudget =
+        ReferenceChainTracker::ANCHOR_SHAPE_RECONCILE_BUDGET;
+    static std::vector<jlong> unclassifiedAnchorClassTagsForTest() {
+        return ReferenceChainTracker::instance()
+            ->collectUnclassifiedAnchorClassTags();
     }
 
     static jlong discoveredTagForTest(int slot, int idx) {
@@ -872,9 +1138,12 @@ public:
     }
 
     static std::vector<jlong>
-    collectStaticFieldAnchorsForRotationForTest(int max_count) {
+    collectStaticFieldAnchorsForRotationForTest(
+        int max_count,
+        std::vector<ReferenceChainTracker::FreshAnchor> *fresh_picked =
+            nullptr) {
         return ReferenceChainTracker::instance()
-            ->collectStaticFieldAnchorsForRotation(max_count);
+            ->collectStaticFieldAnchorsForRotation(max_count, fresh_picked);
     }
 
     static void addToStaticAnchorIndexForTest(jlong tag, jlong own_class_tag,
@@ -915,6 +1184,14 @@ public:
             entries);
     }
 
+    using FreshAnchor = ReferenceChainTracker::FreshAnchor;
+
+    static void requeueStaticAnchorFreshFrontForTest(
+            const std::vector<FreshAnchor> &entries) {
+        ReferenceChainTracker::instance()->requeueStaticAnchorFreshFront(
+            entries);
+    }
+
     static size_t staticAnchorFifoSizeForTest() {
         return ReferenceChainTracker::instance()->_static_anchor_fifo.size();
     }
@@ -923,18 +1200,48 @@ public:
         return ReferenceChainTracker::instance()
             ->_static_anchor_fifo_set.contains(tag);
     }
+    static bool atRiskAnchorNeedsObservationForTest(jlong tag, u32 klass_id) {
+        return ReferenceChainTracker::instance()->atRiskAnchorNeedsObservation(
+            tag, klass_id);
+    }
 
     static void walkStaticAnchorFifoForTest(jvmtiEnv *jvmti, JNIEnv *jni,
                                              const std::vector<jlong> &tags,
                                              int budget, int *edges_admitted,
-                                             std::vector<jlong> *unwalked) {
+                                             std::vector<jlong> *unwalked,
+                                             bool *anchor_observation_overflow = nullptr) {
+        walkStaticFieldAnchorsWithPrefillForTest(jvmti, jni, 0, tags, budget,
+                                                 edges_admitted, unwalked,
+                                                 anchor_observation_overflow);
+    }
+
+    // Direct walkStaticFieldAnchors() drive with the walk's own scope pre-filled to
+    // `journal_prefill` records, so a test can force a mid-descent journal overflow after a
+    // controlled number of admitted edges.
+    static void walkStaticFieldAnchorsWithPrefillForTest(
+            jvmtiEnv *jvmti, JNIEnv *jni, size_t journal_prefill,
+            const std::vector<jlong> &tags, int budget, int *edges_admitted,
+            std::vector<jlong> *unwalked,
+            bool *anchor_observation_overflow = nullptr) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         bool truncated = false;
         bool cap_hit = false;
         u64 safepoint_ns = 0;
-        t->walkStaticFieldAnchors(jvmti, jni, tags, budget, edges_admitted,
-                                  &truncated, &cap_hit, &safepoint_ns,
+        bool overflow = false;
+        // The scope is the caller-side owner: its destructor replays the accepted prefix.
+        ReferenceChainAnchorObservationScope scope(t);
+        if (journal_prefill > 0) {
+            ReferenceChainPassContext fill_ctx(scope);
+            fill_ctx.tracker = t;
+            fill_ctx.frontier = t->frontierTable();
+            fillAnchorJournalForTest(fill_ctx, journal_prefill);
+        }
+        t->walkStaticFieldAnchors(jvmti, jni, scope, tags, budget, edges_admitted,
+                                  &truncated, &cap_hit, &safepoint_ns, &overflow,
                                   unwalked);
+        if (anchor_observation_overflow != nullptr) {
+            *anchor_observation_overflow = overflow;
+        }
     }
 
     // Direct candidate-slot seeding (the production path fills these via pollWatchedTargets()'s
@@ -989,6 +1296,27 @@ public:
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         return std::vector<jlong>(t->_priority_expand.begin(),
                                    t->_priority_expand.end());
+    }
+
+    // Report a root without running a whole pass, so its scheduling effect can
+    // be checked independently of the ordinary rotation collectors.
+    static jvmtiIterationControl reportHeapRootForTest(
+        jvmtiHeapRootKind kind, jlong class_tag, jlong *tag, void *context) {
+        return ReferenceChainTracker::heapRootCallback(kind, class_tag, 0, tag,
+                                                       context);
+    }
+
+    // Direct heapReferenceCallback driver for the static sweep's class -> field rediscovery of an
+    // already-admitted holder: negative class-object referrer (treated as root-like), holder as
+    // tag_ptr.
+    static jint reportStaticFieldEdgeForTest(
+        jlong referrer_class_tag, jlong *tag, void *context,
+        jlong class_tag = 0) {
+        jlong rtag = referrer_class_tag;
+        return ReferenceChainTracker::heapReferenceCallback(
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*reference_info=*/nullptr,
+            class_tag, /*referrer_class_tag=*/0, /*size=*/0, tag, &rtag,
+            /*length=*/0, context);
     }
 
     // Simulates a tag left in _priority_expand by a prior pass's truncated expandFrontier()

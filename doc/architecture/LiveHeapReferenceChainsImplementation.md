@@ -16,9 +16,9 @@ Related documents:
 
 ## Main components
 
-`LivenessTracker` detects growth in the number of distinct GC ages among surviving tracked
-samples of a class. Candidate selection also requires qualifying allocating-thread evidence.
-It assigns leak tags to instances in those class/thread groups.
+`LivenessTracker` uses distinct GC ages and allocating-thread evidence to select candidates. Each
+class keeps 16 retained thread cohorts and four challenger slots; these add 143,360 bytes across
+256 classes. When all incumbents meet the count bar, a challenger must outscore the weakest.
 
 `ReferenceChainTracker` maintains a root-based frontier and searches for those instances. It runs on one agent-owned background thread. `_engine_lock` serializes engine state across lifecycle and test paths.
 
@@ -108,14 +108,21 @@ can expand already-admitted roots while waiting for the next enumeration attempt
 
 Root enumeration uses `firstpassbudget`, including attempts after the first pass.
 
-This phase does not use the callback deadline or keep an enumeration cursor. Repeated
-attempts can examine already-admitted roots without charging admission budget. Direct-root
-leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
+Root enumeration has no JVMTI cursor. It skips compatible indexed anchors and stamps accepted
+durable reports by tag, source, kind, and attempt. A retry suppresses only reports accepted by its
+preceding incomplete attempt; static-field chunks keep separate stamps across index eviction.
 
-For this release, a root-enumeration pause is acceptable if it is shorter than three
-seconds. This threshold is not the desired latency and is not a hard real-time
-guarantee. [PROF-16284](https://datadoghq.atlassian.net/browse/PROF-16284)
-tracks separate measurement and a progress-preserving mitigation.
+A weaker `JNI_GLOBAL` report does not replace `STATIC_FIELD` attribution but can re-enlist an evicted
+anchor when no index or accepted report covers it. Suppression of the weaker report is bound to the
+live index or an accepted retry stamp only: a stale static-sweep stamp alone never suppresses, so a
+holder whose static edge disappeared but which a JNI global still retains can always re-enlist after
+eviction. Stronger upgrades and rejected transitions remain eligible; chain-attached entries cannot
+be upgraded by roots.
+
+Repeated attempts can examine already-admitted roots without charging admission budget. Direct-root
+leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
+For this release, a root-enumeration pause is acceptable when it stays under three seconds; separate
+work tracks the measurement and a progress-preserving mitigation.
 
 ### Static fields
 
@@ -197,13 +204,125 @@ An object can change after its first expansion. For example, a long-lived collec
 | Leak accumulation | 16 | Select parents that accumulate instances of watched classes. |
 | Stale expanded entries | 256 | Provide eventual low-priority rechecks across the frontier table. |
 | Transient root kinds | 16 | Improve root attribution when later observations provide a more durable root kind. |
-| Static anchors | 32 selected, plus 16 FIFO entries | Descend from selected objects held by static fields. |
+| Anchors | 32 selected, plus 16 FIFO entries | Descend from indexed anchors: objects held by static fields or JNI globals, and confirmed collection/map holders first seen as stack or JNI locals. See [Anchor index](#anchor-index). |
 
 Leak accumulation has two levels. The first groups admissions by leaf class and parent class. The second ranks parent object tags within the selected group.
 
 When a class first becomes watched, the tracker scans existing expanded entries for matching stable class tags. This scan supplies data that admission-time tracking could not collect before the class became watched.
 
 Rotation improves coverage but remains bounded and best effort.
+
+### Anchor index
+
+`collectStaticFieldAnchorsForRotation()` selects descend-walk anchors from an index
+(`_static_anchor_index`), not from the full frontier table. The index has two shares:
+
+- **Durable share.** Root-attached `STATIC_FIELD` and `JNI_GLOBAL` entries, added by
+  `addToStaticAnchorIndex()`. Such an entry is selectable while it stays root-attached with a
+  durable root kind. Once it is classified as a collection or map, it stays selectable after
+  reparenting. A reparented holder of any other class gets one walk from the at-risk FIFO
+  (`pushAtRiskStaticAnchor()`).
+- **Local share.** Holders that root enumeration reports as `STACK_LOCAL` or `JNI_LOCAL` roots.
+  `heapRootCallback()` passes them to `noteLocalRootHolder()`. A holder is indexed only after
+  `reconcileAnchorClassShapes()` classifies its class as implementing `java.util.Collection` or
+  `java.util.Map`. A confirmed collection remains selectable after expansion reparents it into a
+  deeper chain, so the tracker still observes replacement backing storage such as a resized
+  `HashMap.table`. Local holders of any other class are never indexed.
+
+Classification needs JNI, which the heap-root callback cannot use. A holder whose class is not
+yet classified waits in `_pending_local_anchors`, capped at 1024 entries.
+`resolvePendingLocalAnchors()` runs after each `reconcileAnchorClassShapes()`. It indexes the
+confirmed collections and drops everything else, including holders whose class is still
+unclassified. The next root enumeration reports a dropped holder again. Reconciliation
+classifies pending holder classes before unclassified durable-anchor classes, within the
+128-classes-per-pass budget. When the pending buffer is full, a holder already confirmed as a
+collection (met while the local share is at its cap) evicts the oldest entry not confirmed as a
+collection. An unclassified holder that meets a full buffer is dropped, and so is a confirmed
+collection when the buffer holds only confirmed collections. Either way the next root enumeration
+reports it again.
+
+The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`), bounding its scan contribution.
+At the cap, `compactLocalAnchors()` scans only the local share but its erasure runs
+`eraseAnchorEntries()`'s stable compaction of the full index, O(durable share + local cap) - so an
+at-cap compaction touches up to 12288 entries. Yields of 512 or more can run each pass; smaller
+yields skip 8 attempts, and a compaction that reclaims less than `LOCAL_ANCHOR_COMPACT_MIN_RECLAIM`
+backs the next attempts off entirely, so a pinned-at-cap index pays the full-index compaction at
+most once per pass and never on every low-yield pass. When no slot is available, new local holders
+are re-reported by the next root enumeration. A low-yield compaction can leave newly dead entries
+holding slots during its 8 skipped at-cap attempts.
+
+The durable share (static fields and JNI globals) is capped at 8192 entries
+(`DURABLE_ANCHOR_INDEX_CAP`). The admission that pushes it past the cap FIFO-evicts the oldest
+1024 durable entries (`DURABLE_ANCHOR_EVICT_BATCH`) from the index and dedup set, so the per-pass
+selection scan stays bounded by the sum of the two caps. Eviction also invalidates the static sweep
+memo, forcing one sweep lap, because a re-discovered durable edge is
+the only path that re-enlists an evicted anchor: an unchanged durable root kind never upgrades,
+an already-admitted entry takes no fresh admission path, and static-only holders never appear in
+root enumeration at all. A live evicted anchor can be re-enlisted when its durable edge is traversed; a dead one is never
+reported again.
+Rotation eligibility is the shared admission contract
+(`isSelectableAnchor()`): root-attached durable kinds, or CONTAINER-shaped holders - reparented
+containers keep parent_tag set and a stale transient root_kind, so the re-enlist bypasses the
+root-kind filter and re-indexes directly. Eviction bumps a resweep-request generation
+unconditionally and never touches the sweep cursor; a sweep lap serves exactly the generations
+requested before it started — it latches the generation at its start from class 0 and publishes
+it only on completing, so a lap in flight when the eviction lands, or a truncated first chunk,
+leave the generation unserved until a full lap actually re-traverses the whole class list. A
+cursor restart on eviction would reset mid-lap progress under sustained above-cap churn and
+starve later classes, so there is none. The forced-lap rate is self-limiting: one eviction batch
+requests one generation, laps never run concurrently, and an eviction fires only after 1024 further
+admissions past the cap - so forced laps are bounded by the above-cap admission rate, never by the
+pass rate.
+
+Pending first-look turns remain in a capped FIFO after index eviction. Queue items carry the
+callback-time class-tag snapshot, so selection does not search the index per queued tag. Overflow
+drops newest turns, which can rejoin when a later report finds a slot; served turns use fair rotation.
+
+Eviction and re-enlistment run only in the replay step described in
+[Deferred anchor-index updates](#deferred-anchor-index-updates), never in a JVMTI callback.
+A local holder that a durable root later attaches moves to the durable share and stops
+counting against the local cap. `restartSearch()` clears both shares and the pending buffer.
+
+### Deferred anchor-index updates
+
+Only the targeted anchor-index mutations are deferred: the local-holder note, the durable add,
+the re-enlist and the at-risk push. A heap callback does not call them. It reserves one record in
+a fixed journal (`AnchorObservationBuffer`) and commits the record when the report is admitted.
+The traversal caller replays the records in arrival order after the synchronous JVMTI call
+returns. Callbacks skip known no-op LOCAL and AT_RISK actions before reserving a record; the
+scope-local indexes suppress duplicate actions across records in the same prefix.
+
+Each scope reserves LOCAL capacity by shape: unclassified holders use pending slots only; confirmed
+containers use index slots, then pending slots or displaceable entries. It reserves AT_RISK records
+against remaining global FIFO room and per-class quotas. Excess local holders are re-reported by
+root enumeration.
+
+The journal holds 16,384 records of at most 24 bytes each, so the record array uses at most
+384 KiB. Two scope-local indexes suppress duplicate LOCAL and AT_RISK actions. Each index has
+32,768 16-bit slots and a 4 KiB occupancy bitmap; together they add 136 KiB. The record and index
+arrays use 520 KiB per tracker, before other metadata. Per-scope quota accounting uses a fixed
+16,640-byte stack table and allocates nothing in callbacks. A reservation fails when the journal is
+full. The callback then aborts the traversal before the
+frontier or tag transition that the report would cause. The caller flushes the accepted prefix.
+The source traversal obligation stays unserved, so a later pass retries it:
+
+- **Root enumeration.** The scope flushes right after `IterateOverReachableObjects()` returns.
+  The rejected root is reported again by the next enumeration.
+- **Expansion batch.** `expandFrontier()` flushes after each `FollowReferences()` batch. The
+  referrer of the rejected edge stays queued.
+- **Static-field chunk.** The sweep flushes right after its `FollowReferences()` call. The chunk
+  cursor stays, the lap is marked truncated, and the replay adds one static-resweep request.
+- **Descent group.** The selected-anchor walk flushes after the walk and the at-risk requeue. The
+  candidate-thread walk flushes when its scope ends. Each group can hold several descents, and
+  all of them share the journal capacity. The partially walked anchor stays unwalked, and the
+  thread cursor stays on the thread whose descent overflowed.
+
+Other allocations in the callbacks remain. This design makes no universal claim about coverage,
+overhead or pause time. Resweep pacing is unchanged. It awaits a separate measurement.
+
+`Profiler::stop()` joins the reference-chain thread before the rest of the teardown. If the join
+fails, `stop()` returns an error and the state stays RUNNING, so a later `stop()` retries the join.
+`disableEngines()` has already disabled sampling by then.
 
 ## Search termination
 
@@ -331,7 +450,9 @@ length. Edge labels are emitted only when all emitted hops have labels.
 
 Callbacks queue bounded, exact-source-tag invalidations under a pending spin lock, not a
 lock-free protocol. Candidate polling and dump snapshots drain them; a dump can drain
-while traversal is active. Callbacks do not acquire the resolved-cache lock.
+while traversal is active. On overflow, the next drain clears the whole cache and increments
+`REFERENCE_CHAIN_EVENTS_DROPPED` for each removed chain, including unaffected cached chains.
+Callbacks do not acquire the resolved-cache lock.
 
 Dump and stop write `datadog.ReferenceChain` events; the traversal thread does not write
 JFR events directly. Stop joins that thread and emits pending output before clearing
