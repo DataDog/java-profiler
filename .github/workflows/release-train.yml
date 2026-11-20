@@ -101,7 +101,7 @@ jobs:
         id: dispatch
         env:
           CANDIDATE: ${{ steps.candidate.outputs.candidate }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
           gh workflow run release-validated.yml \
             --ref "$CANDIDATE" \
@@ -112,17 +112,32 @@ jobs:
             -f source_sha="$CANDIDATE"
 
           # Find the dispatched run: newest workflow_dispatch run whose head
-          # SHA is the candidate.
-          sleep 10
-          RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
-            --limit 20 --json databaseId,headSha,createdAt \
-            --jq "[.[] | select(.headSha == \"$CANDIDATE\")] | sort_by(.createdAt) | last | .databaseId")
+          # SHA is the candidate. The run record can lag the accepted
+          # dispatch by minutes; retry instead of failing over an unwatched
+          # release.
+          RUN_ID=""
+          for attempt in $(seq 1 12); do
+            RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
+              --limit 20 --json databaseId,headSha,createdAt \
+              --jq "[.[] | select(.headSha == \"$CANDIDATE\")] | sort_by(.createdAt) | last | .databaseId")
+            [ -n "$RUN_ID" ] && break
+            echo "attempt $attempt/12: dispatched run not listed yet, retrying in 15s"
+            sleep 15
+          done
           if [ -z "$RUN_ID" ]; then
             echo "::error::Could not locate the dispatched release run for $CANDIDATE"
             exit 1
           fi
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "run_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" >> "$GITHUB_OUTPUT"
+          # The version the release run tags: compute-version reads the tags
+          # reachable from HEAD, so run it at the candidate, not at the
+          # train's checkout (main HEAD, which may already be ahead).
+          WT=$(mktemp -d)
+          git worktree add --detach "$WT" "$CANDIDATE" >/dev/null 2>&1
+          VERSION=$( (cd "$WT" && "$GITHUB_WORKSPACE/utils/compute-version.sh" --release --minor) || echo unknown)
+          git worktree remove --force "$WT" >/dev/null 2>&1 || true
+          echo "release_version=v_${VERSION}" >> "$GITHUB_OUTPUT"
           {
             echo "## Release run"
             echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
@@ -138,7 +153,10 @@ jobs:
             gh run view "$RUN_ID" --json conclusion --jq '.conclusion')
           echo "conclusion=$CONCLUSION" >> "$GITHUB_OUTPUT"
           if [ "$CONCLUSION" != "success" ]; then
+            # A ::error:: annotation alone does not fail the step; the train
+            # must report the failed release so the Slack step fires.
             echo "::error::Release run $RUN_ID finished with conclusion: $CONCLUSION"
+            exit 1
           fi
 
       - name: Report release outcome
@@ -147,18 +165,16 @@ jobs:
           CONCLUSION: ${{ steps.wait.outputs.conclusion }}
           CANDIDATE: ${{ steps.candidate.outputs.candidate }}
           RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          RELEASE_VERSION: ${{ steps.dispatch.outputs.release_version }}
         run: |
-          # The released version is deterministic: compute-version from the
-          # candidate with all tags visible.
-          VERSION=$(utils/compute-version.sh --release --minor 2>/dev/null || echo unknown)
           {
             echo "## Release train result"
             echo "- Candidate: $CANDIDATE"
-            echo "- Version: v_$VERSION"
+            echo "- Version: $RELEASE_VERSION"
             echo "- Release run: $RUN_URL"
             echo "- Conclusion: $CONCLUSION"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Release train: v_$VERSION from $CANDIDATE ($CONCLUSION) — $RUN_URL"
+          echo "Release train: $RELEASE_VERSION from $CANDIDATE ($CONCLUSION) — $RUN_URL"
 
       - name: Notify Slack on skip or failure
         if: ${{ !cancelled() && (steps.candidate.outputs.skip-reason != '' || failure()) }}
@@ -171,9 +187,11 @@ jobs:
           if not webhook:
               print("SLACK_WEBHOOK not configured, skipping notification")
               raise SystemExit(0)
-          body = open(os.environ["GITHUB_STEP_SUMMARY"]).read()
+          with open(os.environ["GITHUB_STEP_SUMMARY"]) as f:
+              body = f.read()
           payload = {"text": "java-profiler release train\n" + body}
           req = urllib.request.Request(webhook, data=json.dumps(payload).encode(),
                                        headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req)
+          with urllib.request.urlopen(req):
+              pass
           PY

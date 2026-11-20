@@ -109,13 +109,23 @@ jobs:
           API="https://${{ env.GITLAB_HOST }}/api/v4/projects/${{ env.GITLAB_PROJECT }}"
           REQUIRED_JOBS=(${{ env.INTEGRATION_JOBS }})
 
+          # Pipelines carry the ref of their trigger; a SHA can have several
+          # (push, merge request, manual). Query the push pipeline for the
+          # candidate's branch; a SHA-shaped ref name (manual dispatch on a
+          # pinned commit) falls back to the sha-only query.
+          REF="$GITHUB_REF_NAME"
+          REF_PARAM=""
+          if ! [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+            REF_PARAM="&ref=$REF"
+          fi
+
           # Find the pipeline for this SHA; retry in case the push landed
           # just before the schedule fired and the pipeline is still being
           # created.
           PIPELINE_ID=""
           for attempt in $(seq 1 36); do
             PIPELINE_ID=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              "$API/pipelines?sha=$SHA&sort=desc&per_page=5" | jq -r '.[0].id // empty') || true
+              "$API/pipelines?sha=$SHA$REF_PARAM&sort=desc&per_page=5" | jq -r '.[0].id // empty') || true
             [ -n "$PIPELINE_ID" ] && break
             echo "attempt $attempt/36: no pipeline for $SHA yet, retrying in 5 min"
             sleep 300
@@ -212,17 +222,20 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, urllib.request
+          with open("summary.txt") as f:
+              summary = f.read()
           payload = {
               "text": "java-profiler nightly certification FAILED on "
                       + os.environ["GITHUB_SHA"] + "\n"
-                      + open("summary.txt").read() + "\n"
+                      + summary + "\n"
                       + os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"]
                       + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
           }
           req = urllib.request.Request(os.environ["SLACK_WEBHOOK"],
                                        data=json.dumps(payload).encode(),
                                        headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req)
+          with urllib.request.urlopen(req):
+              pass
           PY
       - name: File PROF ticket
         id: jira

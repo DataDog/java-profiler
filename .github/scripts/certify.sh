@@ -45,9 +45,17 @@ if ! git rev-parse --verify --quiet "$SHA^{commit}" >/dev/null; then
 fi
 SHA=$(git rev-parse "$SHA^{commit}")
 
-# Remote notes must be visible before deciding whether this commit is already
-# certified; a note only present locally would make the check miss it.
-git fetch origin "$NOTES_REF:$NOTES_REF" 2>/dev/null || echo "No certification notes on origin yet"
+# '+' allows non-fast-forward notes updates, which are routine for git notes.
+# A missing notes ref on origin is normal (first certification); any other
+# fetch failure must fail loudly, else the already-certified check runs
+# against a stale ref.
+if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
+  if git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1; then
+    echo "ERROR: failed to fetch $NOTES_REF from origin" >&2
+    exit 1
+  fi
+  echo "No certification notes on origin yet"
+fi
 
 if git notes --ref=certification list 2>/dev/null | awk '{print $2}' | grep -qx "$SHA"; then
   echo "Commit $SHA is already certified; nothing to do"

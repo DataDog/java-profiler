@@ -14,7 +14,6 @@ on:
 permissions:
   contents: write
   actions: read
-  pull-requests: write
 
 jobs:
   update-assets-and-releaase:
@@ -89,4 +88,14 @@ jobs:
           fi
           VERSION="${RELEASE_TAG#v_}"
           NOTES_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+          set +e
           .github/scripts/bump-ddtrace.sh "$VERSION" "$NOTES_URL"
+          RC=$?
+          set -e
+          # Exit 3 is the documented no-token skip, not a failure; the
+          # release and assets are already published at this point.
+          if [ "$RC" -eq 3 ]; then
+            echo "::warning::dd-trace-java bump skipped: DDTRACE_GH_TOKEN is not configured"
+            exit 0
+          fi
+          exit $RC
