@@ -147,17 +147,25 @@ jobs:
           # runs many stages before integration-test.
           declare -A STATUS
           # Matrix expansion can push a dd-trace-integration pipeline past 100
-          # jobs; follow GitLab's page links until a short page arrives.
-          jobs_json=""
-          page=1
-          while :; do
-            page_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page" || echo "[]")
-            jobs_json="$jobs_json$page_json"
-            [ "$(echo "$page_json" | jq 'length')" -lt 100 ] && break
-            page=$((page+1))
-          done
+          # jobs; follow GitLab's page links until a short page arrives. Fetch
+          # inside the retry loop: cell statuses must refresh every attempt.
+          fetch_all_jobs() {
+            local jobs_json="" page_json page=1
+            while :; do
+              page_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page" || echo "[]")
+              if [ -z "$jobs_json" ]; then
+                jobs_json="$page_json"
+              else
+                jobs_json=$(jq -cn --argjson a "$jobs_json" --argjson b "$page_json" '$a + $b')
+              fi
+              [ "$(echo "$page_json" | jq 'length')" -lt 100 ] && break
+              page=$((page+1))
+            done
+            echo "$jobs_json"
+          }
           for attempt in $(seq 1 60); do
+            jobs_json=$(fetch_all_jobs)
             missing=0; pending=0
             for job in "${REQUIRED_JOBS[@]}"; do
               # GitLab matrix expansion names cells "name: [hotspot, 8]": match
