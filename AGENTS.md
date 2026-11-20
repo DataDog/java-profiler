@@ -204,7 +204,18 @@ C++ engine `ddprof-lib/src/main/cpp/` (implementation-specific code under `hotsp
 - Treat caller contract violations (null arguments, mismatched array lengths, an operation
   that must never fail in a test) as bugs: throw instead of returning false or
   incrementing a failure counter, and do not add validation that duplicates what the loop
-  already checks.
+  already checks. This is the Java API convention; native code does not throw — see the
+  C++ exceptions rule below.
+- **C++ exceptions.** Never write `throw`, `try` or `catch` in
+  `ddprof-lib/src/main/cpp`: an uncaught exception escaping through a JVMTI callback
+  terminates the JVM — like `abort`, but opaque — and the unwinder conflicts with the
+  static-libgcc/`-static-libstdc++` link and the pthread-cancellation cleanup rules
+  (`libraryPatcher_linux.cpp`, `j9WallClock.cpp`). Programming bugs are `assert` +
+  `abort()`; expected failures (OOM, missing data) are error codes or a `false` return,
+  with `new (std::nothrow)`/mmap allocation where the failure must be survivable. Plain
+  `new` and std containers still terminate the process on OOM — never rely on catching
+  that. Enforced in CI: the `qualityChecks` task fails on any `throw`/`try`/`catch` (or
+  throwing std helper) in native sources outside the checker's exception list.
 - Explain in a comment why a non-obvious call, init-order assumption, sentinel return value
   (e.g. 0 meaning miss/full), omitted lock, unsynchronized access or read of a specific
   buffer (e.g. standby) is safe, and why a workaround or test exclusion exists.

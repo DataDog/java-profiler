@@ -206,6 +206,16 @@ varargs there, including when building error or label strings. O(N)
 linear scans only for small sets (cutoff ~256 elements); larger sets need an index or binary
 search. Do not resolve symbols or line tables eagerly in hot paths.
 
+**C++ exceptions.** Never write `throw`/`try`/`catch`: an uncaught exception escaping
+through a JVMTI callback terminates the JVM, and the unwinder conflicts with the
+static-libgcc/-static-libstdc++ link and the pthread-cancellation cleanup rules
+(`libraryPatcher_linux.cpp`, `j9WallClock.cpp`). Bugs are `assert` + `abort()`; expected
+failures are error codes, with `new (std::nothrow)`/mmap allocation where the failure must
+be survivable; plain `new` and std containers still terminate on OOM — never rely on
+catching that. Enforced in CI: the `qualityChecks` task fails on any exception keyword in
+native sources outside the checker's exception list (see the root `AGENTS.md`
+"C++ exceptions").
+
 **Concurrent data structure iteration.** When iterating a concurrent array (e.g.
 `CodeCacheArray`), NULL-check every slot — a slot may be count-allocated but
 pointer-not-yet-stored. Never permanently advance an iteration cursor past NULL gaps; stop
