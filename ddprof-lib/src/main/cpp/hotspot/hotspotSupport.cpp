@@ -467,13 +467,16 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         uintptr_t carrier_fp, carrier_sp;
         const void* carrier_pc;
         bool valid_carrier_sp;
-        bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && continuation_entry_nm != nullptr
+        bool in_entry_nm = continuation_entry_nm != nullptr
                 && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
+        bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && in_entry_nm;
         int words = sampled_entry ? frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw()) : -1;
         bool saved_fp = words >= 2;
         bool exception_entry = false;
 #ifdef __x86_64__
-        if (continuation_entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm) {
+        // The exact entry return PC precedes cleanup, so its entry is still published.
+        // It keeps the metadata recovery below even when the phase decoders reject the code.
+        if (in_entry_nm && (sampled_entry || !VMStructs::isContEntryReturnPc(walk_pc.raw()))) {
             if (!sampled_entry) words = frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw());
             if (words < 0) {
                 HotspotStackFrame::ContinuationEntryLayout layout;
@@ -529,7 +532,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             VMNMethod* entry_nm = continuation_entry_nm;
             uintptr_t spill_bytes = 0;
 #ifdef __aarch64__
-            if (kind != ContBoundary::Frozen && entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm) {
+            if (kind != ContBoundary::Frozen && in_entry_nm) {
                 spill_bytes = HotspotStackFrame::continuationEntrySpillWords(entry_nm, walk_pc.raw()) * sizeof(uintptr_t);
             }
 #endif
@@ -554,7 +557,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             } else {
                 bool known_boundary = VMStructs::isContReturnBarrier(walk_pc.raw())
                         || VMStructs::isContEntryReturnPc(walk_pc.raw())
-                        || (entry_nm != nullptr && CodeHeap::findNMethod(walk_pc.raw()) == entry_nm);
+                        || in_entry_nm;
                 int entry_offset = VMStructs::contEntryThreadOffset();
                 if (entry_nm != nullptr && kind == ContBoundary::Frozen &&
                         (continuation_stack_args < 0 || use_thread_entry)) {

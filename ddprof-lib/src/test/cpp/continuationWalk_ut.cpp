@@ -230,7 +230,7 @@ protected:
         X64ExceptionNativePrefix, X64ExceptionMalformed, X64ExceptionReturnPcAfterPop,
         X64ExceptionInvalidCarrierPc, X64ExceptionFarCall, X64ExceptionFarCallNativePrefix,
         X64ExceptionBadBranch, X64ExceptionTruncatedCode, X64ExceptionInteriorPc, X64ExceptionInteriorReturnPc,
-        X64ExceptionByteTest, X64ExceptionByteTestNativePrefix
+        X64ExceptionByteTest, X64ExceptionByteTestNativePrefix, ReturnPcUndecodableFrameExported
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -254,6 +254,7 @@ protected:
                 test_case == EntryCase::X64ExceptionMalformed || test_case == EntryCase::X64ExceptionInvalidCarrierPc || x64_far_call || x64_byte_test ||
                 test_case == EntryCase::X64ExceptionBadBranch || test_case == EntryCase::X64ExceptionTruncatedCode || test_case == EntryCase::X64ExceptionInteriorPc;
         bool tracked_child = test_case == EntryCase::LeafSpillNativePrefixExportedTrackedChild;
+        bool undecodable_return = test_case == EntryCase::ReturnPcUndecodableFrameExported;
         bool invalid_exported_size = test_case == EntryCase::LeafSpillNativePrefixExportedInvalidSize;
         bool leaf_native_prefix = test_case == EntryCase::LeafSpillNativePrefix ||
                 test_case == EntryCase::LeafSpillNativePrefixExportedNull || test_case == EntryCase::LeafSpillNativePrefixExportedParent || tracked_child || invalid_exported_size;
@@ -479,11 +480,13 @@ protected:
         bool exported_parent = test_case == EntryCase::ExportedParentEntry || test_case == EntryCase::LeafSpillNativePrefixExportedParent ||
                 test_case == EntryCase::X64ExceptionNativePrefixExportedParent || test_case == EntryCase::X64ExceptionSampleExportedParent;
         bool exported_entry = exported_parent || test_case == EntryCase::LeafSpillNativePrefixExportedNull || tracked_child || invalid_exported_size ||
-                test_case == EntryCase::X64ExceptionNativePrefixExportedNull || test_case == EntryCase::X64ExceptionSampleExportedNull;
+                test_case == EntryCase::X64ExceptionNativePrefixExportedNull || test_case == EntryCase::X64ExceptionSampleExportedNull ||
+                undecodable_return;
         ScopedValue<int> cont_entry_offset(_cont_entry_offset, exported_entry ? offsetof(ThreadLayout, entry) : -1);
         ScopedValue<int> parent_offset(_cont_entry_parent_offset, 0);
         ScopedValue<uint64_t> entry_size(TYPE_SIZE_NAME(VMContinuationEntry), exported_entry ? (invalid_exported_size ? 80 : 64) : 0);
         if (exported_entry) thread.entry = exported_parent ? &stack[16] : nullptr;
+        if (undecodable_return) thread.entry = stack; // 64-byte entry whose entryFP() is &stack[8]
         ScopedValue<uint64_t> type_size(TYPE_SIZE_NAME(VMNMethod), sizeof(NMethod));
         ScopedValue<uint64_t> method_size(TYPE_SIZE_NAME(VMMethod), sizeof(Method));
         ScopedValue<uint64_t> constmethod_size(TYPE_SIZE_NAME(VMConstMethod), sizeof(ConstMethod));
@@ -517,7 +520,7 @@ protected:
         }
 #endif
         ScopedValue<const void*> return_pc(_cont_entry_return_pc,
-                test_case == EntryCase::ReturnPc ? sampled_pc : tracked_child ? blob.nm.code + 31 : _cont_entry_return_pc);
+                test_case == EntryCase::ReturnPc || undecodable_return ? sampled_pc : tracked_child ? blob.nm.code + 31 : _cont_entry_return_pc);
         VMTestAccessor::install(true, exported_entry ? 27 : 21);
 
         bool nonpointer_fp = test_case == EntryCase::CompiledNonPointerFp ||
@@ -571,6 +574,7 @@ protected:
 #endif
         if (test_case == EntryCase::ReturnPc) sampled_fp = 1;
         if (test_case == EntryCase::InvalidFrameSize) blob.nm.frame_size = 2;
+        if (undecodable_return) blob.nm.frame_size = 258; // phase decoders reject sizes above 256 words
         ucontext_t context{};
 #ifdef __APPLE__
         _STRUCT_MCONTEXT64 machine_context{};
@@ -612,7 +616,8 @@ protected:
             frame.fp() = 1;
         } else
 #endif
-        if (leaf_native_prefix || x64_exception_prefix || test_case == EntryCase::BarrierInteriorNativePrefix) {
+        if (leaf_native_prefix || x64_exception_prefix || undecodable_return ||
+                test_case == EntryCase::BarrierInteriorNativePrefix) {
             stack[-4] = sampled_fp;
             stack[-3] = (uintptr_t)sampled_pc;
             frame.pc() = (uintptr_t)LEAF_PC;
@@ -670,6 +675,11 @@ protected:
                 }
                 EXPECT_FALSE(truncated);
             }
+            return;
+        }
+        if (undecodable_return) {
+            assertCarrier(depth);
+            EXPECT_FALSE(truncated);
             return;
         }
         if (invalid_exported_size) {
@@ -1322,6 +1332,10 @@ TEST_F(ContinuationWalkTest, EntryNMethodAfterRestoringRegistersRetainsCarrier) 
 
 TEST_F(ContinuationWalkTest, VerifiedReturnPcDoesNotRequireSampledFp) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPc);
+}
+
+TEST_F(ContinuationWalkTest, EntryReturnPcUsesExportedEntryWhenPhaseDecodingRejects) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPcUndecodableFrameExported);
 }
 
 TEST_F(ContinuationWalkTest, CompiledCarrierAcceptsNonPointerSavedFp) {
