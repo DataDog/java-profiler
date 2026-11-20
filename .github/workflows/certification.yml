@@ -150,6 +150,7 @@ jobs:
           # reached a terminal state. Cells can be created late: the pipeline
           # runs many stages before integration-test.
           declare -A STATUS
+          for job in ${{ env.INTEGRATION_JOBS }}; do STATUS[$job]="unknown"; done
           # Matrix expansion can push a dd-trace-integration pipeline past 100
           # jobs; follow GitLab's page links until a short page arrives. Fetch
           # inside the retry loop: cell statuses must refresh every attempt.
@@ -268,6 +269,7 @@ jobs:
           } > summary.txt
           cat summary.txt
       - name: Notify Slack
+        if: ${{ failure() }}
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
@@ -293,7 +295,7 @@ jobs:
               pass
           PY
       - name: File PROF ticket
-        if: ${{ !cancelled() }}
+        if: ${{ failure() }}
         id: jira
         env:
           ATLASSIAN_BASE_URL: ${{ secrets.ATLASSIAN_BASE_URL }}

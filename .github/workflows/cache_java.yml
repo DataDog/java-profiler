@@ -106,7 +106,7 @@ jobs:
       - name: Upload SDKMAN! as Artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sdkman-installation-amd64-${{ inputs.artifact_suffix }}
+          name: sdkman-installation-amd64${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: ${{ env.SDKMAN_DIR }}
 
   setup-sdkman-aarch64:
@@ -146,7 +146,7 @@ jobs:
       - name: Upload SDKMAN! as Artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sdkman-installation-aarch64-${{ inputs.artifact_suffix }}
+          name: sdkman-installation-aarch64${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: ${{ env.SDKMAN_DIR }}
 
   cache-amd64:
@@ -187,7 +187,7 @@ jobs:
         if: steps.check-cache.outputs.cache-hit != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: sdkman-installation-amd64-${{ inputs.artifact_suffix }}
+          name: sdkman-installation-amd64${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: sdkman
 
       - name: Install JDK ${{ matrix.java_variant }}
@@ -302,7 +302,7 @@ jobs:
         if: steps.check-cache.outputs.cache-hit != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: sdkman-installation-aarch64-${{ inputs.artifact_suffix }}
+          name: sdkman-installation-aarch64${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: sdkman
       - name: Install JDK ${{ matrix.java_variant }}
         if: steps.check-cache.outputs.cache-hit != 'true'
