@@ -50,11 +50,17 @@ SHA=$(git rev-parse "$SHA^{commit}")
 # fetch failure must fail loudly, else the already-certified check runs
 # against a stale ref.
 if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
-  if git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1; then
-    echo "ERROR: failed to fetch $NOTES_REF from origin" >&2
+  # ls-remote exit 2 means the ref is absent on origin (normal on first
+  # certification); any other status is a transport failure and must fail
+  # loudly, else the already-certified check runs against a stale ref.
+  LS_RC=0
+  git ls-remote --exit-code origin "$NOTES_REF" >/dev/null 2>&1 || LS_RC=$?
+  if [ "$LS_RC" -eq 2 ]; then
+    echo "No certification notes on origin yet"
+  else
+    echo "ERROR: failed to fetch $NOTES_REF from origin (ls-remote rc=$LS_RC)" >&2
     exit 1
   fi
-  echo "No certification notes on origin yet"
 fi
 
 if git notes --ref=certification list 2>/dev/null | awk '{print $2}' | grep -qx "$SHA"; then

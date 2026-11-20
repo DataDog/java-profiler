@@ -116,7 +116,7 @@ jobs:
           REF="$GITHUB_REF_NAME"
           REF_PARAM=""
           if ! [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then
-            REF_PARAM="&ref=$REF"
+            REF_PARAM="&ref=$(jq -rn --arg r "$REF" '$r|@uri')"
           fi
 
           # Find the pipeline for this SHA; retry in case the push landed
@@ -124,6 +124,12 @@ jobs:
           # created.
           PIPELINE_ID=""
           for attempt in $(seq 1 36); do
+            # The first half of the window filters by ref (the push pipeline
+            # for the candidate's branch); if the mirror names its refs
+            # differently, the second half falls back to any pipeline for
+            # the SHA instead of burning the whole budget on an empty
+            # ref-filtered result.
+            if [ "$attempt" -gt 18 ]; then REF_PARAM=""; fi
             PIPELINE_ID=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
               "$API/pipelines?sha=$SHA$REF_PARAM&sort=desc&per_page=5" | jq -r '.[0].id // empty') || true
             [ -n "$PIPELINE_ID" ] && break

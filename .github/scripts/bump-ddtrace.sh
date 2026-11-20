@@ -80,11 +80,19 @@ git config user.email "java-profiler@datadoghq.com"
 git config user.name "Datadog Java Profiler"
 git add "$TOML" "$LOCK"
 git commit -m "Bump java-profiler (ddprof) to ${VERSION}"
-# A remote branch from a closed/failed previous run would reject a plain
-# push as non-fast-forward; the branch is bot-owned and version-scoped, so
-# recreate it.
-git push origin :"$BRANCH" 2>/dev/null || true
-git push origin "$BRANCH"
+# The branch is bot-owned and version-scoped. Push plainly first; only a
+# non-fast-forward reject (a stale branch from a closed previous run)
+# recreates it, so a concurrent PR on the branch is not deleted by accident
+# and a delete failure is not hidden.
+if ! git push origin "$BRANCH" 2>"$TEMP_DIR/push.err"; then
+  if grep -qE 'non-fast-forward|fetch first' "$TEMP_DIR/push.err"; then
+    git push origin :"$BRANCH" || { echo "ERROR: failed to recreate $BRANCH" >&2; exit 1; }
+    git push origin "$BRANCH"
+  else
+    cat "$TEMP_DIR/push.err" >&2
+    exit 1
+  fi
+fi
 
 PR_BODY=$(cat <<EOF
 # What Does This Do
