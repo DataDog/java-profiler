@@ -190,8 +190,8 @@ zero; an all-zero captured value is distinct from an unavailable retained value.
 
 The block tracker has lazy chunks of 256 coherent cells. Each 128-byte cell contains
 seven atomic payload words, a publication word and four pending-weight segments. Cold normal-owner
-registration allocates backing only for ASGCT wall precheck with a nonempty filter
-and real stacks. Warm lookup and signal handlers do not repair missing backing.
+registration allocates backing for stackful ASGCT wall precheck in filtered and
+unfiltered recordings. Warm lookup and signal handlers do not repair missing backing.
 Each chunk contributes 32,768 bytes to `NM_WALLCLOCK`; up to 8 chunks cover 2,048 slots,
 excluding pointer metadata and allocator overhead. Backing survives recording
 resets and is released with the tracker.
@@ -202,6 +202,8 @@ Readers use bounded atomic probes; zero, odd or changing sequences are rejected.
 Sequence values never wrap or reset during owner reuse or recording transitions.
 The terminal even value remains readable but cannot publish another origin.
 Root invalidation prevents a retained cell from being treated as a new binding.
+Ordinary native-slot reuse preserves block generations so closed predecessor tokens
+cannot alias a new run. Only saturated generations restart after native-owner teardown.
 
 Suppression requires matching current/retained fields and a revalidated native
 identity and recording epoch. Missing backing, unstable publication or terminal

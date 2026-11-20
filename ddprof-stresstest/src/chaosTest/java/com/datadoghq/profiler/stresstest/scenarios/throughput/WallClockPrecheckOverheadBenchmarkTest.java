@@ -44,7 +44,7 @@ class WallClockPrecheckOverheadBenchmarkTest {
       benchmark.setup();
       if (precheck) {
         assertTrue(
-            JavaProfiler.getInstance().getDebugCounters().get("wc_signals_suppressed_sampled_run")
+            JavaProfiler.getInstance().getDebugCounters().get("wc_signals_suppressed_owned_block")
                 > 0);
       }
     } finally {

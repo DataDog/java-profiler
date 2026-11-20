@@ -67,39 +67,181 @@ bool WallClockBlockTracker::ensureAllocated() {
 }
 
 u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
-                                           OSThreadState state, BlockRunOwner owner) {
+                                           OSThreadState state, BlockRunOwner owner
+                                           TASK_BLOCK_DIAGNOSTIC_ONLY(, TaskBlockDiagnosticRecord* admitted_origin)) {
 #ifdef UNIT_TEST
     if (_block_admission_hook != nullptr) {
         _block_admission_hook(_block_admission_hook_arg);
     }
 #endif
+#if defined(DEBUG) || defined(UNIT_TEST)
+    TaskBlockDiagnosticRecord diagnostic{};
+    TaskBlockDiagnosticRecord* diagnostic_ptr = &diagnostic;
+    diagnostic = TaskBlockDiagnostics::identity(registry, slot_id);
+    diagnostic.words[TaskBlockDiagnosticRecord::OWNER] = static_cast<u64>(owner);
+    diagnostic.words[TaskBlockDiagnosticRecord::STATE] = static_cast<u64>(state);
+#endif
+    if (state == OSThreadState::UNKNOWN) {
+        TASK_BLOCK_DIAGNOSTIC(ENTER_UNKNOWN_STATE, diagnostic_ptr, 0);
+        return 0;
+    }
     ThreadFilter::Slot* identity_slot = registry->slotForId(slot_id);
     BlockState* block_slot = slotForId(slot_id);
-    if (identity_slot == nullptr || block_slot == nullptr) {
+    if (identity_slot == nullptr) {
+        TASK_BLOCK_DIAGNOSTIC(ENTER_NO_IDENTITY_SLOT, diagnostic_ptr, 0);
         return 0;
     }
-    u32 generation = 0;
-    if (!block_slot->trySetActiveBlockRun(identity_slot, state, owner, &generation,
-                                          registry->unfilteredWallTrackingActive())) {
+    if (block_slot == nullptr) {
+        TASK_BLOCK_DIAGNOSTIC(ENTER_NO_BLOCK_SLOT, diagnostic_ptr, 0);
         return 0;
     }
-    return WallClockBlockTracker::encodeBlockRunToken(slot_id, generation);
+    u64 generation = 0;
+    if (!block_slot->tryPrepareActiveBlockRun(identity_slot, owner, &generation,
+                                              registry->unfilteredWallTrackingActive() TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) {
+        return 0;
+    }
+    block_slot->publishActiveBlockRun(state);
+    u64 token = encodeBlockRunToken(slot_id, generation);
+#if defined(DEBUG) || defined(UNIT_TEST)
+    diagnostic.words[TaskBlockDiagnosticRecord::TOKEN] = token;
+    diagnostic.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH] = diagnostic.words[TaskBlockDiagnosticRecord::CURRENT_EPOCH];
+    diagnostic.words[TaskBlockDiagnosticRecord::VALID] |= TaskBlockDiagnosticRecord::HAS_ORIGIN;
+    if (admitted_origin != nullptr) *admitted_origin = diagnostic;
+#endif
+    TASK_BLOCK_DIAGNOSTIC(ENTER_TOKEN_PUBLISHED, diagnostic_ptr, 0);
+    return token;
 }
 
-bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation) {
-    BlockState* s = slotForId(slot_id);
-    if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
+static bool isActiveRun(const WallClockBlockTracker::BlockState* s, u64 generation
+                         TASK_BLOCK_DIAGNOSTIC_ONLY(, TaskBlockDiagnosticRecord* diagnostic)) {
+    if (s == nullptr) {
+        TASK_BLOCK_DIAGNOSTIC(EXIT_NO_BLOCK_SLOT, diagnostic, 0);
         return false;
     }
-    // Owned-run fields only; the unowned-blocked tail survives the exit.
-    s->clearActiveBlockRun(OSThreadState::RUNNABLE);
+    if (generation == 0) {
+        TASK_BLOCK_DIAGNOSTIC(EXIT_ZERO_GENERATION, diagnostic, 0);
+        return false;
+    }
+    OSThreadState state = s->activeBlockState();
+#if defined(DEBUG) || defined(UNIT_TEST)
+    diagnostic->words[TaskBlockDiagnosticRecord::OBSERVED_STATE] = static_cast<u64>(state);
+    diagnostic->words[TaskBlockDiagnosticRecord::VALID] |= TaskBlockDiagnosticRecord::HAS_OBSERVED_STATE;
+#endif
+    if (state == OSThreadState::UNKNOWN) {
+        TASK_BLOCK_DIAGNOSTIC(EXIT_STATE_UNKNOWN, diagnostic, 0);
+        return false;
+    }
+    BlockRunOwner owner = s->activeBlockOwner();
+#if defined(DEBUG) || defined(UNIT_TEST)
+    diagnostic->words[TaskBlockDiagnosticRecord::OBSERVED_OWNER] = static_cast<u64>(owner);
+    diagnostic->words[TaskBlockDiagnosticRecord::VALID] |= TaskBlockDiagnosticRecord::HAS_OBSERVED_OWNER;
+#endif
+    if (owner == BlockRunOwner::NONE) {
+        TASK_BLOCK_DIAGNOSTIC(EXIT_OWNER_NONE, diagnostic, 0);
+        return false;
+    }
+    u64 observed_generation = s->blockGeneration();
+#if defined(DEBUG) || defined(UNIT_TEST)
+    diagnostic->words[TaskBlockDiagnosticRecord::OBSERVED_GENERATION] = observed_generation;
+    diagnostic->words[TaskBlockDiagnosticRecord::VALID] |= TaskBlockDiagnosticRecord::HAS_OBSERVED_GENERATION;
+#endif
+    if (observed_generation != generation) {
+        TASK_BLOCK_DIAGNOSTIC(EXIT_GENERATION_MISMATCH, diagnostic, 0);
+        return false;
+    }
     return true;
 }
 
-void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state) {
+bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u64 generation) {
+    BlockState* s = slotForId(slot_id);
+#if defined(DEBUG) || defined(UNIT_TEST)
+    TaskBlockDiagnosticRecord diagnostic{};
+    TaskBlockDiagnosticRecord* diagnostic_ptr = &diagnostic;
+    diagnostic.words[TaskBlockDiagnosticRecord::TOKEN] = encodeBlockRunToken(slot_id, generation);
+    diagnostic.words[TaskBlockDiagnosticRecord::CURRENT_SLOT] = static_cast<u64>(slot_id);
+    diagnostic.words[TaskBlockDiagnosticRecord::OPERATION] = 1;
+#endif
+    if (!isActiveRun(s, generation TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) return false;
+    // Owned-run fields only; the unowned-blocked tail survives the exit.
+    s->clearActiveBlockRun();
+    TASK_BLOCK_DIAGNOSTIC(EXIT_MATCHED_AND_CLEARED, diagnostic_ptr, 0);
+    return true;
+}
+
+bool WallClockBlockTracker::snapshotAndExitBlockedRun(ThreadFilter* registry,
+                                                      ThreadFilter::SlotID slot_id,
+                                                      u64 generation,
+                                                      BlockRunSnapshot* snapshot
+                                                      TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* origin)) {
+    ThreadFilter::Slot* identity_slot = registry->slotForId(slot_id);
+    BlockState* s = slotForId(slot_id);
+#if defined(DEBUG) || defined(UNIT_TEST)
+    TaskBlockDiagnosticRecord diagnostic{};
+    TaskBlockDiagnosticRecord* diagnostic_ptr = &diagnostic;
+    diagnostic = origin == nullptr ? TaskBlockDiagnostics::identity(registry, slot_id,
+        encodeBlockRunToken(slot_id, generation)) : *origin;
+#endif
+    if (identity_slot == nullptr) {
+        TASK_BLOCK_DIAGNOSTIC(EXIT_NO_IDENTITY_SLOT, diagnostic_ptr, 0);
+        return false;
+    }
+    if (!isActiveRun(s, generation TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) return false;
+    if (snapshot != nullptr) *snapshot = s->snapshotBlockRun(identity_slot);
+    s->clearActiveBlockRun();
+    TASK_BLOCK_DIAGNOSTIC(EXIT_MATCHED_AND_CLEARED, diagnostic_ptr, 0);
+    return true;
+}
+
+bool WallClockBlockTracker::flushUnownedTail(ThreadFilter::SlotID slot_id, int tid,
+                                             bool blocking) {
+    auto* block = slotForId(slot_id);
+    if (block == nullptr ||
+        block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
+    // Standalone trackers have no recorder; their synthetic state needs no emission.
+    return !_tail_flush || _tail_flush(slot_id, tid, blocking);
+}
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+static void observeInvalidation(WallClockBlockTracker::BlockState* block, int slot_id,
+                                 TaskBlockStage stage) {
+    if (block == nullptr) return;
+    BlockRunOwner owner = block->activeBlockOwner();
+    if (owner == BlockRunOwner::NONE) return;
+    TaskBlockDiagnosticRecord record{};
+    record.words[TaskBlockDiagnosticRecord::TOKEN] = WallClockBlockTracker::encodeBlockRunToken(slot_id, block->blockGeneration());
+    record.words[TaskBlockDiagnosticRecord::CURRENT_SLOT] = static_cast<u64>(slot_id);
+    record.words[TaskBlockDiagnosticRecord::OWNER] = static_cast<u64>(owner);
+    record.words[TaskBlockDiagnosticRecord::STATE] = static_cast<u64>(block->activeBlockState());
+    TaskBlockDiagnostics::observe(stage, &record);
+}
+#endif
+
+bool WallClockBlockTracker::retireSlot(ThreadFilter::SlotID slot_id, int tid) {
+    auto* block = slotForId(slot_id);
+    if (block == nullptr) return true;
+    TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(block, slot_id, TaskBlockStage::INVALIDATE_RETIRE);)
+    block->clearActiveBlockRun();
+    if (!flushUnownedTail(slot_id, tid)) return false;
+    resetSlot(slot_id);
+    return true;
+}
+
+void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
     if (s != nullptr) {
-        s->resetSlot(state);
+        TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(s, slot_id, TaskBlockStage::INVALIDATE_RESET);)
+        s->resetSlot();
+    }
+}
+
+void WallClockBlockTracker::resetSlotForReuse(ThreadFilter::SlotID slot_id) {
+    BlockState* s = slotForId(slot_id);
+    if (s != nullptr) {
+        TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(s, slot_id, TaskBlockStage::INVALIDATE_REUSE);)
+        // Ordinary reuse must not make a closed predecessor token valid again.
+        // Saturation recovery relies on the previous native owner having exited.
+        if (s->blockGeneration() == kMaxBlockRunGeneration) s->resetBlockGeneration();
+        s->resetSlot();
     }
 }
 
@@ -108,34 +250,56 @@ void WallClockBlockTracker::resetAll() {
     if (storage == nullptr) {
         return;
     }
+    TASK_BLOCK_DIAGNOSTIC_ONLY(int slot_id = 0;)
     for (auto& s : storage->slots) {
-        s.resetSlot(OSThreadState::UNKNOWN);
+        TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(&s, slot_id++, TaskBlockStage::INVALIDATE_ALL);)
+        s.resetSlot();
     }
 }
 
-void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state) {
+void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
-    if (s != nullptr && s->needsActiveBlockRunClear(state)) {
-        s->clearActiveBlockRun(state);
+    if (s != nullptr && s->needsActiveBlockRunClear()) {
+        TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(s, slot_id, TaskBlockStage::INVALIDATE_CONTEXT);)
+        s->clearActiveBlockRun();
     }
 }
 
-void WallClockBlockTracker::resetUnownedBlockedTails() {
+u64 WallClockBlockTracker::resetUnownedBlockedTails() {
     SlotStorage* storage = _storage.load(std::memory_order_acquire);
     if (storage == nullptr) {
-        return;
+        return 0;
     }
+    u64 dropped = 0;
     for (ThreadFilter::SlotID id = 0; id < ThreadFilter::kMaxThreads; ++id) {
+        dropped += storage->slots[id].unowned_blocked_pending_weight.load(std::memory_order_acquire);
         storage->slots[id].resetUnownedBlockedSampling();
         // Segments outlive a reset tail; their epochs belong to the released recording.
         clearUnownedWeightSegments(id);
     }
+    return dropped;
 }
 
-bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
-                                                     const ThreadEntry& entry) const {
+bool WallClockBlockTracker::hasActiveBlockRun(ThreadFilter::SlotID slot_id) const {
+    const BlockState* s = slotForId(slot_id);
+    return s != nullptr && s->activeBlockOwner() != BlockRunOwner::NONE;
+}
+
+bool WallClockBlockTracker::isOwnedBlockSuppressionCandidate(ThreadFilter* registry,
+                                                             const ThreadEntry& entry) const {
+    u64 generation = 0;
+    bool already_sampled = false;
+    return ownedBlockGeneration(registry, entry, generation, already_sampled) &&
+           already_sampled;
+}
+
+bool WallClockBlockTracker::ownedBlockGeneration(ThreadFilter* registry,
+                                                 const ThreadEntry& entry,
+                                                 u64& generation,
+                                                 bool& already_sampled) const {
     ThreadFilter::Slot* identity_slot = entry.slot;
-    if (identity_slot == nullptr || identity_slot->nativeTid() != entry.tid ||
+    if (!registry->unfilteredWallTrackingActive() || identity_slot == nullptr ||
+        identity_slot->nativeTid() != entry.tid ||
         identity_slot->lifecycleGeneration() != entry.lifecycle_generation) {
         return false;
     }
@@ -144,29 +308,23 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
         return false;
     }
 
-    const bool unfiltered_tracking = registry->unfilteredWallTrackingActive();
-    ThreadFilter::RecordingEpoch epoch = 0;
-    if (unfiltered_tracking) {
-        epoch = registry->recordingEpoch();
-        if (epoch == 0 || entry.recording_epoch != epoch ||
-            identity_slot->recordingEpoch() != epoch) {
-            return false;
-        }
-    }
-
-    u32 block_generation = slot->blockGeneration();
-    BlockRunOwner owner = slot->activeBlockOwner();
+    // active_block_state publishes the rest of the block-run payload. Acquire
+    // it before reading the context epoch, owner, or generation so those reads
+    // observe the stores that preceded publishActiveBlockRun().
     OSThreadState state = slot->activeBlockState();
-    bool context_eligible =
-        !unfiltered_tracking || slot->activeBlockRemainedOutsideContextWindow(identity_slot);
-    bool sampled = slot->sampledThisRun();
-    OSThreadState last_sampled_state =
-        sampled ? slot->lastSampledState() : OSThreadState::UNKNOWN;
-    bool suppressible_state = isPrecheckSuppressionState(state);
-    if (owner == BlockRunOwner::NONE || !context_eligible ||
-        !suppressible_state || !sampled || state != last_sampled_state) {
+    if (!isPrecheckSuppressionState(state)) return false;
+
+    ThreadFilter::RecordingEpoch epoch = registry->recordingEpoch();
+    if (epoch == 0 || entry.recording_epoch != epoch ||
+        identity_slot->recordingEpoch() != epoch ||
+        !slot->activeBlockRemainedOutsideContextWindow(identity_slot)) {
         return false;
     }
+
+    u64 block_generation = slot->blockGeneration();
+    BlockRunOwner owner = slot->activeBlockOwner();
+    u64 sampled_generation = slot->sampledBlockGeneration();
+    if (owner == BlockRunOwner::NONE) return false;
 
 #ifdef UNIT_TEST
     if (_suppression_snapshot_hook != nullptr) {
@@ -174,19 +332,23 @@ bool WallClockBlockTracker::shouldSuppressOwnedBlock(ThreadFilter* registry,
     }
 #endif
 
-    // Independent atomics can describe different runs during an exit/re-entry.
-    // Reject a payload unless both the identity and block generation still match.
+    // entry supplies native identity, lifecycle and recording epoch, not block payload.
+    // Revalidate that identity and the block payload sampled within this call before
+    // accepting a snapshot assembled from independent atomics.
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
+        slot->activeBlockState() != state ||
         identity_slot->nativeTid() != entry.tid ||
-        identity_slot->lifecycleGeneration() != entry.lifecycle_generation) {
+        identity_slot->lifecycleGeneration() != entry.lifecycle_generation ||
+        slot->sampledBlockGeneration() != sampled_generation) {
         return false;
     }
-    if (unfiltered_tracking &&
-        (registry->recordingEpoch() != epoch || identity_slot->recordingEpoch() != epoch ||
-         !slot->activeBlockRemainedOutsideContextWindow(identity_slot))) {
+    if (registry->recordingEpoch() != epoch || identity_slot->recordingEpoch() != epoch ||
+        !slot->activeBlockRemainedOutsideContextWindow(identity_slot)) {
         return false;
     }
+    generation = block_generation;
+    already_sampled = sampled_generation == block_generation;
     return true;
 }
 

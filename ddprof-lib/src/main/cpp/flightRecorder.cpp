@@ -1002,6 +1002,9 @@ Recording::Recording(int fd, Arguments &args)
 }
 
 Recording::~Recording() {
+#ifdef UNIT_TEST
+  if (_fd == -1) return; // Buffer/table-only serializer fixture.
+#endif
   finishChunk(true);
   close(_fd);
 }
@@ -1903,7 +1906,9 @@ void Recording::writeThreads(Buffer *buf) {
   // After flip: new samples go into the new active set
   // We flush from old_index (the previous active set)
 
-  std::unordered_set<int> threads;
+  std::unordered_set<int> threads(_archived_thread_ids.begin(), _archived_thread_ids.end());
+  _archived_thread_ids.clear();
+  _thread_table_overflow.store(0, std::memory_order_release);
   threads.insert(_tid);  // always present: the recording thread itself
 
   for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
@@ -2567,6 +2572,21 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
+void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_TASK_BLOCK);
+  buf->putVar64(event->_start);
+  buf->putVar64(event->_end - event->_start);
+  buf->putVar64(tid);
+  buf->putVar64(event->_blocker);
+  buf->putVar64(event->_unblockingSpanId);
+  buf->putVar64(event->_callTraceId);
+  buf->put8(static_cast<int>(event->_observedBlockingState));
+  writeContextSnapshot(buf, event->_ctx);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   _wall_epochs.insert_or_assign(event->_start_time, *event);
@@ -2579,7 +2599,7 @@ void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   buf->putVar64(event->_num_failed_samples);
   buf->putVar64(event->_num_exited_threads);
   buf->putVar64(event->_num_permission_denied);
-  buf->putVar64(event->_num_suppressed_sampled_run);
+  buf->putVar64(event->_num_suppressed_owned_block);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -2884,9 +2904,35 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 }
 
 // assumption is that we hold the lock (with lock_index)
-void Recording::addThread(int lock_index, int tid) {
+bool Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
+    if (_thread_ids[lock_index][active].insert(tid)) return true;
+    if (tid != 0) _thread_table_overflow.fetch_or(1U << lock_index, std::memory_order_release);
+    return false;
+}
+
+bool Recording::recoverThreadTableCapacity() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  u32 overflow = _thread_table_overflow.load(std::memory_order_acquire);
+  if (overflow == 0) return false;
+  int active = _active_index.load(std::memory_order_acquire);
+  std::unordered_set<int> threads;
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
+    if (overflow & (1U << i)) _thread_ids[i][active].collect(threads);
+  }
+  // Allocation completes before any table is cleared, preserving every existing event reference.
+  _archived_thread_ids.insert(_archived_thread_ids.end(), threads.begin(), threads.end());
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
+    if (overflow & (1U << i)) _thread_ids[i][active].clear();
+  }
+  _thread_table_overflow.store(0, std::memory_order_release);
+  return true;
+}
+
+bool FlightRecorder::recoverThreadTableCapacity() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  ExclusiveLockGuard locker(&_rec_lock);
+  return _rec != nullptr && _rec->recoverThreadTableCapacity();
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
@@ -2998,6 +3044,31 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
   }
 }
 
+bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
+                                     TaskBlockEvent *event
+                                     TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic, TaskBlockStage* rejection)) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (!locker.ownsLock()) {
+    TASK_BLOCK_REJECTION(REJECT_RECORDER_SHARED_LOCK, diagnostic, lock_index, rejection);
+    return false;
+  }
+  Recording* rec = _rec;
+  if (rec == nullptr) {
+    TASK_BLOCK_REJECTION(REJECT_NO_RECORDING, diagnostic, 0, rejection);
+    return false;
+  }
+  Buffer *buf = rec->buffer(lock_index);
+  // Thread admission must precede bytes that reference this chunk's thread pool.
+  if (!rec->addThread(lock_index, tid)) {
+    TASK_BLOCK_REJECTION(REJECT_EVENT_THREAD_ADMISSION, diagnostic, tid, rejection);
+    return false;
+  }
+  TASK_BLOCK_DIAGNOSTIC(BUFFER_SERIALIZATION_BEGIN, diagnostic, lock_index);
+  rec->recordTaskBlock(buf, tid, event);
+  TASK_BLOCK_DIAGNOSTIC(BUFFER_ACCEPTED, diagnostic, lock_index);
+  return true;
+}
+
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
                                           const char *unit) {
@@ -3107,10 +3178,11 @@ bool FlightRecorder::recordWallSample(int lock_index, int tid, u64 call_trace_id
   }
   Recording* rec = _rec;
   if (rec == nullptr) return false;
+  // A retained tail must keep its weight if eventThread cannot enter this chunk.
+  if (!rec->addThread(lock_index, tid)) return false;
   RecordingBuffer* buf = rec->buffer(lock_index);
   rec->recordMethodSample(buf, tid, call_trace_id, 0, event, &context);
   rec->flushIfNeeded(buf);
-  rec->addThread(lock_index, tid);
   return true;
 }
 

@@ -20,18 +20,18 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ### Architecture
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, recording-scoped tables (release/acquire), isolated liveness collectors, reusable unowned wall-stack roots and exact-copy failure handling
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
-- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, recordings, buffers, metadata and constant pools
+- [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer and independent DEBUG TaskBlock receipts: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, bounded stop-time thread-table capacity recovery, recordings, buffers, metadata and constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current implementation, including root-anchor indexing and rotation
 - [MallocArenaWarning](architecture/MallocArenaWarning.md) - glibc malloc arena detector: arena walk, rule, and JFR events
 - [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception (hooks installed per recording, restored on stop), raw-identity exit admission and allocation sampling
-- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; wall reservoir and retained-weight epoch provenance; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
+- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; wall reservoir, retained-weight epoch provenance and retryable teardown-tail flush; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness and vtable receiver frames
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
 - [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching (persistent sigaction/pthread_create hooks); crash-handler bootstrap (raw-identity thread-exit registry, Linux-only fault/profiling-mask fence)
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, release, and rotation protocols; lazy storage
-- [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership and retained unowned wall context
+- [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership and retained filtered/unfiltered unowned wall context
 
 ### Build System
 - [BuildSystemGuide](building/BuildSystemGuide.md) - Build conventions, Java formatting, TestKit verification and independent JDK 21 build-logic CI

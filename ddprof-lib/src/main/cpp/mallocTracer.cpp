@@ -491,8 +491,7 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid, u32 session
     } else
 #endif
     {
-        Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event, nullptr,
-                                           &session);
+        Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event, &session);
     }
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);

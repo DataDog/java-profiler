@@ -236,7 +236,7 @@ class BaseWallClock : public Engine {
         epoch.updateNumSuccessfulSamples(num_successful_samples);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
-        epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
+        epoch.addNumSuppressedOwnedBlock(WallClockCounters::drainSuppressedOwnedBlock());
         // The statistics that open an epoch must not close it in the same pass.
         if (opens_epoch) epoch.clean();
 #ifdef UNIT_TEST
@@ -284,7 +284,7 @@ class BaseWallClock : public Engine {
     }
 
 public:
-    // Normal timer/dump threads only. Hold through stripe acquisition and sealing.
+    // Normal threads only. Hold through stripe acquisition and chunk sealing.
     static std::unique_lock<std::mutex> samplingEpochLock();
     // Caller holds the epoch mutex and every recording stripe.
     static void settleSamplingEpoch();
@@ -335,7 +335,53 @@ public:
     static std::atomic<bool> _force_start_failure_for_test;
   public:
 #endif
+#ifdef UNIT_TEST
+    // Exercises precheck decisions and successful/failed recording completion
+    // with controlled thread states, without a JVM or signal delivery.
+    static bool wallPrecheckForTest(
+        ProfiledThread* current, bool unowned_fallback, OSThreadState observed_state,
+        u64& weight, bool recorded = false);
+#endif
+#if defined(DEBUG) || defined(UNIT_TEST)
+    static bool awaitInitialSamplingEpochForTest(u64 timeout_nanos);
+#endif
+#ifdef DEBUG
+    // Drives the real precheck/recording path with controlled OS-state inputs
+    // and an intervening JFR dump. Called synchronously from the JNI test hook.
+    static bool recordUnownedWallTailAcrossDumpForTest(
+        jthread thread, const char* path, int path_length, bool dump_after_primary,
+        bool reset_before_tail);
+#endif
 };
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+// Serializes the synchronous driver with timer epoch writes, but not its dumps:
+// Profiler::dump acquires the same epoch mutex before locking recording stripes.
+class WallClockTestEpochGuard {
+    std::unique_lock<std::mutex> _lock;
+
+    class ScopedUnlock {
+        std::unique_lock<std::mutex>& _lock;
+    public:
+        explicit ScopedUnlock(std::unique_lock<std::mutex>& lock) : _lock(lock) { _lock.unlock(); }
+        ~ScopedUnlock() { _lock.lock(); }
+        ScopedUnlock(const ScopedUnlock&) = delete;
+        ScopedUnlock& operator=(const ScopedUnlock&) = delete;
+    };
+
+  public:
+    explicit WallClockTestEpochGuard(u64 timeout_nanos);
+    WallClockTestEpochGuard(const WallClockTestEpochGuard&) = delete;
+    WallClockTestEpochGuard& operator=(const WallClockTestEpochGuard&) = delete;
+    bool ownsLock() const { return _lock.owns_lock(); }
+
+    template <typename Action>
+    void withoutEpochLock(Action action) {
+        ScopedUnlock unlock(_lock);
+        action();
+    }
+};
+#endif
 
 class WallClockASGCT : public BaseWallClock {
   private:

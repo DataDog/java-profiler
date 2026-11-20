@@ -516,7 +516,7 @@ size. Suppressed selections consume capacity and count in `numSuccessfulSamples`
 just like signals suppressed by the handler; failed sends do not count. This keeps
 `samplePoolSize / numSuccessfulSamples` upscaling consistent with selection
 probability. `samplePoolSize` includes all collected candidates, and
-`numSuppressedSampledRun` reports suppression separately. It is the total for
+`numSuppressedOwnedBlock` reports owned suppression separately. It is the total for
 all passes of the epoch. A suppression never closes an epoch. There is no backfill.
 Retained blocked units keep each epoch window's start tick and serialize at that
 tick. This requires consumers to scale by the sample timestamp's epoch, not flush
@@ -554,8 +554,12 @@ Omitting `filter` defaults to context filtering (`filter=0`); an explicit empty
 `filter=` disables it. With empty `filter=`, an activated, supported wall engine,
 and `wallprecheck=true`, thread identities register lazily on their first context,
 park, or block hook, not eagerly at ThreadStart. Only already-sampled owned blocks
-that remain **outside** context windows can suppress signals in this mode;
-unowned observations and in-context threads keep ordinary sampling.
+that remain **outside** context windows can suppress signals in this mode.
+Context-scoped profiling never suppresses owned blocks. Unfiltered recordings keep
+ordinary sampling inside context windows. Stackful ASGCT uses weighted fallback
+for other unowned blocked observations. Delegated and `lightweight=true` sampling
+keep unit weight: neither publishes a reusable local trace ID for deferred tails.
+This bypass affects only unowned fallback, not owned-block decisions.
 
 Registry identity survives recording restarts until thread teardown. A new
 unfiltered epoch invalidates suppression state, which the owner resets lazily
@@ -570,7 +574,23 @@ are allocated lazily and kept until tracker destruction. In-flight owner hooks c
 slot IDs across `stop()`, so this backing outlives the recording; it is charged to its own
 `NM_WALL_BLOCK_TRACKER` category because `NM_WALLCLOCK` reads 0 when idle.
 Block-slot allocation failure leaves suppression inactive; a later registration retries.
-Context boundaries skip clean owned-run writes and retain unowned context and epoch segments.
+Context boundaries skip clean owned-run writes and retain unowned context and epoch segments
+in both filtered and unfiltered stackful ASGCT recordings. Paired TaskBlock runs survive
+context crossings so their exits can reject context-ineligible durations.
+
+Thread teardown tries to emit each retained unowned segment before slot reuse.
+A contended stripe or failed write keeps the slot retired with its original trace,
+context, state and epoch weights. Registry drains retry these bounded retained slots.
+
+Recording stop flushes live and retired tails after signal and TaskBlock drains,
+before engine teardown. It holds the sampling-epoch mutex, so the wall timer cannot close
+an epoch during the flush. It waits for each exact stripe instead of trying it once.
+Full JFR thread tables recover capacity without discarding old thread references or
+requiring a dump; retries are bounded by registry and table capacity. Other failures,
+such as a retiring thread that has not yet published its TID, get three 1 ms backoffs.
+After the retries, stop discards the remaining tails under every stripe, adds their
+weight to `wc_unowned_tail_dropped_at_stop`, and continues teardown.
+No owned TaskBlock duration is synthesized.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.
@@ -857,7 +877,7 @@ category list.
 |--------|-----------------------------------------------|--------------------|
 | CTimer / CTimerJvmti | `CTIMER_SIGNAL_OWN`, `CTIMER_SIGNAL_FOREIGN` | `SP_CPU` |
 | PerfEvents, ITimer, ITimerJvmti | none (the guard may increment `SAMPLES_DROPPED_THREAD_LOCAL`) | `SP_CPU` |
-| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED` (TID lookup helper), `WC_SIGNAL_SUPPRESSED_SAMPLED_RUN`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
+| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED` (TID lookup helper), `WC_SIGNAL_SUPPRESSED_OWNED_BLOCK`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
 | J9WallClock | none | `SP_CPU` and `SP_WALL` |
 | ObjectSampler | none | `SP_ALLOC` (includes `SP_LIVENESS`) |
 | LivenessTracker | `LIVENESS_URGENT_BOOST_ADMITS`, `LIVENESS_URGENT_BOOST_BACKED_OFF` | `SP_LIVENESS` |

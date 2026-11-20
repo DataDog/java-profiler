@@ -8,6 +8,8 @@
 #define _PROFILER_H
 
 #include "arch.h"
+#include "taskBlockDiagnostics.h"
+#include "nativeMem.h"
 #include "arguments.h"
 #include "callTraceStorage.h"
 #include "codeCache.h"
@@ -101,7 +103,7 @@ struct WallSampleRequest {
   ThreadFilter::RecordingEpoch registry_epoch = 0;
   u32 trace_epoch = 0;
   u64 sampling_epoch_start = 0;
-  u32 block_generation = 0;
+  u64 block_generation = 0;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   OSThreadState arm_state = OSThreadState::UNKNOWN;
   bool unowned_sample = false;
@@ -141,6 +143,9 @@ private:
   // JDK_8313796 workaround for unfixed versions
   static volatile bool _need_JDK_8313796_workaround;
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+  TaskBlockDiagnostics _task_block_diagnostics;
+#endif
   Mutex _state_lock;
   std::atomic<State> _state;
   // Thread-registration gates; the contract is in ProfilingEngines.md.
@@ -245,6 +250,9 @@ private:
   // AND referencechains=true - see Profiler::start()). Atomic: also read by
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
+  std::atomic<bool> _task_block_enabled{false};
+  static constexpr u64 TASK_BLOCK_CLOSED = 1ULL << 63;
+  std::atomic<u64> _task_block_activity_state{0};
 
   // The walkers' sigsetjmp scopes are inside recordSampleLocked(), so their
   // recovery returns through this owner rather than jumping past its destructor.
@@ -254,10 +262,13 @@ private:
     bool _owned;
 
   public:
-    RecordingStripe(SpinLock* locks, u32 index) : _locks(locks), _index(index) {
-      _owned = _locks[_index].tryLock() ||
-          _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
-          _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+    RecordingStripe(SpinLock* locks, u32 index, bool allow_fallback = true)
+        : _locks(locks), _index(index) {
+      _owned = _locks[_index].tryLock();
+      if (!_owned && allow_fallback) {
+        _owned = _locks[_index = (_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
+            _locks[_index = (_index + 2) % CONCURRENCY_LEVEL].tryLock();
+      }
     }
     ~RecordingStripe() { if (_owned) _locks[_index].unlock(); }
     RecordingStripe(const RecordingStripe&) = delete;
@@ -285,6 +296,12 @@ private:
                           u64* recorded_call_trace_id, const Context* context = nullptr);
   bool writeSampleEvent(u32 lock_index, int tid, u64 trace_id, jint type, Event* event,
                         const Context* context = nullptr);
+  // Partial writes consume only accepted segments, retaining the original payload for retries.
+  bool flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                           bool preserve_cadence);
+  bool flushWallTail(ThreadFilter::SlotID slot_id, int tid, bool blocking);
+  // Never fails: each retained tail is written, or its weight is counted as dropped.
+  void flushUnownedTailsAtStop();
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -372,6 +389,9 @@ private:
   // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
   void reportDrainTimeout(const char *what);
   void unlockAll();
+  bool beginTaskBlockRotation();
+  void endTaskBlockRotation();
+
   // Holds every stripe lock for its scope.
   class AllStripesLock {
     Profiler *_profiler;
@@ -482,14 +502,26 @@ public:
         _remote_symbolication(false), _sanity_check_failed(false),
         _sanity_check_message(NULL), _dlopen_entry(NULL) {
 
+#if defined(DEBUG) || defined(UNIT_TEST)
+    NativeMem::record(NM_MISC, sizeof(_task_block_diagnostics));
+#endif
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
     }
     _thread_filter.setBlockTracker(&_block_tracker);
+    _block_tracker.setTailFlush([this](ThreadFilter::SlotID slot_id, int tid, bool blocking) {
+      return flushWallTail(slot_id, tid, blocking);
+    });
     _call_trace_storage.registerLivenessChecker(
         [this](CallTraceIdSet& live) { _block_tracker.collectLiveTraceIds(live); },
         [this](const CallTraceIdSet& failed) { _block_tracker.onUnpreservedTraceIds(failed); });
   }
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+  TaskBlockDiagnostics& taskBlockDiagnostics() { return _task_block_diagnostics; }
+#endif
+  // Test-only capability probe for the default synchronous wall-clock API tests.
+  bool taskBlockSupportedForTest(JNIEnv* env, jthread thread);
 
   static inline Profiler *instance() {
     return _instance;
@@ -500,6 +532,9 @@ public:
   using SampleWriteHook = bool (*)(u32, u64, Event*, const Context*, void*);
   SampleWriteHook sampleWriteHookForTest = nullptr;
   void* sampleWriteHookArgForTest = nullptr;
+  // Runs before each stop-time tail flush backoff sleep.
+  void (*stopTailBackoffHookForTest)(void*) = nullptr;
+  void* stopTailBackoffHookArgForTest = nullptr;
   RecordingLocks recordingLocksForTest() { return RecordingLocks(this); }
   u32 exchangeNumContextAttributesForTest(u32 count);
 #endif
@@ -748,7 +783,6 @@ public:
   // sample is dropped when the recording memory was released since.
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
-                    u64 *recorded_call_trace_id = nullptr,
                     const u32 *recording_session = nullptr);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
@@ -757,6 +791,11 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
+  // Caller holds its stripe lock and supplies CallTraceBuffer::capacity() space,
+  // including the one-extra-frame truncation probe. Converts to ASGCT format and
+  // marks detected continuation roots; returns 0 on error/empty capture.
+  int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer,
+                         bool& truncated);
   // recording_session: recordingSession() read before the caller resolved
   // anything recording-scoped in event (a class id); a moved one drops the sample.
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event,
@@ -775,6 +814,35 @@ public:
   void pruneClosedWallEpochs();
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  enum class TaskBlockRecordResult {
+    RECORDED,
+    STACK_CAPTURE_FAILED,
+    RECORD_FAILED,
+  };
+  TaskBlockRecordResult recordTaskBlock(int tid, jthread thread,
+                                        int start_depth,
+                                        TaskBlockEvent *event
+                                        TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr,
+                                                                   TaskBlockStage* rejection = nullptr));
+#ifdef UNIT_TEST
+  using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
+      int tid, jthread thread, int start_depth, TaskBlockEvent *event);
+  static void setTaskBlockRecordOverrideForTest(
+      TaskBlockRecordOverride override);
+  enum class TaskBlockActivityStage {
+    BEFORE_RESERVATION, BEFORE_RESERVATION_CAS, AFTER_RESERVATION, AFTER_CLOSURE, AFTER_EXIT
+  };
+  using TaskBlockActivityHook = void (*)(TaskBlockActivityStage stage);
+  static void setTaskBlockActivityHookForTest(TaskBlockActivityHook hook);
+  static void runTaskBlockActivityHookForTest(TaskBlockActivityStage stage);
+#endif
+  bool tryEnterTaskBlockActivity(TASK_BLOCK_DIAGNOSTIC_ONLY(const TaskBlockDiagnosticRecord* diagnostic = nullptr));
+  void leaveTaskBlockActivity();
+  bool omitStacktraces() const { return _omit_stacktraces; }
+
+  bool taskBlockEnabled() const {
+    return _task_block_enabled.load(std::memory_order_acquire);
+  }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,
@@ -805,6 +873,15 @@ public:
   static void (*threadEndMarkedForTest)();
   void onThreadEndForTest() { onThreadEnd(nullptr, nullptr, nullptr); }
   int resetRecordingStateForTest() { return resetRecordingState(); }
+
+  bool beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
+  void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
+  bool taskBlockRotationActiveForTest() const {
+    return (_task_block_activity_state.load(std::memory_order_acquire) & TASK_BLOCK_CLOSED) != 0;
+  }
+  int taskBlockInflightForTest() const {
+    return _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
+  }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).
