@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-20 13:41:32 EST
+**Date:** 2026-11-20 13:47:33 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 42 |
-| CPU Cores (end) | 57 |
+| CPU Cores (start) | 50 |
+| CPU Cores (end) | 41 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 379 |
-| Sample Rate | 6.32/sec |
-| Health Score | 395% |
-| Threads | 9 |
+| CPU Samples | 408 |
+| Sample Rate | 6.80/sec |
+| Health Score | 425% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (4 unique values: 42-59 cores)</summary>
+<summary>CPU Timeline (2 unique values: 41-50 cores)</summary>
 
 ```
-1795199765 42
-1795199770 42
-1795199775 42
-1795199780 59
-1795199785 59
-1795199790 59
-1795199795 59
-1795199800 59
-1795199805 59
-1795199810 59
-1795199815 59
-1795199820 59
-1795199825 59
-1795199830 57
-1795199835 57
-1795199840 57
-1795199845 55
-1795199850 55
-1795199855 55
-1795199860 55
+1795200175 50
+1795200180 50
+1795200185 50
+1795200190 50
+1795200195 50
+1795200200 50
+1795200205 50
+1795200210 50
+1795200215 50
+1795200220 50
+1795200225 50
+1795200230 50
+1795200235 50
+1795200240 50
+1795200245 50
+1795200250 50
+1795200255 50
+1795200260 50
+1795200265 50
+1795200270 41
 ```
 </details>
 
