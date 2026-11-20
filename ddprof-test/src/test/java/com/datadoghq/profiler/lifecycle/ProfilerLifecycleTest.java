@@ -84,7 +84,7 @@ public class ProfilerLifecycleTest {
    * {@code native_symbols} and {@code thread_local} are not listed: they legitimately grow as
    * libraries are loaded and threads are created.
    */
-  private static final String[] NO_GROWTH_WHEN_IDLE = {"thread_filter"};
+  private static final String[] NO_GROWTH_WHEN_IDLE = {"thread_filter", "wall_block_tracker"};
 
   /** Slack for small, legitimate fluctuations (e.g. a trace recorded during teardown). */
   private static final long GROWTH_TOLERANCE_BYTES = 64 * 1024;

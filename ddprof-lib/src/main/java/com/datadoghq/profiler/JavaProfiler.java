@@ -84,9 +84,13 @@ public final class JavaProfiler {
    * default temp directory as the scratch where the bundled library will be exploded before
    * linking.
    *
-   * <p>This overload expresses no preference about monitor-event ownership: when the process-wide
-   * instance already exists it is returned unchanged, whatever its {@code
-   * delegateMonitorWaitEvents} setting is.
+   * <p>When this class loader already holds the instance, it is returned unchanged whatever its
+   * monitor-event ownership is. Otherwise this initializes with {@code Object.wait} delegation
+   * disabled, which fails if the native profiler was already initialized with delegation enabled
+   * (for example by another class loader).
+   *
+   * @throws IOException if the native library cannot be loaded
+   * @throws IllegalStateException if the native profiler was initialized with delegation enabled
    */
   public static JavaProfiler getInstance() throws IOException {
     return getInstance(null, null);
@@ -96,10 +100,14 @@ public final class JavaProfiler {
    * Get a {@linkplain JavaProfiler} instance backed by the bundled native library and using the
    * given directory as the scratch where the bundled library will be exploded before linking.
    *
+   * <p>When this class loader already holds the instance, it is returned unchanged whatever its
+   * monitor-event ownership is. Otherwise this initializes with {@code Object.wait} delegation
+   * disabled, which fails if the native profiler was already initialized with delegation enabled
+   * (for example by another class loader).
+   *
    * @param scratchDir directory where the bundled library will be exploded before linking
-   *     <p>This overload expresses no preference about monitor-event ownership: when the
-   *     process-wide instance already exists it is returned unchanged, whatever its {@code
-   *     delegateMonitorWaitEvents} setting is.
+   * @throws IOException if the native library cannot be loaded
+   * @throws IllegalStateException if the native profiler was initialized with delegation enabled
    */
   public static JavaProfiler getInstance(String scratchDir) throws IOException {
     return getInstance(null, scratchDir);
@@ -109,13 +117,16 @@ public final class JavaProfiler {
    * Get a {@linkplain JavaProfiler} instance backed by the given native library and using the given
    * directory as the scratch where the bundled library will be exploded before linking.
    *
+   * <p>When this class loader already holds the instance, it is returned unchanged whatever its
+   * monitor-event ownership is. Otherwise this initializes with {@code Object.wait} delegation
+   * disabled, which fails if the native profiler was already initialized with delegation enabled
+   * (for example by another class loader).
+   *
    * @param libLocation the path to the native library to be used instead of the bundled one
    * @param scratchDir directory where the bundled library will be exploded before linking; ignored
    *     when 'libLocation' is {@literal null}
-   *     <p>This overload expresses no preference about monitor-event ownership: when the
-   *     process-wide instance already exists it is returned unchanged, whatever its {@code
-   *     delegateMonitorWaitEvents} setting is. Only the explicit three-argument overload enforces
-   *     the ownership-conflict check.
+   * @throws IOException if the native library cannot be loaded
+   * @throws IllegalStateException if the native profiler was initialized with delegation enabled
    */
   public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir)
       throws IOException {
@@ -578,6 +589,11 @@ public final class JavaProfiler {
     return taskBlockSupportedForTest0(Thread.currentThread());
   }
 
+  /** Test-only probe of the native platform-thread classification of the calling thread. */
+  boolean platformThreadForTest() {
+    return platformThreadForTest0(Thread.currentThread());
+  }
+
   /**
    * Test-only hook exercising {@link #beginTaskBlock0} with an explicit {@code thread}, to cover
    * the rejection path when it does not identify the calling thread.
@@ -700,6 +716,8 @@ public final class JavaProfiler {
       boolean isVirtual, long token, long blocker, long unblockingSpanId);
 
   private static native boolean taskBlockSupportedForTest0(Thread thread);
+
+  private static native boolean platformThreadForTest0(Thread thread);
 
   private static native long beginTaskBlock0(Thread thread);
 

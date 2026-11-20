@@ -207,6 +207,19 @@ TEST_F(ThreadLocalDataPoolTest, reclaimedSlotCanBeginTaskBlockAfterAbandonedInte
 // can't hide behind a getter that happens to read as "clean" anyway.
 // Uses forTid() directly rather than going through the pool -- unclaimAndReset()
 // doesn't care how the instance was created.
+template <typename Slot>
+static void expectSameBlockSlot(const Slot& actual, const Slot& expected) {
+    EXPECT_EQ(expected.start_ticks, actual.start_ticks);
+    EXPECT_EQ(expected.blocker, actual.blocker);
+    EXPECT_EQ(expected.block_token, actual.block_token);
+    EXPECT_EQ(expected.block_state, actual.block_state);
+    EXPECT_EQ(expected.context.spanId, actual.context.spanId);
+    EXPECT_EQ(expected.context.rootSpanId, actual.context.rootSpanId);
+    for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
+        EXPECT_EQ(expected.context.getTag(i), actual.context.getTag(i));
+    }
+}
+
 TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     ProfiledThread* dirty = ProfiledThread::forTid(123);
     // unclaimAndReset() always zeroes _tid, so the fresh reference instance
@@ -226,14 +239,16 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     dirty->recordCallTraceId(0x5000);
     dirty->noteCPUSample(9);
     dirty->setJavaThread(true);
-    ASSERT_TRUE(dirty->parkEnter());
-    dirty->setParkBlockToken(0x1234);
     Context task_block_context{};
     task_block_context.spanId = 0x6000;
     task_block_context.rootSpanId = 0x7000;
     for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
         task_block_context.setTag(i, 0x100 + i);
     }
+    ASSERT_TRUE(dirty->parkEnter(0x7100, task_block_context));
+    dirty->setParkBlockToken(0x1234);
+    ASSERT_TRUE(dirty->monitorEnter(0x7200, task_block_context, 0x7300, OSThreadState::OBJECT_WAIT));
+    dirty->setMonitorBlockToken(0x7400);
     ASSERT_TRUE(dirty->taskBlockEnter(0x8000, 0x9000, task_block_context));
     dirty->setFilterSlotId(42);
     ASSERT_TRUE(dirty->enterLogicalContextWindow());
@@ -274,7 +289,8 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     EXPECT_EQ(reset_snapshot.call_trace_id, fresh_snapshot.call_trace_id);
     EXPECT_EQ(reset_snapshot.recording_epoch, fresh_snapshot.recording_epoch);
     EXPECT_EQ(reset_snapshot.misc_flags, fresh_snapshot.misc_flags);
-    EXPECT_EQ(reset_snapshot.park_block_token, fresh_snapshot.park_block_token);
+    expectSameBlockSlot(reset_snapshot.park_slot, fresh_snapshot.park_slot);
+    expectSameBlockSlot(reset_snapshot.monitor_slot, fresh_snapshot.monitor_slot);
     EXPECT_EQ(reset_snapshot.task_block_start_ticks, fresh_snapshot.task_block_start_ticks);
     EXPECT_EQ(reset_snapshot.task_block_token, fresh_snapshot.task_block_token);
     EXPECT_EQ(reset_snapshot.block_recording_epoch, fresh_snapshot.block_recording_epoch);

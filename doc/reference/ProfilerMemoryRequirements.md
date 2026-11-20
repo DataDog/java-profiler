@@ -280,9 +280,9 @@ Retained unowned wall contexts use separate lazy tracker backing:
 | Backing | Accounted bytes | Lifetime |
 |---------|-----------------|----------|
 | `SlotStorage` | `2048 × 64 + 32 × 8 = 131,328` | First cold registration to tracker destruction |
-| Context chunks | `C × 256 × 128 = C × 32,768`, with `0 ≤ C ≤ 8` | Cold registration in the enabled retention mode to tracker destruction |
+| Context chunks | `C × 256 × 128 = C × 32,768`, with `0 ≤ C ≤ 8` | Cold registration, or a context-filtered start for chunks with live owners, in the enabled retention mode to tracker destruction |
 
-These allocations are charged to `NM_WALLCLOCK`. Recording resets retain backing;
+These allocations are charged to `NM_WALL_BLOCK_TRACKER`. Recording resets retain backing;
 disabled retention does not allocate context chunks. Existing backing is released
 at tracker destruction. The eight chunk pointers, mode flag, storage pointer and
 ABI padding belong to the tracker object, not the chunk payload. Unit-test hooks
@@ -328,10 +328,10 @@ recording), and the CPU timer table (`ctimer`; `pid_max × 4` bytes, 16 MiB at a
 since it was patched (see [Stopping](../architecture/NativeMemoryProfiling.md#stopping)).
 What stays: the context-value dictionary (so the `dictionary` gauge stays non-zero),
 per-thread state (`thread_local`), parsed native symbols (`native_symbols`), the thread
-filter and the wall-clock block-tracker backing (`wallclock`, once a thread-registry
-registration allocated it), the native I/O FD-type caches (section 10), the persistent
-`pthread_create`/`sigaction` GOT hooks, and `PerfEvents`'
-per-thread events. `ProfilerLifecycleTest` uses no thread filter, so no tracker backing exists, and asserts that `calltrace`, `jfr_buffers`, `wallclock`,
+filter, the wall-clock block tracker's slots and retained-context chunks
+(`wall_block_tracker`, once a thread-registry registration allocated them), the native I/O
+FD-type caches (section 10), the persistent `pthread_create`/`sigaction` GOT hooks, and
+`PerfEvents`' per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
 `line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
 counters, read 0 after every `stop()`. A stop whose JFR output failed is the exception:
 the retained recording keeps its buffers and this recording-scoped memory, and the
@@ -748,7 +748,7 @@ Paths are relative to `ddprof-lib/src/main/cpp/`.
 - `threadLocalData.h` - Embedded OTEL record, tag/root fields and private membership
 - `threadLocalDataPool.cpp` - Reserved owner backing and `NM_THREAD_LOCAL` accounting
 - `context.h` - Aligned normalized snapshot with ten tag encodings
-- `wallClockBlockTracker.{h,cpp}` - Lazy backing and `NM_WALLCLOCK` accounting
+- `wallClockBlockTracker.{h,cpp}` - Lazy backing and `NM_WALL_BLOCK_TRACKER` accounting
 - Context strings are stored in `_context_value_map`
 
 **10. Native I/O FD-type caches:**

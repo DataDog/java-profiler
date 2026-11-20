@@ -53,6 +53,7 @@
   X(METHOD_MAP, "method_map")                                                  \
   X(LIVENESS, "liveness")                                                      \
   X(WALLCLOCK, "wallclock")                                                    \
+  X(WALL_BLOCK_TRACKER, "wall_block_tracker")                                  \
   X(CTIMER, "ctimer")                                                          \
   X(MISC, "misc")
 

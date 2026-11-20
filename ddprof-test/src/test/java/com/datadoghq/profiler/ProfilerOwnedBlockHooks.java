@@ -35,6 +35,11 @@ public final class ProfilerOwnedBlockHooks {
     return profiler.taskBlockSupportedForTest();
   }
 
+  /** Returns the native platform-thread classification of the calling thread. */
+  public static boolean platformThread(JavaProfiler profiler) {
+    return profiler.platformThreadForTest();
+  }
+
   /** Completes the calling thread's block with controlled timestamps in debug native builds. */
   public static boolean endTaskBlockAtTicks(
       long token, long startTicks, long endTicks, long blocker, long unblockingSpanId) {

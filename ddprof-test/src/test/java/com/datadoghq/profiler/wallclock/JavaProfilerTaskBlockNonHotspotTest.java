@@ -6,10 +6,10 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -20,18 +20,13 @@ public class JavaProfilerTaskBlockNonHotspotTest extends AbstractProfilerTest {
   /** A platform thread must not arm an interval when classification is not trusted. */
   @Test
   public void platformThreadCannotArmTaskBlock() {
-    // Positive control: blockEnter() does not check platform-thread classification. With an
-    // empty filter, it arms a run only when unfiltered wall tracking is active (which also enables
-    // TaskBlock recording) and this thread has a registry slot. A non-zero token therefore shows
-    // that beginTaskBlock() can return 0 below only because classification is not trusted.
-    long control =
-        ProfilerOwnedBlockHooks.blockEnter(profiler, TaskBlockAssertions.OSTHREAD_STATE_SLEEPING);
-    Assumptions.assumeTrue(
-        control != 0,
-        "the wall engine on this JVM does not enable TaskBlock tracking for this thread");
-    ProfilerOwnedBlockHooks.blockExit(profiler, control);
-
-    assertEquals(0L, profiler.beginTaskBlock());
+    // The JUnit thread is a platform thread, so false is the fail-closed classification.
+    assertFalse(ProfilerOwnedBlockHooks.platformThread(profiler));
+    long token = profiler.beginTaskBlock();
+    assertEquals(0L, token);
+    assertFalse(profiler.endTaskBlock(token, 1L, 0L));
+    stopProfiler();
+    assertEquals(0L, verifyEvents("datadog.TaskBlock", false).count());
   }
 
   @Override

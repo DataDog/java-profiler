@@ -1690,7 +1690,7 @@ TEST(ThreadOwnerRegistryTest, ContextEnterWhileInactiveRetainsLogicalSourceWitho
     registry.setBlockTracker(&tracker);
     auto owner = registryOwner(6201);
     const auto registry_bytes = NativeMem::live(NM_THREAD_FILTER);
-    const auto wall_bytes = NativeMem::live(NM_WALLCLOCK);
+    const auto wall_bytes = NativeMem::live(NM_WALL_BLOCK_TRACKER);
     ASSERT_FALSE(registry.registryActive());
     ASSERT_EQ(nullptr, tracker.slotForId(0));
     registry.onContextWindowEnter(*owner);
@@ -1699,7 +1699,7 @@ TEST(ThreadOwnerRegistryTest, ContextEnterWhileInactiveRetainsLogicalSourceWitho
     EXPECT_EQ(nullptr, registry.lookupByTid(owner->tid()));
     EXPECT_EQ(nullptr, tracker.slotForId(0));
     EXPECT_EQ(registry_bytes, NativeMem::live(NM_THREAD_FILTER));
-    EXPECT_EQ(wall_bytes, NativeMem::live(NM_WALLCLOCK));
+    EXPECT_EQ(wall_bytes, NativeMem::live(NM_WALL_BLOCK_TRACKER));
     registry.init("", true);
     int id = registry.ensureOwnerSlot(*owner);
     ASSERT_GE(id, 0);
@@ -1833,6 +1833,27 @@ TEST_F(ThreadRegistryTest, OwnerReuseStartsOutsideWindow) {
     ASSERT_NE(0u, run.token());
     EXPECT_FALSE(tracker.exitBlockedRun(WallClockBlockTracker::tokenSlotId(old_run.token()),
                                         WallClockBlockTracker::tokenGeneration(old_run.token())));
+    EXPECT_EQ(OSThreadState::SLEEPING, tracker.slotForId(id)->activeBlockState());
+}
+
+TEST_F(ThreadRegistryTest, StaleOwnerExitLeavesReassignedSlotUntouched) {
+    auto first = registryOwner(6212);
+    auto second = registryOwner(6213);
+    registry.onContextWindowEnter(*first);
+    const int old_id = first->filterSlotId();
+    ASSERT_GE(old_id, 0);
+    registry.unregisterThread(old_id, first->tid());
+    ASSERT_EQ(old_id, first->filterSlotId()) << "Retirement must leave the owner's stale projection";
+    const int id = registry.ensureOwnerSlot(*second);
+    ASSERT_EQ(old_id, id) << "The retired slot must be reassigned to the second owner";
+    auto* slot = registry.slotForId(id);
+    ASSERT_EQ(second->tid(), slot->nativeTid());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, run.token());
+    const u64 window_state = slot->rawContextWindowState();
+    registry.onContextWindowExit(*first);
+    EXPECT_EQ(4u, first->logicalContextWindowState());
+    EXPECT_EQ(window_state, slot->rawContextWindowState());
     EXPECT_EQ(OSThreadState::SLEEPING, tracker.slotForId(id)->activeBlockState());
 }
 

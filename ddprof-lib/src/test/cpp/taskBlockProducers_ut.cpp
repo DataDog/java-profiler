@@ -38,6 +38,22 @@ public:
         VM::_hotspot = hotspot;
         return previous;
     }
+    static bool exchangeWaitDelegation(bool delegated) {
+        bool previous = VM::_monitor_wait_events_delegated.value();
+        VM::_monitor_wait_events_delegated.set(delegated);
+        return previous;
+    }
+};
+
+class WaitDelegationOverride {
+public:
+    explicit WaitDelegationOverride(bool delegated)
+        : _saved(VMTestAccessor::exchangeWaitDelegation(delegated)) {}
+    ~WaitDelegationOverride() { VMTestAccessor::exchangeWaitDelegation(_saved); }
+    WaitDelegationOverride(const WaitDelegationOverride&) = delete;
+    WaitDelegationOverride& operator=(const WaitDelegationOverride&) = delete;
+private:
+    bool _saved;
 };
 
 class HotspotOverride {
@@ -300,8 +316,7 @@ TEST_F(TaskBlockProducersTest, MonitorCallbacksAttachProfiledThreadBeforeJni) {
         << "entry must attach the ProfiledThread before any JNI call";
 }
 
-class MonitorTaskBlockHashTest : public TaskBlockProducersTest,
-                                 public ::testing::WithParamInterface<bool> {
+class MonitorTaskBlockRecordTest : public TaskBlockProducersTest {
 protected:
     inline static int hash_calls;
     inline static jobject hashed_object;
@@ -337,7 +352,59 @@ protected:
         TaskBlockProducersTest::TearDown();
         Counters::reset();
     }
+};
 
+// A contended re-entry after Object.wait() returns belongs to the wait interval.
+TEST_F(MonitorTaskBlockRecordTest, NestedContentionKeepsObjectWaitInterval) {
+    u64 min_ticks = TSC::frequency() / 1000;
+    ASSERT_GT(min_ticks, 1u);
+    constexpr u64 start_ticks = 100;
+    setMonitorTaskBlockTicksForTest(start_ticks);
+    MonitorWait(&jvmti, &jni, testThread(), &monitor, 100);
+    u64 token = current->monitorBlockToken();
+    ASSERT_NE(0u, token);
+
+    MonitorContendedEnter(&jvmti, &jni, testThread(), &monitor);
+    EXPECT_EQ(token, current->monitorBlockToken()) << "the live wait owner must be retained";
+    EXPECT_EQ(OSThreadState::OBJECT_WAIT, block()->activeBlockState());
+    setMonitorTaskBlockTicksForTest(start_ticks + min_ticks);
+    MonitorContendedEntered(&jvmti, &jni, testThread(), &monitor);
+    EXPECT_EQ(token, current->monitorBlockToken()) << "the nested exit must not end the wait";
+    EXPECT_EQ(0, record_calls);
+
+    MonitorWaited(&jvmti, &jni, testThread(), &monitor, JNI_FALSE);
+    EXPECT_EQ(1, record_calls);
+    EXPECT_EQ(OSThreadState::OBJECT_WAIT, recorded_event._observedBlockingState);
+    EXPECT_EQ(start_ticks, recorded_event._start);
+    EXPECT_EQ(0u, current->monitorBlockToken());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+}
+
+// With Object.wait delegated to Java, the native wait callbacks own nothing.
+TEST_F(MonitorTaskBlockRecordTest, DelegatedWaitCallbacksAreNoOps) {
+    {
+        WaitDelegationOverride delegated(true);
+        MonitorWait(&jvmti, &jni, testThread(), &monitor, 100);
+        EXPECT_EQ(0u, current->monitorBlockToken());
+        EXPECT_EQ(-1, current->filterSlotId()) << "a delegated wait must not reserve a slot";
+    }
+    // Positive control: without delegation the same wait arms, and a delegated
+    // MonitorWaited leaves that native-owned interval for its own exit.
+    MonitorWait(&jvmti, &jni, testThread(), &monitor, 100);
+    u64 token = current->monitorBlockToken();
+    ASSERT_NE(0u, token);
+    {
+        WaitDelegationOverride delegated(true);
+        MonitorWaited(&jvmti, &jni, testThread(), &monitor, JNI_FALSE);
+        EXPECT_EQ(token, current->monitorBlockToken());
+    }
+    MonitorWaited(&jvmti, &jni, testThread(), &monitor, JNI_FALSE);
+    EXPECT_EQ(0u, current->monitorBlockToken());
+}
+
+class MonitorTaskBlockHashTest : public MonitorTaskBlockRecordTest,
+                                 public ::testing::WithParamInterface<bool> {
+protected:
     void enterMonitor() {
         if (GetParam()) {
             MonitorWait(&jvmti, &jni, testThread(), &monitor, 100);
@@ -405,7 +472,7 @@ TEST_F(TaskBlockProducersTest, ParkLifecycleDoesNotRequireRegistryAdmission) {
     EXPECT_EQ(JNI_TRUE, Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
         &jni, nullptr, testThread(), JNI_FALSE));
     EXPECT_EQ(-1, current->filterSlotId());
-    EXPECT_EQ(0u, current->snapshotForTest().park_block_token);
+    EXPECT_EQ(0u, current->snapshotForTest().park_slot.block_token);
     EXPECT_EQ(JNI_FALSE, Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
         &jni, nullptr, testThread(), JNI_FALSE));
     Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
@@ -416,28 +483,116 @@ TEST_F(TaskBlockProducersTest, ParkLifecycleDoesNotRequireRegistryAdmission) {
         &jni, nullptr, testThread(), JNI_FALSE, 0, 0);
 }
 
-TEST_F(TaskBlockProducersTest, RotationDefersOwnershipWithoutDiscardingUnownedTail) {
-    int slot_id = registry->ensureOwnerSlot(*current);
-    ASSERT_GE(slot_id, 0);
-    block()->recordUnownedBlockedSample(0x1234, OSThreadState::SLEEPING);
-    ASSERT_TRUE(block()->shouldRecordUnownedBlockedSample());
-    ASSERT_FALSE(block()->shouldRecordUnownedBlockedSample());
+// Captures producer-side tail flushes; a false result models a failed JFR write.
+struct TailFlushCapture {
+    static inline int writes;
+    static inline u64 trace;
+    static inline u64 weight;
+    static inline bool accept;
+
+    explicit TailFlushCapture(Profiler* profiler, bool accept_writes) : _profiler(profiler) {
+        writes = 0;
+        trace = 0;
+        weight = 0;
+        accept = accept_writes;
+        profiler->sampleWriteHookForTest = [](u32, u64 id, Event* event, const Context*, void*) {
+            ++writes;
+            trace = id;
+            weight = static_cast<ExecutionEvent*>(event)->_weight;
+            return accept;
+        };
+    }
+    ~TailFlushCapture() { _profiler->sampleWriteHookForTest = nullptr; }
+    TailFlushCapture(const TailFlushCapture&) = delete;
+    TailFlushCapture& operator=(const TailFlushCapture&) = delete;
+
+private:
+    Profiler* _profiler;
+};
+
+class OwnedBlockAdmissionTest : public TaskBlockProducersTest {
+protected:
+    static constexpr u64 kOrigin = 0x1234;
+    int slot_id = -1;
+
+    void SetUp() override {
+        TaskBlockProducersTest::SetUp();
+        tracker->setUnownedContextSnapshotsNeeded(true);
+        slot_id = registry->ensureOwnerSlot(*current);
+        ASSERT_GE(slot_id, 0);
+        // The writer replays the published context once per deferred epoch segment.
+        ASSERT_TRUE(tracker->publishUnownedTrace(slot_id, kOrigin, OSThreadState::SLEEPING, Context{}));
+        ASSERT_TRUE(tracker->deferUnownedWeight(slot_id, TSC::ticks()));
+        ASSERT_EQ(1u, pendingWeight());
+    }
+
+    void TearDown() override {
+        block()->resetUnownedBlockedSampling();
+        tracker->setUnownedContextSnapshotsNeeded(false);
+        TaskBlockProducersTest::TearDown();
+    }
+
+    u64 pendingWeight() {
+        return block()->unowned_blocked_pending_weight.load(std::memory_order_acquire);
+    }
+
+    void expectTailRetained() {
+        EXPECT_EQ(1u, pendingWeight());
+        EXPECT_EQ(kOrigin, block()->unowned_blocked_call_trace_id.load(std::memory_order_acquire));
+        EXPECT_TRUE(block()->unownedBlockedFallbackEnabled());
+        EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+    }
+};
+
+TEST_F(OwnedBlockAdmissionTest, FlushesPendingTailThenOwnsRunWithFallbackPaused) {
+    TailFlushCapture capture(profiler, true);
+    u64 token = enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT);
+    ASSERT_NE(0u, token);
+    EXPECT_EQ(1, TailFlushCapture::writes);
+    EXPECT_EQ(kOrigin, TailFlushCapture::trace);
+    EXPECT_EQ(1u, TailFlushCapture::weight);
+    EXPECT_EQ(0u, pendingWeight());
+    EXPECT_FALSE(block()->unownedBlockedFallbackEnabled()) << "an owned run pauses the fallback";
+    EXPECT_EQ(BlockRunOwner::JAVA, block()->activeBlockOwner());
+    u64 generation = 0;
+    ASSERT_TRUE(WallClockBlockTracker::decodeBlockRunToken(token, slot_id, generation));
+    tracker->exitBlockedRun(slot_id, generation);
+}
+
+TEST_F(OwnedBlockAdmissionTest, FailedTailFlushRejectsAdmissionAndRetainsTail) {
+    TailFlushCapture capture(profiler, false);
+    EXPECT_EQ(0u, enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT));
+    EXPECT_EQ(1, TailFlushCapture::writes);
+    expectTailRetained();
+}
+
+TEST_F(OwnedBlockAdmissionTest, RotationDefersOwnershipWithoutDiscardingUnownedTail) {
+    TailFlushCapture capture(profiler, true);
+    long long dropped = Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION);
     profiler->beginTaskBlockRotationForTest();
     u64 token = enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT);
     profiler->endTaskBlockRotationForTest();
 
     EXPECT_EQ(0u, token);
-    EXPECT_EQ(1u, block()->unowned_blocked_pending_weight.load(std::memory_order_acquire));
-    EXPECT_EQ(0x1234u, block()->unowned_blocked_call_trace_id.load(std::memory_order_acquire));
-    EXPECT_TRUE(block()->unownedBlockedFallbackEnabled());
-    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+    EXPECT_EQ(dropped + 1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+    EXPECT_EQ(0, TailFlushCapture::writes);
+    expectTailRetained();
+    // Positive control: the same admission succeeds once rotation ends.
+    token = enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT);
+    ASSERT_NE(0u, token);
+    EXPECT_EQ(1, TailFlushCapture::writes);
+    u64 generation = 0;
+    ASSERT_TRUE(WallClockBlockTracker::decodeBlockRunToken(token, slot_id, generation));
+    tracker->exitBlockedRun(slot_id, generation);
 }
 
-TEST_F(TaskBlockProducersTest, RejectedContextAdmissionRestoresUnownedFallback) {
-    int slot_id = registry->ensureOwnerSlot(*current);
-    ASSERT_GE(slot_id, 0);
+TEST_F(OwnedBlockAdmissionTest, RejectedContextAdmissionRestoresUnownedFallback) {
+    TailFlushCapture capture(profiler, true);
     ASSERT_TRUE(registry->add(current->tid(), slot_id));
     EXPECT_EQ(0u, enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT));
+    EXPECT_EQ(1, TailFlushCapture::writes) << "admission must flush before the context check";
+    EXPECT_EQ(0u, pendingWeight());
     EXPECT_TRUE(block()->unownedBlockedFallbackEnabled());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
     registry->remove(slot_id);
 }
