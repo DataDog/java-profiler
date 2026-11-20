@@ -605,6 +605,24 @@ private:
   int _previous;
 };
 
+// Restores test-written slot values on every exit, including a failed assertion.
+class SlotRestorer {
+public:
+  SlotRestorer(const std::vector<void**>& slots, const std::vector<void*>& values)
+      : _slots(slots), _values(values) {}
+  ~SlotRestorer() {
+    for (size_t index = 0; index < _slots.size(); index++) {
+      __atomic_store_n(_slots[index], _values[index], __ATOMIC_RELEASE);
+    }
+  }
+  SlotRestorer(const SlotRestorer&) = delete;
+  SlotRestorer& operator=(const SlotRestorer&) = delete;
+
+private:
+  const std::vector<void**>& _slots;
+  const std::vector<void*>& _values;
+};
+
 // Stands in for the PLT resolver address a lazily bound JUMP_SLOT holds; never called.
 int lazyBindingStub() { return -1; }
 
@@ -612,6 +630,11 @@ int lazyBindingStub() { return -1; }
 class NettyEpollImageSkipTest : public NettyEpollDiscoveryTest {
 protected:
   void SetUp() override {
+    // An earlier case must not leak an injected failure or an installation.
+    ASSERT_EQ(nullptr, LibraryPatcher::exchangeSocketImportFailureForTest(nullptr));
+    ASSERT_EQ(nullptr, LibraryPatcher::exchangeSocketImageFailureForTest(nullptr));
+    ASSERT_EQ(-1, LibraryPatcher::exchangeSocketMissingOriginalForTest(-1));
+    ASSERT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
     NettyEpollDiscoveryTest::SetUp();
     ASSERT_FALSE(HasFatalFailure());
     char path[PATH_MAX];
@@ -622,6 +645,10 @@ protected:
     expected_libraries = existing_libraries + (retained == nullptr ? 1 : 0);
     jdk_handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     ASSERT_NE(nullptr, jdk_handle) << dlerror();
+    // A reload of this parsed inode at another base gets no cache, so one process-lifetime
+    // reference keeps libnet at its first base for every later case.
+    static void* const process_libnet = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    ASSERT_NE(nullptr, process_libnet) << dlerror();
     Dl_info info;
     ASSERT_NE(0, dladdr(dlsym(jdk_handle, "jdk_fixture_read"), &info));
     Libraries::instance()->updateSymbols(false);
@@ -778,6 +805,7 @@ TEST_P(NettyEpollImageSkipTest, MissingEpollPwait2OriginalLeavesLazySlotUntouche
   ASSERT_TRUE(netty->prepareImportsForPatch());
   void* lazy_stub = reinterpret_cast<void*>(lazyBindingStub);
   for (void** location : slots) __atomic_store_n(location, lazy_stub, __ATOMIC_RELEASE);
+  SlotRestorer restore_slots(slots, originals);
   {
     MissingEpollPwait2Original missing;
     EXPECT_TRUE(LibraryPatcher::patch_socket_functions());
@@ -796,9 +824,8 @@ TEST_P(NettyEpollImageSkipTest, MissingEpollPwait2OriginalLeavesLazySlotUntouche
   }
   LibraryPatcher::unpatch_socket_functions();
   EXPECT_EQ(netty_original, __atomic_load_n(netty_slot, __ATOMIC_ACQUIRE));
-  for (size_t index = 0; index < count; index++) {
-    EXPECT_EQ(lazy_stub, __atomic_load_n(slots[index], __ATOMIC_ACQUIRE));
-    __atomic_store_n(slots[index], originals[index], __ATOMIC_RELEASE);
+  for (void** location : slots) {
+    EXPECT_EQ(lazy_stub, __atomic_load_n(location, __ATOMIC_ACQUIRE));
   }
 }
 
