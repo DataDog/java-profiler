@@ -53,6 +53,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 ### Design
 
 - [BitsReviewMergeGateDesign](BitsReviewMergeGateDesign.md) - Bits PASS merge gate: policy, implementation, trusted status publisher, and enforcement proposal pending separate approval
+- [BitsReviewRedReviewRunbook](BitsReviewRedReviewRunbook.md) - Developer procedure for a red Bits review: what clears FAIL, what does not, and how to get a fresh review
 - [NativeMemoryProfilerExclusionDesign](NativeMemoryProfilerExclusionDesign.md) - Admission check design for conflicting native-memory profilers: decision, rationale and lifecycle limits
 - [ReferenceChainsCollectionSummary](ReferenceChainsCollectionSummary.md) - Short reference-chain overview and limits
 - [ReferenceChainsDesign](ReferenceChainsDesign.md) - Reference-chain design decision and trade-offs
