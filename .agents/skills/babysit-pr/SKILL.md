@@ -150,14 +150,15 @@ heads.
    three REST reads: `$GH api --paginate repos/datadog/java-profiler/issues/<n>/comments?per_page=100`
    for top-level comments, `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/reviews?per_page=100`
    for review bodies, and
-   `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` for the census
+   `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments?per_page=100` for the census
    (step 1b). If the PR state is not `open` (REST state values are lowercase), run the
    stop report and cleanup immediately, acting on no checks or findings — the PR may
    have been closed or merged between polls. Recheck the state is `open` immediately
    before each push.
    A poll that finds nothing stays cheap: no log fetching, no deep analysis — and
    while the previous poll found nothing new (CI pending or green on an unchanged
-   head, no new comments, no open work), the next poll waits 20 minutes instead of
+   head, no new comment or review on any of those surfaces, no open work), the next
+   poll waits 20 minutes instead of
    10; any red check, new comment or head moved by someone else resets the
    interval to 10.
 1b. **Thread census (deterministic, every poll).** From the paginated
