@@ -57,22 +57,15 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch, jint tid,
     return;
   }
 
-  int victim = 0;
-  for (int i = 1; i < scratch.thread_count; i++) {
-    const auto &candidate = scratch.threads[i];
-    const auto &current = scratch.threads[victim];
-    if (candidate.count < current.count ||
-        (candidate.count == current.count &&
-         candidate.age_count < current.age_count)) {
-      victim = i;
-    }
-  }
-  if (scratch.threads[victim].count < TID_RETAINED_COUNT_BAR) {
-    initialize(scratch.threads[victim]);
-    return;
-  }
-
-  // Qualified incumbents stay intact while challengers accumulate a full-epoch count.
+  // With the incumbent table full, a newcomer ALWAYS accumulates in the challenger pool - even
+  // when a sub-bar (count < TID_RETAINED_COUNT_BAR) incumbent sits in the table. Immediate
+  // sub-bar eviction let two alternating single-sample threads overwrite the same slot every
+  // epoch (each reset to count 1), so a genuinely-present thread could never reach the bar and
+  // qualify. Challenger promotion (promoteThreadGenCandidates()) is the only path back into the
+  // incumbent table, and it requires the challenger to OUTRANK the weakest incumbent - sub-bar
+  // incumbents therefore survive newcomer churn while real threads keep accumulating samples.
+  // A newcomer that lands on a full challenger pool recycles only a count-1 (single-sample)
+  // challenger: bounded pool churn that can never displace an incumbent.
   if (scratch.challenger_count <
       KlassCountScratch::MAX_THREAD_CHALLENGERS_PER_KLASS) {
     initialize(scratch.challengers[scratch.challenger_count++]);
