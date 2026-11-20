@@ -51,11 +51,11 @@ jobs:
         run: |
           if [ -n "$OVERRIDE_SHA" ]; then
             git fetch origin refs/notes/certification:refs/notes/certification 2>/dev/null || \
-              { echo "::error::No certification notes exist and an override SHA was requested"; exit 1; }
+              { echo "::error::No certification notes exist and an override SHA was requested" >&2; exit 1; }
             git rev-parse --verify --quiet "$OVERRIDE_SHA^{commit}" >/dev/null || \
-              { echo "::error::Override SHA $OVERRIDE_SHA is not a commit"; exit 1; }
+              { echo "::error::Override SHA $OVERRIDE_SHA is not a commit" >&2; exit 1; }
             if ! git notes --ref=certification list 2>/dev/null | awk '{print $2}' | grep -qx "$(git rev-parse "$OVERRIDE_SHA^{commit}")"; then
-              echo "::error::Override SHA $OVERRIDE_SHA carries no certification note"
+              echo "::error::Override SHA $OVERRIDE_SHA carries no certification note" >&2
               exit 1
             fi
             CANDIDATE=$(git rev-parse "$OVERRIDE_SHA^{commit}")
@@ -66,10 +66,32 @@ jobs:
                 echo "skip-reason=$OUT" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              echo "::error::pick-release-candidate.sh failed: $OUT"
+              echo "::error::pick-release-candidate.sh failed: $OUT" >&2
               exit 1
             fi
             CANDIDATE="$OUT"
+          fi
+
+          # The same release-position rule the scheduled train applies: the
+          # candidate must be newer than the newest mainline release tag, so
+          # an operator override cannot release an older certified commit
+          # after a newer one.
+          LAST_MAINLINE_TAG=$(git tag --list 'v_*' | sed 's/^v_//' | \
+            sort -t. -k1,1n -k2,2n -k3,3n | awk '{a[NR]=$0} END {for (i=NR; i>=1; i--) print a[i]}' | \
+            while read -r t; do
+              c=$(git rev-parse --verify --quiet "v_${t}^{commit}" || true)
+              if [ -n "$c" ] && git merge-base --is-ancestor "$c" origin/main; then echo "v_${t}"; break; fi
+            done)
+          if [ -n "$LAST_MAINLINE_TAG" ]; then
+            TAG_COMMIT=$(git rev-parse "$LAST_MAINLINE_TAG^{commit}")
+            if [ "$TAG_COMMIT" == "$CANDIDATE" ]; then
+              echo "::error::Candidate $CANDIDATE is already released ($LAST_MAINLINE_TAG)" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$TAG_COMMIT" "$CANDIDATE"; then
+              echo "::error::Candidate $CANDIDATE predates the last release $LAST_MAINLINE_TAG" >&2
+              exit 1
+            fi
           fi
 
           # Hard guard against two releases from the same certified commit:
@@ -103,8 +125,11 @@ jobs:
           CANDIDATE: ${{ steps.candidate.outputs.candidate }}
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
+          # The workflow_dispatch API takes a branch/tag ref, not a SHA; the
+          # certified commit is pinned through source_sha, which
+          # release-validated.yml validates and checks out.
           gh workflow run release-validated.yml \
-            --ref "$CANDIDATE" \
+            --ref main \
             -f release_type=minor \
             -f dry_run=$DRY_RUN \
             -f skip_tests=false \
@@ -119,8 +144,8 @@ jobs:
           RUN_ID=""
           for attempt in $(seq 1 60); do
             RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
-              --limit 20 --json databaseId,headSha,displayTitle \
-              --jq "[.[] | select(.headSha == \"$CANDIDATE\" and (.displayTitle | contains(\"release-train-${GITHUB_RUN_ID}]\")))] | last | .databaseId // empty")
+              --limit 20 --json databaseId,displayTitle \
+              --jq "[.[] | select(.displayTitle | contains(\"release-train-${GITHUB_RUN_ID}]\"))] | last | .databaseId // empty")
             [ -n "$RUN_ID" ] && break
             echo "attempt $attempt/60: dispatched run not listed yet, retrying in 15s"
             sleep 15
@@ -185,15 +210,30 @@ jobs:
         if: ${{ !cancelled() && (steps.candidate.outputs.skip-reason != '' || failure()) }}
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SKIP_REASON: ${{ steps.candidate.outputs.skip-reason }}
+          CANDIDATE: ${{ steps.candidate.outputs.candidate }}
+          RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          RELEASE_VERSION: ${{ steps.dispatch.outputs.release_version }}
+          CONCLUSION: ${{ steps.wait.outputs.conclusion }}
         run: |
+          # Compose from explicit outputs: a failure of an earlier step leaves
+          # the run summary incomplete, and the Slack message must still carry
+          # the decision-relevant lines.
           python3 - <<'PY'
           import json, os, urllib.request
           webhook = os.environ.get("SLACK_WEBHOOK", "")
           if not webhook:
               print("SLACK_WEBHOOK not configured, skipping notification")
               raise SystemExit(0)
-          with open(os.environ["GITHUB_STEP_SUMMARY"]) as f:
-              body = f.read()
+          e = os.environ
+          if e.get("SKIP_REASON"):
+              body = "Release train skipped: " + e["SKIP_REASON"]
+          else:
+              body = ("Release train result\n"
+                      + "- Candidate: " + e.get("CANDIDATE", "unknown") + "\n"
+                      + "- Version: " + e.get("RELEASE_VERSION", "unknown") + "\n"
+                      + "- Release run: " + e.get("RUN_URL", "n/a") + "\n"
+                      + "- Conclusion: " + e.get("CONCLUSION", "unknown"))
           payload = {"text": "java-profiler release train\n" + body}
           req = urllib.request.Request(webhook, data=json.dumps(payload).encode(),
                                        headers={"Content-Type": "application/json"})

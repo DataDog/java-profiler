@@ -63,13 +63,14 @@ BASE="${ATLASSIAN_BASE_URL%/}"
 AUTH="$ATLASSIAN_USER_EMAIL:$ATLASSIAN_API_TOKEN"
 API="$BASE/rest/api/3"
 
-# Escaped exact-match JQL for the dedupe lookup; summary text is plain ASCII
-# produced by the callers (no quotes), but escape anyway.
+# Escaped JQL for the dedupe lookup; summary text is plain ASCII produced by
+# the callers (no quotes), but escape anyway. The /search endpoint is retired;
+# /search/jql takes a POST body and may return issues or issueKeys.
 JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\""; "\\\\\"")')
 JQL="project = $PROJECT AND summary ~ \"$JQL_SUMMARY\" AND resolution = Unresolved"
 EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
-  --get --data-urlencode "jql=$JQL" --data 'maxResults=1&fields=key' \
-  "$API/search" | jq -r '.issues[0].key // empty') || {
+  -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
+  "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
   echo "WARNING: dedupe lookup failed; creating a new issue" >&2
   EXISTING_KEY=""
 }
@@ -78,7 +79,7 @@ BODY=$(cat "$BODY_FILE")
 
 if [ -n "$EXISTING_KEY" ]; then
   COMMENT_PAYLOAD=$(jq -n --arg body "$BODY" \
-    '{body: [{type: "paragraph", content: [{type: "text", text: ("Recurring failure. Details:\n\n" + $body)}]}]}')
+    '{body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: ("Recurring failure. Details:\n\n" + $body)}]}]}}')
   curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
     -X POST --data "$COMMENT_PAYLOAD" "$API/issue/$EXISTING_KEY/comment" >/dev/null
   echo "$EXISTING_KEY"

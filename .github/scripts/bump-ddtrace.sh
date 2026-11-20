@@ -53,6 +53,12 @@ if [ "$OLD_VERSION" == "$VERSION" ]; then
   echo "dd-trace-java already pins ddprof ${VERSION}; nothing to do"
   exit 0
 fi
+# Refuse a downgrade: the train only ever bumps forward, and an equality-
+# only guard would silently regress the pin if an older version ever came in.
+if [ "$(printf '%s\n%s\n' "$OLD_VERSION" "$VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" == "$VERSION" ]; then
+  echo "ERROR: refusing to downgrade ddprof from ${OLD_VERSION} to ${VERSION}" >&2
+  exit 1
+fi
 
 git checkout -B "$BRANCH"
 
