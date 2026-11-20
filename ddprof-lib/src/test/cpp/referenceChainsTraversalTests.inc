@@ -1694,10 +1694,13 @@ TEST_F(ReferenceChainsBfsTest, SelectedAnchorWalkOverflowRequeuesAnchorForRetry)
     tracker->stop();
 }
 
-// Journal overflow mid-descent: the partially walked anchor stays unwalked and is re-walked fully
-// later, so its partial descent's edges must come back OUT of the walk budget - keeping them
-// counted would double-charge the anchor's frontier segment against the caller's budget.
-TEST_F(ReferenceChainsBfsTest, AnchorWalkOverflowRollsBackPartialEdges) {
+// Journal overflow mid-descent: the partially walked anchor stays unwalked and is re-walked
+// later, but its partial descent's edges STAY counted - ctx.edges_admitted counts NEW frontier
+// admissions, the accepted prefix stays applied (the scope flush replays it), and the re-walk
+// re-charges only still-unadmitted edges (dedup by positive tag), so the segment is charged
+// exactly once. Rolling the partial edges back out of the budget would let applied-to-frontier
+// work escape the budget (fails-before: the pushed rollback under-counted by the partial edges).
+TEST_F(ReferenceChainsBfsTest, AnchorWalkOverflowKeepsPartialEdgesCounted) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -1740,9 +1743,10 @@ TEST_F(ReferenceChainsBfsTest, AnchorWalkOverflowRollsBackPartialEdges) {
     ASSERT_EQ(1u, unwalked.size());
     EXPECT_EQ(105, unwalked[0]);
     EXPECT_GT(tags_ever_assigned[child], 0)
-        << "the plain child edge never ran - the overflow came too early to exercise the rollback";
-    EXPECT_EQ(0, edges)
-        << "the partial descent's edges must be rolled back out of the walk budget";
+        << "the plain child edge never ran - the overflow came too early to exercise the contract";
+    EXPECT_EQ(1, edges)
+        << "the partial descent's admitted edge must stay counted: it is applied to the frontier "
+           "and the re-walk will not re-charge it";
     FrontierEntry entry{};
     ASSERT_TRUE(frontier->lookup(107, &entry));
     EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
@@ -1759,7 +1763,8 @@ TEST_F(ReferenceChainsBfsTest, AnchorWalkOverflowRollsBackPartialEdges) {
     EXPECT_FALSE(overflow);
     EXPECT_TRUE(unwalked.empty());
     // The retry legitimately charges no NEW edges: the partial walk's child admission survived
-    // (frontier dedup), so only the rejected demotion is left to apply.
+    // (frontier dedup) and was already counted above, so only the rejected demotion is left to
+    // apply - total charge for the anchor's segment stays exact.
     ASSERT_TRUE(frontier->lookup(107, &entry));
     EXPECT_EQ(105, entry.parent_tag) << "the retried descent demotes the holder";
 

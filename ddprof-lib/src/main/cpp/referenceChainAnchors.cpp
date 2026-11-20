@@ -178,7 +178,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
   std::vector<TierPick> fresh_picks;
   std::vector<TierPick> container_picks;
   std::vector<TierPick> other_picks;
-  std::vector<jlong> fresh_kept_tags;
+  // Fresh-pick membership for the fair tiers' dedup: a set, not a vector - the fair tiers probe
+  // it once per scanned pick on the per-pass hot path.
+  std::unordered_set<jlong> fresh_kept_tags;
   std::vector<jlong> fresh_spent_tags;
   selected.reserve(max_picks);
   leak_picks.reserve(max_picks);
@@ -187,6 +189,7 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
   other_picks.reserve(fair_pick_limit);
   fresh_kept_tags.reserve(std::min(fresh_queue_len, max_picks));
   fresh_spent_tags.reserve(fresh_queue_len + max_picks);
+  std::unordered_set<jlong> leak_spent_tags;
   bool container_before_cursor = false;
   bool other_before_cursor = false;
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
@@ -206,6 +209,14 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
       if (entry.leak_tag != 0) {
         if (leak_picks.size() < max_picks) {
           leak_picks.push_back(TierPick{i, tag});
+        } else {
+          // Capped out: a leak-tagged anchor never falls to the fair tiers (only this tier and
+          // the fresh lane can select it, and the fresh lane's filter rejects leak tags), so a
+          // skipped suffix pick must not keep a fresh-lane turn it can never spend on a walk.
+          // Spend the first look here - the leak tier's own cap is the only wait, and once the
+          // head drains the anchor is still leak-tagged and still selectable by this scan.
+          fresh_spent_tags.push_back(tag);
+          leak_spent_tags.insert(tag);
         }
       } else {
         bool is_container = false;
@@ -268,7 +279,7 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
         continue;
       }
       fresh_picks.push_back(TierPick{idx_size, anchor.tag});
-      fresh_kept_tags.push_back(anchor.tag);
+      fresh_kept_tags.insert(anchor.tag);
       if (fresh_picked != nullptr) {
         fresh_picked->push_back(anchor);
       }
@@ -324,13 +335,15 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
   consume_tier_fair(other_picks, other_before_cursor, _anchor_other_cursor,
                     budget_left);
 
-  if (!selected.empty()) {
-    // Selection alone no longer consumes a first look: walked anchors are marked served after
-    // their descent (the caller, post-flush), and unwalked fresh picks are requeued to the queue
-    // front. Only erase selected tags still sitting in the queue (leak- or fair-tier picks):
-    // their look happens this pass via the walk, and leaving them queued would re-serve them next
-    // pass.
+  if (!selected.empty() || !leak_spent_tags.empty()) {
+    // Selection alone no longer consumes a fresh anchor's first look: walked anchors are marked
+    // served after their descent (the caller, post-flush), and unwalked fresh picks are requeued
+    // to the queue front. Erase the tags whose look IS spent this pass and that must not sit in
+    // the queue: selected tags (leak- or fair-tier picks - their look happens via the walk, and
+    // leaving them queued would re-serve them next pass) and the cap-skipped leak suffix (spent
+    // in the scan above).
     std::unordered_set<jlong> served(selected.begin(), selected.end());
+    served.insert(leak_spent_tags.begin(), leak_spent_tags.end());
     _static_anchor_fresh_queue.erase(
         std::remove_if(_static_anchor_fresh_queue.begin(),
                        _static_anchor_fresh_queue.end(),
@@ -340,8 +353,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
         _static_anchor_fresh_queue.end());
   }
   // First looks spent WITHOUT a walk: entries the fresh-lane filters rejected (dead, leak-tier,
-  // non-container) and the overflow-drained remainder. These never descend this pass, so their
-  // look is spent here; walked anchors' looks are spent by the caller after the scope flush.
+  // non-container), the leak-tier cap's skipped suffix, and the no-budget overflow drain. These
+  // never descend this pass, so their look is spent here; walked anchors' looks are spent by the
+  // caller after the scope flush.
   _frontier->markAnchorRotationServed(fresh_spent_tags.data(),
                                       fresh_spent_tags.size());
   return selected;
@@ -380,6 +394,10 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
   }
   // A local holder later attached by a durable root now belongs to the capped durable share;
   // release its slot in the local cap (it stays indexed - the dedup below is a no-op for it).
+  // INVARIANT (_local_anchor_tags ⊆ _static_anchor_index_tags): erasing here keeps the subset
+  // relation evictOldestDurableAnchors()'s durable-share subtraction relies on - the tag stays
+  // in _static_anchor_index_tags, so a local-share tag is always an indexed tag, never the
+  // reverse.
   _local_anchor_tags.erase(tag);
   // The upgrade grows the durable share without a new index push (the dedup in
   // indexAnchorForRotation() returns early), so the durable cap is checked here too. The just
@@ -444,6 +462,10 @@ void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
   bool confirmed_container = false;
   if (shape != _class_shape_cache.end()) {
     if (_local_anchor_tags.size() < LOCAL_ANCHOR_INDEX_CAP) {
+      // INVARIANT (_local_anchor_tags ⊆ _static_anchor_index_tags): every local-share insert is
+      // immediately followed by indexAnchorForRotation(), which inserts the same tag into
+      // _static_anchor_index_tags (dedup no-op if already indexed) - the subset relation
+      // evictOldestDurableAnchors()'s durable-share subtraction relies on.
       _local_anchor_tags.emplace(tag, own_class_tag);
       indexAnchorForRotation(tag, own_class_tag);
       return;
@@ -516,6 +538,9 @@ void ReferenceChainTracker::resolvePendingLocalAnchors() {
       continue; // still full (live containers, or compaction backed off): the cap holds
     }
     _local_anchor_tags.emplace(pending.tag, pending.class_tag);
+    // INVARIANT (_local_anchor_tags ⊆ _static_anchor_index_tags): same contract as
+    // noteLocalRootHolder()'s insert - indexAnchorForRotation() below adds the tag to
+    // _static_anchor_index_tags in the same step.
     indexAnchorForRotation(pending.tag, pending.class_tag);
   }
   // Keep capacity: the buffer refills on every root enumeration.
@@ -1013,11 +1038,15 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
     jni->DeleteLocalRef(objects[i]);
     if (overflow) {
       // The partially walked anchor stays unwalked (its rejected edge was not applied) so the
-      // caller restores it with the remaining resolved tags - and it is re-walked fully later.
-      // Roll the partial descent's edges back out of the budget and do not count the anchor as
-      // walked: keeping the partial edges counted (or the walked count) would double-charge its
-      // frontier segment against the caller's budget.
-      *edges_admitted = edges_before;
+      // caller restores it with the remaining resolved tags. Edge-accounting contract:
+      // ctx.edges_admitted counts NEW frontier admissions only (admitObject() counts a fresh
+      // insert, never an already-admitted tag), and the partial descent's accepted observation
+      // prefix IS replayed by the caller's scope flush - those admissions stay applied to the
+      // frontier. Keeping them counted is what keeps the budget exact: the later re-walk re-
+      // charges only edges that are still unadmitted (dedup by positive tag), so the anchor's
+      // segment is charged once in total. Rolling the partial edges back would let applied-to-
+      // frontier work escape the budget; incrementing the walk count would misreport the
+      // descent as consumed, so only the walk count stays untouched here.
       *anchor_observation_overflow = true;
       first_unwalked = i;
       first_undeleted = i + 1;
