@@ -410,10 +410,10 @@ WallClockBlockTracker::UnownedContextCell* WallClockBlockTracker::unownedContext
         ThreadFilter::SlotID slot_id) const {
     if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
     auto* chunk = _context_chunks[slot_id >> ThreadFilter::kChunkShift].load(std::memory_order_acquire);
-    // Clang 14/aarch64 UBSan sign-extends signed masked subscripts at 128..255.
-    // Keep the index unsigned while that compiler remains supported.
-    unsigned index = static_cast<unsigned>(slot_id) & ThreadFilter::kChunkMask;
-    return chunk != nullptr ? &chunk->cells[index] : nullptr;
+    // Unsigned: clang 14 at -O0 on aarch64 folds the signed mask into a sign-extending
+    // byte load, so offsets 128..255 index cells[-128..-1]. Drop once clang 15+ is the floor.
+    const u32 cell_index = static_cast<u32>(slot_id) & ThreadFilter::kChunkMask;
+    return chunk != nullptr ? &chunk->cells[cell_index] : nullptr;
 }
 
 bool WallClockBlockTracker::canPublishUnownedContext(ThreadFilter::SlotID slot_id) const {
