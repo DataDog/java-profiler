@@ -138,17 +138,17 @@ heads.
    `$GH api --paginate repos/datadog/java-profiler/commits/<sha>/check-runs?per_page=100 --jq '.check_runs[]'`
    (the paginated REST call emits one JSON object per page; `--jq '.check_runs[]'`
    reads each page's checks: name, status, conclusion, details_url) and
-   `$GH api repos/datadog/java-profiler/commits/<sha>/status?per_page=100 --jq '.statuses[]'`
-   (status contexts: `bits-review/head`, `dd-gitlab/*`, the rest; the paginated read
-   covers a head whose context count exceeds one page, and the `--jq` stream is
-   behavior-identical on the single-page response). Dedupe checks by name keeping the
+   `$GH api --paginate repos/datadog/java-profiler/commits/<sha>/status?per_page=100 --jq '.statuses[]'`
+   (status contexts: `bits-review/head`, `dd-gitlab/*`, the rest; every page's
+   contexts are read — the envelope's top-level combined state is not a poll
+   signal and no poll decision consumes it). Dedupe checks by name keeping the
    run with the newest `started_at` — a head carries cancelled runs of earlier
    retries beside their reruns. A check is red when its `conclusion`
    is none of success/skipped/neutral and pending while `status` is not `completed`
    (REST statuses are lowercase: `queued`, `in_progress`, `completed`); a status
    context is red or pending by its `state`. Then the comment surfaces, in
-   three REST reads: `$GH api --paginate repos/datadog/java-profiler/issues/<n>/comments`
-   for top-level comments, `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/reviews`
+   three REST reads: `$GH api --paginate repos/datadog/java-profiler/issues/<n>/comments?per_page=100`
+   for top-level comments, `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/reviews?per_page=100`
    for review bodies, and
    `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` for the census
    (step 1b). If the PR state is not `open` (REST state values are lowercase), run the
@@ -160,13 +160,16 @@ heads.
    head, no new comments, no open work), the next poll waits 20 minutes instead of
    10; any red check, new comment or head moved by someone else resets the
    interval to 10.
-1b. **Thread census (deterministic, every poll).** From that paginated comment
-   list compute the census over ALL comments, never only ones newer than the
-   run: a comment whose `in_reply_to_id` is set is a reply; the rest are thread
-   roots. The classification set in step 4 is every thread root from a trusted
-   author, **regardless of replies** — a reply never closes a thread: an
-   untrusted reply must not hide a trusted finding, and replies only matter to
-   the one-reply cap (a thread in the worker's `replied` record — or carrying
+1b. **Thread census (deterministic, every poll).** From the paginated
+   `pulls/<n>/comments` list compute the census over ALL comments, never only ones
+   newer than the run: a comment whose `in_reply_to_id` is set is a reply; the rest
+   are thread roots. The census covers that list only — the poll's top-level comment
+   and review-body reads (step 1) feed step 4's classification directly and are
+   never census inputs, so every id the census and the `replied` record key on is
+   from the one inline-comment id sequence. The classification set in step 4 is
+   every thread root from a trusted author, **regardless of replies** — a reply
+   never closes a thread: an untrusted reply must not hide a trusted finding, and
+   replies only matter to the one-reply cap (a thread in the worker's `replied` record — or carrying
    a signature reply from the worker's own account id — is done; the
    record decides, never the reply's author: the worker posts with the PR
    author's login, so the author's own reply must not count as the worker's).
