@@ -1764,16 +1764,31 @@ bool Profiler::startCpuEngine(Arguments &args) {
 // thread, so no SIGVTALRM can be in flight; CPU events enable only on
 // the success path, which never rolls back. A new call site that can
 // leave signal handlers in flight MUST drain before _jfr.stop().
-void Profiler::rollBackStart() {
+Error Profiler::rollBackStart() {
   _thread_filter.deactivateRecording();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
+  Error output_error = Error::OK;
   {
     AllStripesLock stripes(this);
-    _jfr.stop();
+    output_error = _jfr.stop();
   }
   LibraryPatcher::unpatch_recording_hooks();
+  // As in stop(): retained output is terminal, so no later start() reuses its memory.
+  if (_jfr.active()) {
+    _state.store(ERROR, std::memory_order_release);
+  }
+  return output_error;
+}
+
+Profiler::RecordingMemoryScope::~RecordingMemoryScope() {
+  if (!armed) return;
+  if (_profiler->_jfr.active()) {
+    _profiler->closeInternGate();
+  } else {
+    _profiler->releaseRecordingMemory();
+  }
 }
 
 // stop() leaves an engine's per-thread resources in place (PerfEvents keeps
@@ -2424,22 +2439,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (!acquireRecordingMemory()) {
     return Error("Failed to allocate call trace storage; retry start()");
   }
-  // Every failed start() from here on gives the recording memory back (and
-  // closes the intern gate); disarmed once the recording runs.
-  struct RecordingMemoryScope {
-    Profiler *profiler;
-    bool armed;
-    explicit RecordingMemoryScope(Profiler *p) : profiler(p), armed(true) {}
-    RecordingMemoryScope(const RecordingMemoryScope &) = delete;
-    RecordingMemoryScope &operator=(const RecordingMemoryScope &) = delete;
-    ~RecordingMemoryScope() {
-      // A rollBackStart() whose _jfr.stop() failed retains the recording and the
-      // memory it references, as stop() does for quarantined output.
-      if (armed && profiler->_jfr._rec == nullptr) {
-        profiler->releaseRecordingMemory();
-      }
-    }
-  } recording_memory(this);
+  // Covers every failed start() from here on; disarmed once the recording runs.
+  RecordingMemoryScope recording_memory(this);
   // Before any engine starts, so no call trace id is cached under the old value.
   __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
   // Defensive: a cached tail id names call-trace storage released at stop();
@@ -2655,8 +2656,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (state() == ERROR) {
     // startCpuEngine() could not close the registration gate after the CPU
     // engine failed. Nothing else has started; undo the setup above.
-    rollBackStart();
-    return Error("thread hook calls did not drain; the profiler is disabled");
+    Error retained = rollBackStart();
+    return retained ? retained : Error("thread hook calls did not drain; the profiler is disabled");
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
     // Enable wall clock BEFORE starting its pthread: timerLoopCommon() checks
@@ -2719,8 +2720,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
-        rollBackStart();
-        return error;
+        Error retained = rollBackStart();
+        return retained ? retained : error;
       }
       error = Error::OK; // recoverable when other modes are also active
     } else {
@@ -2786,10 +2787,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
-  rollBackStart();
-
-  return Error(
-      "Neither CPU, wallclock nor allocation profiling could be started");
+  Error retained = rollBackStart();
+  return retained ? retained
+                  : Error("Neither CPU, wallclock nor allocation profiling could be started");
 }
 
 Error Profiler::stop() {
@@ -2961,6 +2961,8 @@ Error Profiler::stop() {
   // refused while it is owned, and the release would also drop uncommitted tails.
   if (!output_error && !_jfr.outputQuarantined()) {
     releaseRecordingMemory();
+  } else {
+    closeInternGate();
   }
   endTaskBlockRotation();
 
@@ -3324,15 +3326,18 @@ void Profiler::shutdown(Arguments &args) {
   _state.store(TERMINATED, std::memory_order_release);
 }
 
-void Profiler::releaseRecordingMemory() {
+void Profiler::closeInternGate() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  // Close the intern gate first (_state is still RUNNING during stop()): new
-  // callers see the flag; the exclusive acquire waits for those holding the
+  // New callers see the flag; the exclusive acquire waits for those holding the
   // lock, and a later acquirer re-checks the flag under it.
   _intern_open.store(false, std::memory_order_seq_cst);
-  {
-    ExclusiveLockGuard drain(&_intern_lock);
-  }
+  ExclusiveLockGuard drain(&_intern_lock);
+}
+
+void Profiler::releaseRecordingMemory() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  // Before any release: _state is still RUNNING during stop().
+  closeInternGate();
 
   // First, while getLiveTraceIds() is no longer consulted (the final chunk is
   // written) and the reference-chain BFS thread is joined. A no-op if nothing

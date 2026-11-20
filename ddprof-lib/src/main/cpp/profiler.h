@@ -354,8 +354,21 @@ private:
   // (Engine::releaseThreads()) under a ThreadTablesFreeze. Returns false,
   // replacing nothing, if hook calls do not drain.
   bool replaceCpuEngine(Engine *next);
-  // Undoes start()'s setup after _jfr.start() when start() then fails.
-  void rollBackStart();
+  // Undoes start()'s setup after _jfr.start() when start() then fails. Returns the
+  // _jfr.stop() error; a recording it retains puts the profiler in ERROR.
+  Error rollBackStart();
+  // On a failed start(), releases the recording memory, or only closes the intern
+  // gate while a retained recording still references that memory.
+  class RecordingMemoryScope {
+    Profiler *_profiler;
+
+  public:
+    bool armed = true;
+    explicit RecordingMemoryScope(Profiler *profiler) : _profiler(profiler) {}
+    RecordingMemoryScope(const RecordingMemoryScope &) = delete;
+    RecordingMemoryScope &operator=(const RecordingMemoryScope &) = delete;
+    ~RecordingMemoryScope();
+  };
   // Enables the CPU engine's events iff EM_CPU is in activated.
   void enableCpuEngine(int activated);
 
@@ -683,6 +696,8 @@ public:
   // and string-label dictionaries once a recording is over (not the
   // context-value one). acquireRecordingMemory() reallocates the storage.
   void releaseRecordingMemory();
+  // Stops new dictionary interning and waits out the callers already inside.
+  void closeInternGate();
   bool acquireRecordingMemory();
   /**
    * Opens both thread-registration gates (see _engines_ready). A CPU engine

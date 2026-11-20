@@ -139,8 +139,9 @@ Profiler::start()
    not the requested mask: a mixed-success start must not stop an engine that failed.
 
 Output quarantine does not skip engine teardown. After teardown, stop latches
-`ERROR` and retains the recording, dictionary roots and uncommitted wall tails.
-A new start or resume cannot reuse this state.
+`ERROR` and retains the recording, dictionary roots and uncommitted wall tails,
+but closes the intern gate. A new start or resume cannot reuse this state. A failed
+start whose rollback cannot deliver the recording ends the same way and returns that error.
 
 Stop deactivates the thread-registry recording projection after engine teardown.
 `rollBackStart()` also deactivates it on each post-JFR start failure, including a

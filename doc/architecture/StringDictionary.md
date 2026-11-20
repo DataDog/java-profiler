@@ -239,8 +239,9 @@ nothing, so the released maps stay empty until the next start. They check the at
 `Profiler::_intern_open` first (one load while closed), do their JNI/JVMTI work, then
 hold a shared lock on `_intern_lock` only around the inserts and re-check the flag under
 it. `start()` opens the gate right after `acquireRecordingMemory()`, before any engine
-starts. `releaseRecordingMemory()` (end of `stop()`, and every failed `start()` through
-a scope guard) clears the flag and then takes the lock exclusively once, which waits
+starts. `closeInternGate()` (from `releaseRecordingMemory()` at the end of `stop()` and
+of every failed `start()`, or alone when retained quarantined output keeps the memory)
+clears the flag and then takes the lock exclusively once, which waits
 only for calls already holding it: a call that takes it afterwards sees the flag
 cleared, and new calls are turned away before they lock, so they cannot starve the
 drain. `_state` is still `RUNNING` there, so `isRunning()` could not do this.

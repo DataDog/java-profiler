@@ -55,6 +55,7 @@ public:
     profiler->_wall_engine = wall;
     profiler->_alloc_engine = alloc;
     profiler->_activated_mask = EM_CPU | EM_WALL | EM_ALLOC;
+    profiler->_intern_open.store(true, std::memory_order_release);
     profiler->_state.store(RUNNING, std::memory_order_release);
   }
   static State state(Profiler* profiler) { return profiler->state(); }
@@ -417,6 +418,7 @@ TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustod
   EXPECT_TRUE(recorder->outputQuarantined());
   EXPECT_EQ(expected_overflow, RecordingTestAccessor::threadTableOverflow(recording.get()));
   EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler.get()));
+  EXPECT_FALSE(profiler->internOpen()) << "retained dictionaries must not admit late interning";
   EXPECT_EQ(1U, cpu.stops);
   EXPECT_EQ(1U, wall.stops);
   EXPECT_EQ(1U, alloc.stops);
