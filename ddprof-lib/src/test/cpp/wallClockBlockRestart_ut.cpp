@@ -97,7 +97,7 @@ protected:
         }
         Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
             nullptr, nullptr, nullptr, JNI_FALSE);
-        return ProfiledThread::current()->snapshotForTest().park_block_token;
+        return ProfiledThread::current()->snapshotForTest().park_slot.block_token;
     }
 
     void exitHook(u64 token) {
