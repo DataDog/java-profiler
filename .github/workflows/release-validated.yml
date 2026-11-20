@@ -137,43 +137,40 @@ jobs:
           # while this run queued behind the concurrency group: the queued run
           # would otherwise compute the next version and release the same
           # commit twice.
+          # One pass over all release tags: (1) a concurrent dispatch for the
+          # same candidate may have released it while this run queued behind
+          # the concurrency group; (2) a queued dispatch pinned to an older
+          # commit must not publish after a newer release landed while it
+          # waited for the lock — checked against the tags of the branch the
+          # release targets (main for major/minor, the release branch for
+          # patch), so maintenance tags never leak into the mainline check.
+          # retag re-points an existing tag at the same commit by design; the
+          # guard exists to stop double releases, not recovery.
           for tag in $(git tag --list 'v_*'); do
-            # retag re-points an existing tag at the same commit by design;
-            # the guard exists to stop double releases, not recovery.
-            if [ "$TYPE" != "retag" ] && [ "$(git rev-parse "$tag^{commit}")" == "$TARGET_SHA" ]; then
+            TAG_COMMIT=$(git rev-parse "$tag^{commit}")
+            if [ "$TYPE" != "retag" ] && [ "$TAG_COMMIT" == "$TARGET_SHA" ]; then
               echo "::error::Release commit $TARGET_SHA already carries a release tag ($tag)"
               exit 1
             fi
-          done
-
-          # A queued mainline dispatch must not publish an older commit after
-          # a newer release landed while it waited for the lock: B untagged
-          # passes the equality guard even when main HEAD C already carries
-          # a newer tag. Mainline-only: maintenance tags live on release/*
-          # branches, not main.
-          if [ "$TYPE" == "major" ] || [ "$TYPE" == "minor" ]; then
-            for tag in $(git tag --list 'v_*'); do
-              TAG_COMMIT=$(git rev-parse "$tag^{commit}")
+            RC=0
+            git merge-base --is-ancestor "$TAG_COMMIT" "origin/$BRANCH" || RC=$?
+            if [ "$RC" -gt 1 ]; then
+              echo "::error::Cannot resolve $tag against $BRANCH" >&2
+              exit 1
+            fi
+            if [ "$RC" -eq 0 ]; then
               RC=0
-              git merge-base --is-ancestor "$TAG_COMMIT" origin/main || RC=$?
+              git merge-base --is-ancestor "$TAG_COMMIT" "$TARGET_SHA" || RC=$?
               if [ "$RC" -gt 1 ]; then
-                echo "::error::Cannot resolve $tag against origin/main" >&2
+                echo "::error::Cannot resolve $tag against the release commit" >&2
                 exit 1
               fi
-              if [ "$RC" -eq 0 ]; then
-                RC=0
-                git merge-base --is-ancestor "$TAG_COMMIT" "$TARGET_SHA" || RC=$?
-                if [ "$RC" -gt 1 ]; then
-                  echo "::error::Cannot resolve $tag against the release commit" >&2
-                  exit 1
-                fi
-                if [ "$RC" -ne 0 ]; then
-                  echo "::error::Release commit $TARGET_SHA predates mainline release $tag"
-                  exit 1
-                fi
+              if [ "$RC" -ne 0 ]; then
+                echo "::error::Release commit $TARGET_SHA predates release $tag on $BRANCH"
+                exit 1
               fi
-            done
-          fi
+            fi
+          done
 
           # Compute release version from git tags
           if [ "$TYPE" == "retag" ]; then
