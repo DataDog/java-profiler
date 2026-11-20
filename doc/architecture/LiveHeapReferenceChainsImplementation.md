@@ -113,8 +113,11 @@ durable reports by tag, source, kind, and attempt. A retry suppresses only repor
 preceding incomplete attempt; static-field chunks keep separate stamps across index eviction.
 
 A weaker `JNI_GLOBAL` report does not replace `STATIC_FIELD` attribution but can re-enlist an evicted
-anchor when no index or accepted report covers it. Stronger upgrades and rejected transitions remain
-eligible; chain-attached entries cannot be upgraded by roots.
+anchor when no index or accepted report covers it. Suppression of the weaker report is bound to the
+live index or an accepted retry stamp only: a stale static-sweep stamp alone never suppresses, so a
+holder whose static edge disappeared but which a JNI global still retains can always re-enlist after
+eviction. Stronger upgrades and rejected transitions remain eligible; chain-attached entries cannot
+be upgraded by roots.
 
 Repeated attempts can examine already-admitted roots without charging admission budget. Direct-root
 leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
