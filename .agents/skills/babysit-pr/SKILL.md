@@ -138,17 +138,23 @@ heads.
    `$GH api --paginate repos/datadog/java-profiler/commits/<sha>/check-runs?per_page=100 --jq '.check_runs[]'`
    (the paginated REST call emits one JSON object per page; `--jq '.check_runs[]'`
    reads each page's checks: name, status, conclusion, details_url) and
-   `$GH api repos/datadog/java-profiler/commits/<sha>/status` (status contexts:
-   `bits-review/head`, `dd-gitlab/*`, the rest). Dedupe checks by name keeping the
+   `$GH api repos/datadog/java-profiler/commits/<sha>/status?per_page=100 --jq '.statuses[]'`
+   (status contexts: `bits-review/head`, `dd-gitlab/*`, the rest; the paginated read
+   covers a head whose context count exceeds one page, and the `--jq` stream is
+   behavior-identical on the single-page response). Dedupe checks by name keeping the
    run with the newest `started_at` — a head carries cancelled runs of earlier
    retries beside their reruns. A check is red when its `conclusion`
    is none of success/skipped/neutral and pending while `status` is not `completed`
    (REST statuses are lowercase: `queued`, `in_progress`, `completed`); a status
-   context is red or pending by its `state`. Then
+   context is red or pending by its `state`. Then the comment surfaces, in
+   three REST reads: `$GH api --paginate repos/datadog/java-profiler/issues/<n>/comments`
+   for top-level comments, `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/reviews`
+   for review bodies, and
    `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` for the census
-   (step 1b). If the PR state is not `OPEN`, run the stop report and cleanup
-   immediately, acting on no checks or findings — the PR may have been closed or
-   merged between polls. Recheck the state is `OPEN` immediately before each push.
+   (step 1b). If the PR state is not `open` (REST state values are lowercase), run the
+   stop report and cleanup immediately, acting on no checks or findings — the PR may
+   have been closed or merged between polls. Recheck the state is `open` immediately
+   before each push.
    A poll that finds nothing stays cheap: no log fetching, no deep analysis — and
    while the previous poll found nothing new (CI pending or green on an unchanged
    head, no new comments, no open work), the next poll waits 20 minutes instead of
