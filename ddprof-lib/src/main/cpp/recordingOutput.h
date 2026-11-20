@@ -24,6 +24,8 @@ public:
         u64 last_chunk = 0;
         u64 bytes = 0;
         u64 inherited_prefix_bytes = 0;
+        // The delivered range is complete; the source could not start its next chunk.
+        bool continuation_failed = false;
         explicit operator bool() const { return recording_id != 0; }
     };
 
