@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -199,6 +200,27 @@ TEST_F(TaskBlockRecorderTest, UncalibratedTscFailsClosed) {
       << "each rejection must be counted under exactly one counter";
 }
 
+TEST_F(TaskBlockRecorderTest, ShortContentionIsNotRecordedAndDoesNotSuppressNextEvent) {
+  Context context{};
+  u64 start_ticks = TSC::ticks();
+  u64 one_millisecond = TSC::frequency() / 1000;
+  ASSERT_GT(one_millisecond, 1ULL);
+  u64 passing_end = start_ticks + one_millisecond;
+
+  EXPECT_FALSE(recordTaskBlockIfEligible(
+      12345, nullptr, 0, start_ticks, passing_end - 1, context, 0, 0,
+      OSThreadState::MONITOR_WAIT));
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
+
+  EXPECT_TRUE(recordTaskBlockIfEligible(
+      12345, nullptr, 0, start_ticks, passing_end, context, 0, 0,
+      OSThreadState::MONITOR_WAIT));
+  EXPECT_EQ(1, g_record_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+}
+
 namespace {
 // Use the signal-handler shared-lock budget as the admission retry contract.
 constexpr int ADMISSION_RETRY_BUDGET = SpinLock::DEFAULT_SHARED_SPIN_BUDGET;
@@ -284,7 +306,7 @@ TEST_F(TaskBlockRecorderTest, AdmissionBudgetDropStillCompletesExitLifecycle) {
       ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
   current->setFilterSlotId(slot_id);
   Context context{};
-  ASSERT_TRUE(isEligibleDuration(1, TSC::ticks()));
+  ASSERT_EQ(TaskBlockDurationCheck::ELIGIBLE, checkTaskBlockDuration(1, TSC::ticks()));
   ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
   u64 token = tracker.enterBlockedRun(
       &filter, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK);
@@ -621,6 +643,107 @@ TEST_F(TaskBlockRecorderTest, StaleCachedFilterSlotIsSelfHealedBeforeExit) {
   diagnosticSince(diagnostic_cursor, TaskBlockStage::EXIT_MATCHED_AND_CLEARED);
 }
 
+TEST_F(TaskBlockRecorderTest, RotationRejectsParkExitWithoutBlockingOrStranding) {
+  constexpr int tid = 12346;
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+  ASSERT_GE(slot_id, 0);
+
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot_id);
+  Context context{};
+  ASSERT_TRUE(current->parkEnter(TSC::ticks(), context));
+  u64 token = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::CONDVAR_WAIT, BlockRunOwner::JAVA);
+  ASSERT_NE(0ULL, token);
+  current->setParkBlockToken(token);
+
+  Profiler* profiler = Profiler::instance();
+  profiler->beginTaskBlockRotationForTest();
+  std::future<bool> result = std::async(std::launch::async, [&]() {
+    u64 start_ticks = 0;
+    u64 exit_token = 0;
+    Context exit_context{};
+    if (!current->parkExit(start_ticks, exit_context, exit_token)) return true;
+    return finishTaskBlockAtExit(
+        current.get(), &filter, &tracker, nullptr, 1, exit_token, start_ticks,
+        exit_context, 0, 0);
+  });
+
+  EXPECT_EQ(std::future_status::ready,
+            result.wait_for(std::chrono::seconds(1)));
+  WallClockBlockTracker::BlockState* slot = tracker.slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_TRUE(current->parkEnter(TSC::ticks(), context));
+  u64 ignored_ticks = 0;
+  u64 ignored_token = 0;
+  Context ignored_context{};
+  EXPECT_TRUE(current->parkExit(
+      ignored_ticks, ignored_context, ignored_token));
+
+  profiler->endTaskBlockRotationForTest();
+  EXPECT_FALSE(result.get());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+}
+
+TEST_F(TaskBlockRecorderTest,
+       RotationRejectsMonitorExitWithoutBlockingOrStranding) {
+  constexpr int tid = 12347;
+  ThreadFilter filter;
+  WallClockBlockTracker tracker;
+  filter.setBlockTracker(&tracker);
+  filter.init("", true);
+  ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+  ASSERT_GE(slot_id, 0);
+
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot_id);
+  Context context{};
+  ASSERT_TRUE(current->monitorEnter(
+      TSC::ticks(), context, 7, OSThreadState::OBJECT_WAIT));
+  u64 token = tracker.enterBlockedRun(
+      &filter, slot_id, OSThreadState::OBJECT_WAIT, BlockRunOwner::JVMTI);
+  ASSERT_NE(0ULL, token);
+  current->setMonitorBlockToken(token);
+
+  Profiler* profiler = Profiler::instance();
+  profiler->beginTaskBlockRotationForTest();
+  std::future<bool> result = std::async(std::launch::async, [&]() {
+    u64 start_ticks = 0;
+    u64 blocker = 0;
+    u64 exit_token = 0;
+    Context exit_context{};
+    if (!current->monitorExit(OSThreadState::OBJECT_WAIT, start_ticks,
+                              exit_context, blocker, exit_token)) {
+      return true;
+    }
+    return finishTaskBlockAtExit(
+        current.get(), &filter, &tracker, nullptr, 0, exit_token, start_ticks,
+        exit_context, blocker, 0);
+  });
+
+  EXPECT_EQ(std::future_status::ready,
+            result.wait_for(std::chrono::seconds(1)));
+  WallClockBlockTracker::BlockState* slot = tracker.slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_TRUE(current->monitorEnter(
+      TSC::ticks(), context, 8, OSThreadState::MONITOR_WAIT));
+  current->clearMonitorBlock();
+
+  profiler->endTaskBlockRotationForTest();
+  EXPECT_FALSE(result.get());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+}
+
 TEST_F(TaskBlockRecorderTest, StackCaptureFailureIsCountedAndActivityReleased) {
   g_record_result.store(Profiler::TaskBlockRecordResult::STACK_CAPTURE_FAILED,
                         std::memory_order_release);
@@ -843,7 +966,9 @@ TEST_F(TaskBlockRealRecorderTest, ContendedRecorderReleasesStripeAndCountsExactl
 }
 
 TEST_F(TaskBlockRealRecorderTest, ThreadTableOverflowIsCountedBeforeSerialization) {
-  auto recording = std::make_unique<Recording>();
+  auto output = std::unique_ptr<FILE, int (*)(FILE*)>(tmpfile(), fclose);
+  ASSERT_NE(nullptr, output);
+  auto recording = std::make_unique<Recording>(fileno(output.get()));
   FlightRecorder& recorder = ProfilerTestAccessor::recorder(profiler);
   struct RecordingRestorer {
     FlightRecorder& recorder;
@@ -962,13 +1087,16 @@ TEST_F(TaskBlockRecorderTest, ExitPausedBeforeAdmissionCannotRecordIntoNextRecor
 
 class TaskBlockRecorderOverflowTest : public TaskBlockRecorderTest {
 protected:
+  std::unique_ptr<FILE, int (*)(FILE*)> output{nullptr, fclose};
   std::unique_ptr<Recording> recording;
   Recording* previous_recording = nullptr;
   bool previous_omit = false;
 
   void SetUp() override {
     TaskBlockRecorderTest::SetUp();
-    recording = std::make_unique<Recording>();
+    output.reset(tmpfile());
+    ASSERT_NE(nullptr, output);
+    recording = std::make_unique<Recording>(fileno(output.get()));
     Profiler::setTaskBlockRecordOverrideForTest(nullptr);
     previous_omit = ProfilerTestAccessor::exchangeOmitStacktraces(true);
     previous_recording = FlightRecorderTestAccessor::exchangeRecording(

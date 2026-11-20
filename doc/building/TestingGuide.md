@@ -2,6 +2,8 @@
 
 # Testing Guide
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 This document describes the complete test strategy for the java-profiler project:
 what runs where, what each tier is designed to catch, and how to run each tier
 locally.
@@ -19,6 +21,75 @@ they require:
 | **Chaos / reliability** | GitLab | Scheduled pipelines; PRs with `test:reliability` label | None | Long-duration stability and probabilistic crash detection |
 
 ---
+
+## Bounded Local Container Runs
+
+`utils/run-containers-tests.sh` mirrors supported CI libc/JDK/architecture/configuration cells.
+See the [complete CLI reference](../../utils/README.md#run-containers-testssh).
+
+Defaults remain clean local cloning, image build on cache miss, container networking and Gradle parallelism.
+Matrix cells run sequentially; unset dimensions with `--matrix` expand to all.
+Unsupported cells are skipped, not executed.
+
+For an exact staged or unstaged candidate in another worktree:
+
+```bash
+./utils/run-containers-tests.sh --mount --source-root=/absolute/path/to/worktree \
+  --offline --max-workers=1 --libc=glibc --arch=aarch64 --jdk=17 --config=debug \
+  --gtest-task=vmEntry_ut
+```
+
+### Source and Metadata
+
+`--source-root` requires `--mount` and an absolute Git working-tree root.
+Source/build outputs are read-write at `/workspace`; no cloning or index rewrite occurs.
+Paths with volume delimiters (`:` or newline) are rejected.
+
+Git common metadata is read-only at its original absolute path so linked-worktree pointers resolve.
+Ordinary checkouts also mount `/workspace/.git` read-only. Source mounts are not relabeled;
+on enforcing SELinux with Podman the script disables container label separation instead.
+The script does not override Git trust, fabricate metadata, change host Git configuration or relabel metadata.
+Hosts that deny the metadata mount remain blocked.
+
+### Cache-only Execution
+
+`--offline` requires mount mode and rejects shell mode and both rebuild flags.
+Missing base/JDK images fail before an image build.
+
+Runtime `--pull=never --network=none` forbids pulls and network access, including wrapper downloads.
+Gradle also receives `--offline`. Cached images alone do not prove compiler or dependency availability.
+Missing prerequisites fail without repair; no host cache is automatically mounted.
+
+### Workers and Resources
+
+`--max-workers=N` accepts positive integers and replaces `--parallel` with `--no-parallel --max-workers=N`.
+It does not limit JVM heap, compiler threads, test threads or container memory.
+
+Check resources and obtain any required serialized execution lease before launching.
+These flags grant no execution permission. Existing TSan privileged/sysctl behavior needs separate approval.
+
+### Retained Evidence
+
+`--artifacts-dir=/absolute/existing/directory` requires mount mode and rejects shell mode.
+Missing, non-directory, relative and volume-delimited roots are rejected.
+
+Each `<libc>-jdk<jdk>-<arch>-<config>` child has gtest XML at `/qualification-gtest` and JFRs at `/tmp/recordings`.
+`GTEST_OUTPUT=xml:/qualification-gtest/` requests native XML; Java fixtures write under `/tmp/recordings`.
+Evidence mounts use shared SELinux labels with Podman on enforcing hosts.
+
+Linux native Exec stdout can bypass Gradle's console through daemon file descriptors.
+Inspect actual XML names, nonzero cases and skips; Gradle success is not coverage.
+Mounts preserve output after `--rm` but do not guarantee tests or recordings were produced.
+
+Use a fresh approved evidence-only root under the selected source's `build/logs/`.
+Archive files and hashes before cell reuse; never mount credentials, caches or unrelated directories.
+This option exports no daemon logs and does not change source, assertions or defaults.
+
+All four flags propagate through matrices. Supported cells, confirmation and fail-fast behavior are unchanged.
+Single cells accept full `--gtest-task` paths; matrix tasks require short names.
+
+Launcher-only tests use `python3 utils/test_run_containers_tests.py` with inert runtime/Git fixtures.
+They execute no Linux compilation or native tests. Native qualification needs nonzero XML case counts.
 
 ## Tier 1 — C++ Unit Tests (Every Branch Push)
 
@@ -177,6 +248,20 @@ On failure the workflow reports affected scenarios to Slack and uploads test rep
 as artifacts.
 
 ---
+
+### Real-VM Qualification
+
+The shared workflow's `qualify-real-vm` job runs debug qualification on HotSpot 25 and
+OpenJ9 17 (`17-j9`). `DDPROF_EXPECTED_VM` enables the tests, which assert the running VM identity.
+The plain HotSpot lifecycle/classifier and both OpenJ9 producers/classifier must pass without skips.
+
+Delegated JVM-stack qualification probes the selected engine before creating JVM recordings.
+Stock JDKs lack the unreleased extension ([upstream work](https://github.com/openjdk/jdk/pull/31059));
+the test records that limitation as a skip, not passed coverage.
+
+`assert_vm_qualification.py` rejects missing methods, failures and skips except that specific
+capability skip with its retained reason. A mandatory delegated cell awaits an extension-capable JDK.
+The job retains XML, wrapper logs/summaries and JFR recordings even on failure.
 
 ## Tier 3 — dd-trace Integration Tests (GitLab, Every Push)
 

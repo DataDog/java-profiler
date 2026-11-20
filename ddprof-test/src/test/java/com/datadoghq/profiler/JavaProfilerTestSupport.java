@@ -5,6 +5,8 @@
 
 package com.datadoghq.profiler;
 
+import java.util.Objects;
+
 /**
  * Test bridge for {@link JavaProfiler}'s package-private wall-clock test seams (same pattern as
  * {@link ReferenceChainTestHooks}). The seams mutate or inspect the process-wide profiler
@@ -53,4 +55,33 @@ public final class JavaProfilerTestSupport {
     return JavaProfiler.recordUnownedWallTailAcrossDumpForTest0(
         Thread.currentThread(), snapshot, dumpAfterPrimary, resetBeforeTail);
   }
+
+  /**
+   * Seeds a blocked stack and five suppressed observations, dumps JFR, then invokes a real
+   * owned-block producer while profiling signals are blocked. Debug builds only.
+   *
+   * @param snapshot path receiving the chunk containing the initial blocked sample
+   * @param producer producer to invoke: 0 for paired API, 1 for generic block, 2 for park, or 3 for
+   *     native monitor contention
+   * @return whether seeding, dumping and producer admission succeeded
+   */
+  public static boolean recordUnownedWallTailBeforeOwnedBlockForTest(
+      String snapshot, int producer) {
+    return recordUnownedWallTailBeforeOwnedBlockForTest0(
+        Thread.currentThread(), snapshot, producer);
+  }
+
+  private static native boolean recordUnownedWallTailBeforeOwnedBlockForTest0(
+      Thread thread, String snapshot, int producer);
+
+  /**
+   * Seeds a PARKED stack with five same-epoch units, then runs a bounded owner transition with
+   * profiling signals blocked and no recording stripe held. Returns false outside debug builds.
+   * Rejects null callbacks and propagates callback failures.
+   */
+  public static boolean withUnownedWallTailForTest(Runnable transition) {
+    return withUnownedWallTailForTest0(Thread.currentThread(), Objects.requireNonNull(transition));
+  }
+
+  private static native boolean withUnownedWallTailForTest0(Thread thread, Runnable transition);
 }

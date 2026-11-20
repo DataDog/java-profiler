@@ -9,13 +9,13 @@ before working on a subsystem.
 
 | Subsystem | Details |
 |---|---|
-| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, freed on stop, reusable unowned wall-clock roots) | [doc/architecture/CallTraceStorage.md](/doc/architecture/CallTraceStorage.md) |
+| Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, freed on stop, reusable unowned wall-clock roots, ASan-safe chunk reclamation) | [doc/architecture/CallTraceStorage.md](/doc/architecture/CallTraceStorage.md) |
 | String dictionary (lazily allocated arena chunks, rotation/clear/release protocols) | [doc/architecture/StringDictionary.md](/doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](/doc/architecture/RefCountGuard.md) |
 | TLS context (thread-local tracing, owner context-window membership, paired TaskBlock interval recovery, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](/doc/architecture/TLSContext.md) |
 | JVM support (HotSpot, J9, Zing) | [doc/architecture/JvmSupportLayer.md](/doc/architecture/JvmSupportLayer.md) |
-| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; timer TID metadata lookup is capped at 256 probes and fails open to ordinary signals; lazy wall-block backing survives recording resets; unowned teardown tails retain slot custody until written, and stop counts the weight of the ones it cannot write as dropped; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](/doc/architecture/ProfilingEngines.md) |
-| JFR integration (FlightRecorder, metadata, constant pools, buffers; bounded DEBUG TaskBlock transition receipts survive recording teardown; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; stop archives full thread tables before bounded tail-admission retries) | [doc/architecture/JfrIntegration.md](/doc/architecture/JfrIntegration.md) |
+| Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; timer TID metadata lookup is capped at 256 probes and fails open to ordinary signals; lazy wall-block backing survives recording resets; unowned teardown tails retain slot custody until written, and stop counts the weight of the ones it cannot write as dropped; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](/doc/architecture/ProfilingEngines.md) |
+| JFR integration (FlightRecorder, metadata, constant pools, buffers; bounded DEBUG TaskBlock transition receipts survive recording teardown; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; stop archives full thread tables before bounded tail-admission retries; output quarantine retains custody and stops producers in non-restartable ERROR) | [doc/architecture/JfrIntegration.md](/doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](/doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](/doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](/doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](/doc/ReferenceChainsCollectionSummary.md) |
 | Native memory profiling (malloc interception installed per recording and restored on stop, raw-identity exit admission, sampling) | [doc/architecture/NativeMemoryProfiling.md](/doc/architecture/NativeMemoryProfiling.md) |
 | glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](/doc/architecture/MallocArenaWarning.md) |
@@ -170,7 +170,8 @@ nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two.
 (caches, tracking tables, cached class-map ids, clocks and deadlines, JNI global refs)
 must be cleared in `stop()`/`start()` or be tagged with a generation and re-validated
 on use; a released or cleared dictionary bumps its `generation()`. Recording-scoped
-memory is freed at the end of `stop()` by `Profiler::releaseRecordingMemory()`. Anything
+memory is freed at the end of `stop()` by `Profiler::releaseRecordingMemory()`, except
+when failed or quarantined JFR output retains it (restart is then refused). Anything
 a late writer can still reach after `stop()` must find it null or zero-capacity under
 the same lock it writes under, and must decide ownership of what it inserted while
 holding that lock, never by re-reading shared state after unlocking. Write queued events
@@ -191,6 +192,7 @@ gates and skip a `NULL` engine slot. Details:
 
 **Reusable wall-clock roots.** Hold the recording stripe through capture, cached-ID publication and tail commit.
 Do not consume a deferred segment after a failed write or apply a later sampling epoch's scale.
+A failed stop flush is retryable only while output is healthy; quarantine still stops producers.
 Retained units serialize at their original epoch-window start; `stop()` drops pending tails when it releases the storage.
 See [CallTraceStorage](/doc/architecture/CallTraceStorage.md#reusable-unowned-wall-clock-roots).
 

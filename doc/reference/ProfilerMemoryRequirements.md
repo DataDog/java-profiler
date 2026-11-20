@@ -309,7 +309,9 @@ filter, the wall-clock block tracker's slots and retained-context chunks
 (`wall_block_tracker`, once a thread-registry registration allocated them), the persistent
 `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`' per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
 `line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
-counters, read 0 after every `stop()`.
+counters, read 0 after every `stop()`. A stop whose JFR output failed is the exception:
+the retained recording keeps its buffers and this recording-scoped memory, and the
+profiler refuses to start again.
 
 ### Summary: Memory Components
 

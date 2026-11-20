@@ -12,6 +12,8 @@
 #include "arguments.h"
 #include "codeCache.h"
 
+#include <atomic>
+
 #ifdef __clang__
 #define DLLEXPORT __attribute__((visibility("default")))
 #else
@@ -135,6 +137,31 @@ class JavaVersionAccess {
    static int get_hotspot_version(char* prop_value);
 };
 
+// The profiler bridge is process-wide and initialized exactly once. Later Java
+// API initialization may reuse it only with the same requested Object.wait
+// ownership, independently of native monitor-event availability.
+enum class ProfilerBridgeInitResult {
+  SUCCESS,
+  FAILURE,
+  MONITOR_EVENTS_DELEGATION_CONFLICT,
+};
+
+// Bridge setup fixes this value; later singleton joiners must request the same value.
+// JVMTI callbacks read cross-thread without acquiring the setup mutex.
+template <typename T>
+class NegotiatedSetting {
+public:
+  void set(T value) { _value.store(value, std::memory_order_release); }
+  T value() const { return _value.load(std::memory_order_acquire); }
+  // True if 'value' agrees with what the one-time setup path already set.
+  bool matches(T value) const {
+    return value == _value.load(std::memory_order_acquire);
+  }
+
+private:
+  std::atomic<T> _value{T{}};
+};
+
 class VM {
   friend class VMTestAccessor;
 
@@ -150,14 +177,15 @@ private:
   static bool _zing;
   static bool _can_sample_objects;
   static bool _can_intercept_binding;
+  static NegotiatedSetting<bool> _monitor_wait_events_delegated;
+  static std::atomic<bool> _native_monitor_events_available;
+  static std::atomic<bool> _profiler_bridge_initialized;
   static bool _is_adaptive_gc_boundary_flag_set;
   static CodeCache *_libjvm;
 
-  // HotSpot JFR async stack-trace extension (optional, JDK 27+).
-  // _request_stack_trace is atomic (RELEASE/ACQUIRE) because canRequestStackTrace()
-  // is called from signal handlers; _init_request_stack_trace is plain because it
-  // is only ever read by initializeRequestStackTrace(), called once from the same
-  // init thread before any signal handlers are installed.
+  // Signal handlers read _request_stack_trace through RELEASE/ACQUIRE publication.
+  // The bridge probe publishes the plain initializer pointer before profiler starts;
+  // bridge setup and serialized opted-in starts read it, including worker restarts.
   static jvmtiExtensionFunction _request_stack_trace;
   static jvmtiExtensionFunction _init_request_stack_trace;
 
@@ -171,6 +199,7 @@ private:
   static void *getLibraryHandle(const char *name);
 
   static bool initShared(JavaVM *vm);
+  static void configureMonitorEvents(bool delegateMonitorWaitEvents);
   static void probeJFRRequestStackTrace();
 
   static CodeCache* openJvmLibrary();
@@ -186,7 +215,8 @@ public:
   static JVM_GetManagement _getManagement;
 
   static bool initLibrary(JavaVM *vm);
-  static bool initProfilerBridge(JavaVM *vm, bool attach);
+  static ProfilerBridgeInitResult initProfilerBridge(
+      JavaVM *vm, bool attach, bool delegateMonitorWaitEvents = false);
 
   static jvmtiEnv *jvmti() { return _jvmti; }
 
@@ -221,6 +251,15 @@ public:
 
   static bool canSampleObjects() { return _can_sample_objects; }
 
+  static bool monitorWaitEventsDelegated() {
+    return _monitor_wait_events_delegated.value();
+  }
+
+  static bool nativeMonitorEventsAvailable() {
+    return _native_monitor_events_available.load(std::memory_order_acquire);
+  }
+  static bool setNativeMonitorEventsEnabled(bool enabled);
+
   static bool isZing() { return _zing; }
 
   static bool isUseAdaptiveGCBoundarySet() {
@@ -236,11 +275,7 @@ public:
   // Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
   static bool initializeRequestStackTrace();
 
-  static jvmtiError requestStackTrace(void* ucontext, jlong user_data) {
-    jvmtiExtensionFunction fn = __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE);
-    if (!fn) return JVMTI_ERROR_NOT_AVAILABLE;
-    return fn(_jvmti, (jthread)nullptr, ucontext, user_data);
-  }
+  static jvmtiError requestStackTrace(void* ucontext, jlong user_data);
 
   static void JNICALL VMInit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   static void JNICALL VMDeath(jvmtiEnv *jvmti, JNIEnv *jni);

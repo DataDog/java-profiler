@@ -32,6 +32,9 @@ enum class WallClockCandidateOutcome {
 };
 
 class BaseWallClock : public Engine {
+#ifdef UNIT_TEST
+    friend class WallClockSamplingOpportunityTestAccessor;
+#endif
   private:
     static std::atomic<bool> _enabled;
     std::atomic<bool> _running;
@@ -327,6 +330,8 @@ public:
 #if defined(UNIT_TEST) || defined(DEBUG)
     // Normal-thread drivers wait for the timer's real epoch without publishing one.
     static bool awaitInitialSamplingEpochForTest(u64 timeout_nanos);
+    // Keep the genuine nonempty window stable until the driver publishes its units.
+    static std::unique_lock<std::mutex> samplingOpportunityLockForTest(u64 timeout_nanos);
     static void setForceStartFailureForTest(bool force) {
         _force_start_failure_for_test.store(force, std::memory_order_release);
     }
@@ -350,6 +355,10 @@ public:
     static bool recordUnownedWallTailAcrossDumpForTest(
         jthread thread, const char* path, int path_length, bool dump_after_primary,
         bool reset_before_tail);
+    // Seeds a real cached stack and five same-epoch deferred units. The caller
+    // blocks profiling signals until the tested ownership transition finishes.
+    static bool seedUnownedWallTailForTest(
+        jthread thread, OSThreadState state = OSThreadState::SLEEPING);
 #endif
 };
 

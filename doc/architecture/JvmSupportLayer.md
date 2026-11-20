@@ -158,15 +158,19 @@ the thread as platform without reading a virtual-thread function-table entry.
 
 On HotSpot reporting JNI 19 or later, classification calls `IsVirtualThread`
 through runtime JNI slot 234. A missing function or a virtual-thread result
-rejects the thread. This path does not depend on the build JDK's JNI headers.
+rejects the thread; a missing function also increments
+`task_block_virtual_thread_detection_failed` and warns once. This path does not
+depend on the build JDK's JNI headers.
 
 On non-HotSpot VMs reporting JNI 19 or later, classification returns false before
 reading slot 234 because this classifier trusts that offset only on HotSpot.
-The paired API therefore returns zero from begin and false from end on those VMs.
+The paired API therefore returns zero from begin and false from end, and the
+JVMTI monitor producers record nothing, on those VMs. The park and generic block
+hooks take virtuality from Java `Thread.isVirtual()` and are not affected.
 
-This restriction applies to the paired Java TaskBlock API, not all profiling.
-`jvmSupport_ut.cpp` covers the JNI-version boundary, missing functions, virtual
-threads and rejection on non-HotSpot without calling the virtual-thread entry.
+`jvmSupport_ut.cpp` runs the classification contract with `VM::isHotspot()` false
+and true, and checks that a non-HotSpot lookup never reads slot 234. Native engine
+capability also controls whether TaskBlock recording is supported.
 
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 

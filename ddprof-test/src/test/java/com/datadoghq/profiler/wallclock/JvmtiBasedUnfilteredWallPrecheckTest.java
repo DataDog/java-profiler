@@ -7,7 +7,6 @@ package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Map;
 import org.junit.jupiter.api.Assumptions;
 
 /** Runs unfiltered owned-block precheck coverage through delegated JVMTI stack collection. */
@@ -17,12 +16,12 @@ public class JvmtiBasedUnfilteredWallPrecheckTest extends UnfilteredWallPrecheck
 
   @Override
   protected void before() {
-    Map<String, Long> counters = profiler.getDebugCounters();
+    // Require the selected delegated engine, not just extension availability.
     Assumptions.assumeTrue(
-        counters.getOrDefault("jvmti_stacks_init_ok", 0L) > 0,
-        "HotSpot RequestStackTrace JVMTI extension is not available");
+        profiler.getStatus().contains("WallClock Engine : WallClock (JVMTI)"),
+        "HotSpot RequestStackTrace JVMTI wall engine was not selected");
     jvmtiDelegationAvailable = true;
-    requestedBefore = counters.getOrDefault("jvmti_stacks_requested", 0L);
+    requestedBefore = profiler.getDebugCounters().getOrDefault("jvmti_stacks_requested", 0L);
   }
 
   @Override

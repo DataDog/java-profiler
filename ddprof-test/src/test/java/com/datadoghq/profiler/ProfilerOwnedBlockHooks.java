@@ -22,12 +22,22 @@ public final class ProfilerOwnedBlockHooks {
   }
 
   public static void blockExit(JavaProfiler profiler, long token) {
-    profiler.blockExit(token);
+    profiler.blockExit(token, 0, 0);
+  }
+
+  public static void blockExit(
+      JavaProfiler profiler, long token, long blocker, long unblockingSpanId) {
+    profiler.blockExit(token, blocker, unblockingSpanId);
   }
 
   /** Returns the runtime capability used by the synchronous success-test classes. */
   public static boolean taskBlockSupported(JavaProfiler profiler) {
     return profiler.taskBlockSupportedForTest();
+  }
+
+  /** Returns whether the default wall engine tracks unfiltered owners, as park producers need. */
+  public static boolean wallRegistryTrackingSupported(JavaProfiler profiler) {
+    return profiler.wallRegistryTrackingSupportedForTest();
   }
 
   /** Returns the native platform-thread classification of the calling thread. */

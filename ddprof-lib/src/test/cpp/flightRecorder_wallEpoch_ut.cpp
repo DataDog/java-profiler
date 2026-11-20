@@ -20,6 +20,7 @@
 #include "engine.h"
 #include "flightRecorder.h"
 #include "profiler.h"
+#include "recordingWriteFailureFixture.h"
 #include "tsc.h"
 #include "wallClockCounters.h"
 #include "wallClock.h"
@@ -44,6 +45,9 @@ public:
     return Profiler::instance()->_jfr.recordTaskBlock(stripe, tid, event);
   }
   static SpinLock& recLock() { return Profiler::instance()->_jfr._rec_lock; }
+  static void setThreadInfo(int tid, const char* name) {
+    Profiler::instance()->_thread_info.set(tid, name, 0);
+  }
 };
 
 class RecordingTestAccessor {
@@ -51,6 +55,8 @@ public:
   static constexpr size_t kPruneFloor = Recording::kMinWallEpochPruneThreshold;
   static size_t epochCount(const Recording& recording) { return recording._wall_epochs.size(); }
   static bool hasEpoch(const Recording& recording, u64 start) { return recording._wall_epochs.count(start) != 0; }
+  static u64 firstRetainedChunk(const Recording& recording) { return recording._first_retained_chunk; }
+  static u64 chunkSequence(const Recording& recording) { return recording._chunk_sequence; }
 };
 
 // Recording needs VM services even when serializing native-only events.
@@ -283,7 +289,7 @@ TEST_P(WallEpochRecordingTest, ClosedOriginsFollowPendingSegmentsAcrossDumpsAndP
   for (int dump = 0; dump < 2; ++dump) {
     WallEpochFile snapshot;
     ASSERT_GE(snapshot.fd, 0);
-    recording.switchChunk(snapshot.fd);
+    ASSERT_TRUE(recording.switchChunk(dup(snapshot.fd)));
     EXPECT_TRUE(decodeWallEpochs(snapshot.fd).weights.empty());
     EXPECT_EQ(2U, RecordingTestAccessor::epochCount(recording));
   }
@@ -292,7 +298,7 @@ TEST_P(WallEpochRecordingTest, ClosedOriginsFollowPendingSegmentsAcrossDumpsAndP
   EXPECT_EQ(5ULL, profiler->blockTracker()->slotForId(slot)->unowned_blocked_pending_weight.load());
   WallEpochFile partial;
   ASSERT_GE(partial.fd, 0);
-  recording.switchChunk(partial.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(partial.fd)));
   auto partial_events = decodeWallEpochs(partial.fd);
   ASSERT_EQ(1U, partial_events.weights.size());
   EXPECT_EQ(3ULL, partial_events.weights.at(first));
@@ -302,7 +308,7 @@ TEST_P(WallEpochRecordingTest, ClosedOriginsFollowPendingSegmentsAcrossDumpsAndP
   EXPECT_FALSE(flushTail().tail_recorded) << "Committed segments must not replay";
   WallEpochFile final;
   ASSERT_GE(final.fd, 0);
-  recording.switchChunk(final.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(final.fd)));
   auto final_events = decodeWallEpochs(final.fd);
   ASSERT_EQ(1U, final_events.weights.size());
   EXPECT_EQ(5ULL, final_events.weights.at(second));
@@ -359,7 +365,7 @@ void WallEpochRecordingTest::checkOrdinaryAfterEpochRotation(bool fail_deferral)
     WallClockCounters::beginSamplingEpoch(second);
     WallEpochFile snapshot;
     ASSERT_GE(snapshot.fd, 0);
-    recording.switchChunk(snapshot.fd);
+    ASSERT_TRUE(recording.switchChunk(dup(snapshot.fd)));
     ASSERT_EQ(1U, decodeWallEpochs(snapshot.fd).epochs.count(first));
     ASSERT_EQ(0U, RecordingTestAccessor::epochCount(recording));
   }
@@ -375,7 +381,7 @@ void WallEpochRecordingTest::checkOrdinaryAfterEpochRotation(bool fail_deferral)
   recording.recordWallClockEpoch(recording.buffer(0), &epoch);
   WallEpochFile final;
   ASSERT_GE(final.fd, 0);
-  recording.switchChunk(final.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(final.fd)));
   const auto events = decodeWallEpochs(final.fd);
   ASSERT_EQ(1U, events.weights.size());
   EXPECT_EQ(0U, events.weights.count(first)) << "Pruned epoch must not be resurrected by an ordinary write";
@@ -597,7 +603,7 @@ TEST_P(WallEpochRecordingTest, TimerExitClosesFinalWindowBeforeFinalSeal) {
   ASSERT_TRUE(RecordingTestAccessor::hasEpoch(recording, origin));
   WallEpochFile final;
   ASSERT_GE(final.fd, 0);
-  recording.switchChunk(final.fd);
+  ASSERT_TRUE(recording.switchChunk(dup(final.fd)));
   const auto events = decodeWallEpochs(final.fd);
   ASSERT_EQ(1U, events.weights.size());
   EXPECT_EQ(1ULL, events.weights.at(origin));
@@ -695,7 +701,7 @@ void WallEpochRecordingTest::checkStopRecoversFullStripe(int tid) {
   const int next_fd = dup(next_continuous.fd);
   ASSERT_GE(next_fd, 0);
   Recording next_recording(next_fd, args);
-  next_recording.switchChunk(next_snapshot.fd);
+  ASSERT_TRUE(next_recording.switchChunk(dup(next_snapshot.fd)));
   const auto next = decodeWallEpochs(next_snapshot.fd);
   EXPECT_TRUE(next.weights.empty());
   // A new recording still publishes its own native thread.
@@ -855,4 +861,134 @@ TEST_F(WallTailStopTest, PermanentWriteFailureCountsDroppedTailAndCompletesTeard
   ASSERT_FALSE(error) << error.message();
   EXPECT_EQ(0ULL, pendingWeight());
   EXPECT_EQ(dropped_before + 1, Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP));
+}
+
+// Profiler::dump() over a recording it does not own, as a RUNNING profiler would hold it.
+class WallEpochDumpTest : public WallEpochRecordingTest {
+protected:
+  static constexpr int kExitedTid = 424242;
+
+  class DumpRecording {
+    Recording* _previous = ProfilerTestAccessor::recording();
+    State _state = ProfilerTestAccessor::exchangeState(RUNNING);
+
+  public:
+    explicit DumpRecording(Recording* recording) { ProfilerTestAccessor::recording() = recording; }
+    ~DumpRecording() {
+      ProfilerTestAccessor::recording() = _previous;
+      ProfilerTestAccessor::exchangeState(_state);
+    }
+    DumpRecording(const DumpRecording&) = delete;
+    DumpRecording& operator=(const DumpRecording&) = delete;
+  };
+
+  Error dumpTo(const WallEpochFile& target) {
+    ProfilerTestAccessor::setThreadInfo(kExitedTid, "exited-before-dump");
+    return profiler->dump(target.filename(), std::strlen(target.filename()));
+  }
+};
+
+TEST_F(WallEpochDumpTest, FailedDeliveryRetainsSourceAndThreadNames) {
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  Recording recording(output.fd(), args);
+  DumpRecording running(&recording);
+  WallEpochFile target;
+  ASSERT_GE(target.fd, 0);
+  ASSERT_TRUE(recording.outputGood());
+  ASSERT_TRUE(output.failWrites());
+
+  Error error = dumpTo(target);
+  ASSERT_TRUE(error);
+  EXPECT_STREQ("Incomplete recording delivery; source bytes retained", error.message());
+  EXPECT_EQ("exited-before-dump", profiler->threadNameForTest(kExitedTid))
+      << "a failed dump must keep the names its retained events reference";
+  EXPECT_FALSE(recording.outputGood());
+}
+
+TEST_F(WallEpochDumpTest, DeliveredDumpForgetsExitedThreadNames) {
+  WallEpochFile source;
+  ASSERT_GE(source.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  Recording recording(dup(source.fd), args);
+  DumpRecording running(&recording);
+  WallEpochFile target;
+  ASSERT_GE(target.fd, 0);
+
+  Error error = dumpTo(target);
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_EQ("", profiler->threadNameForTest(kExitedTid));
+}
+
+namespace {
+RecordingWriteFailureFixture* continuation_output = nullptr;
+Recording::ContinuationStage continuation_failure_stage;
+bool continuation_failure_injected = false;
+
+// Fails source writes after the destination copy and close completed.
+struct ContinuationFailure {
+  ContinuationFailure(RecordingWriteFailureFixture* output, Recording::ContinuationStage stage) {
+    continuation_output = output;
+    continuation_failure_stage = stage;
+    continuation_failure_injected = false;
+    Recording::continuationHookForTest = +[](Recording::ContinuationStage stage) {
+      if (stage != continuation_failure_stage) return;
+      continuation_failure_injected = continuation_output->failWrites();
+    };
+  }
+  ~ContinuationFailure() {
+    Recording::continuationHookForTest = nullptr;
+    continuation_output = nullptr;
+  }
+  ContinuationFailure(const ContinuationFailure&) = delete;
+  ContinuationFailure& operator=(const ContinuationFailure&) = delete;
+};
+} // namespace
+
+class WallEpochContinuationFailureTest : public WallEpochDumpTest {
+protected:
+  void checkDeliveredDespiteContinuationFailure(Recording::ContinuationStage stage) {
+    RecordingWriteFailureFixture output;
+    ASSERT_TRUE(output.valid());
+    Arguments args;
+    args._jfr_options = JFR_SYNC_OPTS;
+    Recording recording(output.fd(), args);
+    DumpRecording running(&recording);
+    WallEpochFile target;
+    ASSERT_GE(target.fd, 0);
+    ASSERT_EQ(1ULL, RecordingTestAccessor::chunkSequence(recording));
+    const long long certified_before = Counters::getCounter(JFR_DELIVERIES_CERTIFIED);
+
+    Error error = Error::OK;
+    {
+      ContinuationFailure failure(&output, stage);
+      error = dumpTo(target);
+    }
+    ASSERT_TRUE(continuation_failure_injected) << "the dump must reach the injected continuation failure";
+    ASSERT_TRUE(error);
+    EXPECT_STREQ("Recording delivered; continuing the recording failed", error.message());
+    EXPECT_EQ(certified_before + 1, Counters::getCounter(JFR_DELIVERIES_CERTIFIED));
+    EXPECT_NO_THROW(decodeWallEpochs(target.fd)) << "the delivered chunk must be complete and sealed";
+    EXPECT_GT(RecordingTestAccessor::firstRetainedChunk(recording), 1ULL)
+        << "the delivered chunk must not stay retained by the source";
+    EXPECT_FALSE(recording.outputGood());
+
+    WallEpochFile second;
+    ASSERT_GE(second.fd, 0);
+    error = dumpTo(second);
+    ASSERT_TRUE(error);
+    EXPECT_STREQ("Incomplete recording output is still owned", error.message());
+    EXPECT_EQ(certified_before + 1, Counters::getCounter(JFR_DELIVERIES_CERTIFIED));
+  }
+};
+
+TEST_F(WallEpochContinuationFailureTest, FailedSourceRestartStillCertifiesDeliveredChunk) {
+  checkDeliveredDespiteContinuationFailure(Recording::ContinuationStage::BEFORE_RESTART);
+}
+
+TEST_F(WallEpochContinuationFailureTest, FailedNextChunkHeaderStillCertifiesDeliveredChunk) {
+  checkDeliveredDespiteContinuationFailure(Recording::ContinuationStage::AFTER_RESTART);
 }
