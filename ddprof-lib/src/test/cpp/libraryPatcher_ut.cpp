@@ -115,7 +115,7 @@ protected:
 // own unlinked library and does expose a pthread_create import, the slot must be
 // left alone and nothing recorded in the patch table.
 TEST_F(LibraryPatcherPatching, LeavesItsOwnPthreadCreateSlotUntouched) {
-  void* const original = (void*)&fake_original_pthread_create;
+  void* const original = reinterpret_cast<void*>(&fake_original_pthread_create);
   void* slot = original;
 
   CodeCache lib(kUnlinkedPath, -1, anchorMin(), anchorMax(), nullptr,
@@ -218,7 +218,7 @@ protected:
 // Someone hooked the slot after us: taking it back would silently remove their
 // interception on every recheck pass.
 TEST_F(LibraryPatcherRehook, LeavesForeignHookInPlace) {
-  void* foreign = (void*)&fake_original_pthread_create;
+  void* foreign = reinterpret_cast<void*>(&fake_original_pthread_create);
   ASSERT_FALSE(lib.contains(foreign));
   slot = foreign;
 
@@ -272,7 +272,7 @@ TEST_F(LibraryPatcherRehook, HookedThreadJoinsWithRoutineResult) {
 // would bypass the wrapper for the process lifetime, since the hook is never
 // unpatched.
 TEST_F(LibraryPatcherPatching, LeavesForeignWrapperInPlaceOnFirstPatch) {
-  void* const foreign = (void*)&fake_original_pthread_create;
+  void* const foreign = reinterpret_cast<void*>(&fake_original_pthread_create);
   void* slot = foreign;
   CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
                 /* imports_patchable */ true);
@@ -292,7 +292,7 @@ TEST_F(LibraryPatcherPatching, LeavesForeignWrapperInPlaceOnFirstPatch) {
 // The rule is per slot: the slot that holds the loader's binding is hooked, the
 // one that holds a wrapper is not, and the entry stays pending.
 TEST_F(LibraryPatcherPatching, HooksOnlySlotsHoldingLoaderBinding) {
-  void* const foreign = (void*)&fake_original_pthread_create;
+  void* const foreign = reinterpret_cast<void*>(&fake_original_pthread_create);
   void* jump_slot = real_pthread_create();
   void* glob_dat = foreign;
   CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
@@ -311,7 +311,7 @@ TEST_F(LibraryPatcherPatching, HooksOnlySlotsHoldingLoaderBinding) {
 // A preloaded interposer is what the loader resolves, so a slot holding it is
 // hooked on the first patch like one holding the libc function.
 TEST_F(LibraryPatcherPatching, PatchesSlotHoldingPreloadedInterposerOnFirstPatch) {
-  void* const interposer = (void*)&fake_original_pthread_create;
+  void* const interposer = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::setLoaderPthreadCreate(interposer);
   void* slot = interposer;
   CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
@@ -329,7 +329,7 @@ TEST_F(LibraryPatcherPatching, PatchesSlotHoldingPreloadedInterposerOnFirstPatch
 // which dlsym(RTLD_DEFAULT) returns, while PLT calls bind to the definition
 // after it. A slot holding that second binding is hooked too.
 TEST_F(LibraryPatcherPatching, PatchesSlotHoldingPltBindingOnFirstPatch) {
-  void* const plt_binding = (void*)&fake_original_pthread_create;
+  void* const plt_binding = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::setNextPthreadCreate(plt_binding);
   ASSERT_NE(plt_binding, LibraryPatcherTestAccessor::loaderPthreadCreate());
   void* slot = plt_binding;
@@ -363,7 +363,7 @@ TEST_F(LibraryPatcherPatching, NeverHooksNullSlotEvenIfABindingIsNull) {
 // A reload resolved into a preloaded interposer (the sanitizer runtime, say) is
 // not a later hook: it is hooked again, as on the first load.
 TEST_F(LibraryPatcherRehook, RehooksSlotHoldingPreloadedInterposer) {
-  void* const interposer = (void*)&fake_original_pthread_create;
+  void* const interposer = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::setLoaderPthreadCreate(interposer);
   slot = interposer;
 
@@ -377,7 +377,7 @@ TEST_F(LibraryPatcherRehook, RehooksSlotHoldingPreloadedInterposer) {
 // clears the flag.
 TEST_F(LibraryPatcherRehook, ForeignHookMarksEntryPendingUntilRehooked) {
   ASSERT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
-  slot = (void*)&fake_original_pthread_create;
+  slot = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
   ASSERT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 
@@ -421,16 +421,18 @@ TEST_F(LibraryPatcherRehook, NullSlotStaysUnhookedAndPending) {
 // forgetPatchTable() resets the whole table and both bindings, so one test's
 // leftovers cannot reach the next.
 TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
-  slot = (void*)&fake_original_pthread_create;
+  slot = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
   ASSERT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
-  LibraryPatcherTestAccessor::setNextPthreadCreate(nullptr);
+  LibraryPatcherTestAccessor::setLoaderPthreadCreate(nullptr);
+  LibraryPatcherTestAccessor::setNextPthreadCreate(real_pthread_create());
 
   LibraryPatcherTestAccessor::forgetPatchTable();
 
   EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
   EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(&lib));
-  EXPECT_EQ(real_pthread_create(), LibraryPatcherTestAccessor::nextPthreadCreate());
+  EXPECT_EQ(real_pthread_create(), LibraryPatcherTestAccessor::loaderPthreadCreate());
+  EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::nextPthreadCreate());
 }
 
 // Both bindings are captured once, at initialization, because dlsym() must not
@@ -440,22 +442,28 @@ TEST_F(LibraryPatcherPatching, InitializeCapturesLoaderBindings) {
   void* const next = dlsym(RTLD_NEXT, "pthread_create");
   ASSERT_NE(nullptr, resolved);
   ASSERT_NE(nullptr, next);
-  LibraryPatcherTestAccessor::setLoaderPthreadCreate((void*)&fake_original_pthread_create);
-  LibraryPatcherTestAccessor::setNextPthreadCreate((void*)&fake_original_pthread_create);
+  LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(&fake_original_pthread_create));
+  LibraryPatcherTestAccessor::setNextPthreadCreate(reinterpret_cast<void*>(&fake_original_pthread_create));
 
   LibraryPatcher::initialize_persistent();
 
+  // dladdr() decides independently whether this binary owns `resolved`: it is
+  // non-PIE and takes &pthread_create (in real_pthread_create()), or it is not.
+  Dl_info resolved_info;
+  Dl_info test_info;
+  ASSERT_NE(0, dladdr(resolved, &resolved_info));
+  ASSERT_NE(0, dladdr(reinterpret_cast<void*>(&fake_original_pthread_create), &test_info));
+  bool owned_by_executable = resolved_info.dli_fbase == test_info.dli_fbase;
   EXPECT_EQ(resolved, LibraryPatcherTestAccessor::loaderPthreadCreate());
-  EXPECT_EQ(LibraryPatcherTestAccessor::pltBinding(resolved, next),
-            LibraryPatcherTestAccessor::nextPthreadCreate());
+  EXPECT_EQ(owned_by_executable ? next : nullptr, LibraryPatcherTestAccessor::nextPthreadCreate());
 }
 
 // The second binding is accepted only when the global one lies in the main
 // executable (a non-PIE executable's canonical address). In this gtest binary a
 // test function lies in the executable and libc's pthread_create does not.
 TEST_F(LibraryPatcherPatching, PltBindingOnlyWhenExecutableOwnsGlobalBinding) {
-  void* const next = (void*)&fake_original_pthread_create;
-  void* const in_executable = (void*)&fake_original_pthread_create;
+  void* const next = reinterpret_cast<void*>(static_cast<uintptr_t>(0x5000));
+  void* const in_executable = reinterpret_cast<void*>(&fake_original_pthread_create);
   void* const in_libc = dlsym(RTLD_NEXT, "pthread_create");
   ASSERT_NE(nullptr, in_libc);
 

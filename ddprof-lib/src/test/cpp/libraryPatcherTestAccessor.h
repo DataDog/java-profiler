@@ -58,7 +58,7 @@ public:
   static void forgetPatchTable() {
     memset(&LibraryPatcher::_pthread_create, 0, sizeof(LibraryPatcher::_pthread_create));
     LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
-    LibraryPatcher::_next_pthread_create = reinterpret_cast<void*>(&pthread_create);
+    LibraryPatcher::_next_pthread_create = nullptr;
     LibraryPatcher::_initialized.store(false);
   }
 };

@@ -32,7 +32,7 @@ std::atomic<bool> LibraryPatcher::_initialized{false};
 PthreadCreateTable LibraryPatcher::_pthread_create;
 // Stand-ins until initialize_persistent() asks the loader.
 void*      LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
-void*      LibraryPatcher::_next_pthread_create = reinterpret_cast<void*>(&pthread_create);
+void*      LibraryPatcher::_next_pthread_create = nullptr;
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
 PatchEntry LibraryPatcher::_socket_entries[4 * MAX_NATIVE_LIBS];
@@ -196,8 +196,8 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
   return 0;
 }
 
-// Whether addr lies in a PT_LOAD segment of the main executable, which is the
-// first object dl_iterate_phdr() reports. Not with _lock held (lock order above).
+// Whether addr lies in a PT_LOAD segment of the main executable, the first object
+// glibc and musl report to dl_iterate_phdr(). Not with _lock held (lock order above).
 static bool in_main_executable(const void* addr) {
   struct Query { uintptr_t addr; bool found; } query = {reinterpret_cast<uintptr_t>(addr), false};
   dl_iterate_phdr(

@@ -70,12 +70,9 @@ private:
   static PthreadCreateTable _pthread_create;
   // The loader's pthread_create bindings, set by initialize_persistent() as dlsym()
   // must not run under _lock: the global scope's (a preloaded interposer included)
-  // and, only if the executable owns that address, the one PLT calls bind to.
+  // and, only if the executable owns that address, the next one (see plt_binding()).
   static void*       _loader_pthread_create;
   static void*       _next_pthread_create;
-  // `next` when `global` lies in the main executable (a non-PIE executable that
-  // takes &pthread_create), otherwise null.
-  static void* plt_binding(void* global, void* next);
   static bool        _patch_pthread_create;
 
   // Separate tracking for sigaction patches
@@ -116,6 +113,10 @@ private:
   static bool excluded_from_pthread_create_patch(CodeCache* lib);
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
+  // `next` when `global` lies in the main executable (a non-PIE executable that
+  // takes &pthread_create; PLT calls then bind to `next` unless an interposer is
+  // also preloaded, which is not supported), otherwise null.
+  static void* plt_binding(void* global, void* next);
   static void patch_pthread_setspecific();
   static void patch_sigaction_in_library(CodeCache* lib);
   // An address known to lie inside this library; how is_profiler_library()

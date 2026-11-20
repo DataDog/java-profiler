@@ -205,7 +205,8 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    `initialize_persistent()`: `dlsym(RTLD_DEFAULT)` (a preloaded interposer
    included) or, only when that address lies in the main executable (a non-PIE
    executable that takes `&pthread_create`), `dlsym(RTLD_NEXT)`, which PLT
-   calls bind to then; or the library's own lazy-binding stub. Any other value
+   calls bind to then (that executable with a preloaded interposer is not
+   supported); or the library's own lazy-binding stub. Any other value
    is left alone: another interposer's wrapper, whose threads are then not
    registered, an unresolved weak import, or a GOT the loader has not
    relocated yet. An entry left with such a slot is pending and is visited on
