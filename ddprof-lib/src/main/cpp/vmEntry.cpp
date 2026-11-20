@@ -41,6 +41,7 @@ static Arguments _agent_args(true);
 
 JavaVM *VM::_vm;
 jvmtiEnv *VM::_jvmti = NULL;
+bool VM::_cont_runtime_classifiable = false;
 
 int VM::_java_version = 0;
 int VM::_java_update_version = 0;
@@ -81,6 +82,55 @@ static bool isVmRuntimeEntry(const char* blob_name) {
 static bool isZingRuntimeEntry(const char* blob_name) {
     return strncmp(blob_name, "_ZN14DolphinRuntime", 19) == 0
         || strncmp(blob_name, "_ZN37JvmtiSampledObjectAllocEventCollector", 42) == 0;
+}
+
+// Prefix match helper: marking runs once at library init over libjvm symbols.
+static bool starts_with(const char* name, const char* prefix) {
+    return strncmp(name, prefix, strlen(prefix)) == 0;
+}
+
+// Every freeze/thaw template instantiation, including the internal glue between the
+// entries and the Freeze/Thaw classes, is parameterized by Config<oop_kind, BarrierSet>.
+static bool hasFreezeThawConfig(const char* name) {
+    return strstr(name, "6ConfigIL8oop_kind") != nullptr;
+}
+
+// freeze<Config<...>>(JavaThread*, long) and thaw<Config<...>>(long, JavaThread*, int) are
+// static templates, so HotSpot names them with internal linkage (_ZL) and a stripped libjvm lacks
+// them; the external-linkage spelling (_Z) is accepted as well.
+static bool isFreezeEntry(const char* name) {
+    return starts_with(name, "_ZL6freezeI") || starts_with(name, "_Z6freezeI");
+}
+
+static bool isThawEntry(const char* name) {
+    return starts_with(name, "_ZL4thawI") || starts_with(name, "_Z4thawI");
+}
+
+bool isContFreezeThawEntry(const char* blob_name) {
+    return hasFreezeThawConfig(blob_name)
+        || starts_with(blob_name, "_ZN10FreezeBase")
+        || starts_with(blob_name, "_ZN8ThawBase")
+        || starts_with(blob_name, "_ZN6FreezeI")
+        || starts_with(blob_name, "_ZN4ThawI")
+        || starts_with(blob_name, "_ZN12Continuation10thaw_entry")
+        || starts_with(blob_name, "_ZN12Continuation12freeze_entry")
+        || starts_with(blob_name, "_ZN12Continuation12prepare_thaw")
+        || starts_with(blob_name, "_ZN12Continuation30set_cont_fastpath")
+        || starts_with(blob_name, "_ZL13freeze_epilog");
+}
+
+bool VM::markContRuntimeAndClassify(CodeCache* lib) {
+    // Substitution needs positive proof that the executing freeze and thaw
+    // entry families were recognized; data-pointer symbols and address
+    // getters the ELF reader also names prove nothing about them.
+    bool freeze_seen = false;
+    bool thaw_seen = false;
+    lib->mark([&](const char* n) {
+        freeze_seen = freeze_seen || isFreezeEntry(n);
+        thaw_seen = thaw_seen || isThawEntry(n);
+        return isContFreezeThawEntry(n);
+    }, MARK_CONT_RUNTIME);
+    return freeze_seen && thaw_seen;
 }
 
 static bool isZeroInterpreterMethod(const char *blob_name) {
@@ -375,6 +425,11 @@ bool VM::initShared(JavaVM* vm) {
       }
   } else {
       lib->mark(isVmRuntimeEntry, MARK_VM_RUNTIME);
+      // Recognizing both executable freeze/thaw entry families is a
+      // precondition for the frozen-recovery origin substitution; stripped or
+      // renamed symbol tables leave it false and recovery keeps the rejection.
+      __atomic_store_n(&_cont_runtime_classifiable, VM::markContRuntimeAndClassify(lib),
+                       __ATOMIC_RELEASE);
       if (isZing()) {
           lib->mark(isZingRuntimeEntry, MARK_VM_RUNTIME);
       } else if (is_zero_vm) {

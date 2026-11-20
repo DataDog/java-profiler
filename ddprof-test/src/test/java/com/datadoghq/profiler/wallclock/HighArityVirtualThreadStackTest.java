@@ -133,7 +133,8 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 else if (frame.methodName() != null && frame.methodName().startsWith("break_"))
                   otherBreak = frame.methodName();
               }
-              if (compiled && !outer) {
+              // Recovered virtual stacks reach run(), so outer no longer marks a partial sample.
+              if (compiled) {
                 // Only a walk that stopped before reaching the carrier is outside this test's
                 // scope.
                 if (otherBreak != null && !crossedBoundary && errors == 0 && carriers == 0) {
@@ -149,14 +150,14 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                   count[2]++;
                   if (firstBadStack[2] == null) firstBadStack[2] = sample.getStackTraceString();
                 }
-                if (!trace.isTruncated()) {
+                if (!outer && !trace.isTruncated()) {
                   count[3]++;
                   if (firstBadStack[3] == null) firstBadStack[3] = sample.getStackTraceString();
                 }
               }
             });
     System.out.println(
-        "High-arity compiled partial samples="
+        "High-arity compiled boundary samples="
             + counts[0]
             + " continuationErrors="
             + counts[1]
@@ -164,7 +165,7 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
             + counts[4]
             + " "
             + excludedBreaks);
-    assertTrue(counts[0] > 0, "No compiled high-arity sample left callers frozen");
+    assertTrue(counts[0] > 0, "No compiled high-arity sample reached a continuation boundary");
     assertEquals(
         0,
         counts[1],

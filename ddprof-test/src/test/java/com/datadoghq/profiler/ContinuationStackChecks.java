@@ -28,6 +28,7 @@ public final class ContinuationStackChecks {
   private final Set<Long> carrierIds;
   private final long[] eligible = new long[2];
   private final long[] partialThaws = new long[2];
+  private long frozenRecoveries;
   private final long[] otherStops = new long[2];
   private final Map<String, Long> failureReasons = new LinkedHashMap<>();
   private long carrierOnlyFailures;
@@ -39,8 +40,15 @@ public final class ContinuationStackChecks {
 
   /** Takes carrier OS IDs discovered from workload samples in either sampling engine. */
   public ContinuationStackChecks(boolean carrierFrames, Set<Long> carrierIds) {
+    this(carrierFrames, carrierIds, 0);
+  }
+
+  /** {@code frozenRecoveries} is the recording's walkvm_frozen_recovered counter. */
+  public ContinuationStackChecks(
+      boolean carrierFrames, Set<Long> carrierIds, long frozenRecoveries) {
     this.carrierFrames = carrierFrames;
     this.carrierIds = new HashSet<>(carrierIds);
+    this.frozenRecoveries = frozenRecoveries;
   }
 
   /** Discovers carriers before checking failures that contain no application frames. */
@@ -208,7 +216,7 @@ public final class ContinuationStackChecks {
       checks.add(
           () ->
               assertTrue(
-                  partialThaws[i] >= MIN_SAMPLES,
+                  partialThaws[i] >= MIN_SAMPLES || frozenRecoveries >= MIN_SAMPLES,
                   "Insufficient partial-thaw samples for layout " + i));
       checks.add(
           () ->

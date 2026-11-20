@@ -85,7 +85,11 @@ public class VirtualThreadCarrierChaosTest extends CStackAwareAbstractProfilerTe
     ContinuationStackChecks counts =
         reduceEvents(
             eventType,
-            () -> new ContinuationStackChecks(carrierFrames, carriers),
+            () ->
+                new ContinuationStackChecks(
+                    carrierFrames,
+                    carriers,
+                    profiler.getDebugCounters().getOrDefault("walkvm_frozen_recovered", 0L)),
             ContinuationStackChecks::accept);
     System.out.println(eventType + " carrier=" + carrierFrames + " " + counts);
     counts.assertValid(eventType);

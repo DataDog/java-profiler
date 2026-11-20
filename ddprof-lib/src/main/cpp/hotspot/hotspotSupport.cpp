@@ -13,6 +13,7 @@
 #include "guards.h"
 #include "hotspot/contBoundary.h"
 #include "hotspot/hotspotSupport.h"
+#include "hotspot/frozenStackWalker.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/klassTraceId.h"
 #include "hotspot/vmStructs.inline.h"
@@ -412,6 +413,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Last ContinuationEntry crossed; advanced via parent() for nested continuations.
     VMContinuationEntry* cont_entry = nullptr;
+    unsigned int continuation_depth = 0;
     int continuation_stack_args = -1;
     VMNMethod* continuation_entry_nm = VMStructs::enterSpecialNMethod();
 
@@ -422,6 +424,18 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     const void* saved_anchor_pc = NULL;
     uintptr_t saved_anchor_sp = 0;
     uintptr_t saved_anchor_fp = 0;
+    // Frozen-recovery origin tracking (see walkThroughContinuation): the
+    // first mounted Java frame the walk verified, whether the freeze/thaw
+    // runtime was crossed, and whether an anchor jump skipped native frames.
+    const void* java_origin_pc = NULL;
+    bool cont_runtime_seen = false;
+    bool native_prefix_skipped = false;
+    // Called after a Java frame is emitted, so a frame an anchor redirect
+    // abandons can never become the origin.
+    auto recordJavaOrigin = [&](const void* pc, VMNMethod* origin_nm) {
+        if (java_origin_pc == NULL && origin_nm != NULL
+                && (origin_nm->isInterpreter() || origin_nm->isNMethod())) java_origin_pc = pc;
+    };
     bool anchor_recovery_used = false;
 
     // Set once the MARK_JAVA_PROFILER hook boundary is found for a
@@ -441,7 +455,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // Advances through a continuation boundary to the carrier frame.
     // Without carrier_frames (default, cstack=vm): always stops with a "JVM Continuation"
-    // synthetic root frame; frozen VT callers are not reconstructed.
+    // synthetic root frame after recovering frozen callers where supported.
     // With carrier_frames (cstack=vmx): attempts to walk through; failures emit BCI_ERROR
     // so the sample is truthfully marked truncated.
     // Walks cont_entry->parent() on repeated calls to handle nested continuations
@@ -450,9 +464,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     //
     // kind: how the caller classified the boundary (see hotspot/contBoundary.h).
     //   Completeness: unless kind proves completeness (verified Thawed), older
-    //     Java callers may remain frozen in a heap StackChunk and be skipped by
-    //     this walker, so the sample is marked truncated. That covers Frozen
-    //     (return barrier) and Unverified (speculative unknown-nmethod crossing).
+    //     Java callers may remain frozen in a heap StackChunk. Frozen boundaries
+    //     attempt heap recovery and clear the new truncation only on success;
+    //     Unverified crossings stay truncated without attempting heap recovery.
     //   Layout: without exported ContinuationEntry metadata, known boundaries
     //     use SP, stack arguments and the generated enterSpecial frame size.
     //     If that metadata is unavailable, Thawed/Unverified use fp as a
@@ -466,12 +480,28 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // anchor would append frames from below the boundary a second time.
         anchor = NULL;
         saved_anchor_sp = 0;
-        // Unless the boundary is verified fully thawed, older Java callers may
-        // remain in heap StackChunks, which this walker skips even when carrier
-        // walking succeeds.
-        if (!contBoundaryProvesComplete(kind) && truncated != nullptr) {
-            *truncated = true;
+        if (!contBoundaryProvesComplete(kind)) {
+            bool was_truncated = truncated != nullptr && *truncated;
+            // A recovered fault can bypass append's return and the rest of this
+            // lambda. Keep the partial trace truncated unless recovery completes.
+            if (truncated != nullptr) *truncated = true;
+            // Only a verified return barrier identifies frozen callers safely.
+            if (kind == ContBoundary::Frozen) {
+                // Substitute the first verified mounted Java frame's PC when the
+                // native prefix was fully walked, the freeze/thaw runtime was
+                // not crossed and its symbols classify; else keep entry_pc.
+                const void* frozen_origin =
+                        cont_runtime_seen || native_prefix_skipped || !VM::contRuntimeClassifiable()
+                                || java_origin_pc == NULL ? entry_pc : java_origin_pc;
+                if (FrozenStackWalker::append(vm_thread, frozen_origin, continuation_depth, frames, depth, actual_max_depth, details)) {
+                    Counters::increment(WALKVM_FROZEN_RECOVERED);
+                    if (truncated != nullptr) *truncated = was_truncated;
+                } else {
+                    Counters::increment(WALKVM_FROZEN_FAILED);
+                }
+            }
         }
+        continuation_depth++;
         if (depth >= actual_max_depth) return false;
         if (!features.carrier_frames) {
             fillFrame(frames[depth++], BCI_NATIVE_FRAME, CONT_ROOT_FRAME);
@@ -733,10 +763,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     saved_anchor_sp = anchor->lastJavaSP();
                     saved_anchor_fp = anchor->lastJavaFP();
                 }
-                const void* anchor_pc = walk_pc.raw();
+                const void* prev_pc = walk_pc.raw();
+                uintptr_t prev_sp = sp, prev_fp = fp;
+                const void* anchor_pc = prev_pc;
                 if (anchor->getFrame(anchor_pc, sp, fp)) {
                     // getFrame() redirects pc to lastJavaPC(), a return address.
                     walk_pc.setReturnAddress(anchor_pc);
+                    // A cursor-changing redirect jumps to the anchor frame,
+                    // leaving the native frames below it unvisited; an
+                    // identical cursor is a pure correction of the same frame.
+                    if (java_origin_pc == NULL
+                            && (walk_pc.raw() != prev_pc || sp != prev_sp || fp != prev_fp)) {
+                        native_prefix_skipped = true;
+                    }
                     if (!nm->contains(walk_pc.raw())) {
                         anchor = NULL;
                         continue;  // NMethod has changed as a result of correction
@@ -766,6 +805,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         const char* bcp = ((const char**)fp)[bcp_offset];
                         int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                         HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
+                        recordJavaOrigin(walk_pc.raw(), nm);
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         walk_pc.setReturnAddress(stripPointer(((void**)fp)[FRAME_PC_SLOT]));
                         fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
@@ -779,6 +819,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     if (method_id != JMETHODID_NOT_WALKABLE) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
+                        recordJavaOrigin(walk_pc.raw(), nm);
                         if (is_plausible_interpreter_frame) {
                             uintptr_t* fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
                             walk_pc.setReturnAddress(stripPointer(((void**)fp_addr)[FRAME_PC_SLOT]));
@@ -818,6 +859,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 VMMethod* method = nm->method();
                 jmethodID method_id = method->id();
                 HotspotSupport::fillJavaFrame(frames[depth++], type, 0, method_id, method);
+                recordJavaOrigin(walk_pc.raw(), nm);
 
                 // Prologue/epilogue unwinds can reach a return barrier without the frame-size step.
                 if (features.carrier_frames && VMContinuationEntry::type_size() == 0) {
@@ -890,7 +932,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
                     break;
                 }
-                uintptr_t prev_sp = sp;
+                uintptr_t prev_sp = sp, prev_fp = fp;
+                const void* prev_entry_pc = walk_pc.raw();
                 const void* entry_frame_pc = walk_pc.raw();
                 if (!next_anchor->getFrame(entry_frame_pc, sp, fp)) {
                     // End of Java stack
@@ -898,6 +941,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 }
                 // getFrame() redirects pc to lastJavaPC(), a return address.
                 walk_pc.setReturnAddress(entry_frame_pc);
+                if (java_origin_pc == NULL
+                        && (walk_pc.raw() != prev_entry_pc || sp != prev_sp || fp != prev_fp)) {
+                    // A cursor-changing redirect skips the frames below it.
+                    native_prefix_skipped = true;
+                }
                 if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
                     break;
@@ -997,7 +1045,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)walk_pc.raw(), walk_pc.isReturnAddress(), lock_index);
-            if (resolution.is_marked()) {
+            if (resolution.mark == MARK_CONT_RUNTIME) {
+                // In-progress freeze/thaw keeps its runtime frames between the
+                // interrupted PC and the barrier; a completed one has returned
+                // past them. The frame is processed as an ordinary native one.
+                cont_runtime_seen = true;
+            } else if (resolution.is_marked()) {
                 if (resolution.mark == MARK_JAVA_PROFILER &&
                     isHookPrefixedSample(event_type)) {
                     // Discard frames captured above the malloc/socket hook boundary,
@@ -1073,6 +1126,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             const char* bcp = ((const char**)recovery_fp)[bcp_offset];
                             int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                             HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
+                            // The redirect to the anchor frame left the native
+                            // callers below it unvisited.
+                            if (java_origin_pc == NULL) native_prefix_skipped = true;
+                            // The anchor frame's own PC, not the sender's.
+                            if (java_origin_pc == NULL) recordJavaOrigin(recovery_pc, CodeHeap::findNMethod(recovery_pc));
                             continuation_stack_args = 0;
                             sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
                             walk_pc.setReturnAddress(stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]));
@@ -1102,6 +1160,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         if (depth > 0) {
                             fillFrame(frames[depth++], BCI_ERROR, "[skipped frames]");
                         }
+                        // The redirect to the anchor frame left the native
+                        // callers below it unvisited.
+                        if (java_origin_pc == NULL) native_prefix_skipped = true;
                         continue;
                     }
                     Counters::increment(WALKVM_ANCHOR_INLINE_NO_SP);
@@ -1154,8 +1215,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // try to read the interpreter frame directly from the anchor's FP.
     // In HotSpot, lastJavaFP != 0 reliably indicates an interpreter frame.
     if (anchor != NULL) {
+        // No Java-frame iteration ran (the first one consumes the anchor), so
+        // the native frames below the anchor were never visited.
+        native_prefix_skipped = true;
         uintptr_t anchor_fp = anchor->lastJavaFP();
         uintptr_t anchor_sp = anchor->lastJavaSP();
+        const void* fallback_origin_pc = anchor->lastJavaPC();
         if (anchor_sp == 0) {
             Counters::increment(WALKVM_ANCHOR_NOT_IN_JAVA);
             goto done;
@@ -1177,6 +1242,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     sp = ((uintptr_t*)anchor_fp)[InterpreterFrame::sender_sp_offset];
                     walk_pc.setReturnAddress(stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]));
                     fp = *(uintptr_t*)anchor_fp;
+                    // The verified frame's own PC, not the sender's: a lone
+                    // mounted frame advances straight to a stub sender.
+                    if (java_origin_pc == NULL) recordJavaOrigin(fallback_origin_pc, CodeHeap::findNMethod(fallback_origin_pc));
                     if (sp != 0 && sp < bottom && aligned(sp)) {
                         goto unwind_loop;
                     }

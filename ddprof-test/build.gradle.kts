@@ -254,6 +254,10 @@ configure<ProfilerTestExtension> {
   extraJvmArgs.addAll(
     "-Dddprof.disable_unsafe=true",
     "-XX:OnError=/tmp/do_stuff.sh",
+    // An interrupted PC between debug-info points takes the next PcDesc's inline scope. Inlined into
+    // recursiveWorkload's copies, sampledLeaf's PC can resolve to another copy (extra callers seen
+    // on GraalVM); out of line, its callers come from exact return PCs. Affects only this method.
+    "-XX:CompileCommand=dontinline,com/datadoghq/profiler/wallclock/FrozenVirtualThreadStackTest.sampledLeaf",
   )
 
   // Optional per-invocation heap override (-PtestMaxHeap=1536m). Appended after

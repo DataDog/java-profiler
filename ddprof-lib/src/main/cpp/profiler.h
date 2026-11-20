@@ -577,6 +577,8 @@ public:
    *   MARK_INTERPRETER = 2     -- terminates the scan
    *   MARK_COMPILER_ENTRY = 3  -- inserts a pseudo JIT-compile-task frame, then resumes unwinding
    *   MARK_JAVA_PROFILER = 4  -- resets depth and resumes unwinding above the hook boundary
+   *   MARK_THREAD_ENTRY = 5    -- terminates the scan
+   *   MARK_CONT_RUNTIME = 6    -- annotation only: the frame keeps its symbol, the walk continues
    *
    * During stack walking, we perform symbol resolution (binarySearch) to check
    * marks and pack the mark value for later use. The performance is O(log n) for
@@ -634,13 +636,13 @@ public:
     };
     int bci;                            // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
     char mark;                         // Value domain: 0 (unmarked) or one of the Mark
-                                        // enum constants (codeCache.h), currently 1-5.
+                                        // enum constants (codeCache.h), currently 1-6.
                                         // Kept as char rather than Mark since it is
                                         // packed into RemoteFramePacker's 3-bit field.
-    // True if this frame carries a JVM-internal mark; caller must inspect
+    // True if this frame carries a walk-control mark; caller must inspect
     // `mark` to decide whether to terminate the walk or dispatch/resume
     // (see the Mark values table above resolveNativeFrameForWalkVM).
-    bool is_marked() const { return mark != 0; }
+    bool is_marked() const { return isWalkControlMark(mark); }
     NativeFrameResolution(const char* name, int bci_type, char mark_value = 0)
       : method_name(name), bci(bci_type), mark(mark_value) {}
     NativeFrameResolution(unsigned long packed, int bci_type, char mark_value = 0)
