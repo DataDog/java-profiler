@@ -1,0 +1,179 @@
+name: Release Train
+run-name: "Weekly release from certified ${{ inputs.sha || 'commit' }}"
+
+# Weekly automated minor release. Picks the newest commit certified by the
+# nightly Release Certification workflow that the train has not released yet,
+# and dispatches the Validated Release workflow pinned to that commit.
+# Skips (with a Slack note) when no certified commit is unreleased.
+# Major and patch releases stay manual.
+
+on:
+  schedule:
+    # Friday 11:00 UTC = 12:00 CET (winter); 13:00 CEST in summer
+    - cron: '0 11 * * 5'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Override: certified commit SHA to release (must carry a certification note)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Dry-run the dispatched release (no tag, no GitLab trigger)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-train
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Pick certified candidate
+        id: candidate
+        env:
+          OVERRIDE_SHA: ${{ inputs.sha }}
+        run: |
+          if [ -n "$OVERRIDE_SHA" ]; then
+            git fetch origin refs/notes/certification:refs/notes/certification 2>/dev/null || \
+              { echo "::error::No certification notes exist and an override SHA was requested"; exit 1; }
+            git rev-parse --verify --quiet "$OVERRIDE_SHA^{commit}" >/dev/null || \
+              { echo "::error::Override SHA $OVERRIDE_SHA is not a commit"; exit 1; }
+            if ! git notes --ref=certification list 2>/dev/null | awk '{print $2}' | grep -qx "$(git rev-parse "$OVERRIDE_SHA^{commit}")"; then
+              echo "::error::Override SHA $OVERRIDE_SHA carries no certification note"
+              exit 1
+            fi
+            CANDIDATE=$(git rev-parse "$OVERRIDE_SHA^{commit}")
+          else
+            OUT=$(.github/scripts/pick-release-candidate.sh) && RC=0 || RC=$?
+            if [ "$RC" -ne 0 ]; then
+              if [ "$RC" -eq 10 ]; then
+                echo "skip-reason=$OUT" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "::error::pick-release-candidate.sh failed: $OUT"
+              exit 1
+            fi
+            CANDIDATE="$OUT"
+          fi
+
+          # Hard guard against two releases from the same certified commit:
+          # refuse when any existing v_* tag points at the candidate.
+          for tag in $(git tag --list 'v_*'); do
+            if [ "$(git rev-parse "$tag^{commit}")" == "$CANDIDATE" ]; then
+              echo "::error::Candidate $CANDIDATE already carries a release tag ($tag)"
+              exit 1
+            fi
+          done
+
+          echo "candidate=$CANDIDATE" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release train candidate"
+            echo "- Commit: $CANDIDATE"
+            git notes --ref=certification show "$CANDIDATE" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report skip
+        if: ${{ steps.candidate.outputs.skip-reason != '' }}
+        env:
+          REASON: ${{ steps.candidate.outputs.skip-reason }}
+        run: |
+          echo "## Release train skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "$REASON" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch Validated Release
+        if: ${{ steps.candidate.outputs.candidate != '' }}
+        id: dispatch
+        env:
+          CANDIDATE: ${{ steps.candidate.outputs.candidate }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          gh workflow run release-validated.yml \
+            --ref "$CANDIDATE" \
+            -f release_type=minor \
+            -f dry_run=$DRY_RUN \
+            -f skip_tests=false \
+            -f request_id="release-train-${GITHUB_RUN_ID}" \
+            -f source_sha="$CANDIDATE"
+
+          # Find the dispatched run: newest workflow_dispatch run whose head
+          # SHA is the candidate.
+          sleep 10
+          RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
+            --limit 20 --json databaseId,headSha,createdAt \
+            --jq "[.[] | select(.headSha == \"$CANDIDATE\")] | sort_by(.createdAt) | last | .databaseId")
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Could not locate the dispatched release run for $CANDIDATE"
+            exit 1
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "run_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release run"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for release completion
+        if: ${{ steps.dispatch.outputs.run_id != '' }}
+        id: wait
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          CONCLUSION=$(gh run watch "$RUN_ID" --exit-status --interval 60 >/dev/null 2>&1 && echo success || \
+            gh run view "$RUN_ID" --json conclusion --jq '.conclusion')
+          echo "conclusion=$CONCLUSION" >> "$GITHUB_OUTPUT"
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::Release run $RUN_ID finished with conclusion: $CONCLUSION"
+          fi
+
+      - name: Report release outcome
+        if: ${{ steps.dispatch.outputs.run_id != '' }}
+        env:
+          CONCLUSION: ${{ steps.wait.outputs.conclusion }}
+          CANDIDATE: ${{ steps.candidate.outputs.candidate }}
+          RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+        run: |
+          # The released version is deterministic: compute-version from the
+          # candidate with all tags visible.
+          VERSION=$(utils/compute-version.sh --release --minor 2>/dev/null || echo unknown)
+          {
+            echo "## Release train result"
+            echo "- Candidate: $CANDIDATE"
+            echo "- Version: v_$VERSION"
+            echo "- Release run: $RUN_URL"
+            echo "- Conclusion: $CONCLUSION"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Release train: v_$VERSION from $CANDIDATE ($CONCLUSION) — $RUN_URL"
+
+      - name: Notify Slack on skip or failure
+        if: ${{ !cancelled() && (steps.candidate.outputs.skip-reason != '' || failure()) }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          webhook = os.environ.get("SLACK_WEBHOOK", "")
+          if not webhook:
+              print("SLACK_WEBHOOK not configured, skipping notification")
+              raise SystemExit(0)
+          body = open(os.environ["GITHUB_STEP_SUMMARY"]).read()
+          payload = {"text": "java-profiler release train\n" + body}
+          req = urllib.request.Request(webhook, data=json.dumps(payload).encode(),
+                                       headers={"Content-Type": "application/json"})
+          urllib.request.urlopen(req)
+          PY
