@@ -37,8 +37,8 @@ they keep their symbols, and native stack walks continue through them.
 For a native interrupted PC outside that runtime, the chunk is quiescent. An
 example is a native call that keeps the thread in the Java state, such as
 compiled `System.nanoTime`; JNI calls change the state and stay rejected. Recovery is
-then gated on the first mounted Java frame the walk verified instead of the
-interrupted PC.
+then gated on the first mounted Java frame the walk verified and emitted instead
+of the interrupted PC; a frame that an anchor redirect replaces does not count.
 That substitution requires positive proof: every native frame between the
 interrupted PC and that Java frame was walked and resolved (no anchor-mediated
 jump skipped them), and library initialization recognized both executable
@@ -102,11 +102,13 @@ older callers were recovered.
   handler layouts, frame bounds and invalid saved-PC slots.
 - `frozenStackWalker_ut.cpp` exercises the production layout initialization,
   immutable successful publication and retry after incomplete metadata discovery.
-- `originAnchorFrozen_ut.cpp` classifies the freeze/thaw runtime symbols and
+- `originAnchorFrozen_ut.cpp` classifies the freeze/thaw runtime symbols,
+  including the internal-linkage (`_ZL`) entry names HotSpot exports, and
   walks with anchor-verified Java frames: an ordinary native call recovers the
-  frozen callers, a freeze/thaw-runtime origin keeps the rejection, and without
-  an anchor no Java frames are manufactured. It also drives `append` directly
-  through its state, origin, nesting, geometry, depth and chunk-chain guards.
+  frozen callers, a freeze/thaw-runtime origin or an anchor-replaced compiled
+  frame keeps the rejection, and without an anchor no Java frames are
+  manufactured. It also drives `append` directly through its state, origin,
+  nesting, geometry, depth and chunk-chain guards.
 - `walkVmAttribution_ut.cpp` checks that freeze/thaw-marked frames keep their
   symbols in walkVM and in the FP/DWARF native-trace conversion.
 - `NestedContinuationTransitionTest` holds real child-publication and child-return

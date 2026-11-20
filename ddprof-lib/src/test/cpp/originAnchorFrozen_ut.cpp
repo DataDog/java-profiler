@@ -430,6 +430,7 @@ protected:
         EntryFrameRedirectB8,      // entry-frame anchor redirection
         IdenticalCursorB9,        // stub-blob anchor redirect with an identical cursor
         SpOnlyCursorChangeB10,    // stub-blob anchor redirect changing SP alone
+        CompiledAnchorRedirectB11, // compiled-nmethod anchor redirect abandons that frame
         NativeCallNoAnchorC,
     };
 
@@ -460,6 +461,7 @@ protected:
                 /* EntryFrameRedirectB8 */ {false, true, false, false, true, true, false, 1, 0},
                 /* IdenticalCursorB9 */ {true, true, true, false, true, true, false, 1, 0},
                 /* SpOnlyCursorChangeB10 */ {false, true, true, false, true, true, false, 1, 0},
+                /* CompiledAnchorRedirectB11 */ {false, true, false, false, true, true, false, 1, 0},
                 /* NativeCallNoAnchorC */ {false, true, false, false, false, false, false, 0, 0},
         };
         return table[static_cast<int>(c)];
@@ -500,7 +502,7 @@ protected:
         for (Control control : {JavaOriginA, NativeCallAnchorB, FreezeRuntimeAnchorB2, NativeCallFallbackB3,
                                 NativeCallUnclassifiableB4, OneMountedFrameB5, GenericAnchorRedirectB6,
                                 SameBlobStubRedirectB7, EntryFrameRedirectB8, IdenticalCursorB9,
-                                SpOnlyCursorChangeB10, NativeCallNoAnchorC}) {
+                                SpOnlyCursorChangeB10, CompiledAnchorRedirectB11, NativeCallNoAnchorC}) {
             dprintf(2, "[child] begin control %d\n", static_cast<int>(control));
             check(control, stack);
             if (::testing::Test::HasFailure()) return; // A must validate before the rest
@@ -549,6 +551,12 @@ protected:
             thread.anchor = {reinterpret_cast<uintptr_t>(&stack[0]),
                              reinterpret_cast<uintptr_t>(&stack[16]), stubPc()};
         }
+        if (control == CompiledAnchorRedirectB11) {
+            // The native caller returns into a compiled frame that the anchor
+            // replaces before it is emitted; that frame cannot be the origin.
+            saved_chain_pc = stack[5];
+            stack[5] = reinterpret_cast<uintptr_t>(pc(2));
+        }
         if (control == EntryFrameRedirectB8) {
             saved_chain_pc = stack[5];
             stack[5] = reinterpret_cast<uintptr_t>(entryPc());
@@ -584,6 +592,10 @@ protected:
                 : reinterpret_cast<uintptr_t>(&stack[16]);
         if (control == IdenticalCursorB9 || control == SpOnlyCursorChangeB10) {
             ASSERT_TRUE(blob(1)->contains(stubPc()));
+        }
+        if (control == CompiledAnchorRedirectB11) {
+            ASSERT_TRUE(blob(2)->isNMethod());
+            ASSERT_FALSE(blob(2)->contains(thread.anchor.pc)); // redirect leaves the nmethod
         }
         if (native_origin) {
             ASSERT_EQ(nullptr, CodeHeap::findNMethod(reinterpret_cast<void*>(frame.pc())));
@@ -629,6 +641,7 @@ protected:
             stack[5] = saved_chain_pc;
             thread.anchor = saved_anchor;
         }
+        if (control == CompiledAnchorRedirectB11) stack[5] = saved_chain_pc;
         if (control == SameBlobStubRedirectB7) {
             stack[5] = saved_chain_pc;
             stack[4] = saved_chain_fp;
