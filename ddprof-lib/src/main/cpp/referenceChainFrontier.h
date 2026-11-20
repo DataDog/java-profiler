@@ -229,7 +229,8 @@ public:
                            u32 attempt_id, u32 previous_attempt_id,
                            bool retrying_incomplete,
                            bool *weaker_root_noop = nullptr,
-                           bool static_sweep = false);
+                           bool static_sweep = false,
+                           u32 retry_base_id = 0);
 
   // Fresh-turn flags share FrontierEntry's existing padding.
   // Pending turns survive index eviction; served turns do not regain fresh-lane priority.

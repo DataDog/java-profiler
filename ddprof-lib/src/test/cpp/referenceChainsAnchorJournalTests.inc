@@ -415,6 +415,43 @@ TEST_F(ReferenceChainsBfsTest, StaticSweepProgressSurvivesIndexEviction) {
     tracker->stop();
 }
 
+// An incomplete retry sequence widens the recognized-stamp window to every attempt of the
+// sequence: a report stamped by the sequence's FIRST attempt still suppresses restaging two
+// attempts later (alternating oversized groups must not ping-pong each other out of the durable
+// index). The window expires with the sequence: a completed sequence, or a range outside it,
+// suppresses only on the current attempt's stamp.
+TEST_F(ReferenceChainsBfsTest, RetrySequenceWindowRecognizesEverySequenceAttempt) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong tag = 21101;
+    insertAnchorEntry(frontier, tag, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+
+    // Attempt 1 stamps the JNI report, then truncates (the sequence opens with base 1).
+    frontier->markRootReportObserved(tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, 1);
+    // Attempt 2 (the immediate retry) suppresses via the previous-attempt window...
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 2, 1, true, nullptr,
+        /*static_sweep=*/false, /*retry_base_id=*/1));
+    // ...and attempt 3 must STILL suppress the attempt-1 stamp via the sequence window.
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 3, 2, true, nullptr,
+        /*static_sweep=*/false, /*retry_base_id=*/1))
+        << "a stamp from the sequence's first attempt must suppress within the sequence";
+    // Outside the sequence (no open sequence): the old one-attempt window applies.
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 3, 2, true, nullptr,
+        /*static_sweep=*/false, /*retry_base_id=*/0));
+    // The sequence completed: the suppression expires with it.
+    EXPECT_FALSE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 3, 2, false, nullptr,
+        /*static_sweep=*/false, /*retry_base_id=*/1));
+
+    tracker->stop();
+}
+
 TEST_F(ReferenceChainsBfsTest, DurableRootReportProgressStampBoundaries) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -474,8 +511,17 @@ TEST_F(ReferenceChainsBfsTest, DurableRootReportProgressStampBoundaries) {
         FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 8U,
         FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 7U, true));
     weaker_root_noop = false;
-    EXPECT_TRUE(frontier->rootReportCompleted(
+    // A stale static-sweep stamp alone no longer suppresses the weaker JNI report: after the
+    // static edge disappears and eviction drops the holder from the durable index, the JNI report
+    // is the only route back into indexed rotation (see rootReportCompleted()).
+    EXPECT_FALSE(frontier->rootReportCompleted(
         static_tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 8, false,
+        &weaker_root_noop));
+    EXPECT_FALSE(weaker_root_noop);
+    // Index coverage still suppresses: the holder sits in the durable index, so the JNI report
+    // restages nothing.
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        static_tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, true, 9, 8, false,
         &weaker_root_noop));
     EXPECT_TRUE(weaker_root_noop);
 
@@ -514,7 +560,11 @@ TEST_F(ReferenceChainsBfsTest, DurableRootReportProgressStampBoundaries) {
     tracker->stop();
 }
 
-TEST_F(ReferenceChainsBfsTest, WeakerJniGlobalReportDoesNotReserveForStaticRoot) {
+// A stale static-sweep stamp alone no longer suppresses the weaker JNI report: after the static
+// edge disappears and eviction drops the holder from the durable index, the JNI report is the only
+// route back into indexed rotation, so it stages a re-enlistment observation even though the old
+// sweep stamp is still on the frontier entry.
+TEST_F(ReferenceChainsBfsTest, WeakerJniGlobalReportStagesDespiteStaleSweepStamp) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -528,15 +578,16 @@ TEST_F(ReferenceChainsBfsTest, WeakerJniGlobalReportDoesNotReserveForStaticRoot)
         /*static_sweep=*/true);
 
     AnchorScopedPass pass(tracker, frontier);
-    ASSERT_EQ(AnchorObservationBuffer::CAPACITY,
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY - 1,
               AnchorAcc::fillAnchorJournalForTest(
-                  pass.ctx, AnchorObservationBuffer::CAPACITY));
+                  pass.ctx, AnchorObservationBuffer::CAPACITY - 1));
     jlong reported = tag;
     EXPECT_EQ(JVMTI_ITERATION_CONTINUE,
               pass.root(JVMTI_HEAP_ROOT_JNI_GLOBAL, 0, &reported));
     EXPECT_FALSE(pass.ctx.anchor_observation_overflow);
     EXPECT_EQ(AnchorObservationBuffer::CAPACITY,
-              AnchorAcc::journalCountForTest());
+              AnchorAcc::journalCountForTest())
+        << "the stale sweep stamp must not suppress the JNI re-enlistment observation";
     pass.scope.flush();
 
     tracker->stop();
@@ -963,6 +1014,54 @@ TEST_F(ReferenceChainsBfsTest, StagedAtRiskReportsRespectPerClassQuota) {
     EXPECT_EQ(1u, AnchorAcc::journalCountForTest());
     pass.scope.flush();
     EXPECT_EQ(cap, AnchorAcc::staticAnchorFifoSizeForTest());
+
+    tracker->stop();
+}
+
+// Rejected per-klass staging must not consume scope class-set slots: a klass whose scope-local
+// staging reached its per-klass cap rejects further records without claiming class-set slots, so
+// another class keeps staging into the same scope afterwards (and the fixed table cannot fill up
+// with zero-count claims).
+TEST_F(ReferenceChainsBfsTest, RejectedAtRiskStagingKeepsClassSetSlotsForOtherClasses) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const size_t cap = AnchorAcc::kAtRiskPerKlassCap;
+    const jlong class_tag_a = -4200;
+    const jlong class_tag_b = -4201;
+    tracker->classTags()->insert(class_tag_a, 42);
+    tracker->classTags()->insert(class_tag_b, 43);
+    // Per-klass cap anchors for A, then far more A anchors than the cap: the excess must be
+    // REJECTED (not staged), and the rejections must not erode the class set.
+    for (size_t i = 0; i < cap + 200; i++) {
+        insertAnchorEntry(frontier, 30000 + (jlong)i, 20000,
+                          JVMTI_HEAP_REFERENCE_STACK_LOCAL, class_tag_a);
+    }
+    const jlong b_tag = 31000;
+    insertAnchorEntry(frontier, b_tag, 20000,
+                      JVMTI_HEAP_REFERENCE_STACK_LOCAL, class_tag_b);
+
+    AnchorScopedPass pass(tracker, frontier);
+    for (size_t i = 0; i < cap + 200; i++) {
+        jlong tag = 30000 + (jlong)i;
+        EXPECT_EQ(JVMTI_VISIT_OBJECTS,
+                  AnchorAcc::reportStaticFieldEdgeForTest(
+                      -555, &tag, &pass.ctx, class_tag_a));
+    }
+    EXPECT_EQ(cap, AnchorAcc::journalCountForTest())
+        << "only the per-klass cap's worth of A records may stage";
+
+    // A different class stages into the same scope after all those rejections.
+    jlong b_reported = b_tag;
+    EXPECT_EQ(JVMTI_VISIT_OBJECTS,
+              AnchorAcc::reportStaticFieldEdgeForTest(
+                  -555, &b_reported, &pass.ctx, class_tag_b));
+    EXPECT_EQ(cap + 1, AnchorAcc::journalCountForTest())
+        << "the rejected A records must not have burned class-set slots";
+    pass.scope.flush();
+    EXPECT_EQ(cap + 1, AnchorAcc::staticAnchorFifoSizeForTest());
 
     tracker->stop();
 }

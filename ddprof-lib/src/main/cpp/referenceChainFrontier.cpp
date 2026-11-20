@@ -282,7 +282,8 @@ bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
                                         u32 previous_attempt_id,
                                         bool retrying_incomplete,
                                         bool *weaker_root_noop,
-                                        bool static_sweep) {
+                                        bool static_sweep,
+                                        u32 retry_base_id) {
   if (weaker_root_noop != nullptr) {
     *weaker_root_noop = false;
   }
@@ -295,17 +296,29 @@ bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
     return false;
   }
   const FrontierEntry &entry = _table[idx];
+  // An incomplete retry sequence widens the recognized-stamp window to every attempt of the
+  // sequence: alternating oversized groups would otherwise ping-pong (each retry restages the
+  // group whose stamp fell out of the one-attempt window, displacing the other from the durable
+  // index, and enumeration never reaches later roots). The window expires with the sequence:
+  // once an attempt completes, retrying_incomplete is false and only the current-attempt stamp
+  // suppresses. Static-sweep stamps carry the high attempt bit, so they never fall inside a
+  // root-enumeration sequence's range (and the sequence id is 0 on static paths).
+  const bool retry_sequence_seen = retrying_incomplete && retry_base_id != 0 &&
+      retry_base_id <= attempt_id &&
+      entry.root_report_attempt >= retry_base_id &&
+      entry.root_report_attempt <= attempt_id &&
+      (entry.root_report_attempt & FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT) == 0;
   // Static attribution stays authoritative, but an unseen evicted anchor may re-enlist.
-  // An index hit or accepted retry stamp suppresses restaging of the weaker report.
+  // An index hit or accepted retry stamp suppresses restaging of the weaker report. The old
+  // static-sweep stamp alone must NOT suppress: after a static edge disappears and FIFO eviction
+  // drops the holder from the durable index, the static sweep can never rediscover the holder
+  // through that edge again - only the JNI-global report can re-enlist it, so a stale sweep stamp
+  // would lock it out of indexed rotation forever (the stamp survives eviction because
+  // root_report_attempt lives on the frontier entry, not in the index).
   bool weaker_jni_global = entry.parent_tag == 0 &&
       entry.root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
       root_kind == JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
   if (weaker_jni_global) {
-    bool static_report_seen =
-        (entry.root_report_attempt &
-         FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT) != 0 &&
-        (entry.root_report_kind_mask &
-         FrontierRootReport::STATIC_FIELD_MASK) != 0;
     bool root_global_seen =
         attempt_id != 0 && entry.root_report_attempt == attempt_id &&
         (entry.root_report_kind_mask &
@@ -315,8 +328,11 @@ bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
         entry.root_report_attempt == previous_attempt_id &&
         (entry.root_report_kind_mask &
          FrontierRootReport::JNI_GLOBAL_MASK) != 0;
-    if (anchor_indexed || static_report_seen || root_global_seen ||
-        previous_global_seen) {
+    bool sequence_global_seen = retry_sequence_seen &&
+        (entry.root_report_kind_mask &
+         FrontierRootReport::JNI_GLOBAL_MASK) != 0;
+    if (anchor_indexed || root_global_seen || previous_global_seen ||
+        sequence_global_seen) {
       if (weaker_root_noop != nullptr) {
         *weaker_root_noop = true;
       }
@@ -346,7 +362,10 @@ bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
   bool previous_stamp = retrying_incomplete && previous_attempt_id != 0 &&
       entry.root_report_attempt == previous_attempt_id &&
       (entry.root_report_kind_mask & kind_bit) != 0;
-  return anchor_indexed || current_stamp || previous_stamp;
+  bool sequence_stamp = retry_sequence_seen &&
+      (entry.root_report_kind_mask & kind_bit) != 0;
+  return anchor_indexed || current_stamp || previous_stamp ||
+         sequence_stamp;
 }
 
 bool FrontierTable::tryMarkAnchorRotationPending(jlong tag) {

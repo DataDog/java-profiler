@@ -888,6 +888,12 @@ private:
   // The last incomplete root attempt and the shared source-qualified report-attempt sequence.
   u32 _last_root_enum_attempt_id = 0;
   u32 _root_report_attempt_sequence = 0;
+  // The FIRST attempt of the current incomplete root-enumeration retry sequence (0 when no
+  // sequence is open). An ongoing sequence widens the recognized-stamp window in
+  // rootReportCompleted() to every attempt of the sequence, so alternating oversized groups
+  // cannot ping-pong each other out of the durable index; it expires when an attempt completes.
+  // BFS-thread-only, like the fields above.
+  u32 _root_enum_retry_base_attempt_id = 0;
 
   // Consecutive root-enumeration attempts ended by a JVMTI error; reset by any successful
   // attempt, restartSearch(), and resetSearchStateForTest(). At MAX_CONSECUTIVE_ENUM_ERRORS the
@@ -1189,7 +1195,11 @@ private:
 
   // Selects durable roots and indexed collections (including reparented ones)
   // with a tiered cursor: leak-tagged, fresh, containers, then other roots fairly.
-  std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
+  // When non-null, `fresh_picked` receives every fresh-lane pick (tag + own_class_tag) this
+  // call selected - the caller requeues the picks the walk did not consume back to the fresh
+  // queue's front, since selection no longer marks a picked anchor served.
+  std::vector<jlong> collectStaticFieldAnchorsForRotation(
+      int max_count, std::vector<FreshAnchor> *fresh_picked = nullptr);
   bool isSelectableAnchor(const FrontierEntry &entry, jlong own_class_tag) const;
   // Callback and replay are serialized on the BFS thread, so callback-time reads see prior flushes.
   bool isAnchorIndexed(jlong tag) const {
@@ -1280,6 +1290,12 @@ private:
   // re-incrementing each entry's class occupancy, and rebuilds the set - the truncated-walk requeue
   // path.
   void requeueStaticAnchorFifoFront(const std::vector<AtRiskAnchor> &entries);
+  // Pushes fresh-lane picks whose walk never happened back to _static_anchor_fresh_queue's FRONT
+  // in reverse order (preserving admission order). Their FIRST_LOOK_PENDING flag is untouched -
+  // the flag is spent only by the post-descent serving (or by the selection-time spending of the
+  // fresh-room overflow drain).
+  void requeueStaticAnchorFreshFront(
+      const std::vector<FreshAnchor> &entries);
   // When non-null, receives the tags of RESOLVED-but-unwalked anchors at the truncation break point
   // - GetObjectsWithTags may return fewer anchors than requested (dead tags drop out) in its own
   // order, so the caller cannot recover the un-walked set from a consumed index; the walk hands the

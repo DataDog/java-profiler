@@ -83,11 +83,22 @@ public:
     u32 live_count = live == _tracker->_static_anchor_fifo_klass_counts.end()
                          ? 0
                          : live->second;
-    u32 slot = atRiskClassSlot(klass_id);
+    // Look the slot up WITHOUT claiming it: a rejection (table full or per-klass cap exceeded)
+    // must not burn a class-set slot for the rest of the scope - a claimed-but-unused slot
+    // accumulates across callbacks and can fill the fixed table, silently refusing later
+    // eligible classes.
+    bool found = false;
+    u32 slot = findAtRiskClassSlot(klass_id, found);
+    u32 staged = found ? _at_risk_class_counts[slot].count : 0;
     if (slot == AT_RISK_CLASS_SET_SLOTS ||
-        live_count + _at_risk_class_counts[slot].count >=
+        live_count + staged >=
             ReferenceChainTracker::STATIC_ANCHOR_ATRISK_PER_KLASS_CAP) {
       return false;
+    }
+    if (!found) {
+      _at_risk_class_used[slot >> 3] |=
+          static_cast<u8>(1u << (slot & 7));
+      _at_risk_class_counts[slot] = AtRiskClassCount{klass_id, 0};
     }
     _at_risk_class_counts[slot].count++;
     _at_risk_staging_budget--;
@@ -129,22 +140,22 @@ private:
   // This fixed table accounts staged classes without allocating in heap callbacks.
   // Twice the FIFO cap holds one distinct class per staged record at half load.
 
-  u32 atRiskClassSlot(u32 klass_id) {
+  u32 findAtRiskClassSlot(u32 klass_id, bool &found) const {
     u32 slot = klass_id * 0x9E3779B9U >> 21;
     for (u32 probes = 0; probes < AT_RISK_CLASS_SET_SLOTS; probes++) {
       bool used = (_at_risk_class_used[slot >> 3] &
                    static_cast<u8>(1u << (slot & 7))) != 0;
       if (!used) {
-        _at_risk_class_used[slot >> 3] |=
-            static_cast<u8>(1u << (slot & 7));
-        _at_risk_class_counts[slot] = AtRiskClassCount{klass_id, 0};
+        found = false;
         return slot;
       }
       if (_at_risk_class_counts[slot].klass_id == klass_id) {
+        found = true;
         return slot;
       }
       slot = (slot + 1) & (AT_RISK_CLASS_SET_SLOTS - 1);
     }
+    found = false;
     return AT_RISK_CLASS_SET_SLOTS;
   }
 
@@ -229,6 +240,9 @@ struct ReferenceChainPassContext {
   u32 root_report_attempt_id = 0;
   u32 root_report_previous_attempt_id = 0;
   bool root_report_retrying_incomplete = false;
+  // The current incomplete retry sequence's first attempt id (0 outside root enumeration): the
+  // recognized-stamp window in rootReportCompleted() widens to the whole sequence.
+  u32 root_report_retry_base_id = 0;
 
   // Set with `truncated` when the journal had no room; distinct from frontier_cap_hit. The rejected
   // transition is not performed, so the source traversal obligation stays unserved.

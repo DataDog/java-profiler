@@ -1150,6 +1150,7 @@ void ReferenceChainTracker::restartSearch() {
   _leak_tags_resolved = 0;
   _root_enum_incomplete = false;
   _last_root_enum_attempt_id = 0;
+  _root_enum_retry_base_attempt_id = 0;
   _root_report_attempt_sequence = 0;
   _static_field_retry_chunk_start = -1;
   _static_field_retry_attempt_id = 0;
@@ -1277,6 +1278,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _last_root_enum_safepoint_ms = 0;
   _root_enum_incomplete = false;
   _last_root_enum_attempt_id = 0;
+  _root_enum_retry_base_attempt_id = 0;
   _root_report_attempt_sequence = 0;
   _static_field_retry_chunk_start = -1;
   _static_field_retry_attempt_id = 0;

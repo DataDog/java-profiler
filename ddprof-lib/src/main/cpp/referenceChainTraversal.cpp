@@ -81,7 +81,8 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         *tag_ptr, translated_root_kind,
         /*anchor_indexed=*/ctx->tracker->isAnchorIndexed(*tag_ptr),
         ctx->root_report_attempt_id, ctx->root_report_previous_attempt_id,
-        ctx->root_report_retrying_incomplete, &weaker_root_noop);
+        ctx->root_report_retrying_incomplete, &weaker_root_noop,
+        /*static_sweep=*/false, ctx->root_report_retry_base_id);
   }
   // Only reserve LOCAL records replay can absorb; repeated refusals would fill the same prefix and
   // starve later roots.
@@ -289,6 +290,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     ctx.tracker = this;
     ctx.root_report_retrying_incomplete = _root_enum_incomplete;
     ctx.root_report_previous_attempt_id = _last_root_enum_attempt_id;
+    ctx.root_report_retry_base_id = _root_enum_retry_base_attempt_id;
     ctx.root_report_attempt_id = nextRootReportAttemptId(false);
     ctx.resolved_chain_tags = resolved_chain_tags;
     ctx.resolved_chain_tag_count = snapshotResolvedChainTags(resolved_chain_tags);
@@ -333,6 +335,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     _last_root_enum_safepoint_ms = root_enum_safepoint_ns / 1000000;
 
     if (root_err != JVMTI_ERROR_NONE) {
+      if (!_root_enum_incomplete) {
+        _root_enum_retry_base_attempt_id = ctx.root_report_attempt_id;
+      }
       _last_root_enum_attempt_id = ctx.root_report_attempt_id;
       // The enumeration attempt errored out - the root picture is incomplete, so record it:
       // runPass()'s termination ladder must not treat the search as settled. The consecutive-error
@@ -345,6 +350,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       return;
     }
     if (ctx.truncated) {
+      if (!_root_enum_incomplete) {
+        _root_enum_retry_base_attempt_id = ctx.root_report_attempt_id;
+      }
       _last_root_enum_attempt_id = ctx.root_report_attempt_id;
       // A truncated attempt ends this pass - an incomplete enumeration leaves the frontier's root
       // picture inconsistent with the expansion phases below, so the next pass expands on the
@@ -360,9 +368,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       return;
     }
     // Completed attempt (no error, no truncation): the root picture is now consistent, so the
-    // ladder may treat the frontier as the only pending work.
+    // ladder may treat the frontier as the only pending work. The retry sequence's widened stamp
+    // window expires with it.
     _root_enum_incomplete = false;
     _last_root_enum_attempt_id = 0;
+    _root_enum_retry_base_attempt_id = 0;
     _consecutive_enum_errors = 0;
   }
 
@@ -491,8 +501,10 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // onto the priority lane, so they are independent of the queue tiers above.
   reconcileAnchorClassShapes(jvmti, jni);
   resolvePendingLocalAnchors();
-  std::vector<jlong> static_anchor_tags =
-      collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
+  std::vector<jlong> static_anchor_tags;
+  std::vector<FreshAnchor> static_anchor_fresh_picked;
+  static_anchor_tags = collectStaticFieldAnchorsForRotation(
+      STATIC_ANCHOR_ROTATION_BUDGET, &static_anchor_fresh_picked);
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
   drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
   for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
@@ -570,12 +582,61 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
         }
       }
       anchor_scope.flush();
+      // First looks are consumed by the walk, not the selection: mark the anchors that were
+      // actually walked (post-flush, so the walk's own replay observes them still pending and
+      // cannot re-enqueue them mid-walk), and give the fresh picks whose walk never happened
+      // (budget exhausted before the fresh tier, or mid-walk) their turn back at the queue
+      // front. Entries spent without a walk (filter-rejected, fresh-room overflow) were marked
+      // served by the selection itself.
+      if (!static_anchor_fresh_picked.empty()) {
+        std::vector<FreshAnchor> fresh_requeue;
+        for (const FreshAnchor &fresh : static_anchor_fresh_picked) {
+          bool selected_for_walk = false;
+          for (jlong tag : static_anchor_tags) {
+            if (tag == fresh.tag) {
+              selected_for_walk = true;
+              break;
+            }
+          }
+          if (!selected_for_walk) {
+            fresh_requeue.push_back(fresh);
+            continue;
+          }
+          for (jlong tag : static_anchor_unwalked) {
+            if (tag == fresh.tag) {
+              fresh_requeue.push_back(fresh);
+              break;
+            }
+          }
+        }
+        requeueStaticAnchorFreshFront(fresh_requeue);
+      }
+      std::vector<jlong> walked_served;
+      walked_served.reserve(static_anchor_tags.size());
+      for (jlong tag : static_anchor_tags) {
+        bool unwalked = false;
+        for (jlong pending : static_anchor_unwalked) {
+          if (pending == tag) {
+            unwalked = true;
+            break;
+          }
+        }
+        if (!unwalked) {
+          walked_served.push_back(tag);
+        }
+      }
+      _frontier->markAnchorRotationServed(walked_served.data(),
+                                          walked_served.size());
       static_anchor_cap_hit_return = static_anchor_frontier_cap_hit;
     }
     if (static_anchor_cap_hit_return) {
       *frontier_cap_hit = true;
       return;
     }
+  } else if (!static_anchor_fresh_picked.empty()) {
+    // No rotation budget for the anchor walks this pass: no descent happened, so no first look
+    // was consumed - every fresh pick keeps its queued turn, back at the queue front.
+    requeueStaticAnchorFreshFront(static_anchor_fresh_picked);
   }
   // expandFrontier() SETS (does not add into) its edges output - see its entry - so the anchor
   // walks' edges are kept in a separate counter and summed here.
