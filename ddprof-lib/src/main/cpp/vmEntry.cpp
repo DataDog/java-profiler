@@ -95,8 +95,8 @@ static bool hasFreezeThawConfig(const char* name) {
     return strstr(name, "6ConfigIL8oop_kind") != nullptr;
 }
 
-// freeze<Config<...>>(JavaThread*, long) and thaw<Config<...>>(long, JavaThread*, int)
-// are static templates, so HotSpot exports them with internal linkage (_ZL).
+// freeze<Config<...>>(JavaThread*, long) and thaw<Config<...>>(long, JavaThread*, int) are
+// static templates: their symbols have internal linkage (_ZL), so a stripped libjvm lacks them.
 static bool isFreezeEntry(const char* name) {
     return starts_with(name, "_ZL6freezeI") || starts_with(name, "_Z6freezeI");
 }
@@ -107,8 +107,6 @@ static bool isThawEntry(const char* name) {
 
 bool isContFreezeThawEntry(const char* blob_name) {
     return hasFreezeThawConfig(blob_name)
-        || isFreezeEntry(blob_name)
-        || isThawEntry(blob_name)
         || starts_with(blob_name, "_ZN10FreezeBase")
         || starts_with(blob_name, "_ZN8ThawBase")
         || starts_with(blob_name, "_ZN6FreezeI")

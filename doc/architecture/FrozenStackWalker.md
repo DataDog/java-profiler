@@ -103,7 +103,7 @@ older callers were recovered.
 - `frozenStackWalker_ut.cpp` exercises the production layout initialization,
   immutable successful publication and retry after incomplete metadata discovery.
 - `originAnchorFrozen_ut.cpp` classifies the freeze/thaw runtime symbols,
-  including the internal-linkage (`_ZL`) entry names HotSpot exports, and
+  including the internal-linkage (`_ZL`) entry names in libjvm's symbol table, and
   walks with anchor-verified Java frames: an ordinary native call recovers the
   frozen callers, a freeze/thaw-runtime origin or an anchor-replaced compiled
   frame keeps the rejection, and without an anchor no Java frames are
