@@ -1118,6 +1118,22 @@ bool isRealTraceId(u64 id) {
   return id != CallTraceStorage::DROPPED_TRACE_ID && id != OVERFLOW_TRACE_ID;
 }
 
+// Plays the owner's publish from a wait hook. A failed step abandons the slot so
+// put() can return and the test reports the failure instead of hitting CALL_CAP.
+u64 publishAsOwner(CallTraceHashTable* table, u32 slot, ASGCT_CallFrame* frame, bool mark_preparing) {
+  if (mark_preparing && !CallTraceHashTableTestAccessor::markPreparing(table, slot)) {
+    ADD_FAILURE() << "markPreparing() failed on a claimed slot";
+    CallTraceHashTableTestAccessor::abandon(table, slot);
+    return CallTraceStorage::DROPPED_TRACE_ID;
+  }
+  u64 id = CallTraceHashTableTestAccessor::publish(table, slot, frame);
+  if (!isRealTraceId(id)) {
+    ADD_FAILURE() << "publish() could not store the trace";
+    CallTraceHashTableTestAccessor::abandon(table, slot);
+  }
+  return id;
+}
+
 }  // namespace
 
 // The owner publishes while put() waits on its slot, either right after the key
@@ -1131,13 +1147,10 @@ static void expectWaiterGetsPublishedTrace(bool preparing) {
     } else {
         stack.claim();
     }
-    u64 published = 0;
+    u64 published = CallTraceStorage::DROPPED_TRACE_ID;
     WaitHookScope owner(table.get(), [&](int call) {
         if (call == 1) {
-            if (!preparing) {
-                ASSERT_TRUE(CallTraceHashTableTestAccessor::markPreparing(table.get(), stack.slot));
-            }
-            published = CallTraceHashTableTestAccessor::publish(table.get(), stack.slot, &stack.frame);
+            published = publishAsOwner(table.get(), stack.slot, &stack.frame, !preparing);
         }
     });
     const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
@@ -1199,13 +1212,16 @@ TEST(CallTraceHashTableWaitTest, PutIgnoresTracePublishedByReclaimingStack) {
     TestStack other(table.get(), 8);
     ASSERT_NE(other.hash, stack.hash);
     stack.claimPreparing();
-    u64 foreign = 0;
+    u64 foreign = CallTraceStorage::DROPPED_TRACE_ID;
     WaitHookScope owner(table.get(), [&](int call) {
         if (call == 1) {
             CallTraceHashTableTestAccessor::abandon(table.get(), stack.slot);
-            ASSERT_TRUE(CallTraceHashTableTestAccessor::claim(table.get(), stack.slot, other.hash));
-            ASSERT_TRUE(CallTraceHashTableTestAccessor::markPreparing(table.get(), stack.slot));
-            foreign = CallTraceHashTableTestAccessor::publish(table.get(), stack.slot, &other.frame);
+            // A failed claim leaves the slot empty, so put() still returns.
+            if (!CallTraceHashTableTestAccessor::claim(table.get(), stack.slot, other.hash)) {
+                ADD_FAILURE() << "could not reclaim the abandoned slot";
+                return;
+            }
+            foreign = publishAsOwner(table.get(), stack.slot, &other.frame, true);
         }
     });
 
@@ -1225,11 +1241,10 @@ TEST(CallTraceHashTableWaitTest, PutKeepsWaitingAfterSpinLimit) {
     TestStack stack(table.get());
     stack.claim();
     const int publish_call = CallTraceHashTableTestAccessor::maxWaitCycles() + 1;
-    u64 published = 0;
+    u64 published = CallTraceStorage::DROPPED_TRACE_ID;
     WaitHookScope owner(table.get(), [&](int call) {
         if (call == publish_call) {
-            ASSERT_TRUE(CallTraceHashTableTestAccessor::markPreparing(table.get(), stack.slot));
-            published = CallTraceHashTableTestAccessor::publish(table.get(), stack.slot, &stack.frame);
+            published = publishAsOwner(table.get(), stack.slot, &stack.frame, true);
         }
     });
 
