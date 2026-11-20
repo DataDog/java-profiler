@@ -127,7 +127,7 @@ jobs:
         run: |
           set +e
           export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
+          export TEST_COMMIT=${{ inputs.ref || github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-${{ matrix.config }}-amd64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
@@ -340,7 +340,7 @@ jobs:
           set +e
 
           export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
+          export TEST_COMMIT=${{ inputs.ref || github.sha }}
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}-${{ matrix.config }}-amd64
           # make sure the job knows it is running on musl
           export LIBC=musl
@@ -517,7 +517,7 @@ jobs:
         run: |
           set +e
           export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
+          export TEST_COMMIT=${{ inputs.ref || github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
@@ -680,7 +680,6 @@ jobs:
          with:
           fetch-depth: 0
           ref: ${{ inputs.ref || github.sha }}
-          ref: ${{ inputs.ref || github.sha }}
        - name: Cache Gradle Wrapper Binaries
          uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
          with:
@@ -714,7 +713,7 @@ jobs:
              "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64${{ inputs.slow_tests && '-slow' || '' }}" -- \
              docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
                \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
-               \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
+               \"${{ inputs.ref || github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
                \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\" \
                \"${{ inputs.slow_tests }}\"
              "
@@ -737,7 +736,7 @@ jobs:
          run: |
            docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
              \"$GITHUB_WORKSPACE/.github/scripts/unwinding_report_alpine_aarch64.sh\" \
-             \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
+             \"${{ inputs.ref || github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
            "
            # Fix permissions after Docker container execution (both top-level and subproject builds).

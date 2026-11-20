@@ -59,9 +59,9 @@ jobs:
               exit 1
             fi
             CANDIDATE=$(git rev-parse "$OVERRIDE_SHA^{commit}")
-            # Same reachability rule as the scheduled path: a commit that is
-            # not on main (e.g. its changes were later reverted) must not be
-            # released by an override.
+            # Same reachability rule as the scheduled path: only commits on
+            # main qualify; a note on an unmerged or rebased-away commit must
+            # not be releasable by an override.
             if ! git merge-base --is-ancestor "$CANDIDATE" origin/main; then
               echo "::error::Override SHA $CANDIDATE is not reachable from origin/main" >&2
               exit 1
