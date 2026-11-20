@@ -188,8 +188,8 @@ class GtestTaskBuilder(
                 Platform.LINUX -> { /* System paths */ }
             }
 
-            // Add gtest libraries
-            lib("gtest", "gtest_main", "gmock", "gmock_main", "dl", "pthread", "m")
+            // Static archives must precede their dependencies, including when no tests are registered.
+            lib("gtest_main", "gmock_main", "gmock", "gtest", "dl", "pthread", "m")
             if (PlatformUtils.currentPlatform == Platform.LINUX) {
                 lib("rt")
             }

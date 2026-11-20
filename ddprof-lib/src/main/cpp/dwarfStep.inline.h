@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2026 Datadog, Inc
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -12,6 +12,7 @@
 #include "faultInjection.h"
 #include "profiler.h"
 #include "safeAccess.h"
+#include "signalFrame.h"
 #include "stackFrame.h"
 #include "stackWalker.inline.h"
 
@@ -23,6 +24,11 @@
 // Advances sp/fp/walk_pc from the current frame to its caller. Returns false
 // where the walk must stop -- an unusable CFA rule, an implausible sp or fp,
 // or no forward progress -- and true when the caller may record another frame.
+// A recognized Linux arm64 signal trampoline also replaces the frame view
+// with the interrupted ucontext, preserving its LR and exact PC. Neither
+// ucontext is modified.
+// Recognized restorers without usable context/CFI stop with *truncated set,
+// when that optional result pointer is available.
 // On a false return sp/fp/walk_pc may already have been partly updated; both
 // callers stop the walk, so no caller observes that.
 //
@@ -44,7 +50,7 @@
 __attribute__((always_inline))
 inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
                               uintptr_t bottom, int depth,
-                              const StackFrame& frame, Profiler* profiler) {
+                              StackFrame& frame, Profiler* profiler, bool* truncated = nullptr) {
     using StackWalkValidation::inDeadZone;
     using StackWalkValidation::aligned;
     using StackWalkValidation::MAX_FRAME_SIZE;
@@ -59,6 +65,21 @@ inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
     uintptr_t prev_sp = sp;
     CodeCache* cc = profiler->findLibraryByAddress(attribution_pc);
     FrameDesc f = cc != NULL ? cc->findFrameDesc(attribution_pc) : FrameDesc::fallback_default_frame();
+    if (!f.isSignalFrame()) {
+        SignalFrame signal_frame;
+        SignalFrame::Result result = SignalFrame::decode(walk_pc.raw(), sp, bottom, cc, signal_frame);
+        if (result == SignalFrame::Result::INVALID) {
+            if (truncated != nullptr) *truncated = true;
+            return false;
+        }
+        if (result == SignalFrame::Result::RECOVERED) {
+            sp = signal_frame.sp;
+            fp = signal_frame.fp;
+            walk_pc.setExactAddress(signal_frame.pc);
+            frame = StackFrame(signal_frame.context);
+            return true;
+        }
+    }
 
     u8 cfa_reg = (u8)f.cfa;
     int cfa_off = f.cfa >> 8;
@@ -121,7 +142,7 @@ inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
             walk_pc.setRecoveredPc(
                 stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))),
                 f.isSignalFrame());
-        } else if (depth == 1) {
+        } else if (depth == 1 || (!walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()))) {
             // Matches the memory-slot path above: StackFrame::link() returns
             // the raw link register, which carries PAC bits on aarch64 and
             // would otherwise be fed to findFrameDesc as a nonsense address.

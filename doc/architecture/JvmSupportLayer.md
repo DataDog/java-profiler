@@ -182,6 +182,67 @@ walker, with raw `Method*` frames, and with lazy jmethodID resolution.
 | `klassRegistry.{h,cpp}` | Redefinition marks keyed by `Klass*` for `fjmethodid=lazy` (`HotspotSupport::_klass_registry`, `hotspotSupport.h:161`) |
 | `klassTraceId.{h,cpp}` | Finds `Klass::_trace_id` by probing, so a stale raw frame can be told apart from a class that reused the same `Klass*` |
 
+Native DWARF steps are shared by `StackWalker::walkDwarf` and the VM walker
+through `dwarfStep.inline.h`. On arm64, an FDE's initial return-address source
+is LR, and PLT leaf descriptors use the same rule. Compact and extended
+`DW_CFA_restore` for the return address restore the CIE-defined source,
+including a non-default stack offset;
+`DW_CFA_same_value` also keeps the return address in LR. A saved return-address
+slot applies only while its CFI offset rule is active. On x64 the initial
+return address remains at CFA-8. The sampled LR is used only for a leaf frame;
+recovered PCs retain the normal return-address attribution and PAC stripping.
+
+For arm64 compiled callers, `StackFrame::adjustSP()` also accounts for temporary
+16-byte argument or register-save areas outside the nmethod's fixed frame.
+C1 subtype checks and VM-leaf calls are recognized at their pending stack pop,
+with a matching push before the call. A bounded scan allows far-call address
+setup between the push and call; it stops at the method entry and rejects
+unrelated instructions and fixed FP/LR saves. Continuation-entry spills use
+their separate entry-phase decoder before ordinary compiled-frame dispatch.
+C1 object-arraycopy has a second live save area around its subtype-check call.
+Matching pair pops on both paths of the following result branch establish the
+additional 16 bytes; the branch-target probe is bounded to 1,024 bytes.
+
+Interrupted arm64 JNI wrappers use their generated register-save phases rather
+than the complete frame size. Before the local-storage subtraction, only the
+saved FP/LR pair is popped. The bounded normal tail decoder requires
+`mov sp, fp; ldp fp, lr, [sp], #16`, optional LR authentication, the thread's
+pending-exception load, its conditional branch and `ret`. At the pending `ldp`
+it restores the two live stack words; later phases use the interrupted LR and
+never read the saved pair below the restored SP. The epilogue repair applies to
+exact interrupted PCs, while recovered return addresses keep the normal
+compiled-frame path.
+
+Linux arm64's vDSO `__kernel_rt_sigreturn` omits DWARF metadata.
+`SignalFrame::decode` in `signalFrame_linux.cpp` recognizes its instruction pair
+and validates the `siginfo_t`/`ucontext_t` layout before returning saved registers.
+
+The shared native step applies recovered PC, SP, FP and register-context provenance;
+unsupported ABIs return `NOT_SIGNAL` without probing code or stack memory.
+
+The interrupted PC is exact; its LR can seed the next leaf after native handler
+frames were recorded. The VM walker also recognizes interrupted Java entry,
+interpreter, epilogue and vtable phases after that prefix.
+
+Invalid instructions or saved registers reject recovery without modifying either
+ucontext. Restoration requires a forward, aligned SP within the walk's stack bound.
+Recognized restorers whose saved context is invalid remain marked truncated.
+Linux also permits custom restorers through `SA_RESTORER`
+(`arch/arm64/kernel/signal.c`, `setup_return`). An exact `mov w8/x8, #139;
+svc #0` sequence outside the vDSO stops with truncation when signal CFI is
+absent, preventing the interrupted FP chain from fabricating callers.
+The kernel builds the same signal frame for these restorers. The walker does
+not trust the instruction pair alone to locate it outside the vDSO.
+musl always installs its own restorer, `__restore_rt`. On musl arm64 with
+HotSpot or OpenJ9, walks across a nested signal handler therefore stop there
+with truncation. A row
+explicitly marked as a signal frame follows its CFI instead. Other syscall
+numbers do not activate this fallback.
+Custom-restorer instruction probes, including anonymous mappings without a
+`CodeCache`, run only on HotSpot/OpenJ9, where the profiler installs safefetch
+recovery handlers. Other VMs retain their CFI/FP fallback without probing
+untrusted instruction addresses outside the known vDSO.
+
 Directly sampled `enterSpecial` frames use
 `HotspotStackFrame::continuationEntryFrameWords()` to locate the carrier SP.
 The helper distinguishes the prologue's register save and storage allocation,

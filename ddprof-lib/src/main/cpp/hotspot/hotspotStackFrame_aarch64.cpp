@@ -276,11 +276,16 @@ NOSANALIGSANITIZE bool HotspotStackFrame::unwindPrologue(VMNMethod* nm, uintptr_
         unsigned int offset = (*ip >> 12) & 0x1f8;
         sp += offset + 16;
         pc = link();
-    } else if (ip[0] == 0x910003fd && ip[-1] == 0xa9bf7bfd) {
+    } else if ((ip[0] == 0x910003fd && ip[-1] == 0xa9bf7bfd) ||
+               (ip >= entry + 2 && ip[-2] == 0xa9bf7bfd && ip[-1] == 0x910003fd &&
+                nm->frameSize() >= 2 && nm->frameSize() <= 512 && (nm->frameSize() & 1) == 0 &&
+                ip[0] == (0xd10003ffU | ((nm->frameSize() - 2) * sizeof(uintptr_t) << 10)))) {
         // stp  x29, x30, [sp, #-16]!
         // mov  x29, sp
+        // sub  sp, sp, #locals (not executed yet)
+        fp = ((uintptr_t*)sp)[0];
+        pc = (uintptr_t)stripPointer((const void*)((uintptr_t*)sp)[1]);
         sp += 16;
-        pc = ((uintptr_t*)sp)[-1];
     } else if (ip <= entry + 16 && isFrameComplete(entry, ip)) {
         sp += nm->frameSize() * sizeof(void*);
         fp = ((uintptr_t*)sp)[-2];
@@ -297,6 +302,31 @@ NOSANALIGSANITIZE bool HotspotStackFrame::unwindEpilogue(VMNMethod* nm, uintptr_
     //  {poll_return}
     //  ret
     instruction_t* ip = (instruction_t*)pc;
+    instruction_t* entry = (instruction_t*)nm->entry();
+    // JNI wrappers use leave(), then test pending_exception before ret.
+    // At ldp only the FP/LR save remains; after it SP and LR are restored.
+    // Require the whole generated tail so a body load/branch cannot select LR.
+    for (int distance = 1; distance <= 4 && ip - entry >= distance; distance++) {
+        instruction_t* tail = ip - distance;
+        if (!nm->contains(tail) || !nm->contains((const char*)(tail + 1) + sizeof(instruction_t) - 1) ||
+            tail[0] != 0x910003bf || tail[1] != 0xa8c17bfd) continue;
+        instruction_t* check = tail + 2;
+        if (!nm->contains((const char*)check + sizeof(instruction_t) - 1)) continue;
+        if (*check == 0xd503239f || *check == 0xd50323bf) check++; // autiaz/autiasp
+        if (!nm->contains((const char*)(check + 2) + sizeof(instruction_t) - 1) || ip > check + 1 ||
+            (*check & 0xffc003ffU) != 0xf9400388 || // ldr x8, [x28, #offset]
+            (check[1] & 0xff00001fU) != 0xb5000008 || // cbnz x8, forward_exception
+            check[2] != 0xd65f03c0) continue;
+        if (ip == tail + 1) {
+            fp = ((uintptr_t*)sp)[0];
+            pc = (uintptr_t)stripPointer((const void*)((uintptr_t*)sp)[1]);
+            sp += 16;
+        } else {
+            // Linux signal delivery may overwrite the slots below restored SP.
+            pc = (uintptr_t)stripPointer((const void*)link());
+        }
+        return true;
+    }
     if (*ip == 0xd65f03c0 || isPollReturn(ip)) {  // ret
         pc = link();
         return true;

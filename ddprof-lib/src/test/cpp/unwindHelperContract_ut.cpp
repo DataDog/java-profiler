@@ -48,6 +48,8 @@
 // befriends.
 class VMStructsTestAccessor {
 public:
+    static offset getBlobSizeOffset() { return VMStructs::_blob_size_offset; }
+    static void setBlobSizeOffset(offset value) { VMStructs::_blob_size_offset = value; }
     static offset getFrameSizeOffset() { return VMStructs::_frame_size_offset; }
     static void setFrameSizeOffset(offset value) { VMStructs::_frame_size_offset = value; }
     static offset getNMethodEntryOffset() { return VMStructs::_nmethod_entry_offset; }
@@ -197,8 +199,8 @@ TEST_F(UnwindHelperContractTest, AsgctOverloadLeavesUcontextReadyForAsyncGetCall
 // unwindPrologue / unwindEpilogue
 //
 // Same contract, but these two take a VMNMethod*, so they need a stand-in.
-// Only two fields are ever read on the branches under test: entry(), to
-// locate the start of the method's code, and frameSize(). The fixture is a
+// The branches under test read entry(), frameSize(), and the blob size
+// used to bound native-wrapper tail decoding. The fixture is a
 // byte buffer laid out to satisfy exactly those, with the offsets pointed at
 // it for the duration of the test and restored afterwards -- the offsets are
 // process-global, and a real JVM run would have populated them from
@@ -217,6 +219,7 @@ class UnwindNMethodHelperContractTest : public UnwindHelperContractTest {
     void SetUp() override {
         UnwindHelperContractTest::SetUp();
 
+        _saved_blob_size_offset = VMStructsTestAccessor::getBlobSizeOffset();
         _saved_frame_size_offset = VMStructsTestAccessor::getFrameSizeOffset();
         _saved_entry_offset = VMStructsTestAccessor::getNMethodEntryOffset();
         _saved_entry_address = VMStructsTestAccessor::getNMethodEntryAddress();
@@ -224,6 +227,8 @@ class UnwindNMethodHelperContractTest : public UnwindHelperContractTest {
         memset(_nmethod, 0, sizeof(_nmethod));
         *(const void**)(bytes() + kEntryAddressOffset) = code();
         *(int*)(bytes() + kFrameSizeOffset) = 4;
+        *(int*)(bytes() + 24) = sizeof(_nmethod);
+        VMStructsTestAccessor::setBlobSizeOffset(24);
 
         VMStructsTestAccessor::setFrameSizeOffset(kFrameSizeOffset);
         // -1 selects entry()'s pre-JDK-23 arm: a single load of the stored
@@ -233,6 +238,7 @@ class UnwindNMethodHelperContractTest : public UnwindHelperContractTest {
     }
 
     void TearDown() override {
+        VMStructsTestAccessor::setBlobSizeOffset(_saved_blob_size_offset);
         VMStructsTestAccessor::setFrameSizeOffset(_saved_frame_size_offset);
         VMStructsTestAccessor::setNMethodEntryOffset(_saved_entry_offset);
         VMStructsTestAccessor::setNMethodEntryAddress(_saved_entry_address);
@@ -249,15 +255,17 @@ class UnwindNMethodHelperContractTest : public UnwindHelperContractTest {
     // int the layout above stores in it.
     char* bytes() { return (char*)_nmethod; }
 
-    static uintptr_t _nmethod[4];
+    instruction_t* code() { return reinterpret_cast<instruction_t*>(_nmethod + 4); }
+    static uintptr_t _nmethod[32];
 
   private:
+    offset _saved_blob_size_offset;
     offset _saved_frame_size_offset;
     offset _saved_entry_offset;
     offset _saved_entry_address;
 };
 
-uintptr_t UnwindNMethodHelperContractTest::_nmethod[4];
+uintptr_t UnwindNMethodHelperContractTest::_nmethod[32];
 
 // pc sitting on the method's first instruction: nothing of the frame has been
 // built yet, so the sender pc is still wherever the call left it.
@@ -347,5 +355,114 @@ TEST_F(UnwindNMethodHelperContractTest, UnwindEpilogueAtReturnRecoversTheRawSend
     EXPECT_EQ((uintptr_t)slot, sp);
 #endif
 }
+
+#ifdef __aarch64__
+TEST_F(UnwindNMethodHelperContractTest, NativeWrapperPendingAllocationRestoresSavedFpAndSender) {
+    code()[0] = 0xa9bf7bfd;
+    code()[1] = 0x910003fd;
+    code()[2] = 0xd10143ff; // sub sp, sp, #80: 12-word full frame
+    *(int*)(bytes() + kFrameSizeOffset) = 12;
+    uintptr_t* slot = stackSlot();
+    slot[0] = kOtherSlot;
+    slot[1] = kSenderRa;
+    for (int phase : {1, 2}) {
+        uintptr_t pc = (uintptr_t)(code() + phase);
+        uintptr_t sp = (uintptr_t)slot;
+        uintptr_t fp = sp;
+        HotspotStackFrame frame(&_uc);
+        ASSERT_TRUE(frame.unwindPrologue(nmethod(), pc, sp, fp));
+        EXPECT_EQ(kSenderRa, pc);
+        EXPECT_EQ((uintptr_t)(slot + 2), sp);
+        EXPECT_EQ(kOtherSlot, fp);
+    }
+    for (int words : {-2, 1, 3, 11, 13, 514}) {
+        SCOPED_TRACE(words);
+        *(int*)(bytes() + kFrameSizeOffset) = words;
+        uintptr_t pc = (uintptr_t)(code() + 2);
+        uintptr_t sp = (uintptr_t)slot;
+        uintptr_t fp = sp;
+        HotspotStackFrame frame(&_uc);
+        ASSERT_TRUE(frame.unwindPrologue(nmethod(), pc, sp, fp));
+        EXPECT_EQ(kLinkReg, pc);
+        EXPECT_EQ((uintptr_t)slot, sp);
+        EXPECT_EQ((uintptr_t)slot, fp);
+    }
+}
+
+TEST_F(UnwindNMethodHelperContractTest, NativeWrapperEpilogueRestoresOnlyTheLiveRegisterSave) {
+    const uint32_t tail[] = {0x910003bf, 0xa8c17bfd, 0xf9400788, 0xb5000048, 0xd65f03c0};
+    memcpy(code() + 4, tail, sizeof(tail));
+    for (int phase = 1; phase < 5; phase++) {
+        SCOPED_TRACE(phase);
+        uintptr_t* slot = stackSlot();
+        slot[0] = kOtherSlot;
+        slot[1] = kSenderRa;
+        uintptr_t pc = (uintptr_t)(code() + 4 + phase);
+        uintptr_t sp = (uintptr_t)slot;
+        uintptr_t fp = phase == 1 ? sp : kOtherSlot;
+        HotspotStackFrame frame(&_uc);
+        ASSERT_TRUE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
+        EXPECT_EQ(phase == 1 ? kSenderRa : kLinkReg, pc);
+        EXPECT_EQ((uintptr_t)slot + (phase == 1 ? 16 : 0), sp);
+        EXPECT_EQ(kOtherSlot, fp);
+    }
+}
+
+TEST_F(UnwindNMethodHelperContractTest, NativeWrapperEpilogueRejectsAdjacentLookalikes) {
+    const uint32_t tail[] = {0x910003bf, 0xa8c17bfd, 0xf9400788, 0xb5000048, 0xd65f03c0};
+    for (int changed = 0; changed < 5; changed++) {
+        SCOPED_TRACE(changed);
+        memcpy(code() + 4, tail, sizeof(tail));
+        code()[4 + changed] ^= 1; // Wrong register/instruction, not the generated tail.
+        uintptr_t pc = (uintptr_t)(code() + 6);
+        uintptr_t sp = (uintptr_t)stackSlot();
+        uintptr_t fp = sp;
+        HotspotStackFrame frame(&_uc);
+        EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
+    }
+}
+TEST_F(UnwindNMethodHelperContractTest, NativeWrapperEpilogueAcceptsAuthenticationAndBoundsItsCodeReads) {
+    for (uint32_t auth : {0xd503239fU, 0xd50323bfU}) {
+        const uint32_t tail[] = {0x910003bf, 0xa8c17bfd, auth, 0xf9400788, 0xb5000048, 0xd65f03c0};
+        memcpy(code() + 4, tail, sizeof(tail));
+        for (int phase = 1; phase < 5; phase++) {
+            SCOPED_TRACE(phase);
+            uintptr_t* slot = stackSlot();
+            slot[0] = kOtherSlot;
+            slot[1] = kSenderRa | (1ULL << 60); // Saved LR can still carry PAC bits.
+            setLinkRegister(kLinkReg | (1ULL << 60));
+            uintptr_t pc = (uintptr_t)(code() + 4 + phase);
+            uintptr_t sp = (uintptr_t)slot;
+            uintptr_t fp = phase == 1 ? sp : kOtherSlot;
+            HotspotStackFrame frame(&_uc);
+            ASSERT_TRUE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
+            EXPECT_EQ(phase == 1 ? kSenderRa : kLinkReg, pc);
+            EXPECT_EQ((uintptr_t)slot + (phase == 1 ? 16 : 0), sp);
+            EXPECT_EQ(kOtherSlot, fp);
+        }
+    }
+    uintptr_t pc = (uintptr_t)(code() + 7);
+    uintptr_t sp = (uintptr_t)stackSlot();
+    uintptr_t fp = sp;
+    HotspotStackFrame frame(&_uc);
+    // Ret remains readable in the allocation but lies outside this code blob.
+    for (int bytes_present = 0; bytes_present < 4; bytes_present++) {
+        SCOPED_TRACE(bytes_present);
+        pc = (uintptr_t)(code() + 7);
+        *(int*)(bytes() + 24) = (char*)(code() + 9) - bytes() + bytes_present;
+        EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
+    }
+    for (int bytes_present = 0; bytes_present < 4; bytes_present++) {
+        pc = (uintptr_t)(code() + 5); // Pending ldp, before the optional AUTI word.
+        *(int*)(bytes() + 24) = (char*)(code() + 6) - bytes() + bytes_present;
+        EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
+    }
+    pc = (uintptr_t)(code() + 7);
+    *(int*)(bytes() + 24) = sizeof(_nmethod);
+    *(const void**)(bytes() + kEntryAddressOffset) = code() + 5;
+    EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
+}
+
+#endif
 
 }  // namespace
