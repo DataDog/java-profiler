@@ -71,7 +71,6 @@ public:
 class FlightRecorderTestAccessor {
 public:
   static SpinLock& lock(FlightRecorder& recorder) { return recorder._rec_lock; }
-  static void setRecording(FlightRecorder& recorder, Recording* recording) { recorder._rec = recording; }
   static Recording* exchangeRecording(FlightRecorder& recorder, Recording* recording) {
     Recording* previous = recorder._rec;
     recorder._rec = recording;
@@ -846,7 +845,11 @@ TEST_F(TaskBlockRealRecorderTest, ContendedRecorderReleasesStripeAndCountsExactl
 TEST_F(TaskBlockRealRecorderTest, ThreadTableOverflowIsCountedBeforeSerialization) {
   auto recording = std::make_unique<Recording>();
   FlightRecorder& recorder = ProfilerTestAccessor::recorder(profiler);
-  FlightRecorderTestAccessor::setRecording(recorder, recording.get());
+  struct RecordingRestorer {
+    FlightRecorder& recorder;
+    Recording* previous;
+    ~RecordingRestorer() { FlightRecorderTestAccessor::exchangeRecording(recorder, previous); }
+  } restore{recorder, FlightRecorderTestAccessor::exchangeRecording(recorder, recording.get())};
   TaskBlockEvent event{};
   event._start = 1;
   event._end = 2;
@@ -859,7 +862,6 @@ TEST_F(TaskBlockRealRecorderTest, ThreadTableOverflowIsCountedBeforeSerializatio
   EXPECT_EQ(before, recording->buffer(stripe)->offset());
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
   EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_EMITTED));
-  FlightRecorderTestAccessor::setRecording(recorder, nullptr);
 }
 
 TEST_F(TaskBlockRecorderTest, ReservationBeforeClosureMustDrainBeforeRotationReturns) {
