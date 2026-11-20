@@ -36,23 +36,27 @@ jobs:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["debug"]'
+      artifact_suffix: cert-debug
 
   test-asan:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["asan"]'
+      artifact_suffix: cert-asan
 
   slow-test-debug:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["debug"]'
       slow_tests: true
+      artifact_suffix: cert-slow-debug
 
   slow-test-asan:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["asan"]'
       slow_tests: true
+      artifact_suffix: cert-slow-asan
 
   fuzz:
     runs-on: ubuntu-latest
@@ -152,11 +156,11 @@ jobs:
           fetch_all_jobs() {
             local jobs_json="" page_json page=1
             while :; do
-              # A transient curl failure yields an empty page, which ends this
-              # attempt's pagination short; the outer retry loop re-fetches
-              # from scratch, so the verdict self-heals on the next attempt.
+              # A curl failure must abort the fetch (return 1), never
+              # masquerade as an empty-but-complete listing: the caller
+              # retries the whole fetch on the next attempt.
               page_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page" || echo "[]")
+                "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page") || return 1
               if [ -z "$jobs_json" ]; then
                 jobs_json="$page_json"
               else
@@ -168,7 +172,12 @@ jobs:
             echo "$jobs_json"
           }
           for attempt in $(seq 1 60); do
-            jobs_json=$(fetch_all_jobs)
+            jobs_json=""
+            if ! jobs_json=$(fetch_all_jobs); then
+              echo "attempt $attempt/60: GitLab job fetch failed, retrying"
+              sleep 180
+              continue
+            fi
             missing=0; pending=0
             for job in "${REQUIRED_JOBS[@]}"; do
               # GitLab matrix expansion names cells "name: [hotspot, 8]": match
@@ -284,6 +293,7 @@ jobs:
               pass
           PY
       - name: File PROF ticket
+        if: ${{ !cancelled() }}
         id: jira
         env:
           ATLASSIAN_BASE_URL: ${{ secrets.ATLASSIAN_BASE_URL }}
@@ -299,7 +309,9 @@ jobs:
             echo "Certification suite: testDebug+testAsan (regular and slow, gtests), fuzz, dd-trace-integration cells."
             echo "The commit cannot enter the Friday release train until a nightly certification passes on it or a successor."
             echo ""
-            cat summary.txt
+            # Collect may have failed before writing the summary; the ticket
+            # must still carry the run coordinates.
+            cat summary.txt 2>/dev/null || true
           } > body.txt
           KEY=$(.github/scripts/file-jira-issue.sh \
             --summary "java-profiler nightly certification failed on ${GITHUB_SHA}" \
