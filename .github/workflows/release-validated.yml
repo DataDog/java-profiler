@@ -125,6 +125,17 @@ jobs:
             git checkout -q --detach "$TARGET_SHA"
           fi
 
+          # A concurrent dispatch for the same candidate may have released it
+          # while this run queued behind the concurrency group: the queued run
+          # would otherwise compute the next version and release the same
+          # commit twice.
+          for tag in $(git tag --list 'v_*'); do
+            if [ "$(git rev-parse "$tag^{commit}")" == "$TARGET_SHA" ]; then
+              echo "::error::Release commit $TARGET_SHA already carries a release tag ($tag)"
+              exit 1
+            fi
+          done
+
           # Compute release version from git tags
           if [ "$TYPE" == "retag" ]; then
             # For retag, find the most recent tag on this branch (the one to re-point)

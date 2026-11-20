@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: ""
+      artifact_suffix:
+        description: "Suffix for cache_java artifact names; callers sharing one workflow run must differ"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -30,6 +35,8 @@ jobs:
   cache-jdks:
     # This job is used to cache the JDKs for the test jobs
     uses: ./.github/workflows/cache_java.yml
+    with:
+      artifact_suffix: ${{ inputs.artifact_suffix }}
   filter-musl-configs:
     # Sanitizers (asan/tsan) are not supported on musl - filter them out
     runs-on: ubuntu-latest
@@ -233,7 +240,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
         if: always() && steps.set_enabled.outputs.enabled == 'true'
@@ -267,14 +274,14 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
       - name: Upload ASan logs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure() && matrix.config == 'asan'
         with:
-          name: asan-logs-glibc-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: asan-logs-glibc-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: /tmp/asan.log.*
           if-no-files-found: ignore
 
@@ -393,7 +400,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
         if: always()
@@ -425,14 +432,14 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
       - name: Upload ASan logs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure() && matrix.config == 'asan'
         with:
-          name: asan-logs-musl-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: asan-logs-musl-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: /tmp/asan.log.*
           if-no-files-found: ignore
 
@@ -616,7 +623,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
       - name: Prepare reports
         if: always() && steps.set_enabled.outputs.enabled == 'true'
@@ -650,14 +657,14 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
       - name: Upload ASan logs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure() && matrix.config == 'asan'
         with:
-          name: asan-logs-glibc-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          name: asan-logs-glibc-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
           path: /tmp/asan.log.*
           if-no-files-found: ignore
 
@@ -757,7 +764,7 @@ jobs:
          uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
          if: failure()
          with:
-           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
            path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
        - name: Prepare reports
          if: always()
@@ -789,13 +796,13 @@ jobs:
          uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
          if: failure()
          with:
-           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
            path: /tmp/signal-safety-violation.txt
            if-no-files-found: ignore
        - name: Upload ASan logs
          uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
          if: failure() && matrix.config == 'asan'
          with:
-           name: asan-logs-musl-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+           name: asan-logs-musl-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}${{ inputs.artifact_suffix && '-' || '' }}${{ inputs.artifact_suffix }}
            path: /tmp/asan.log.*
            if-no-files-found: ignore
