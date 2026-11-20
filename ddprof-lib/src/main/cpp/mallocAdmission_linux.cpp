@@ -360,8 +360,9 @@ bool lookupGnu(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, u
 }
 
 // Walks one DT_HASH bucket chain for one marker name. Words are 32-bit on
-// x86_64 and aarch64. Index 0 ends the chain; the walk also stops after
-// MAX_HASH_CHAIN_STEPS entries and after nchain entries (cycle bound).
+// x86_64 and aarch64. Index 0 ends the chain; the walk visits at most
+// MAX_HASH_CHAIN_STEPS entries and stops after nchain entries (cycle bound).
+// A terminator reached at the step cap still ends the chain validly.
 bool lookupSysv(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, uintptr_t load_bias,
                 const char* name, size_t len, MarkerFindings& out, AdmissionReason& fail) {
     out.qualifying = 0;
@@ -415,6 +416,9 @@ bool lookupSysv(const ImageMetadata& md, const ElfProgramHeader* ph, int phnum, 
             return false;
         }
     }
+    // A chain of exactly MAX_HASH_CHAIN_STEPS entries ends validly: the last
+    // word read at the cap is the terminator, not a further entry to visit.
+    if (index == 0) return true;
     fail = CHAIN_LIMIT;
     return false;
 }
