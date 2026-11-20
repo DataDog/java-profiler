@@ -16,7 +16,9 @@
 
 struct dl_phdr_info;
 
-// Patch libraries' imported function relocation slots.
+// Patch libraries' imported function relocation slots. pthread_create entries
+// (_patched_entries) use only _lib; _location and _func are meaningful for the
+// other entry tables.
 typedef struct _patchEntry {
   CodeCache* _lib;
   // Library import location.
@@ -68,19 +70,19 @@ typedef void (*LiveLibraryCollector)(void* ctx);
 typedef void (*LiveLibraryVisitor)(CodeCache* lib, int tag);
 
 // Uses libc cancellation cleanup, not a C++ destructor action across routine().
-void run_with_cleanup(void* (*routine)(void*), void* params,
-                      void (*cleanup_fn)(void*), void* cleanup_arg);
+void* run_with_cleanup(void* (*routine)(void*), void* params,
+                       void (*cleanup_fn)(void*), void* cleanup_arg);
 
 class LibraryPatcher {
   friend class LibraryPatcherTestAccessor;
+  // Patches and restores its malloc hooks with LiveLibraryWalks.
+  friend class MallocHooker;
 
 private:
   static SpinLock    _lock;
-  // Set by initialize(), which Profiler::start() calls just before the first
-  // library scan. Patching must not begin any earlier: pthread_create_hook()
-  // routes newly created threads through Profiler::registerThread(), which
-  // dereferences state that only exists once the profiler is running. Read from
-  // the Libraries refresher thread, hence atomic with release/acquire.
+  // Set by initialize_persistent() (Profiler::init() and start()); enables the
+  // pthread_create patching, which is never unpatched. Read by the Libraries
+  // refresher thread, hence release/acquire.
   static std::atomic<bool> _initialized;
   static PatchEntry  _patched_entries[MAX_NATIVE_LIBS];
   static int         _size;
@@ -114,8 +116,7 @@ private:
   // libraryPatcher_linux.cpp). Walker-owned non-socket slots are written only
   // during a live visit; those libraries are not pinned and may be dlclose()d.
   // Pinned socket transactions own disjoint slots and do not use this walk.
-  // (MallocHooker patches without a walk: it pins each library with
-  // UnloadProtection while writing to it, and never restores.)
+  // MallocHooker also patches and restores its malloc hooks in walks.
   class LiveLibraryWalk {
   public:
     LiveLibraryWalk(LiveLibraryCollector collect, void* ctx, LiveLibraryVisitor visit);
@@ -126,9 +127,6 @@ private:
 
   static void add_live_candidate(CodeCache* lib, int tag);
   static int visit_loaded_object(struct dl_phdr_info* info, size_t size, void* data);
-  static bool needs_socket_patch(CodeCache* lib);
-  static void patch_socket_slots(CodeCache* lib);
-  static void patch_socket_slot(void** location, void* hook_fn, const char* fn_name, CodeCache* lib);
   static bool excluded_from_pthread_create_patch(CodeCache* lib);
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
@@ -159,9 +157,12 @@ public:
   // start()/stop() and the library refresher can observe this state from different
   // threads, so keep the flag atomic even though stop normally happens at JVM shutdown.
   static std::atomic<bool> _socket_active;
-  static void initialize();
+  // Enables the persistent patches (pthread_create, sigaction). Idempotent;
+  // called from Profiler::init() and from start(), which -agentpath sessions
+  // reach without init(). They survive stop/start cycles and are never unpatched.
+  static void initialize_persistent();
   static void patch_libraries();
-  static void unpatch_libraries();
+  static void unpatch_recording_hooks();
   static void patch_sigaction();
   // Owner starts reserve a generation and publish activation together under _lock.
   static bool patch_socket_functions(bool require_active = false,
@@ -197,9 +198,9 @@ public:
 
 class LibraryPatcher {
 public:
-  static void initialize() { }
+  static void initialize_persistent() { }
   static void patch_libraries() { }
-  static void unpatch_libraries() { }
+  static void unpatch_recording_hooks() { }
   static void patch_sigaction() { }
   static bool patch_socket_functions(bool require_active = false,
                                      std::atomic<bool>* activating_owner = nullptr) {

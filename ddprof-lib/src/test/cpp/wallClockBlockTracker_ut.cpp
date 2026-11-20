@@ -35,6 +35,7 @@
 #include <mutex>
 #include <thread>
 #include "counters.h"
+#include <vector>
 
 template <typename T, typename = void>
 struct HasUncheckedExit : std::false_type {};
@@ -263,6 +264,8 @@ TEST_F(WallClockBlockTrackerTest, ZeroWeightUnownedTailTraceRemainsResolvableAcr
     ASSERT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 
     CallTraceStorage storage;
+
+    ASSERT_TRUE(storage.acquire());
     ASGCT_CallFrame frame{};
     frame.bci = 10;
     frame.method_id = (jmethodID)0x1234;
@@ -563,6 +566,7 @@ TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFiel
             block->markBlockGenerationSampled(block->blockGeneration());
         }
         CallTraceStorage traces;
+        ASSERT_TRUE(traces.acquire());
         u64 root = realTrace(traces);
         ASSERT_GT(root >> 32, 0ULL);
         Context original = context(0xA100 + transition);
@@ -587,12 +591,37 @@ TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFiel
     }
 }
 
+// stop() releases the call-trace storage; deferred epoch segments must not
+// survive into the next recording's tail.
+TEST_F(UnownedContextSidecarTest, ResetUnownedBlockedTailsClearsEpochSegments) {
+    const int id = filter->registerThread(9011);
+    ASSERT_GE(id, 0);
+    auto* block = tracker->slotForId(id);
+    ASSERT_NE(nullptr, block);
+    CallTraceStorage traces;
+    ASSERT_TRUE(traces.acquire());
+    const u64 root = realTrace(traces);
+    ASSERT_TRUE(block->shouldRecordUnownedBlockedSample());
+    ASSERT_TRUE(tracker->publishUnownedTrace(id, root, OSThreadState::SLEEPING, context(0xA300)));
+    ASSERT_FALSE(block->shouldRecordUnownedBlockedSample(false, false));
+    ASSERT_TRUE(tracker->deferUnownedWeight(id, 330));
+    WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+    ASSERT_EQ(1U, tracker->copyUnownedWeightSegments(id, segments));
+
+    filter->resetUnownedBlockedTails();
+
+    EXPECT_EQ(0U, tracker->copyUnownedWeightSegments(id, segments));
+    EXPECT_EQ(0ULL, block->unowned_blocked_call_trace_id.load());
+    EXPECT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
+}
+
 TEST_F(UnownedContextSidecarTest, CleanOwnedPayloadRetainsContextAndEpochSegmentsWithoutWrites) {
     const int id = filter->registerThread(9010);
     ASSERT_GE(id, 0);
     auto* block = tracker->slotForId(id);
     ASSERT_NE(nullptr, block);
     CallTraceStorage traces;
+    ASSERT_TRUE(traces.acquire());
     const u64 root = realTrace(traces);
     ASSERT_GT(root >> 32, 0ULL);
     const Context original = context(0xA200);
@@ -635,6 +664,7 @@ TEST_F(UnownedContextSidecarTest, RoundTripAllTenTags) {
     EXPECT_FALSE(tracker->readUnownedContext(id, actual, sequence));
     EXPECT_EQ(0ULL, sequence);
     CallTraceStorage traces;
+    ASSERT_TRUE(traces.acquire());
     u64 root = realTrace(traces);
     ASSERT_GT(root >> 32, 0ULL);
     Context expected = context(0xf1234560U);
@@ -657,6 +687,7 @@ TEST_F(UnownedContextSidecarTest, OddPublicationIsRejectedAtEveryPayloadBoundary
     int id = filter->registerThread(7752);
     ASSERT_GE(id, 0);
     CallTraceStorage traces;
+    ASSERT_TRUE(traces.acquire());
     u64 root = realTrace(traces);
     Context first = context(100);
     ASSERT_TRUE(tracker->publishUnownedTrace(id, root, OSThreadState::SLEEPING, first));
@@ -697,6 +728,7 @@ TEST_F(UnownedContextSidecarTest, ChangingPublicationIsRejected) {
     int id = filter->registerThread(7757);
     ASSERT_GE(id, 0);
     CallTraceStorage traces;
+    ASSERT_TRUE(traces.acquire());
     u64 root = realTrace(traces);
     Context first = context(100);
     ASSERT_TRUE(tracker->publishUnownedTrace(id, root, OSThreadState::SLEEPING, first));
@@ -794,6 +826,7 @@ TEST_F(UnownedContextSidecarTest, AllocatedBackingSurvivesModeToggle) {
         WallClockBlockTracker::storageSize()) + 32768;
     ASSERT_EQ(allocated, NativeMem::live(NM_WALLCLOCK));
     CallTraceStorage traces;
+    ASSERT_TRUE(traces.acquire());
     u64 root = realTrace(traces);
     ASSERT_GT(root >> 32, 0ULL);
     Context first = context(500);
@@ -898,6 +931,7 @@ TEST_F(UnownedContextSidecarTest, LastEvenSequenceDoesNotWrap) {
     int id = filter->registerThread(7756);
     ASSERT_GE(id, 0);
     CallTraceStorage traces;
+    ASSERT_TRUE(traces.acquire());
     u64 root = realTrace(traces);
     tracker->setUnownedContextPublicationForTest(id, UINT64_MAX - 3);
     Context expected = context(300);
@@ -921,6 +955,8 @@ TEST_F(UnownedContextSidecarTest, LastEvenSequenceDoesNotWrap) {
 TEST(WallClockProductionRootsTest, ZeroWeightRootSurvivesRepeatedDumpsOutsideMembership) {
     ProfiledThread::initCurrentThreadSignalSafe();
     auto profiler = std::make_unique<Profiler>();
+    // Call-trace storage is recording-scoped; no start() allocates it here.
+    ASSERT_TRUE(profiler->callTraceStorageForTest()->acquire());
     auto* registry = profiler->threadFilter();
     auto* tracker = profiler->blockTracker();
     registry->init("enabled");
@@ -957,6 +993,8 @@ TEST(WallClockProductionRootsTest, ZeroWeightRootSurvivesRepeatedDumpsOutsideMem
 TEST(WallClockProductionRootsTest, CopyFailureRetainsWeightStateAndCadence) {
     ProfiledThread::initCurrentThreadSignalSafe();
     auto profiler = std::make_unique<Profiler>();
+    // Call-trace storage is recording-scoped; no start() allocates it here.
+    ASSERT_TRUE(profiler->callTraceStorageForTest()->acquire());
     auto* registry = profiler->threadFilter();
     auto* tracker = profiler->blockTracker();
     registry->init("enabled");
@@ -989,6 +1027,8 @@ TEST(WallClockProductionRootsTest, CopyFailureRetainsWeightStateAndCadence) {
 TEST(WallClockProductionRootsTest, PrunedRootIsIndexedAgainOnPublication) {
     ProfiledThread::initCurrentThreadSignalSafe();
     auto profiler = std::make_unique<Profiler>();
+    // Call-trace storage is recording-scoped; no start() allocates it here.
+    ASSERT_TRUE(profiler->callTraceStorageForTest()->acquire());
     auto* registry = profiler->threadFilter();
     auto* tracker = profiler->blockTracker();
     registry->init("enabled");
@@ -1030,7 +1070,10 @@ public:
           previous_reader(BaseWallClock::exchangeThreadStateReaderForTest(sleeping)),
           previous_write(profiler->sampleWriteHookForTest),
           previous_write_arg(profiler->sampleWriteHookArgForTest),
-          previous_sampling_epoch(WallClockCounters::samplingEpochStart()) {
+          previous_sampling_epoch(WallClockCounters::samplingEpochStart()),
+          acquired_storage(profiler->callTraceStorageForTest()->activeTableForTest() == nullptr) {
+        // Call-trace storage is recording-scoped and no start() runs here.
+        EXPECT_TRUE(profiler->callTraceStorageForTest()->acquire());
         WallClockCounters::beginSamplingEpoch(TSC::ticks());
         profiler->blockTracker()->setUnownedContextSnapshotsNeeded(true);
         profiler->threadFilter()->init("0");
@@ -1057,6 +1100,7 @@ public:
         profiler->sampleWriteHookForTest = previous_write;
         profiler->sampleWriteHookArgForTest = previous_write_arg;
         profiler->blockTracker()->setUnownedContextSnapshotsNeeded(false);
+        if (acquired_storage) profiler->callTraceStorageForTest()->release();
         ProfiledThread::release();
     }
 
@@ -1110,6 +1154,7 @@ private:
     Profiler::SampleWriteHook previous_write;
     void* previous_write_arg;
     u64 previous_sampling_epoch;
+    bool acquired_storage;
     static OSThreadState sleeping() { return OSThreadState::SLEEPING; }
     static bool acceptWrite(u32, u64, Event*, const Context*, void*) { return true; }
 };
@@ -1480,6 +1525,7 @@ public:
     void SetUp() override {
         ProfiledThread::initCurrentThreadSignalSafe();
         profiler = std::make_unique<Profiler>();
+        ASSERT_TRUE(profiler->callTraceStorageForTest()->acquire());
         profiler->blockTracker()->setUnownedContextSnapshotsNeeded(true);
         auto* registry = profiler->threadFilter();
         registry->init("enabled");
@@ -1869,6 +1915,8 @@ INSTANTIATE_TEST_SUITE_P(IndependentWrites, UnownedBoundaryTransactionTest, ::te
 TEST_F(WallClockSampleTransactionTest, FreshRecordingClearsRootsButKeepsCollector) {
     ASSERT_EQ(0ULL, request.registry_epoch);
     ASSERT_EQ(0, profiler->resetRecordingStateForTest());
+    // The reset releases the storage; start() acquires it again before engines run.
+    ASSERT_TRUE(profiler->callTraceStorageForTest()->acquire());
     EXPECT_EQ(0ULL, block()->unowned_blocked_call_trace_id.load());
     EXPECT_EQ(0ULL, block()->unowned_blocked_pending_weight.load());
     EXPECT_EQ(0ULL, block()->unowned_blocked_decision_count.load());
@@ -2701,4 +2749,52 @@ TEST_F(WallClockSampleTransactionTest, StaleIdentityCannotDeferWeight) {
     stale.slot_id = -1;
     EXPECT_FALSE(profiler->deferUnownedWallSample(stale));
     EXPECT_EQ(pending, retained->unowned_blocked_pending_weight.load());
+}
+
+namespace {
+// Leaves a flushable tail on the tracker slot: a recorded stack plus pending weight.
+void buildUnownedBlockedTail(WallClockBlockTracker::BlockState* slot) {
+    ASSERT_NE(nullptr, slot);
+    ASSERT_TRUE(slot->shouldRecordUnownedBlockedSample());
+    slot->consumeUnownedBlockedWeight();
+    slot->recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
+    ASSERT_FALSE(slot->shouldRecordUnownedBlockedSample());
+}
+
+// Slots span more than one registry chunk, so the reset must cover every slot.
+void expectResetDropsTails(ThreadFilter* filter, WallClockBlockTracker* tracker,
+                           bool disable_first) {
+    ASSERT_TRUE(tracker->ensureAllocated());
+    std::vector<ThreadFilter::SlotID> ids;
+    for (int i = 0; i < ThreadFilter::kChunkSize + 2; i++) {
+        ThreadFilter::SlotID id = filter->registerThread(5000 + i);
+        ASSERT_GE(id, 0);
+        ids.push_back(id);
+        buildUnownedBlockedTail(tracker->slotForId(id));
+    }
+    ASSERT_GT(ids.back() >> ThreadFilter::kChunkShift, ids.front() >> ThreadFilter::kChunkShift);
+    if (disable_first) {
+        filter->init("");
+        ASSERT_FALSE(filter->enabled());
+    }
+
+    filter->resetUnownedBlockedTails();
+
+    for (ThreadFilter::SlotID id : ids) {
+        u64 trace_id, weight;
+        OSThreadState state;
+        EXPECT_FALSE(tracker->slotForId(id)->flushUnownedBlockedTail(trace_id, weight, state))
+            << "slot " << id;
+        EXPECT_EQ(0u, trace_id) << "slot " << id;
+    }
+}
+} // namespace
+
+TEST_F(WallClockBlockTrackerTest, ResetUnownedBlockedTailsDropsTailsInEveryChunk) {
+    expectResetDropsTails(filter.get(), tracker.get(), false);
+}
+
+// The reset runs at stop() even when the thread filter is disabled.
+TEST_F(WallClockBlockTrackerTest, ResetUnownedBlockedTailsDropsTailsWhenFilterDisabled) {
+    expectResetDropsTails(filter.get(), tracker.get(), true);
 }

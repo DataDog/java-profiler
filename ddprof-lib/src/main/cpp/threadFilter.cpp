@@ -941,6 +941,12 @@ void ThreadFilter::clearActive() {
     }
 }
 
+void ThreadFilter::resetUnownedBlockedTails() {
+    if (_block_tracker != nullptr) {
+        _block_tracker->resetUnownedBlockedTails();
+    }
+}
+
 void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     // Preserve the legacy filter contract: every non-empty value, including
     // "0", enables context filtering. Empty filter disables filtering; the

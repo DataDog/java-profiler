@@ -12,7 +12,8 @@ Work runs in four phases — Intent → Design → Build and Test → Deploy —
 tracker ticket as the system of record: decisions and evidence land there, so
 anyone can pick the work up without reconstructing a conversation. Datadog
 engineers track work in Jira (`PROF-<n>`); external contributors use GitHub
-issues.
+issues. How to write the ticket, the design and the Build plan is in the
+`ticket-writing` and `work-planning` agent skills (`.agents/skills/`).
 
 ## Intent — what and why
 
@@ -44,8 +45,9 @@ Turn the intent into a proposed solution and a way to verify it.
 - Human: review trade-offs and assumptions. Engineer steering is mandatory on
   critical areas: public API, security, formal models, shared-library behavior,
   schema migrations, new dependencies, perf-critical code.
-- Sizing (S/M/L) drives design depth. Output: the design (markdown in a draft
-  PR), the acceptance criteria, and the identified review requirements.
+- Sizing (S/M/L) drives design depth. Output: the design (in the ticket
+  description, or markdown in a draft PR — one declared source of truth), the
+  acceptance criteria, and the identified review requirements.
 - Build-ready when: approach clear enough to implement, verification plan
   feasible, blocking questions and required alignment resolved.
 

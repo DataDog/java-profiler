@@ -774,6 +774,8 @@ protected:
         if (GetParam()) ASSERT_TRUE(filter->add(kTid, slot_id));
         ASGCT_CallFrame frame{};
         frame.method_id = reinterpret_cast<jmethodID>(0x12345);
+        // The storage is allocated only for a recording; release it in TearDown().
+        ASSERT_TRUE(profiler->callTraceStorageForTest()->acquire());
         trace_id = profiler->callTraceStorageForTest()->put(1, &frame, false, 1);
         ASSERT_GT(trace_id >> 32, 0ULL);
         previous_reader = BaseWallClock::exchangeThreadStateReaderForTest(
@@ -797,6 +799,7 @@ protected:
         BaseWallClock::exchangeThreadStateReaderForTest(previous_reader);
         tracker->setUnownedContextSnapshotsNeeded(false);
         WallClockCounters::reset();
+        profiler->callTraceStorageForTest()->release();
         WallClockPrecheckTest::TearDown();
     }
 

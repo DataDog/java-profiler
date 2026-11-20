@@ -321,17 +321,34 @@ private:
   constexpr static double HEAP_FLOOR_FLOOR_REL_MIN = 0.01;
   constexpr static u64 HEAP_FLOOR_FLOOR_ABS_MIN = 1ULL << 19;    // 512KiB
 
-  bool _initialized;
-  bool _enabled;
+  // Atomic: onGC() reads it on a GC thread while release() and initialize()
+  // write it. It only gates scalar updates there, so that read is relaxed.
+  std::atomic<bool> _initialized;
+  // Atomic: allocation callbacks (track() and its admission and growth paths)
+  // read _enabled and _table_max_cap outside the table lock, while start() and
+  // release() change them.
+  std::atomic<bool> _enabled;
   Error _stored_error;
 
   SpinLock _table_lock;
+  // See tableGeneration(). Changed only under the exclusive _table_lock, so
+  // track() compares it under the shared lock against a stable value.
+  std::atomic<u64> _table_generation{0};
+  // Token of the checker start() registered with the call-trace storage; 0 if none.
+  u64 _liveness_checker_token{0};
   volatile int _table_size;
   int _table_cap;
-  int _table_max_cap;
+  std::atomic<int> _table_max_cap;
   TrackingEntry *_table;
 
-  SubsampleRate _subsample;
+  // start() rewrites both while an allocation callback of the previous
+  // recording may still read them in admitForTracking(). A threshold of
+  // UINT64_MAX admits every allocation without a draw.
+  std::atomic<u64> _subsample_threshold;
+  std::atomic<double> _subsample_ratio;  // reported in the recording settings
+  static_assert(std::atomic<u64>::is_always_lock_free &&
+                    std::atomic<double>::is_always_lock_free,
+                "admitForTracking() runs in JVMTI allocation callbacks");
 
   // Chase-phase admission-boost state (admitForTracking()'s declaration
   // comment below). _watched_tids is two-phase-published: slots first, then
@@ -572,8 +589,9 @@ private:
   // (profiler.cpp) whenever `reset || _start_time == 0`, restarting that
   // StringDictionary's id namespace at 1 - but TrackingEntry::cached_klass_id
   // and _klass_population's klass_id keys are ids resolved from that
-  // dictionary, and both survive stop()/start() cycles (this class's table is
-  // designed to persist across recordings). Left unguarded, an id cached
+  // dictionary. release() drops both at every stop(), but a generation bump
+  // while the tracker holds them (classMapGenerationSetForTest(), or any
+  // future reset path) still has to be caught. Left unguarded, an id cached
   // before a reset would silently collide with whatever unrelated class the
   // new generation reassigns that same id to. cleanup_table() compares this
   // against Profiler::instance()->classMap()->generation() and, on a
@@ -642,9 +660,38 @@ private:
 
   jlong acquireLeakTag();
   void releaseLeakTag(jlong tag);
+  // Frees every pool slot. Caller holds _leak_tag_pool_lock.
+  void resetLeakTagPoolLocked() {
+    for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
+      _leak_tag_free_list[i] = i;
+      if (_leak_tag_in_use[i]) {
+        // Freeing an owned slot is an ownership transition.
+        bumpLeakTagIncarnationLocked(i);
+      }
+      _leak_tag_in_use[i] = false;
+    }
+    _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
+  }
+  // Clears the JVMTI tag of every object still carrying a pool tag. Returns
+  // false if the objects could not be enumerated (some may keep their tag).
+  bool clearLeakTagsOnObjects(jvmtiEnv *jvmti, JNIEnv *env);
+  // Marks the slots table entries own as in use and frees the rest; frees none
+  // when stale_tags_may_remain (leak tagging off until a later rebuild).
+  void rebuildLeakTagPool(bool stale_tags_may_remain);
+  // start()'s pool setup: retries a failed clear, then rebuilds the pool.
+  void prepareLeakTagPool(jvmtiEnv *jvmti, JNIEnv *jni);
+  // A clearLeakTagsOnObjects() failed: the next release() retries even when
+  // the pool shows no tag out, and start() retries before rebuilding the pool.
+  // Both run on the start/stop control thread, under Profiler::_state_lock.
+  bool _leak_tag_clear_pending = false;
+  // Deletes the population representatives' weak refs and empties the
+  // population and its scratch. Caller holds the exclusive _table_lock.
+  void resetKlassPopulationLocked(JNIEnv *env);
 
   Error initialize(Arguments &args);
-  Error initialize_table(JNIEnv *jni, int sampling_interval);
+  // Resolves the heap limits and returns the table's maximum capacity in
+  // *max_cap; publishing the table itself is left to initialize().
+  Error initialize_table(JNIEnv *jni, int sampling_interval, int *max_cap);
 
   // force=true is used by track()'s table-overflow branch to run a cleanup
   // synchronously from the allocation-sampling call stack, bypassing the
@@ -907,7 +954,8 @@ public:
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
         _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
-        _subsample(0.1), _watched_tid_count(0), _urgent_tracking(false),
+        _subsample_threshold(SubsampleRate(0.1).threshold),
+        _subsample_ratio(0.1), _watched_tid_count(0), _urgent_tracking(false),
         _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _last_cleanup_ns(0), _used_after_last_gc(0),
@@ -940,15 +988,23 @@ public:
                            __ATOMIC_ACQUIRE);
   }
 
-  // Reset recording-scoped gates at every accepted profiler start. Persistent tracking and
-  // population state intentionally survives recording boundaries.
+  // Reset recording-scoped gates at every accepted profiler start.
   void resetSession();
   Error start(Arguments &args);
   void stop();
-  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
+  // Frees what a recording built: the table and its weak refs, leak tags, the
+  // per-klass population. Called by Profiler::stop() after the final chunk and
+  // the BFS join: only an in-flight allocation callback can race, and drops.
+  void release(JNIEnv *env);
+  // Bumped by stop() before its final flush, by release() and when initialize()
+  // publishes a table. Read before the stack capture and passed to track(),
+  // which drops the sample if it moved: its call_trace_id belongs to a stopped recording.
+  u64 tableGeneration() const { return _table_generation.load(std::memory_order_acquire); }
+  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id,
+             u64 table_generation);
 
   // track()'s admission gate: a chase-phase raise of the live-samples
-  // tracking probability over the configured _subsample ratio (default 10% -
+  // tracking probability over the configured subsample ratio (default 10% -
   // a 90% probabilistic drop whose thinning of small per-(klass, tid)
   // populations was observed live as the intermittent zero-tag runs in
   // LeakTagCorrelationReferenceChainTest - see that test's own comment for
@@ -969,6 +1025,16 @@ public:
   // the configured ratio - a stale or missed boost cannot drop an allocation
   // that the ratio would have admitted.
   bool admitForTracking(jint tid);
+  // Release stores pair with admitForTracking()'s and subsampleRatio()'s
+  // acquire loads; a reader may see one half of a concurrent update.
+  void setSubsampleRate(const SubsampleRate &rate) {
+    _subsample_ratio.store(rate.ratio, std::memory_order_release);
+    _subsample_threshold.store(rate.threshold, std::memory_order_release);
+  }
+  // The configured ratio, for the recording settings.
+  double subsampleRatio() const {
+    return _subsample_ratio.load(std::memory_order_acquire);
+  }
 
   // Publishes the current candidate poll's qualifying tids as the watched
   // set above. Called from ReferenceChainTracker's full poll
@@ -1217,15 +1283,8 @@ public:
   // out of gtest's reach.
   void leakTagPoolResetForTest() {
     ExclusiveLockGuard guard(&_leak_tag_pool_lock);
-    for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
-      _leak_tag_free_list[i] = i;
-      if (_leak_tag_in_use[i]) {
-        // Freeing an owned slot is an ownership transition.
-        bumpLeakTagIncarnationLocked(i);
-      }
-      _leak_tag_in_use[i] = false;
-    }
-    _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
+    resetLeakTagPoolLocked();
+    _leak_tag_clear_pending = false;
   }
 
   jlong acquireLeakTagForTest() { return acquireLeakTag(); }
@@ -1244,6 +1303,12 @@ public:
 
   int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
 
+  void prepareLeakTagPoolForTest(jvmtiEnv *jvmti, bool clear_pending) {
+    _leak_tag_clear_pending = clear_pending;
+    prepareLeakTagPool(jvmti, nullptr);
+  }
+  bool leakTagClearPendingForTest() const { return _leak_tag_clear_pending; }
+
   u32 tableSizeForTest() const { return _table_size; }
 
   // Reads slot `idx`'s publication flag, leak tag and cached class id,
@@ -1260,6 +1325,11 @@ public:
     return true;
   }
 
+  // Slot `idx`'s skipped-bytes weight; 0 if idx is outside the allocated table.
+  double trackingSkippedForTest(u32 idx) const {
+    return (_table == nullptr || idx >= (u32)_table_cap) ? 0 : _table[idx].skipped;
+  }
+
   // Admission-boost test seams - same "for testing only" rationale as the
   // leak-tag pool seams above: admitForTracking()/noteSelectedCandidates()
   // are JNI-free pure logic (atomic reads + the per-thread RNG draw), so they
@@ -1267,7 +1337,7 @@ public:
   // (NewWeakGlobalRef) and stays out of gtest's reach.
   bool admitForTrackingForTest(jint tid) { return admitForTracking(tid); }
 
-  void setSubsampleRatioForTest(double ratio) { _subsample = SubsampleRate(ratio); }
+  void setSubsampleRatioForTest(double ratio) { setSubsampleRate(SubsampleRate(ratio)); }
 
   // Reset for tests: clears both boost paths, forces ratio=0 (deterministic
   // reject for unboosted tids - xorshift::threshold(0) is 0, which no draw
