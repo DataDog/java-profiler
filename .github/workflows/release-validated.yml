@@ -146,6 +146,35 @@ jobs:
             fi
           done
 
+          # A queued mainline dispatch must not publish an older commit after
+          # a newer release landed while it waited for the lock: B untagged
+          # passes the equality guard even when main HEAD C already carries
+          # a newer tag. Mainline-only: maintenance tags live on release/*
+          # branches, not main.
+          if [ "$TYPE" == "major" ] || [ "$TYPE" == "minor" ]; then
+            for tag in $(git tag --list 'v_*'); do
+              TAG_COMMIT=$(git rev-parse "$tag^{commit}")
+              RC=0
+              git merge-base --is-ancestor "$TAG_COMMIT" origin/main || RC=$?
+              if [ "$RC" -gt 1 ]; then
+                echo "::error::Cannot resolve $tag against origin/main" >&2
+                exit 1
+              fi
+              if [ "$RC" -eq 0 ]; then
+                RC=0
+                git merge-base --is-ancestor "$TAG_COMMIT" "$TARGET_SHA" || RC=$?
+                if [ "$RC" -gt 1 ]; then
+                  echo "::error::Cannot resolve $tag against the release commit" >&2
+                  exit 1
+                fi
+                if [ "$RC" -ne 0 ]; then
+                  echo "::error::Release commit $TARGET_SHA predates mainline release $tag"
+                  exit 1
+                fi
+              fi
+            done
+          fi
+
           # Compute release version from git tags
           if [ "$TYPE" == "retag" ]; then
             # For retag, find the most recent tag on this branch (the one to re-point)

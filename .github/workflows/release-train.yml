@@ -241,7 +241,14 @@ jobs:
                       + "- Version: " + e.get("RELEASE_VERSION", "unknown") + "\n"
                       + "- Release run: " + e.get("RUN_URL", "n/a") + "\n"
                       + "- Conclusion: " + e.get("CONCLUSION", "unknown"))
-          payload = {"text": "java-profiler release train\n" + body}
+          # nightly.yml's receiver consumes {"scenarios", "failed_run_url"};
+          # send the same fields alongside text so one webhook serves both
+          # workflows (a plain Slack incoming webhook ignores the extras).
+          payload = {"text": "java-profiler release train\n" + body,
+                     "scenarios": body,
+                     "failed_run_url": e.get("RUN_URL")
+                                       or (e["GITHUB_SERVER_URL"] + "/" + e["GITHUB_REPOSITORY"]
+                                           + "/actions/runs/" + e["GITHUB_RUN_ID"])}
           req = urllib.request.Request(webhook, data=json.dumps(payload).encode(),
                                        headers={"Content-Type": "application/json"})
           with urllib.request.urlopen(req):
