@@ -193,6 +193,66 @@ public class ExternalLauncher {
 
   private static volatile long lineNumberSink;
 
+  private static volatile boolean spinRunning;
+  private static volatile long spinSink;
+  private static volatile long spinRounds;
+  private static Thread spinThread;
+
+  /**
+   * Background workload for the admission lifecycle scenarios: thread churn, lambda call sites and
+   * string churn keep the JVM firing the profiler's persistent JVMTI callbacks (which run in
+   * profiler code and allocate through the profiler's own GOT) while the scenario executes the
+   * stand-in's install/restore steps, so those steps run under concurrent allocator traffic.
+   */
+  private static void runSpinWorkload() {
+    long acc = 0;
+    int round = 0;
+    while (spinRunning) {
+      round++;
+      spinRounds = round;
+      int capture = round;
+      Runnable lambda = () -> spinSink = capture;
+      lambda.run();
+      acc += String.valueOf(acc).concat("-" + capture).length();
+      Thread worker =
+          new Thread(
+              () -> {
+                byte[] block = new byte[128];
+                spinSink += block.length;
+              });
+      worker.start();
+      try {
+        worker.join(1_000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+    spinSink += acc;
+  }
+
+  private static void startSpinThread() {
+    if (spinThread != null) {
+      throw new IllegalStateException("spin thread already running");
+    }
+    spinRunning = true;
+    spinThread = new Thread(ExternalLauncher::runSpinWorkload, "admission-spin");
+    spinThread.start();
+  }
+
+  private static void stopSpinThread() throws InterruptedException {
+    Thread thread = spinThread;
+    if (thread == null) {
+      throw new IllegalStateException("spin thread not running");
+    }
+    spinRunning = false;
+    thread.join(5_000);
+    if (thread.isAlive()) {
+      throw new IllegalStateException("spin thread did not stop within 5s");
+    }
+    spinThread = null;
+  }
+
   /**
    * Spends its time in many different JDK methods (regular expressions, formatting, maps, sorting,
    * big-integer arithmetic), so that their frames, and the lines of their bytecode indices, show up
@@ -276,6 +336,14 @@ public class ExternalLauncher {
           break;
         case "CPUWORK":
           runEntryFrameWorkload();
+          break;
+        case "SPINSTART":
+          startSpinThread();
+          System.out.println("[spin] started");
+          break;
+        case "SPINSTOP":
+          stopSpinThread();
+          System.out.println("[spin] stopped rounds=" + spinRounds);
           break;
         case "ALLOC":
           if (!loaded) {
