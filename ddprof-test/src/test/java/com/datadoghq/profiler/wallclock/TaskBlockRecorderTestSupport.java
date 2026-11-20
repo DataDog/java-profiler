@@ -1,6 +1,9 @@
 /* Copyright 2026, Datadog, Inc. */
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.datadoghq.profiler.NativeBuildConfig;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -12,6 +15,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /** Reads bounded native receipts without using the JFR writer or clearing diagnostic history. */
 final class TaskBlockRecorderTestSupport {
@@ -20,6 +24,36 @@ final class TaskBlockRecorderTestSupport {
   /** Builds without counters report zero, so no rejection credit is available there. */
   static long recordFailures(Map<String, Long> counters) {
     return counters.getOrDefault("task_block_record_failed", 0L);
+  }
+
+  static final int MAX_RECORD_ATTEMPTS = 5;
+
+  /** One eligible interval; returns endTaskBlock's result. */
+  @FunctionalInterface
+  interface Attempt {
+    boolean recorded() throws Exception;
+  }
+
+  /**
+   * Repeats an eligible interval until one is recorded. Only the JNI endTaskBlock path records
+   * TaskBlocks here, so each rejected attempt must add exactly one task_block_record_failed.
+   */
+  static void recordWithinAttempts(Supplier<Map<String, Long>> counters, Attempt attempt)
+      throws Exception {
+    long before = recordFailures(counters.get());
+    int rejected = 0;
+    while (!attempt.recorded()) {
+      rejected++;
+      assertEquals(
+          rejected,
+          recordFailures(counters.get()) - before,
+          "endTaskBlock rejection not accounted as task_block_record_failed");
+      assertTrue(rejected < MAX_RECORD_ATTEMPTS, "no recorded interval in bounded attempts");
+    }
+    assertEquals(
+        rejected,
+        recordFailures(counters.get()) - before,
+        "recorded interval also counted a recorder failure");
   }
 
   static native long cursor0();
