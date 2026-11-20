@@ -14,8 +14,7 @@
 
 struct dl_phdr_info;
 
-// Patch libraries' @plt entries. pthread_create entries (_patched_entries) use
-// only _lib; _location and _func are meaningful for the other entry tables.
+// A patched GOT slot (sigaction and socket tables) with the function it held.
 typedef struct _patchEntry {
   CodeCache* _lib;
   // library's @plt location
@@ -23,6 +22,30 @@ typedef struct _patchEntry {
   // original function
   void*  _func;
 } PatchEntry;
+
+// A library whose pthread_create slots are hooked. The slots are found again
+// through lib->findImport().
+struct PthreadCreateEntry {
+  CodeCache* lib;
+  // The last pass that visited the library found it mapped, and no slot held a
+  // foreign value the visit before had not seen.
+  bool mapped;
+  // The foreign value each slot held at the last visit, or null.
+  void* foreign[NUM_IMPORT_TYPES];
+};
+
+// The pthread_create entries, guarded by LibraryPatcher::_lock. All-zero is the
+// empty table.
+struct PthreadCreateTable {
+  PthreadCreateEntry entries[MAX_NATIVE_LIBS];
+  // The entries' libraries, sorted, for patch_pthread_create()'s collector.
+  CodeCache* sorted[MAX_NATIVE_LIBS];
+  int size;
+  // Set by a pass when an entry's slot held a foreign value that the visit
+  // before had not seen: the pass must not be counted as having handled the
+  // loader's adds and subs. A foreign value that stays does not set it.
+  bool declined;
+};
 
 // A library to visit with a LibraryPatcher::LiveLibraryWalk
 typedef struct _libraryRef {
@@ -47,8 +70,11 @@ private:
   // pthread_create patching, which is never unpatched. Read by the Libraries
   // refresher thread, hence release/acquire.
   static std::atomic<bool> _initialized;
-  static PatchEntry  _patched_entries[MAX_NATIVE_LIBS];
-  static int         _size;
+  static PthreadCreateTable _pthread_create;
+  // What the loader resolves pthread_create to through the global scope, a
+  // preloaded interposer included. Set once by initialize_persistent(), before the
+  // patching starts, because dlsym() must not run under _lock.
+  static void*       _loader_pthread_create;
   static bool        _patch_pthread_create;
 
   // Separate tracking for sigaction patches

@@ -29,8 +29,9 @@ typedef void* (*func_start_routine)(void*);
 
 SpinLock LibraryPatcher::_lock;
 std::atomic<bool> LibraryPatcher::_initialized{false};
-PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
-int        LibraryPatcher::_size = 0;
+PthreadCreateTable LibraryPatcher::_pthread_create;
+// Stands in until initialize_persistent() asks the loader.
+void*      LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
 PatchEntry LibraryPatcher::_socket_entries[4 * MAX_NATIVE_LIBS];
@@ -46,16 +47,16 @@ static int find_entry(const PatchEntry* entries, int size, CodeCache* lib) {
   return -1;
 }
 
+static PthreadCreateEntry* find_pthread_create_entry(PthreadCreateTable& table, CodeCache* lib) {
+  for (int index = 0; index < table.size; index++) {
+    if (table.entries[index].lib == lib) return &table.entries[index];
+  }
+  return nullptr;
+}
+
 static bool has_entry_for(const PatchEntry* entries, int size, CodeCache* lib) {
   return find_entry(entries, size, lib) >= 0;
 }
-
-// Per pthread_create entry, parallel to _patched_entries: whether the last pass
-// that looked found its library mapped. Guarded by _lock.
-static bool pthread_create_entry_mapped[MAX_NATIVE_LIBS];
-// The entries' libraries, sorted, for patch_pthread_create()'s collector.
-// Guarded by _lock.
-static CodeCache* pthread_create_entry_libs[MAX_NATIVE_LIBS];
 
 void LibraryPatcher::add_live_candidate(CodeCache* lib, int tag) {
   // Libraries without a known image base never had their imports parsed.
@@ -196,7 +197,13 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
 
 void LibraryPatcher::initialize_persistent() {
   if (!_initialized.load(std::memory_order_acquire)) {
-    _size = 0;
+    _pthread_create.size = 0;
+    // The loader's choice, which a preloaded interposer wins: dlsym() is not
+    // allowed under _lock, and no patch pass has run yet.
+    void* resolved = dlsym(RTLD_DEFAULT, "pthread_create");
+    if (resolved != nullptr) {
+      _loader_pthread_create = resolved;
+    }
     // Release so the reset above is visible to any thread that sees the flag.
     // Once set, pthread_create patches are persistent across stop/start cycles.
     _initialized.store(true, std::memory_order_release);
@@ -608,7 +615,7 @@ void LibraryPatcher::patch_libraries() {
 
    TEST_LOG("Patching libraries");
    patch_pthread_create();
-   TEST_LOG("%d libraries patched", _size);
+   TEST_LOG("%d libraries patched", _pthread_create.size);
 }
 
 bool LibraryPatcher::excluded_from_pthread_create_patch(CodeCache* lib) {
@@ -652,40 +659,57 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
 #endif
 
   // An entry outlives its library: a reload at the same base keeps its
-  // CodeCache and entry, but its fresh GOT holds the real pthread_create. The
+  // CodeCache and entry, but its fresh GOT holds what the loader resolves. The
   // walk verified it is the same image, so the saved slots are valid.
-  int entry = find_entry(_patched_entries, _size, lib);
-  bool reload = entry >= 0;
-  if (reload) {
-    pthread_create_entry_mapped[entry] = true;  // this walk found it mapped
-  }
-  void* real = reinterpret_cast<void*>(&pthread_create);
+  PthreadCreateEntry* entry = find_pthread_create_entry(_pthread_create, lib);
+  bool reload = entry != nullptr;
   bool patch[NUM_IMPORT_TYPES] = {};
+  void* foreign[NUM_IMPORT_TYPES] = {};
   bool any_patch = false;
+  // True when a slot holds a foreign value that the visit before had not seen:
+  // a value that stays is not pending. The same rule on the first patch and on
+  // a reload.
+  bool changed = false;
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
     if (slots[ty] == nullptr) {
       continue;
     }
     void* current = __atomic_load_n(slots[ty], __ATOMIC_RELAXED);
-    // A reload's fresh GOT holds the real pthread_create or, with lazy binding,
-    // the library's own PLT stub. Anything else was hooked by someone after us:
-    // leave it rather than take their interception away.
-    patch[ty] = current != func &&
-                (!reload || current == real || lib->contains(current));
+    if (current == func) {
+      continue;
+    }
+    // The loader leaves what it resolves for every library (a preloaded
+    // interposer included) or, with lazy binding, the library's own PLT stub.
+    // Anything else was hooked by someone else: leave it rather than take their
+    // interception away.
+    patch[ty] = current == _loader_pthread_create || lib->contains(current);
     any_patch |= patch[ty];
+    if (!patch[ty]) {
+      foreign[ty] = current;
+      // Null is the "no record" value and an unrelocated GOT slot can hold it,
+      // so it never counts as seen.
+      changed |= !reload || current == nullptr || entry->foreign[ty] != current;
+    }
+  }
+  if (reload) {
+    entry->mapped = !changed;
+    memcpy(entry->foreign, foreign, sizeof(foreign));
+    // A library without an entry is a candidate on every pass anyway.
+    _pthread_create.declined |= changed;
   }
   if (!any_patch) {
     return;
   }
   if (!reload) {
-    if (_size >= MAX_NATIVE_LIBS) {
+    if (_pthread_create.size >= MAX_NATIVE_LIBS) {
       TEST_LOG("Patching: entry table full, %s is not routed through the hook", lib->name());
       return;
     }
-    // Only _lib is meaningful for pthread_create entries: the slots are found
-    // again through lib->findImport().
-    pthread_create_entry_mapped[_size] = true;
-    _patched_entries[_size++]._lib = lib;
+    PthreadCreateEntry& added = _pthread_create.entries[_pthread_create.size++];
+    added.lib = lib;
+    added.mapped = !changed;
+    memcpy(added.foreign, foreign, sizeof(foreign));
+    _pthread_create.declined |= changed;
   }
   TEST_LOG("Patching: %s", lib->name());
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
@@ -752,22 +776,26 @@ void LibraryPatcher::patch_pthread_create() {
 
   struct Context { const CodeCacheArray* native_libs; Recheck recheck; };
   Context ctx = {&Libraries::instance()->native_libs(), recheck};
+  bool declined;
   {
     LiveLibraryWalk walk(
         [](void* data) {
           const Context& c = *static_cast<const Context*>(data);
-          for (int index = 0; index < _size; index++) {
-            pthread_create_entry_libs[index] = _patched_entries[index]._lib;
+          PthreadCreateTable& table = _pthread_create;
+          table.declined = false;
+          for (int index = 0; index < table.size; index++) {
+            PthreadCreateEntry& entry = table.entries[index];
+            table.sorted[index] = entry.lib;
             if (c.recheck == ALL) {
-              // patch_library_unlocked() sets it again if this walk visits it.
-              pthread_create_entry_mapped[index] = false;
-            } else if (c.recheck == NONE || pthread_create_entry_mapped[index]) {
+              // Set again if this walk visits the library and every slot settles.
+              entry.mapped = false;
+            } else if (c.recheck == NONE || entry.mapped) {
               continue;
             }
-            add_live_candidate(_patched_entries[index]._lib, 0);
+            add_live_candidate(entry.lib, 0);
           }
-          CodeCache** libs_end = pthread_create_entry_libs + _size;
-          std::sort(pthread_create_entry_libs, libs_end);
+          CodeCache** libs_end = table.sorted + table.size;
+          std::sort(table.sorted, libs_end);
           int num_of_libs = c.native_libs->count();
           for (int index = 0; index < num_of_libs; index++) {
             CodeCache* lib = c.native_libs->at(index);
@@ -776,15 +804,19 @@ void LibraryPatcher::patch_pthread_create() {
             // every pass.
             if (lib != nullptr && lib->peekImport(im_pthread_create) != nullptr
                 && !excluded_from_pthread_create_patch(lib)
-                && !std::binary_search(pthread_create_entry_libs, libs_end, lib)) {
+                && !std::binary_search(table.sorted, libs_end, lib)) {
               add_live_candidate(lib, 0);
             }
           }
         },
         &ctx,
         [](CodeCache* lib, int) { patch_library_unlocked(lib); });
+    declined = _pthread_create.declined;  // under _lock, which the walk holds
   }
-  if (recheck != NONE && counts_known) {
+  // A patched library reloaded at the same base but not yet relocated holds raw
+  // values in its GOT, which the visit declines as new foreign values. Counting
+  // the pass as handled would skip that entry until the next load or unload.
+  if (recheck != NONE && counts_known && !declined) {
     pthread_create_checked_adds.store(counts.adds, std::memory_order_release);
     if (recheck == ALL) {
       pthread_create_checked_subs.store(counts.subs, std::memory_order_release);
