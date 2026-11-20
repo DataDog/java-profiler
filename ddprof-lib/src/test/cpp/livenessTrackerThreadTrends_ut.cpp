@@ -62,6 +62,12 @@ public:
         bool created;
         tracker->klassPopulationRecordForTest(klass_id, /*count=*/1, epoch,
                                               &slot, &created);
+        foldSlot(tracker, scratch, slot);
+    }
+
+    // Folds into an arbitrary slot (no record creation) - the direct seam for the slot-bounds
+    // guard test.
+    static void foldSlot(LivenessTracker *tracker, void *scratch, int slot) {
         tracker->_table_lock.lock();
         tracker->recordTidTrendSamplesLocked(
             slot, *static_cast<Scratch *>(scratch));
@@ -204,6 +210,13 @@ TEST(LivenessThreadTrendTest, AgeCapacityGuardCapsDistinctAgesWithoutDroppingCou
         << "distinct-age window must cap at MAX_AGES_PER_THREAD";
     EXPECT_EQ(40u, LivenessThreadTrendTestAccessor::threadCount(scratch, 0))
         << "the retained count keeps rising past the age cap";
+    // The boundary is >= (not >): with the guard loosened to >, the 41st distinct age would be
+    // admitted and written past ages[MAX - 1], corrupting age_count itself.
+    LivenessThreadTrendTestAccessor::add(tracker, scratch, 7, 41);
+    EXPECT_EQ(32u, LivenessThreadTrendTestAccessor::threadAgeCount(scratch, 0))
+        << "the guard must hold at the cap boundary (>=, not >)";
+    EXPECT_EQ(7, LivenessThreadTrendTestAccessor::threadTid(scratch, 0));
+    EXPECT_EQ(41u, LivenessThreadTrendTestAccessor::threadCount(scratch, 0));
 }
 
 // Promotion must require a challenger to OUTRANK the weakest incumbent (strict >): an equal
@@ -304,4 +317,131 @@ TEST(LivenessThreadTrendTest, NewcomerChurnBeyondPoolNeverDisplacesIncumbents) {
                              << " displaced by newcomer churn";
     }
     EXPECT_EQ(4, LivenessThreadTrendTestAccessor::challengerCount(scratch));
+}
+
+// A full trend table must not hand a slot to a newcomer that is weaker than the weakest victim's
+// accumulated evidence: a trend whose consecutive_positive was just reset by one skipped (or
+// non-qualifying) epoch still owns its pre-reset retained counts, and a single-sample newcomer
+// must not take that slot unconditionally (F-772fa299c1da).
+TEST(LivenessThreadTrendTest, TakeoverEarnsAgainstAccumulatedEvidence) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const u32 klass_id = 772;
+    ScratchGuard scratch{LivenessThreadTrendTestAccessor::newScratch()};
+
+    // Fill all 8 trend slots with qualifying threads (count 12 clears the bar): two full epochs.
+    for (int epoch = 1; epoch <= 2; epoch++) {
+        ScratchGuard epoch_scratch{LivenessThreadTrendTestAccessor::newScratch()};
+        for (jint tid = 1; tid <= 8; tid++) {
+            for (u32 i = 0; i < 12; i++) {
+                LivenessThreadTrendTestAccessor::add(tracker, epoch_scratch,
+                                                     tid, 1);
+            }
+        }
+        LivenessThreadTrendTestAccessor::fold(tracker, epoch_scratch, klass_id,
+                                              epoch);
+    }
+
+    // Epoch 3: tid 1 drops to a single retained instance (resets its hysteresis, newest live
+    // count 1); tids 2-8 vanish entirely (one trailing zero epoch each, pre-reset count 12).
+    ScratchGuard dipped{LivenessThreadTrendTestAccessor::newScratch()};
+    for (u32 i = 0; i < 1; i++) {
+        LivenessThreadTrendTestAccessor::add(tracker, dipped, 1, 1);
+    }
+    LivenessThreadTrendTestAccessor::fold(tracker, dipped, klass_id, 3);
+    EXPECT_EQ(0, LivenessThreadTrendTestAccessor::consecutivePositive(
+                     tracker, klass_id, 1))
+        << "setup: tid 1's hysteresis must be reset by the weak epoch";
+
+    // A single-sample newcomer (count 1) is weaker than every victim's evidence: tid 1's newest
+    // live count matches it and tids 2-8 still own pre-reset counts of 12 - the newcomer is
+    // dropped and every accumulated trend survives.
+    ScratchGuard newcomer{LivenessThreadTrendTestAccessor::newScratch()};
+    LivenessThreadTrendTestAccessor::add(tracker, newcomer, 99, 1);
+    LivenessThreadTrendTestAccessor::fold(tracker, newcomer, klass_id, 4);
+    EXPECT_EQ(nullptr,
+              LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id, 99))
+        << "a weaker newcomer must not take a slot unconditionally";
+    for (jint tid = 1; tid <= 8; tid++) {
+        EXPECT_NE(nullptr,
+                  LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id,
+                                                            tid))
+            << "accumulated trend for tid " << tid << " must survive";
+    }
+
+    // A newcomer that OUTRANKS the weakest victim's evidence earns the slot: count 20 beats
+    // tid 1's newest live count of 1.
+    ScratchGuard hot{LivenessThreadTrendTestAccessor::newScratch()};
+    for (u32 i = 0; i < 20; i++) {
+        LivenessThreadTrendTestAccessor::add(tracker, hot, 99, 1);
+    }
+    LivenessThreadTrendTestAccessor::fold(tracker, hot, klass_id, 5);
+    EXPECT_NE(nullptr,
+              LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id, 99))
+        << "a newcomer hotter than the weakest victim's evidence must take a slot";
+    EXPECT_EQ(nullptr,
+              LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id, 1))
+        << "the weakest victim's trend is the one replaced";
+}
+
+// Sustaining trends are never victims: with every slot's consecutive_positive alive, a newcomer
+// of any strength is dropped (bounded retry on a later epoch).
+TEST(LivenessThreadTrendTest, SustainedTrendsAreNeverTakeoverVictims) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const u32 klass_id = 773;
+    ScratchGuard scratch{LivenessThreadTrendTestAccessor::newScratch()};
+
+    for (int epoch = 1; epoch <= 2; epoch++) {
+        ScratchGuard epoch_scratch{LivenessThreadTrendTestAccessor::newScratch()};
+        for (jint tid = 1; tid <= 8; tid++) {
+            for (u32 i = 0; i < 12; i++) {
+                LivenessThreadTrendTestAccessor::add(tracker, epoch_scratch,
+                                                     tid, 1);
+            }
+        }
+        LivenessThreadTrendTestAccessor::fold(tracker, epoch_scratch, klass_id,
+                                              epoch);
+    }
+    // Epoch 3 keeps every thread present at its qualifying count.
+    ScratchGuard epoch_scratch{LivenessThreadTrendTestAccessor::newScratch()};
+    for (jint tid = 1; tid <= 8; tid++) {
+        for (u32 i = 0; i < 12; i++) {
+            LivenessThreadTrendTestAccessor::add(tracker, epoch_scratch, tid, 1);
+        }
+    }
+    LivenessThreadTrendTestAccessor::fold(tracker, epoch_scratch, klass_id, 3);
+
+    ScratchGuard hot{LivenessThreadTrendTestAccessor::newScratch()};
+    for (u32 i = 0; i < 40; i++) {
+        LivenessThreadTrendTestAccessor::add(tracker, hot, 99, 1);
+    }
+    LivenessThreadTrendTestAccessor::fold(tracker, hot, klass_id, 4);
+    EXPECT_EQ(nullptr,
+              LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id, 99))
+        << "no sustaining trend may be evicted, whatever the newcomer's strength";
+}
+
+// The slot bounds guard on recordTidTrendSamplesLocked(): out-of-range slots must be a no-op
+// (removing the guard would index the population table out of bounds).
+TEST(LivenessThreadTrendTest, OutOfRangeFoldSlotIsANoOp) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const u32 klass_id = 774;
+    ScratchGuard scratch{LivenessThreadTrendTestAccessor::newScratch()};
+    LivenessThreadTrendTestAccessor::add(tracker, scratch, 7, 1);
+    // Seed one real trend through a VALID slot, then prove out-of-range slots are no-ops.
+    ScratchGuard seed{LivenessThreadTrendTestAccessor::newScratch()};
+    LivenessThreadTrendTestAccessor::add(tracker, seed, 7, 1);
+    int slot = -1;
+    {
+        bool created;
+        tracker->klassPopulationRecordForTest(klass_id, 1, 1, &slot, &created);
+    }
+    LivenessThreadTrendTestAccessor::foldSlot(tracker, seed, slot);
+    ASSERT_NE(nullptr,
+              LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id, 7))
+        << "setup: the valid fold must create the trend";
+    LivenessThreadTrendTestAccessor::foldSlot(tracker, scratch, -1);
+    LivenessThreadTrendTestAccessor::foldSlot(tracker, scratch, slot + 1);
+    EXPECT_NE(nullptr,
+              LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id, 7))
+        << "out-of-range folds must not create or corrupt trends";
 }

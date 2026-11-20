@@ -138,18 +138,50 @@ void LivenessTracker::recordTidTrendSamplesLocked(
       if (entry.tid_trend_count < KlassPopulationEntry::MAX_TID_TRENDS) {
         trend = &entry.tid_trends[entry.tid_trend_count++];
       } else {
+        // A takeover must be earned against the victim's accumulated evidence, not just its
+        // (possibly just-reset) hysteresis counter: a trend whose consecutive_positive was just
+        // reset still carries its pre-reset retained counts, and a single-sample newcomer must
+        // not take that slot unconditionally. A candidate victim is therefore unsustained
+        // (consecutive_positive == 0) AND dead-enough: either its ring ends in two or more zero
+        // epochs (the thread is really gone - its history no longer matters) or its newest live
+        // retained count is below the newcomer's current epoch count. Among the qualifying
+        // candidates the weakest (lowest consecutive_positive, then ring_fill) loses its slot.
+        // No qualifying victim: the newcomer is dropped - bounded, it retries on a later epoch
+        // (no new state; the scan is O(candidates x ring) with both constants bounded: 8 x 16).
+        const u8 incoming_count =
+            (u8)std::min<u32>(scratch.threads[ti].count, UINT8_MAX);
         int victim = -1;
         for (int i = 0; i < entry.tid_trend_count; i++) {
-          if (entry.tid_trends[i].synthetic) {
+          KlassPopulationEntry::TidTrend &candidate = entry.tid_trends[i];
+          if (candidate.synthetic) {
             continue;
           }
+          if (candidate.consecutive_positive != 0) {
+            continue; // still sustaining its qualification - never a victim
+          }
+          u8 trailing_zeros = 0;
+          u8 last_live_count = 0;
+          for (int k = 0; k < candidate.ring_fill; k++) {
+            u8 sample = candidate.count_ring[(candidate.ring_head +
+                KlassPopulationEntry::TID_TREND_RING_SIZE - 1 - k) %
+                KlassPopulationEntry::TID_TREND_RING_SIZE];
+            if (sample == 0) {
+              trailing_zeros++;
+              continue;
+            }
+            last_live_count = sample;
+            break;
+          }
+          if (trailing_zeros < 2 && last_live_count >= incoming_count) {
+            continue; // just reset (one skipped epoch) or present-but-unsustained, and still
+                      // hotter than the newcomer: the accumulated evidence keeps the slot
+          }
           if (victim < 0 ||
-              (entry.tid_trends[i].consecutive_positive <
-               entry.tid_trends[victim].consecutive_positive) ||
-              (entry.tid_trends[i].consecutive_positive ==
+              (candidate.consecutive_positive <
+                   entry.tid_trends[victim].consecutive_positive) ||
+              (candidate.consecutive_positive ==
                    entry.tid_trends[victim].consecutive_positive &&
-               entry.tid_trends[i].ring_fill <
-                   entry.tid_trends[victim].ring_fill)) {
+               candidate.ring_fill < entry.tid_trends[victim].ring_fill)) {
             victim = i;
           }
         }
