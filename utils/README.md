@@ -90,7 +90,19 @@ The terminal interaction tests require Python 3.
 
 ```bash
 .github/scripts/tests/test_release_automation.sh
+.github/scripts/tests/test_release_train.sh
 ```
+
+### Automated release train
+
+The nightly certification, the Friday minor release and the dd-trace-java
+bump PR run without operator input. See
+[doc/building/ReleaseTrain.md](../doc/building/ReleaseTrain.md) for the
+workflow contracts, secrets and failure handling. The scripts behind it live
+in `.github/scripts/`: `certify.sh` (attach the certification note),
+`pick-release-candidate.sh` (select the train candidate),
+`file-jira-issue.sh` (PROF ticket filing) and `bump-ddtrace.sh`
+(dependency bump PR).
 
 ---
 
