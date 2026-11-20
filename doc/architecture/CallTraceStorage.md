@@ -162,8 +162,8 @@ before the first `start()`); `acquire()` is the only place they are allocated.
   `release()`, under every recording stripe, `releaseRecordingMemory()` drops every
   pending unowned wall-clock tail (trace ID, weight and epoch segments), so neither a
   thread-teardown tail flush nor a later recording writes a freed ID. `stop()` writes
-  the pending tails first (`Profiler::flushUnownedTailsAtStop()`), or counts the ones it
-  cannot write in `wc_unowned_tail_dropped_at_stop`.
+  the pending tails first (`Profiler::flushUnownedTailsAtStop()`), or adds the weight of
+  the ones it cannot write to `wc_unowned_tail_dropped_at_stop`.
 - While released, `put()` finds `_active_storage == nullptr` and returns
   `DROPPED_TRACE_ID`, and `processTraces()` hands its processor a local set holding
   only the dropped-trace placeholder (a chunk written without a recording, as gtests

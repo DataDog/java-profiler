@@ -300,7 +300,7 @@ private:
   bool flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
                            bool preserve_cadence);
   bool flushWallTail(ThreadFilter::SlotID slot_id, int tid, bool blocking);
-  // Never fails: each retained tail is written or counted as dropped.
+  // Never fails: each retained tail is written, or its weight is counted as dropped.
   void flushUnownedTailsAtStop();
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
 
