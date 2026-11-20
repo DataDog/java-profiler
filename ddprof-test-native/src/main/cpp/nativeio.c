@@ -58,7 +58,10 @@ static ElfW(Addr) dynamic_pointer(ElfW(Addr) base, ElfW(Addr) value) {
 
 static int collect_imports(struct dl_phdr_info *info, size_t size, void *data) {
     const char *name = strrchr(info->dlpi_name, '/');
-    if (name == NULL || (strcmp(name, "/libnet.so") != 0 && strcmp(name, "/libnio.so") != 0)) return 0;
+    /* IBM Java 8 reaches libc through libjava's JCL bridge; only hooked slots are recorded,
+     * so an unpatched OpenJDK libjava contributes nothing. */
+    if (name == NULL || (strcmp(name, "/libnet.so") != 0 && strcmp(name, "/libnio.so") != 0 &&
+                         strcmp(name, "/libjava.so") != 0)) return 0;
     ElfW(Addr) base = info->dlpi_addr;
     const ElfW(Dyn) *dynamic = NULL;
     for (int index = 0; index < info->dlpi_phnum; index++) {
