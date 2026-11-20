@@ -128,15 +128,32 @@ and close the run log with the stop summary — commits pushed, findings
 flagged, threads left for the author, `bits_triggered` and `bits_rerequested`
 heads.
 
-1. **Poll.** Every 10 minutes: `git fetch origin`; `$GH pr checks <n>`;
-   `$GH pr view <n> --json state,reviews,comments,url,mergeable,mergeStateStatus`;
-   and
-   `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` — inline review
-   comments are invisible to `pr view --json`. If the PR state is not `OPEN`,
-   run the stop report and cleanup immediately, acting on no checks or findings —
-   the PR may have been closed or merged between polls. Recheck the state is
-   `OPEN` immediately before each push. A poll that finds nothing stays
-   cheap: no log fetching, no deep analysis.
+1. **Poll.** Every 10 minutes (20 while idle, below) — `git fetch origin`, then read
+   every signal through the REST API only: `gh pr checks` and `gh pr view --json` run
+   on GraphQL (the whole CI rollup paginated there costs ~13 of 5000 points per poll)
+   and must not come back. First
+   `$GH api repos/datadog/java-profiler/pulls/<n> --jq '{state, head: .head.sha,
+   mergeable, mergeable_state: .mergeable_state, draft: .draft}'` — PR state, head sha
+   and merge state; then, for that head sha, the CI rollup in two REST reads:
+   `$GH api --paginate repos/datadog/java-profiler/commits/<sha>/check-runs?per_page=100 --jq '.check_runs[]'`
+   (the paginated REST call emits one JSON object per page; `--jq '.check_runs[]'`
+   reads each page's checks: name, status, conclusion, details_url) and
+   `$GH api repos/datadog/java-profiler/commits/<sha>/status` (status contexts:
+   `bits-review/head`, `dd-gitlab/*`, the rest). Dedupe checks by name keeping the
+   run with the newest `started_at` — a head carries cancelled runs of earlier
+   retries beside their reruns. A check is red when its `conclusion`
+   is none of success/skipped/neutral and pending while `status` is not `completed`
+   (REST statuses are lowercase: `queued`, `in_progress`, `completed`); a status
+   context is red or pending by its `state`. Then
+   `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/comments` for the census
+   (step 1b). If the PR state is not `OPEN`, run the stop report and cleanup
+   immediately, acting on no checks or findings — the PR may have been closed or
+   merged between polls. Recheck the state is `OPEN` immediately before each push.
+   A poll that finds nothing stays cheap: no log fetching, no deep analysis — and
+   while the previous poll found nothing new (CI pending or green on an unchanged
+   head, no new comments, no open work), the next poll waits 20 minutes instead of
+   10; any red check, new comment or head moved by someone else resets the
+   interval to 10.
 1b. **Thread census (deterministic, every poll).** From that paginated comment
    list compute the census over ALL comments, never only ones newer than the
    run: a comment whose `in_reply_to_id` is set is a reply; the rest are thread
@@ -185,8 +202,8 @@ heads.
    the failing provider, reproduce through
    the build-and-summarize wrapper (never the bare Gradle wrapper), and follow
    `verify-profiler-change` for what the fix must pass.
-3. **Merge conflicts.** When the poll reports the PR conflicted (`mergeStateStatus`
-   `DIRTY`), rebase on the base branch and examine every conflict: draft a resolution
+3. **Merge conflicts.** When the poll reports the PR conflicted (`mergeable_state`
+   `dirty`), rebase on the base branch and examine every conflict: draft a resolution
    for each — both sides' intent and the proposed merged result. Add every file you
    will resolve to the marker's `scope` before resolving it.
    - A conflict whose resolution needs no semantic choice — adjacent hunks, additive
@@ -291,8 +308,9 @@ heads.
    the push is refused — recognize that refusal immediately (compare the fetched base
    tip against your run-start tip), do not burn a fix-push round on it: report it as a
    base-advance stop.
-   When the pushed fixes address the comments of a blocking review (`CHANGES_REQUESTED`
-   in `gh pr view --json reviews`), re-request review from that review's author so the
+   When the pushed fixes address the comments of a blocking review (`state`
+   `CHANGES_REQUESTED` in `$GH api .../pulls/<n>/reviews`), re-request review from
+   that review's author so the
    block clears when they re-review:
    `$GH api -X POST repos/datadog/java-profiler/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'`.
    Re-request only authors whose blocking comments the fixes addressed — never add
