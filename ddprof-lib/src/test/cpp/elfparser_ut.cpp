@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <algorithm>
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -1293,8 +1294,9 @@ void setTag(std::vector<Elf64_Dyn>& dyn, int64_t tag, uint64_t value) {
 
 // Replaces `dyn`'s DT_PLTRELSZ with room for two entries `stride` bytes apart (the
 // first without an import) and ends it with DT_NULL; `dyn` must not have one already.
-// With `found`, the parse must import pthread_create from the second entry and the
-// fingerprint must follow that entry's r_offset; otherwise the parse must import nothing.
+// With `found`, the parse imports pthread_create from the second entry and the fingerprint
+// follows its r_offset; otherwise the table is walked at another stride and neither does.
+// Call through ASSERT_NO_FATAL_FAILURE: the fatal ASSERT_THAT only leaves this helper.
 void expectPltStride(std::vector<Elf64_Dyn> dyn, uint64_t stride, bool found) {
     setTag(dyn, DT_PLTRELSZ, 2 * stride);
     dyn.push_back({DT_NULL, {0}});
@@ -1310,16 +1312,18 @@ void expectPltStride(std::vector<Elf64_Dyn> dyn, uint64_t stride, bool found) {
 
     EXPECT_EQ(parsedPthreadCreateImport(image),
               found ? reinterpret_cast<void**>(image + PLT_SLOT) : nullptr);
-    if (!found) return;
     const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
     const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
     second.r_offset = PLT_SLOT + 2 * sizeof(void*);
     memcpy(image + DYN_JMPREL_OFF + stride, &second, sizeof(second));
+    const u64 after = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
     EXPECT_NE(before, 0u);
-    EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image)), before);
+    if (found) EXPECT_NE(after, before);
+    else EXPECT_EQ(after, before);
 }
 
 // DT_PLTREL fixes the DT_JMPREL stride: DT_REL is 16-byte Elf64_Rel, DT_RELA 24-byte.
+// The positive rows prove the selected stride; the others prove a different one misses.
 TEST_F(ElfTest, pltRelSelectsEntryStride) {
     struct Case { uint64_t pltrel, stride; bool found; };
     const Case cases[] = {
@@ -1332,12 +1336,13 @@ TEST_F(ElfTest, pltRelSelectsEntryStride) {
         SCOPED_TRACE(::testing::Message() << "pltrel=" << c.pltrel << " stride=" << c.stride);
         auto dyn = pltDyn();
         setTag(dyn, DT_PLTREL, c.pltrel);
-        expectPltStride(dyn, c.stride, c.found);
+        ASSERT_NO_FATAL_FAILURE(expectPltStride(dyn, c.stride, c.found));
     }
 }
 
 // Without DT_PLTREL the stride is a valid DT_RELAENT (>= sizeof(Elf64_Rela)), else
-// DT_RELENT. 32 differs from every struct size; an invalid DT_RELAENT never falls back.
+// DT_RELENT. 32 differs from every struct size; an invalid DT_RELAENT is covered by
+// pltFallbackRejectsInvalidRelaent.
 TEST_F(ElfTest, pltFallbackStride) {
     constexpr uint64_t BIG = 32;
     struct Case { uint64_t relaent, relent, stride; bool found; };
@@ -1347,7 +1352,8 @@ TEST_F(ElfTest, pltFallbackStride) {
         {0, sizeof(Elf64_Rela), BIG, false},                   // wrong stride misses the entry
         {BIG, 0, BIG, true},                                   // DT_RELAENT alone
         {BIG, sizeof(Elf64_Rela), BIG, true},                  // a valid DT_RELAENT wins
-        {sizeof(Elf64_Rel), BIG, BIG, false},                  // an invalid one skips the table
+        {sizeof(Elf64_Rela), BIG, sizeof(Elf64_Rela), true},   // DT_RELAENT smaller than DT_RELENT wins
+        {0, sizeof(Elf64_Rel), sizeof(Elf64_Rel), true},       // DT_RELENT alone may be an Elf64_Rel stride
     };
     for (const Case& c : cases) {
         SCOPED_TRACE(::testing::Message() << "relaent=" << c.relaent << " relent=" << c.relent
@@ -1356,7 +1362,7 @@ TEST_F(ElfTest, pltFallbackStride) {
         setTag(dyn, DT_PLTREL, 0);
         setTag(dyn, DT_RELAENT, c.relaent);
         setTag(dyn, DT_RELENT, c.relent);
-        expectPltStride(dyn, c.stride, c.found);
+        ASSERT_NO_FATAL_FAILURE(expectPltStride(dyn, c.stride, c.found));
     }
 }
 
