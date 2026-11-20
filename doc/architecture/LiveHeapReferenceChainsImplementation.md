@@ -121,6 +121,8 @@ be upgraded by roots.
 
 Repeated attempts can examine already-admitted roots without charging admission budget. Direct-root
 leak-tag conversion also bypasses the ordinary admission-budget check; elapsed time is not bounded.
+For this release, a root-enumeration pause is acceptable when it stays under three seconds; separate
+work tracks the measurement and a progress-preserving mitigation.
 
 ### Static fields
 
@@ -240,10 +242,14 @@ collection when the buffer holds only confirmed collections. Either way the next
 reports it again.
 
 The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`), bounding its scan contribution.
-At the cap, `compactLocalAnchors()` checks local entries but compacts the full index at
-O(durable share + local cap). Yields of 512 or more can run each pass; smaller yields skip 8 attempts.
-When no slot is available, new local holders are re-reported by the next root enumeration. A low-yield
-compaction can leave newly dead entries holding slots during its 8 skipped at-cap attempts.
+At the cap, `compactLocalAnchors()` scans only the local share but its erasure runs
+`eraseAnchorEntries()`'s stable compaction of the full index, O(durable share + local cap) - so an
+at-cap compaction touches up to 12288 entries. Yields of 512 or more can run each pass; smaller
+yields skip 8 attempts, and a compaction that reclaims less than `LOCAL_ANCHOR_COMPACT_MIN_RECLAIM`
+backs the next attempts off entirely, so a pinned-at-cap index pays the full-index compaction at
+most once per pass and never on every low-yield pass. When no slot is available, new local holders
+are re-reported by the next root enumeration. A low-yield compaction can leave newly dead entries
+holding slots during its 8 skipped at-cap attempts.
 
 The durable share (static fields and JNI globals) is capped at 8192 entries
 (`DURABLE_ANCHOR_INDEX_CAP`). The admission that pushes it past the cap FIFO-evicts the oldest
@@ -263,7 +269,10 @@ requested before it started — it latches the generation at its start from clas
 it only on completing, so a lap in flight when the eviction lands, or a truncated first chunk,
 leave the generation unserved until a full lap actually re-traverses the whole class list. A
 cursor restart on eviction would reset mid-lap progress under sustained above-cap churn and
-starve later classes, so there is none.
+starve later classes, so there is none. The forced-lap rate is self-limiting: one eviction batch
+requests one generation, laps never run concurrently, and an eviction fires only after 1024 further
+admissions past the cap - so forced laps are bounded by the above-cap admission rate, never by the
+pass rate.
 
 Pending first-look turns remain in a capped FIFO after index eviction. Queue items carry the
 callback-time class-tag snapshot, so selection does not search the index per queued tag. Overflow

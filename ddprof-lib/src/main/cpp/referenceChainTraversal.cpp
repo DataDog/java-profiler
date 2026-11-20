@@ -517,6 +517,10 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   }
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
       stale_expanded_tags.empty() && static_anchor_tags.empty()) {
+    // Fresh-lane picks popped but never selected (the selection budget went to the other tiers)
+    // keep their queued turns: this return bypasses the walk block's requeue below, so restore
+    // them here - otherwise they are out of the queue and never walked or spent.
+    requeueStaticAnchorFreshFront(static_anchor_fresh_picked);
     return;
   }
   // rotation_reserved_budget + max(budget - expand_phase_edges_admitted, 0) is exactly

@@ -302,8 +302,7 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
     size_t consumed_pos = 0;
     for (size_t k = 0; k < picks.size() && took < want; k++) {
       const TierPick &p = picks[k];
-      if (std::find(fresh_kept_tags.begin(), fresh_kept_tags.end(), p.tag) !=
-          fresh_kept_tags.end()) {
+      if (fresh_kept_tags.count(p.tag) != 0) {
         continue;
       }
       selected.push_back(p.tag);
@@ -1176,10 +1175,13 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
             // Later traversal decisions must see its accepted observations.
             scope.flush();
           }
-          walked++;
           if (overflow) {
+            // The partially walked anchor stays unwalked (its rejected edge was not applied),
+            // matching walkStaticFieldAnchors(): the descent is not misreported as consumed, so
+            // the retained cursor re-walks it in full without the walked count charging it.
             break; // retain the cursor on this thread: its walk was cut short
           }
+          walked++;
         }
       }
     }
