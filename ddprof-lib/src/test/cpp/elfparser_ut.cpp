@@ -17,6 +17,7 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -1290,22 +1291,32 @@ void setTag(std::vector<Elf64_Dyn>& dyn, int64_t tag, uint64_t value) {
     if (value != 0) dyn.push_back({tag, {value}});
 }
 
-// Two DT_JMPREL entries `stride` bytes apart, the first without an import: the
-// pthread_create import is only found when the parser walks the table at that stride.
-std::unique_ptr<void, decltype(&free)> buildStridedPltImage(std::vector<Elf64_Dyn> dyn, uint64_t stride) {
+// Replaces `dyn`'s DT_PLTRELSZ with room for two entries `stride` bytes apart (the
+// first without an import) and ends it with DT_NULL; `dyn` must not have one already.
+// With `found`, the parse must import pthread_create from the second entry and the
+// fingerprint must follow that entry's r_offset; otherwise the parse must import nothing.
+void expectPltStride(std::vector<Elf64_Dyn> dyn, uint64_t stride, bool found) {
     setTag(dyn, DT_PLTRELSZ, 2 * stride);
     dyn.push_back({DT_NULL, {0}});
     auto mem = buildPltImage(dyn);
-    if (mem) {
-        char* image = static_cast<char*>(mem.get());
-        Elf64_Rela second;
-        memset(&second, 0, sizeof(second));
-        second.r_offset = PLT_SLOT;
-        second.r_info = ELF64_R_INFO(1, 0);
-        memset(image + DYN_JMPREL_OFF, 0, stride);
-        memcpy(image + DYN_JMPREL_OFF + stride, &second, sizeof(second));
-    }
-    return mem;
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    Elf64_Rela second;
+    memset(&second, 0, sizeof(second));
+    second.r_offset = PLT_SLOT;
+    second.r_info = ELF64_R_INFO(1, 0);
+    memset(image + DYN_JMPREL_OFF, 0, stride);
+    memcpy(image + DYN_JMPREL_OFF + stride, &second, sizeof(second));
+
+    EXPECT_EQ(parsedPthreadCreateImport(image),
+              found ? reinterpret_cast<void**>(image + PLT_SLOT) : nullptr);
+    if (!found) return;
+    const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+    second.r_offset = PLT_SLOT + 2 * sizeof(void*);
+    memcpy(image + DYN_JMPREL_OFF + stride, &second, sizeof(second));
+    EXPECT_NE(before, 0u);
+    EXPECT_NE(Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image)), before);
 }
 
 // DT_PLTREL fixes the DT_JMPREL stride: DT_REL is 16-byte Elf64_Rel, DT_RELA 24-byte.
@@ -1313,41 +1324,39 @@ TEST_F(ElfTest, pltRelSelectsEntryStride) {
     struct Case { uint64_t pltrel, stride; bool found; };
     const Case cases[] = {
         {DT_REL, sizeof(Elf64_Rel), true},
-        {DT_RELA, sizeof(Elf64_Rel), false},  // a Rela walk steps over the 16-byte second entry
+        {DT_REL, sizeof(Elf64_Rela), false},
+        {DT_RELA, sizeof(Elf64_Rela), true},
+        {DT_RELA, sizeof(Elf64_Rel), false},
     };
     for (const Case& c : cases) {
-        SCOPED_TRACE(c.pltrel);
+        SCOPED_TRACE(::testing::Message() << "pltrel=" << c.pltrel << " stride=" << c.stride);
         auto dyn = pltDyn();
         setTag(dyn, DT_PLTREL, c.pltrel);
-        auto mem = buildStridedPltImage(dyn, c.stride);
-        ASSERT_THAT(mem.get(), ::testing::NotNull());
-        char* image = static_cast<char*>(mem.get());
-        EXPECT_EQ(parsedPthreadCreateImport(image),
-                  c.found ? reinterpret_cast<void**>(image + PLT_SLOT) : nullptr);
+        expectPltStride(dyn, c.stride, c.found);
     }
 }
 
-// Without DT_PLTREL the stride is a valid DT_RELAENT, else DT_RELENT; the 32-byte
-// stride differs from every struct size, and 24 (RELENT) never reaches the second entry.
+// Without DT_PLTREL the stride is a valid DT_RELAENT (>= sizeof(Elf64_Rela)), else
+// DT_RELENT. 32 differs from every struct size; an invalid DT_RELAENT never falls back.
 TEST_F(ElfTest, pltFallbackStride) {
-    constexpr uint64_t STRIDE = 32;
-    struct Case { uint64_t relaent, relent; bool found; };
+    constexpr uint64_t BIG = 32;
+    struct Case { uint64_t relaent, relent, stride; bool found; };
     const Case cases[] = {
-        {0, STRIDE, true},                       // DT_RELENT alone
-        {STRIDE, sizeof(Elf64_Rela), true},      // a valid DT_RELAENT wins over DT_RELENT
-        {0, sizeof(Elf64_Rela), false},          // wrong DT_RELENT stride misses the entry
+        {0, BIG, BIG, true},                                   // DT_RELENT alone
+        {0, sizeof(Elf64_Rela), sizeof(Elf64_Rela), true},
+        {0, sizeof(Elf64_Rela), BIG, false},                   // wrong stride misses the entry
+        {BIG, 0, BIG, true},                                   // DT_RELAENT alone
+        {BIG, sizeof(Elf64_Rela), BIG, true},                  // a valid DT_RELAENT wins
+        {sizeof(Elf64_Rel), BIG, BIG, false},                  // an invalid one skips the table
     };
     for (const Case& c : cases) {
-        SCOPED_TRACE(c.relaent * 1000 + c.relent);
+        SCOPED_TRACE(::testing::Message() << "relaent=" << c.relaent << " relent=" << c.relent
+                                          << " stride=" << c.stride);
         auto dyn = pltDyn();
         setTag(dyn, DT_PLTREL, 0);
         setTag(dyn, DT_RELAENT, c.relaent);
         setTag(dyn, DT_RELENT, c.relent);
-        auto mem = buildStridedPltImage(dyn, STRIDE);
-        ASSERT_THAT(mem.get(), ::testing::NotNull());
-        char* image = static_cast<char*>(mem.get());
-        EXPECT_EQ(parsedPthreadCreateImport(image),
-                  c.found ? reinterpret_cast<void**>(image + PLT_SLOT) : nullptr);
+        expectPltStride(dyn, c.stride, c.found);
     }
 }
 
