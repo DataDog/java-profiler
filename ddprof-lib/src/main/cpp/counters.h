@@ -361,6 +361,12 @@
   X(REFERENCE_CHAIN_STATIC_SWEEP_CLASSES_CAPPED, "reference_chain_static_sweep_classes_capped") \
   X(JFR_OUTPUT_FAILURES, "jfr_output_failures") \
   X(JFR_DELIVERIES_CERTIFIED, "jfr_deliveries_certified") \
+  /* indexAnchorForRotation() fresh-queue overflow: a newly indexed anchor's    \
+   * prioritized first look was lost, to a STATIC_ANCHOR_FRESH_CAP eviction or  \
+   * to a rotation drain that exhausted its budget before the queue emptied -   \
+   * the anchor keeps fair-tier coverage via _static_anchor_index, so this      \
+   * gauges how often anchor bursts outpace the rotation drain. */              \
+  X(REFERENCE_CHAIN_STATIC_FRESH_DROPPED, "reference_chain_static_fresh_dropped") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_SAMPLER_PERF(X)                                             \
