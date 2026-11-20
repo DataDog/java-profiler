@@ -105,9 +105,30 @@ the tracking table. The expensive class-history fold is kept off that callback p
 
 ## Mutable-container coverage
 
-A long-lived collection can receive references after its first expansion. Bounded rotation
-revisits leak-accumulating parents, stale expanded entries, transient-root entries, and static
-anchors. This adds opportunities to discover changed references, not complete mutation coverage.
+A long-lived collection can receive references after its first expansion.
+Bounded rotation revisits leak-accumulating parents and stale expanded entries.
+It also revisits transient roots and anchor holders.
+
+These bounded walks improve mutation coverage. They do not guarantee every changed reference
+is observed.
+
+The index stores holders seen through static-field/JNI-global edges.
+It also indexes tagged stack/JNI-local roots whose shape is unknown or container-like.
+
+An indexed `CONTAINER` holder can remain eligible after reparenting.
+Unknown or `NON_CONTAINER` local-root entries are not persistently selected while they
+remain transient.
+
+When rotation reaches anchor selection, it takes up to 32 indexed anchors and drains up to
+16 at-risk FIFO entries, skipping duplicates. The FIFO offers a best-effort first look to
+reparented durable holders and chain-attached holders seen through static-field edges.
+
+Admission is globally and per-class capped.
+Drained entries can be lost if rotation has no budget, object resolution fails, or a
+frontier lookup fails during the walk or requeue.
+
+Budget, deadline, and frontier-cap stops return resolved-but-unwalked FIFO entries to the
+front when their frontier entries still exist. These walks share rotation's edge budget.
 
 ## Cost controls
 
