@@ -479,7 +479,7 @@ void VMStructs::resolveOffsets() {
         _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);
     }
     if (_enter_special_nm == NULL && _cont_entry_return_pc != NULL) {
-        _enter_special_nm = CodeHeap::findNMethod(_cont_entry_return_pc);
+        __atomic_store_n(&_enter_special_nm, CodeHeap::findNMethod(_cont_entry_return_pc), __ATOMIC_RELEASE);
     }
     initContEntryThreadOffset();
 }

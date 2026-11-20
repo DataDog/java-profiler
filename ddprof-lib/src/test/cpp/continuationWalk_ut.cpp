@@ -230,7 +230,7 @@ protected:
         X64ExceptionNativePrefix, X64ExceptionMalformed, X64ExceptionReturnPcAfterPop,
         X64ExceptionInvalidCarrierPc, X64ExceptionFarCall, X64ExceptionFarCallNativePrefix,
         X64ExceptionBadBranch, X64ExceptionTruncatedCode, X64ExceptionInteriorPc, X64ExceptionInteriorReturnPc,
-        X64ExceptionByteTest, X64ExceptionByteTestNativePrefix, ReturnPcUndecodableFrameExported
+        X64ExceptionByteTest, X64ExceptionByteTestNativePrefix, ReturnPcUndecodableFrameExported, ReturnPcLazyEntryNMethod
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -255,6 +255,7 @@ protected:
                 test_case == EntryCase::X64ExceptionBadBranch || test_case == EntryCase::X64ExceptionTruncatedCode || test_case == EntryCase::X64ExceptionInteriorPc;
         bool tracked_child = test_case == EntryCase::LeafSpillNativePrefixExportedTrackedChild;
         bool undecodable_return = test_case == EntryCase::ReturnPcUndecodableFrameExported;
+        bool lazy_entry_nm = test_case == EntryCase::ReturnPcLazyEntryNMethod;
         bool invalid_exported_size = test_case == EntryCase::LeafSpillNativePrefixExportedInvalidSize;
         bool leaf_native_prefix = test_case == EntryCase::LeafSpillNativePrefix ||
                 test_case == EntryCase::LeafSpillNativePrefixExportedNull || test_case == EntryCase::LeafSpillNativePrefixExportedParent || tracked_child || invalid_exported_size;
@@ -495,7 +496,8 @@ protected:
         ScopedValue<char*> heap2(_code_heap[2], nullptr);
         ScopedValue<const void*> heap_low(_code_heap_low, heap.low);
         ScopedValue<const void*> heap_high(_code_heap_high, heap.high);
-        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, reinterpret_cast<VMNMethod*>(barrier_interior ? &carrier.nm : &blob.nm));
+        ScopedValue<VMNMethod*> entry_nm(_enter_special_nm, lazy_entry_nm ? nullptr :
+                reinterpret_cast<VMNMethod*>(barrier_interior ? &carrier.nm : &blob.nm));
         ScopedValue<const void*> return_barrier(_cont_return_barrier, barrier_interior ? blob.nm.code : _cont_return_barrier);
         ScopedValue<int> inferred_entry_offset(_cont_entry_thread_offset, barrier_interior ? 0 : _cont_entry_thread_offset);
         if (barrier_interior) {
@@ -520,7 +522,7 @@ protected:
         }
 #endif
         ScopedValue<const void*> return_pc(_cont_entry_return_pc,
-                test_case == EntryCase::ReturnPc || undecodable_return ? sampled_pc : tracked_child ? blob.nm.code + 31 : _cont_entry_return_pc);
+                test_case == EntryCase::ReturnPc || undecodable_return || lazy_entry_nm ? sampled_pc : tracked_child ? blob.nm.code + 31 : _cont_entry_return_pc);
         VMTestAccessor::install(true, exported_entry ? 27 : 21);
 
         bool nonpointer_fp = test_case == EntryCase::CompiledNonPointerFp ||
@@ -572,7 +574,7 @@ protected:
             if (x64_phase >= 169) stack[9] = 0; // return PC has left the stack
         }
 #endif
-        if (test_case == EntryCase::ReturnPc) sampled_fp = 1;
+        if (test_case == EntryCase::ReturnPc || lazy_entry_nm) sampled_fp = 1;
         if (test_case == EntryCase::InvalidFrameSize) blob.nm.frame_size = 2;
         if (undecodable_return) blob.nm.frame_size = 258; // phase decoders reject sizes above 256 words
         ucontext_t context{};
@@ -647,6 +649,8 @@ protected:
         features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot;
         bool truncated = false;
         int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        // A wrapper generated after initialization is looked up once, then reused.
+        if (lazy_entry_nm) EXPECT_EQ(reinterpret_cast<VMNMethod*>(&blob.nm), _enter_special_nm);
         if (barrier_interior) {
             if (test_case == EntryCase::BarrierInteriorNativePrefix) assertCarrier(depth);
             else {
@@ -1336,6 +1340,10 @@ TEST_F(ContinuationWalkTest, VerifiedReturnPcDoesNotRequireSampledFp) {
 
 TEST_F(ContinuationWalkTest, EntryReturnPcUsesExportedEntryWhenPhaseDecodingRejects) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPcUndecodableFrameExported);
+}
+
+TEST_F(ContinuationWalkTest, LateEntryWrapperLookupIsPublished) {
+    assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPcLazyEntryNMethod);
 }
 
 TEST_F(ContinuationWalkTest, CompiledCarrierAcceptsNonPointerSavedFp) {

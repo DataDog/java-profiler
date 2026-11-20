@@ -22,10 +22,14 @@ inline bool crashProtectionActive() {
 }
 
 inline VMNMethod* VMStructs::enterSpecialNMethod() {
-    if (_enter_special_nm != nullptr) return _enter_special_nm;
-    // The native wrapper can be generated after profiler initialization.
+    VMNMethod* nm = __atomic_load_n(&_enter_special_nm, __ATOMIC_ACQUIRE);
+    if (nm != nullptr) return nm;
+    // The native wrapper can be generated after profiler initialization. As with the
+    // initialization-time lookup, the result is kept; racing publishers store the same value.
     const void* pc = contEntryReturnPc();
-    return pc != nullptr ? CodeHeap::findNMethod(pc) : nullptr;
+    nm = pc != nullptr ? CodeHeap::findNMethod(pc) : nullptr;
+    if (nm != nullptr) __atomic_store_n(&_enter_special_nm, nm, __ATOMIC_RELEASE);
+    return nm;
 }
 
 template <typename T>
