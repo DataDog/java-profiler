@@ -20,6 +20,7 @@
 #include "engine.h"
 #include "flightRecorder.h"
 #include "profiler.h"
+#include "recordingWriteFailureFixture.h"
 #include "tsc.h"
 #include "wallClockCounters.h"
 #include "wallClock.h"
@@ -44,6 +45,9 @@ public:
     return Profiler::instance()->_jfr.recordTaskBlock(stripe, tid, event);
   }
   static SpinLock& recLock() { return Profiler::instance()->_jfr._rec_lock; }
+  static void setThreadInfo(int tid, const char* name) {
+    Profiler::instance()->_thread_info.set(tid, name, 0);
+  }
 };
 
 class RecordingTestAccessor {
@@ -855,4 +859,64 @@ TEST_F(WallTailStopTest, PermanentWriteFailureCountsDroppedTailAndCompletesTeard
   ASSERT_FALSE(error) << error.message();
   EXPECT_EQ(0ULL, pendingWeight());
   EXPECT_EQ(dropped_before + 1, Counters::getCounter(WC_UNOWNED_TAIL_DROPPED_AT_STOP));
+}
+
+// Profiler::dump() over a recording it does not own, as a RUNNING profiler would hold it.
+class WallEpochDumpTest : public WallEpochRecordingTest {
+protected:
+  static constexpr int kExitedTid = 424242;
+
+  class DumpRecording {
+    Recording* _previous = ProfilerTestAccessor::recording();
+    State _state = ProfilerTestAccessor::exchangeState(RUNNING);
+
+  public:
+    explicit DumpRecording(Recording* recording) { ProfilerTestAccessor::recording() = recording; }
+    ~DumpRecording() {
+      ProfilerTestAccessor::recording() = _previous;
+      ProfilerTestAccessor::exchangeState(_state);
+    }
+    DumpRecording(const DumpRecording&) = delete;
+    DumpRecording& operator=(const DumpRecording&) = delete;
+  };
+
+  Error dumpTo(const WallEpochFile& target) {
+    ProfilerTestAccessor::setThreadInfo(kExitedTid, "exited-before-dump");
+    return profiler->dump(target.filename(), std::strlen(target.filename()));
+  }
+};
+
+TEST_F(WallEpochDumpTest, FailedDeliveryRetainsSourceAndThreadNames) {
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  Recording recording(output.fd(), args);
+  DumpRecording running(&recording);
+  WallEpochFile target;
+  ASSERT_GE(target.fd, 0);
+  ASSERT_TRUE(recording.outputGood());
+  ASSERT_TRUE(output.failWrites());
+
+  Error error = dumpTo(target);
+  ASSERT_TRUE(error);
+  EXPECT_STREQ("Incomplete recording delivery; source bytes retained", error.message());
+  EXPECT_EQ("exited-before-dump", profiler->threadNameForTest(kExitedTid))
+      << "a failed dump must keep the names its retained events reference";
+  EXPECT_FALSE(recording.outputGood());
+}
+
+TEST_F(WallEpochDumpTest, DeliveredDumpForgetsExitedThreadNames) {
+  WallEpochFile source;
+  ASSERT_GE(source.fd, 0);
+  Arguments args;
+  args._jfr_options = JFR_SYNC_OPTS;
+  Recording recording(dup(source.fd), args);
+  DumpRecording running(&recording);
+  WallEpochFile target;
+  ASSERT_GE(target.fd, 0);
+
+  Error error = dumpTo(target);
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_EQ("", profiler->threadNameForTest(kExitedTid));
 }
