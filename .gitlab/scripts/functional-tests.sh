@@ -77,11 +77,11 @@ if [ ! -x "${JDK_CACHE_DIR}/bin/java" ]; then
       rm -f "${TEST_JDK_TARBALL}"
       exit 1
     fi
-    if [ "${CURL_STATUS}" -eq 0 ] && tar -xzf "${TEST_JDK_TARBALL}" -C "${JDK_CACHE_DIR}" --strip-components=1; then
+    if [ "${CURL_STATUS}" -eq 0 ] && tar -xzf "${TEST_JDK_TARBALL}" -C "${JDK_CACHE_DIR}" --strip-components=1 && [ -n "$(ls -A "${JDK_CACHE_DIR}")" ]; then
       rm -f "${TEST_JDK_TARBALL}"
       break
     fi
-    echo "TEST_JDK ${TEST_JDK} download attempt ${attempt} produced a non-tar body:"
+    echo "TEST_JDK ${TEST_JDK} download attempt ${attempt} produced a non-tar or empty body:"
     dump_test_jdk_body "${TEST_JDK_TARBALL}"
     save_test_jdk_body "${TEST_JDK_TARBALL}" /tmp/test-jdk-failed.bin
     if [ "$attempt" -eq 1 ]; then

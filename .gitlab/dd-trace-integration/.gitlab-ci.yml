@@ -204,7 +204,7 @@ prepare-patched-agent:
             break
           fi
           rm -rf "${STAGE_DIR}"
-          echo "JDK download attempt ${attempt} produced a non-tar body:"
+          echo "JDK download attempt ${attempt} produced a non-tar or empty body:"
           dump_jdk_body "${JDK_TARBALL}"
           save_body "${JDK_TARBALL}" "/tmp/jdk-download-failed-attempt${attempt}.bin"
           if [ "$attempt" -eq 1 ]; then
