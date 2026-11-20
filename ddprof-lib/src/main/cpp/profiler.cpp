@@ -1468,7 +1468,8 @@ bool Profiler::beginTaskBlockRotation() {
       u64 remaining = _task_block_activity_state.load(std::memory_order_acquire) & ~TASK_BLOCK_CLOSED;
       Log::error("Profiler::beginTaskBlockRotation: timed out after %ldms waiting for "
                  "%llu in-flight TaskBlock recording(s). Skipping task-block rotation; "
-                 "this indicates a stuck TaskBlock record path.",
+                 "a recorder may be waiting at a safepoint in its JVMTI stack capture "
+                 "or stuck in its record path.",
                  TASK_BLOCK_ROTATION_TIMEOUT_NS / 1000000L,
                  (unsigned long long)remaining);
       Counters::increment(TASK_BLOCK_ROTATION_TIMEOUT);
