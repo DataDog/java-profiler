@@ -84,6 +84,12 @@ jobs:
               echo "::error::${TYPE^} can only be performed from 'release/*' branches (format: release/X.Y._)"
               exit 1
             fi
+            # A pinned source_sha must be on the release branch, not an
+            # unrelated branch's commit.
+            if ! git merge-base --is-ancestor "$TARGET_SHA" "origin/$BRANCH" 2>/dev/null; then
+              echo "::error::Patch/retag release commit must be an ancestor of $BRANCH"
+              exit 1
+            fi
           else
             if ! git merge-base --is-ancestor "$TARGET_SHA" origin/main 2>/dev/null; then
               echo "::error::Major or minor releases can only be performed from 'main' branch or a commit on main"

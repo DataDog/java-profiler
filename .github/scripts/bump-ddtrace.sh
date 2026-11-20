@@ -34,6 +34,9 @@ fi
 
 export GH_TOKEN="$DDTRACE_GH_TOKEN"
 export GH_REPO="$REPO"
+# The token authenticates gh API calls but not the plain git push from the
+# temp clone; wire it in as a git credential helper.
+gh auth setup-git --hostname github.com >/dev/null
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -76,7 +79,10 @@ if [ -f "$LOCK" ]; then
   fi
 fi
 
-EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+# An open PR from a previous run means the bump is already tracked; a lookup
+# failure must abort — treating it as "no PR" could delete an existing PR's
+# head branch in the recreate fallback below.
+EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
 if [ -n "$EXISTING" ]; then
   echo "Open bump PR already exists: #$EXISTING"
   exit 0

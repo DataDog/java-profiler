@@ -140,7 +140,7 @@ jobs:
             -f release_type=minor \
             -f dry_run=$DRY_RUN \
             -f skip_tests=false \
-            -f request_id="release-train-${GITHUB_RUN_ID}" \
+            -f request_id="release-train-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             -f source_sha="$CANDIDATE"
 
           # Find the dispatched run. request_id is unique to this dispatch
@@ -152,7 +152,7 @@ jobs:
           for attempt in $(seq 1 60); do
             RUN_ID=$(gh run list --workflow=release-validated.yml --event=workflow_dispatch \
               --limit 20 --json databaseId,displayTitle \
-              --jq "[.[] | select(.displayTitle | contains(\"release-train-${GITHUB_RUN_ID}]\"))] | last | .databaseId // empty")
+              --jq "[.[] | select(.displayTitle | contains(\"release-train-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}]\"))] | last | .databaseId // empty")
             [ -n "$RUN_ID" ] && break
             echo "attempt $attempt/60: dispatched run not listed yet, retrying in 15s"
             sleep 15
