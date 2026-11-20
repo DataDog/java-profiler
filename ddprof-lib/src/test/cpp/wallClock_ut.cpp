@@ -929,6 +929,8 @@ private:
             for (int tid = 0; tid < population; ++tid) entries.push_back(tid);
         };
         auto sample = [&](int tid, int& failures, int&, int&, int&, bool) {
+            // The pass that opens the larger-pool epoch also drains a suppression.
+            if (pass == 10 && tid == 0) WallClockCounters::incrementSuppressedSampledRun();
             if (pass >= 20 && tid == 0) {
                 failures++;
                 return WallClockCandidateOutcome::SIGNAL_FAILED;
@@ -974,6 +976,9 @@ TEST(WallClockSamplingEpochTest, EachStatisticsChangeClosesOneEpoch) {
         }
         pool_changes += current._num_samplable_threads == 8 && next._num_samplable_threads == 16;
         outcome_changes += current._num_failed_samples == 0 && next._num_failed_samples == 1;
+        if (current._num_samplable_threads == 8 && next._num_samplable_threads == 16) {
+            EXPECT_EQ(1u, next._num_suppressed_sampled_run) << "The opening pass keeps its suppression";
+        }
     }
     EXPECT_EQ(1, pool_changes);
     EXPECT_EQ(1, outcome_changes);

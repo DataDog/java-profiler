@@ -236,9 +236,9 @@ class BaseWallClock : public Engine {
         epoch.updateNumSuccessfulSamples(num_successful_samples);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
+        epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
         // The statistics that open an epoch must not close it in the same pass.
         if (opens_epoch) epoch.clean();
-        epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
 #ifdef UNIT_TEST
         observeEpochForTest(epoch);
 #endif
