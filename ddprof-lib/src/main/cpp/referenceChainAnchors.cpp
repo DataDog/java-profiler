@@ -149,7 +149,11 @@ void ReferenceChainTracker::descendFromAnchor(
 }
 
 std::vector<jlong>
-ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
+ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
+    int max_count, std::vector<FreshAnchor> *fresh_picked) {
+  if (fresh_picked != nullptr) {
+    fresh_picked->clear();
+  }
   std::vector<jlong> selected;
   const size_t fresh_queue_len = _static_anchor_fresh_queue.size();
   if (max_count <= 0 ||
@@ -228,26 +232,46 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
     int fresh_room =
         (max_count - (int)leak_picks.size()) -
         (max_count - (int)leak_picks.size()) / 2;
+    if (fresh_room <= 0 && !_static_anchor_fresh_queue.empty()) {
+      // The leak tier saturated the whole selection budget: the fresh lane got NO budget this
+      // pass, so queued entries would never pop and never receive fair-tier budget either -
+      // spend their first look now (the old queue.clear() semantics) so they fall back to the
+      // fair tiers at their index positions once the leak tier ebbs. With a positive fresh
+      // budget the queue keeps its entries' turns across passes (FIFO order, nothing jumps the
+      // queue).
+      while (!_static_anchor_fresh_queue.empty()) {
+        fresh_spent_tags.push_back(
+            _static_anchor_fresh_queue.front().tag);
+        _static_anchor_fresh_queue.pop_front();
+      }
+    }
     while (!_static_anchor_fresh_queue.empty() && fresh_room > 0) {
       FreshAnchor anchor = _static_anchor_fresh_queue.front();
       _static_anchor_fresh_queue.pop_front();
-      fresh_spent_tags.push_back(anchor.tag);
       FrontierEntry entry{};
       if (!frontier->lookupLocked(anchor.tag, &entry) ||
           !isSelectableAnchor(entry, anchor.own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(anchor.tag) || entry.leak_tag != 0) {
+        // Dead/ineligible/queued/leak-tier: first look spent, not fresh-kept (the leak tier
+        // selects it via the scan if it is leak-tagged).
+        fresh_spent_tags.push_back(anchor.tag);
         continue;
       }
       auto shape_it = _class_shape_cache.find(anchor.own_class_tag);
       bool keep = shape_it == _class_shape_cache.end() ||
                   shape_it->second == (u8)AnchorClassShape::CONTAINER;
       if (!keep) {
+        // Classified non-container: the other tier owns it - first look spent here.
+        fresh_spent_tags.push_back(anchor.tag);
         continue;
       }
       fresh_picks.push_back(TierPick{idx_size, anchor.tag});
       fresh_kept_tags.push_back(anchor.tag);
+      if (fresh_picked != nullptr) {
+        fresh_picked->push_back(anchor);
+      }
       fresh_room--;
     }
   });
@@ -301,21 +325,23 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
                     budget_left);
 
   if (!selected.empty()) {
+    // Selection alone no longer consumes a first look: walked anchors are marked served after
+    // their descent (the caller, post-flush), and unwalked fresh picks are requeued to the queue
+    // front. Only erase selected tags still sitting in the queue (leak- or fair-tier picks):
+    // their look happens this pass via the walk, and leaving them queued would re-serve them next
+    // pass.
     std::unordered_set<jlong> served(selected.begin(), selected.end());
     _static_anchor_fresh_queue.erase(
         std::remove_if(_static_anchor_fresh_queue.begin(),
                        _static_anchor_fresh_queue.end(),
                        [&](const FreshAnchor &anchor) {
-                         if (served.count(anchor.tag) == 0) {
-                           return false;
-                         }
-                         fresh_spent_tags.push_back(anchor.tag);
-                         return true;
+                         return served.count(anchor.tag) != 0;
                        }),
         _static_anchor_fresh_queue.end());
-    fresh_spent_tags.insert(fresh_spent_tags.end(), selected.begin(),
-                            selected.end());
   }
+  // First looks spent WITHOUT a walk: entries the fresh-lane filters rejected (dead, leak-tier,
+  // non-container) and the overflow-drained remainder. These never descend this pass, so their
+  // look is spent here; walked anchors' looks are spent by the caller after the scope flush.
   _frontier->markAnchorRotationServed(fresh_spent_tags.data(),
                                       fresh_spent_tags.size());
   return selected;
@@ -903,6 +929,18 @@ void ReferenceChainTracker::requeueStaticAnchorFifoFront(
   _static_anchor_fifo_set.rebuildFrom(_static_anchor_fifo);
 }
 
+void ReferenceChainTracker::requeueStaticAnchorFreshFront(
+    const std::vector<FreshAnchor> &entries) {
+  if (entries.empty()) {
+    return;
+  }
+  // Reverse order onto the front preserves the tags' relative admission order (push_front of the
+  // LAST entry first leaves the FIRST entry at the deque's front).
+  for (size_t i = entries.size(); i-- > 0;) {
+    _static_anchor_fresh_queue.push_front(entries[i]);
+  }
+}
+
 void ReferenceChainTracker::walkStaticFieldAnchors(
     jvmtiEnv *jvmti, JNIEnv *jni, ReferenceChainAnchorObservationScope &scope,
     const std::vector<jlong> &anchor_tags, int budget, int *edges_admitted,
@@ -972,16 +1010,20 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
              "outcome tag=%lld edges=%d truncated=%d cap_hit=%d",
              (long long)resolved_tags[i], *edges_admitted - edges_before,
              (int)*truncated, (int)*frontier_cap_hit);
-    walked++;
     jni->DeleteLocalRef(objects[i]);
     if (overflow) {
       // The partially walked anchor stays unwalked (its rejected edge was not applied) so the
-      // caller restores it with the remaining resolved tags.
+      // caller restores it with the remaining resolved tags - and it is re-walked fully later.
+      // Roll the partial descent's edges back out of the budget and do not count the anchor as
+      // walked: keeping the partial edges counted (or the walked count) would double-charge its
+      // frontier segment against the caller's budget.
+      *edges_admitted = edges_before;
       *anchor_observation_overflow = true;
       first_unwalked = i;
       first_undeleted = i + 1;
       break;
     }
+    walked++;
     if (*truncated && !*frontier_cap_hit) {
       // Budget/deadline exhausted mid-set - remaining anchors keep their rotation turn via the
       // cursor next pass (the wrapping cursor already tolerates a short selection).

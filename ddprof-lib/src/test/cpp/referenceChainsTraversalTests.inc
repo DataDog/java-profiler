@@ -1694,6 +1694,78 @@ TEST_F(ReferenceChainsBfsTest, SelectedAnchorWalkOverflowRequeuesAnchorForRetry)
     tracker->stop();
 }
 
+// Journal overflow mid-descent: the partially walked anchor stays unwalked and is re-walked fully
+// later, so its partial descent's edges must come back OUT of the walk budget - keeping them
+// counted would double-charge the anchor's frontier segment against the caller's budget.
+TEST_F(ReferenceChainsBfsTest, AnchorWalkOverflowRollsBackPartialEdges) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int anchor = addNode();
+    int child = addNode();
+    int holder = addNode();
+    node_tags[anchor] = 105;
+    node_tags[holder] = 107;
+    // The journal is filled to capacity before the walk: the plain child edge is admitted first
+    // (edge admissions need no journal slot); the holder edge (a durable demotion, which needs
+    // journal room) is where the descent overflows.
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, anchor, child, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, anchor, holder, -1},
+    };
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 107, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    T8Acc::pushStaticAnchorFifoForTest(105, 28366);
+
+    std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained;
+    ASSERT_EQ(1, T8Acc::drainStaticAnchorFifoForTest(16, drained));
+    std::vector<jlong> drained_tags;
+    for (const auto &at_risk : drained) {
+        drained_tags.push_back(at_risk.tag);
+    }
+
+    int edges = 0;
+    std::vector<jlong> unwalked;
+    bool overflow = false;
+    T8Acc::walkStaticFieldAnchorsWithPrefillForTest(
+        &mock_jvmti, &mock_jni, AnchorObservationBuffer::CAPACITY,
+        drained_tags, 1000, &edges, &unwalked, &overflow);
+    EXPECT_TRUE(overflow);
+    ASSERT_EQ(1u, unwalked.size());
+    EXPECT_EQ(105, unwalked[0]);
+    EXPECT_GT(tags_ever_assigned[child], 0)
+        << "the plain child edge never ran - the overflow came too early to exercise the rollback";
+    EXPECT_EQ(0, edges)
+        << "the partial descent's edges must be rolled back out of the walk budget";
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
+
+    // A retry on an empty journal walks the anchor fully: the demotion lands and the child is
+    // re-admitted against a fresh budget.
+    jvmti_tbl.FollowReferences = &mock_FollowReferences;
+    edges = 0;
+    unwalked.clear();
+    overflow = false;
+    T8Acc::walkStaticFieldAnchorsWithPrefillForTest(
+        &mock_jvmti, &mock_jni, 0, drained_tags, 1000, &edges, &unwalked,
+        &overflow);
+    EXPECT_FALSE(overflow);
+    EXPECT_TRUE(unwalked.empty());
+    // The retry legitimately charges no NEW edges: the partial walk's child admission survived
+    // (frontier dedup), so only the rejected demotion is left to apply.
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(105, entry.parent_tag) << "the retried descent demotes the holder";
+
+    tracker->stop();
+}
+
 // Candidate-thread descent with a full journal: the first thread's rejected demotion stops the
 // group before the second thread is walked; the accepted prefix is flushed on the way out, and the
 // retry walks both threads.
@@ -1854,23 +1926,40 @@ TEST_F(ReferenceChainsBfsTest, ProfilerStopFailedJoinSkipsTeardownAndRetrySuccee
     ProfilerTestAccessor::setReferenceChainsActive(profiler, true);
     ProfilerTestAccessor::setState(profiler, RUNNING);
 
-    // A started-but-unjoined worker whose join the stub refuses.
+    // A started-but-unjoined worker whose join the stub refuses. The stub records the
+    // reference-chain gate state AT JOIN TIME: stop() must close the gate (heap callbacks and
+    // thread-object registrations) before it joins, so nothing past the flip can enqueue for the
+    // dying consumer.
     T8Acc::setThreadUnjoinedForTest();
-    T8Acc::setJoinResultForTest(EBUSY);
+    static int s_join_calls_observed = 0;
+    static bool s_join_gate_open = false;
+    s_join_calls_observed = 0;
+    s_join_gate_open = false;
+    T8Acc::setJoinHookForTest([](pthread_t, void **) {
+        s_join_calls_observed++;
+        s_join_gate_open = ProfilerTestAccessor::referenceChainsActive(
+            Profiler::instance());
+        return EBUSY;
+    });
     const u64 epoch_before = T8Acc::journalEpochForTest();
 
     Error failed = profiler->stop();
     EXPECT_TRUE(failed) << "a failed join must make stop() report an error";
+    EXPECT_EQ(1, s_join_calls_observed);
+    EXPECT_FALSE(s_join_gate_open)
+        << "the registration gate must be closed before the BFS join";
     EXPECT_EQ(1, T8Acc::joinCallCountForTest());
     EXPECT_FALSE(T8Acc::threadJoinedForTest());
     EXPECT_EQ(RUNNING, ProfilerTestAccessor::state(profiler));
-    EXPECT_TRUE(ProfilerTestAccessor::referenceChainsActive(profiler));
+    EXPECT_TRUE(ProfilerTestAccessor::referenceChainsActive(profiler))
+        << "the failed join must reopen the gate: teardown was skipped";
     EXPECT_EQ(0, cpu_engine.stops);
     EXPECT_EQ(0, wall_engine.stops);
     EXPECT_EQ(epoch_before, T8Acc::journalEpochForTest()) << "tracker teardown must not have run";
     EXPECT_TRUE(tracker->enabled());
 
     // Retry with a successful join: the join is attempted again and the teardown completes.
+    T8Acc::clearJoinResultForTest();
     T8Acc::setJoinResultForTest(0);
     Error retried = profiler->stop();
     EXPECT_FALSE(retried) << (retried.message() != nullptr ? retried.message() : "");

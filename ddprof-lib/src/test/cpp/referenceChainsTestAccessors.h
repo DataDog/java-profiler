@@ -447,6 +447,12 @@ public:
         ReferenceChainTracker::instance()->_join_thread_for_test = nullptr;
     }
     static int joinCallCountForTest() { return s_join_calls; }
+    // Installs a caller-owned join stub (same signature as the injected one) so a test can
+    // observe Profiler state at join time - e.g. that stop() closes the reference-chain gate
+    // before it joins the BFS worker.
+    static void setJoinHookForTest(int (*hook)(pthread_t, void **)) {
+        ReferenceChainTracker::instance()->_join_thread_for_test = hook;
+    }
     // Marks a worker as started-but-unjoined, the state a failed join leaves.
     static void setThreadUnjoinedForTest() {
         ReferenceChainTracker::instance()->_thread_joined = false;
@@ -1132,9 +1138,12 @@ public:
     }
 
     static std::vector<jlong>
-    collectStaticFieldAnchorsForRotationForTest(int max_count) {
+    collectStaticFieldAnchorsForRotationForTest(
+        int max_count,
+        std::vector<ReferenceChainTracker::FreshAnchor> *fresh_picked =
+            nullptr) {
         return ReferenceChainTracker::instance()
-            ->collectStaticFieldAnchorsForRotation(max_count);
+            ->collectStaticFieldAnchorsForRotation(max_count, fresh_picked);
     }
 
     static void addToStaticAnchorIndexForTest(jlong tag, jlong own_class_tag,
@@ -1175,6 +1184,14 @@ public:
             entries);
     }
 
+    using FreshAnchor = ReferenceChainTracker::FreshAnchor;
+
+    static void requeueStaticAnchorFreshFrontForTest(
+            const std::vector<FreshAnchor> &entries) {
+        ReferenceChainTracker::instance()->requeueStaticAnchorFreshFront(
+            entries);
+    }
+
     static size_t staticAnchorFifoSizeForTest() {
         return ReferenceChainTracker::instance()->_static_anchor_fifo.size();
     }
@@ -1193,6 +1210,19 @@ public:
                                              int budget, int *edges_admitted,
                                              std::vector<jlong> *unwalked,
                                              bool *anchor_observation_overflow = nullptr) {
+        walkStaticFieldAnchorsWithPrefillForTest(jvmti, jni, 0, tags, budget,
+                                                 edges_admitted, unwalked,
+                                                 anchor_observation_overflow);
+    }
+
+    // Direct walkStaticFieldAnchors() drive with the walk's own scope pre-filled to
+    // `journal_prefill` records, so a test can force a mid-descent journal overflow after a
+    // controlled number of admitted edges.
+    static void walkStaticFieldAnchorsWithPrefillForTest(
+            jvmtiEnv *jvmti, JNIEnv *jni, size_t journal_prefill,
+            const std::vector<jlong> &tags, int budget, int *edges_admitted,
+            std::vector<jlong> *unwalked,
+            bool *anchor_observation_overflow = nullptr) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         bool truncated = false;
         bool cap_hit = false;
@@ -1200,6 +1230,12 @@ public:
         bool overflow = false;
         // The scope is the caller-side owner: its destructor replays the accepted prefix.
         ReferenceChainAnchorObservationScope scope(t);
+        if (journal_prefill > 0) {
+            ReferenceChainPassContext fill_ctx(scope);
+            fill_ctx.tracker = t;
+            fill_ctx.frontier = t->frontierTable();
+            fillAnchorJournalForTest(fill_ctx, journal_prefill);
+        }
         t->walkStaticFieldAnchors(jvmti, jni, scope, tags, budget, edges_admitted,
                                   &truncated, &cap_hit, &safepoint_ns, &overflow,
                                   unwalked);
