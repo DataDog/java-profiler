@@ -181,7 +181,8 @@ assert_result_rejected_with_diagnostics() {
 }
 
 assert_run_generator_captures_exit_status() {
-  local script="$WORK/nonzero-generator.sh" captured
+  local script="$WORK/nonzero-generator.sh" saved_script_file captured
+  saved_script_file="$SCRIPT_FILE"
   cat > "$script" << 'STUB'
 printf '%s\n' 'RUN_BENCHMARKS=true'
 printf '%s\n' 'nonzero-process-stderr' >&2
@@ -203,6 +204,7 @@ STUB
   else
     fail "run_generator did not reject the nonzero process"
   fi
+  SCRIPT_FILE="$saved_script_file"
 }
 
 assert_child_rejected_with_diagnostics() {
