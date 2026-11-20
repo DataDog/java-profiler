@@ -32,7 +32,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   private static final long BLOCKER = 0x7301L;
   private static final long UNBLOCKING_SPAN_ID = 0x7302L;
-  private static final int MAX_RECORD_ATTEMPTS = 5;
 
   @Test
   public void pairedApiEmitsTaskBlockWithStack() throws Exception {
@@ -477,11 +476,12 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
    * task_block_record_failed increment; park and monitor TaskBlocks on other JVM threads can also
    * increment it, so the delta is a lower bound, not an exact per-worker count.
    */
-  private void recordWithinAttempts(Attempt attempt) throws Exception {
+  private void recordWithinAttempts(TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
     recordWithinAttempts("eligible interval", attempt);
   }
 
-  private void recordWithinAttempts(String description, Attempt attempt) throws Exception {
+  private void recordWithinAttempts(
+      String description, TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
     long before = TaskBlockRecorderTestSupport.recordFailures(profiler.getDebugCounters());
     int rejected = 0;
     while (!attempt.recorded()) {
@@ -496,7 +496,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
               + ", record_failed="
               + failures);
       assertTrue(
-          rejected < MAX_RECORD_ATTEMPTS,
+          rejected < TaskBlockRecorderTestSupport.MAX_RECORD_ATTEMPTS,
           description + ": no recorded interval in bounded attempts");
     }
   }
@@ -532,11 +532,6 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       Thread.sleep(10L);
     }
     throw new AssertionError("Counter did not increase: " + name);
-  }
-
-  @FunctionalInterface
-  private interface Attempt {
-    boolean recorded() throws Exception;
   }
 
   @FunctionalInterface
