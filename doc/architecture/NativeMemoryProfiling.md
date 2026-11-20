@@ -68,7 +68,8 @@ located via `CodeCache::findImport()`.
 
 Each hook calls the saved original function first, then hands the result to
 `MallocTracer::maybeRecord(ret, size)`. `maybeRecord` is the common gate: it does nothing
-unless `running() && ret != NULL && size != 0`.
+unless running and given a non-null, nonempty allocation that `shouldSample()` selects.
+A selected allocation is dropped if the raw thread identity is exit-marked.
 
 | Hook | Calls | Passes to `maybeRecord` |
 |------|-------|---------|
@@ -250,27 +251,41 @@ passed since the last update. The interval is clamped to
 
 ```cpp
 void MallocTracer::maybeRecord(void* ret, size_t size) {
-    if (running() && ret && size) {
-        ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
-        if (prof_thread == nullptr) {
-            Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-            return;
-        }
-        CriticalSection cs(prof_thread);
-        if (cs.entered() && shouldSample(size)) {
-            recordMalloc(ret, size, prof_thread->tid());
-        }
+    const u32 session = Profiler::instance()->recordingSession();
+    if (!running() || ret == nullptr || size == 0 || !shouldSample(size)) {
+        return;
+    }
+    if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+        Counters::increment(MALLOC_SAMPLES_DROPPED);
+        return;
+    }
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return;
+    }
+    CriticalSection cs(prof_thread);
+    if (cs.entered()) {
+        recordMalloc(ret, size, prof_thread->tid(), session);
+    } else {
+        Counters::increment(MALLOC_SAMPLES_DROPPED);
     }
 }
 ```
 
-The `ProfiledThread` is obtained with `acquireCurrent()` (the allocation-adjacent-hook
-variant, which may claim a slot from the priming pool and never mallocs). Because that
-happens before `shouldSample()`, every allocation that passes the
-`running()`/`ret`/`size` gate claims a thread-local slot on first touch, even when it is
-then not sampled. The `CriticalSection` is the reentrancy guard: allocations made by
-the profiler while it records a sample re-enter the hooks through the patched GOT, fail
-to enter the critical section, and are not recorded.
+`shouldSample()` runs first because it reads no TLS. An unsampled allocation therefore
+skips the exit-registry lookup, which costs a raw `gettid` syscall, and skips TLS.
+Only a sampled allocation claims a thread-local slot with `acquireCurrent()` (the
+allocation-adjacent-hook variant, which may claim a slot from the priming pool and never
+mallocs).
+
+The `CriticalSection` is the reentrancy guard. Allocations made by the profiler while it
+records a sample re-enter the hooks through the patched GOT and fail to enter the
+critical section. They advance the byte countdown, and a sample that lands on one is
+dropped and counted in `MALLOC_SAMPLES_DROPPED`. This does not bias the recorded weights:
+each countdown crossing draws a fresh exponential interval, so an application allocation
+of `size` bytes is still sampled with probability `1 - exp(-size / interval)`, the
+inverse of its weight.
 
 ---
 

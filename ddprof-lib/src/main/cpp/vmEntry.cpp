@@ -65,9 +65,14 @@ AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
 static void wakeupHandler(int signo) {
-  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
-  // Dummy handler for interrupting syscalls
+  (void)signo;
 }
+
+#ifdef UNIT_TEST
+void wakeupHandlerForTest(int signo) {
+  wakeupHandler(signo);
+}
+#endif
 
 static bool isVmRuntimeEntry(const char* blob_name) {
     return strcmp(blob_name, "_ZNK12MemAllocator8allocateEv") == 0

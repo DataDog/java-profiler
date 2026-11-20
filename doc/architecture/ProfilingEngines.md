@@ -184,9 +184,9 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
 1. **JVMTI** `ThreadStart`/`ThreadEnd` reach `Profiler::onThreadStart()`/
    `onThreadEnd()`, which call `Profiler::registerThread()`/
    `unregisterThread()`, so they share the gates described in item 2.
-   When the thread's `ProfiledThread` still exists at thread end,
-   unregistration runs with profiling signals blocked
-   (`blockProfilingForExit()`).
+   `onThreadEnd()` blocks profiling signals (`blockProfilingForExit()`) before
+   publishing the exit-registry mark, so the filter update, name update, engine
+   unregistration and TLS release all run under that block.
 2. **Native threads**: on Linux, `LibraryPatcher`'s `pthread_create` GOT hook
    wraps the start routine (`start_routine_wrapper()`) and calls
    `Profiler::registerThread()`. On exit, `unregister_and_release()` calls
@@ -492,13 +492,49 @@ loop while _running:
   collectThreads(threads)       ThreadFilter::collect() if the filter is on,
                                 else OS::listThreads() minus self and the
                                 Libraries refresher thread
-  NativeMem::setLive(NM_WALLCLOCK, capacity * sizeof(entry))
+  NativeMem::record(NM_WALLCLOCK, change_in_capacity * sizeof(entry))
   sample = ReservoirSampler(threads)     at most _reservoir_size threads
   for each: sampleThreads(t)    OS::sendSignalWithCookie(tid, SIGVTALRM,
                                 SignalCookie::wallclock())
   update WallClockEpochEvent; emit it on change or every >= 1 s
   OS::sleep(normal(interval, interval/10)), clamped to [1, 2*interval-1] ns
 ```
+
+Both context-filtered and unfiltered prechecks run **after** uniform reservoir
+selection, so timer suppression and registry lookups visit at most the reservoir
+size. Suppressed selections consume capacity and count in `numSuccessfulSamples`,
+just like signals suppressed by the handler; failed sends do not count. This keeps
+`samplePoolSize / numSuccessfulSamples` upscaling consistent with selection
+probability. `samplePoolSize` includes all collected candidates, and
+`numSuppressedSampledRun` reports suppression separately. There is no backfill.
+
+The timer's TID metadata lookup inspects at most 256 hash buckets per candidate,
+including tombstones. Exhaustion increments `wc_precheck_registry_probe_exhausted`
+and attempts the ordinary signal; handler-side suppression remains available.
+
+Deep collisions can therefore cause extra signals, not dropped selections.
+Identity registration, deduplication and teardown keep full-table lookup semantics.
+
+Omitting `filter` defaults to context filtering (`filter=0`); an explicit empty
+`filter=` disables it. With empty `filter=`, an activated, supported wall engine,
+and `wallprecheck=true`, thread identities register lazily on their first context,
+park, or block hook, not eagerly at ThreadStart. Only already-sampled owned blocks
+that remain **outside** context windows can suppress signals in this mode;
+unowned observations and in-context threads keep ordinary sampling.
+
+Registry identity survives recording restarts until thread teardown. A new
+unfiltered epoch invalidates suppression state, which the owner resets lazily
+on its next hook; an open logical context survives that refresh, and matching
+context exits still work while stopped or stale. Context-filtered starts instead
+clear membership and eagerly reset all tracker slots. Context entry/exit drops
+unowned deferred tails: original context attributes are not retained with them.
+
+Timer backing capacity is accounted with allocation deltas and retracted on exit,
+not by replacing the shared `NM_WALLCLOCK` gauge. The tracker allocates its backing
+on first registry registration and keeps it until destruction. In-flight owner hooks can
+carry slot IDs across `stop()`, so the backing outlives the recording; it is charged
+to its own `NM_WALL_BLOCK_TRACKER` category because `NM_WALLCLOCK` reads 0 when idle.
+Allocation failure leaves suppression inactive; a later registration retries.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h:23`), and joins it (`wallClock.cpp:330-339`).
@@ -717,11 +753,14 @@ In summary:
   recording runs, except in a library the restore walk could not verify. Libraries loaded later are patched by `Libraries::refresh()`
   (`libraries.cpp:90-91`).
 - **Signals**: none. Hooks run synchronously on the allocating thread.
-- **Sampling**: `maybeRecord()` (`mallocTracer.cpp:312`) acquires the
-  thread's `ProfiledThread` (if there is none, it increments
-  `SAMPLES_DROPPED_THREAD_LOCAL`), enters a `CriticalSection` to block
-  re-entry from the profiler's own allocations, then calls `shouldSample()`.
-  That function is a lock-free CAS on a shared `_bytes_until_sample`, with
+- **Sampling**: `maybeRecord()` first calls `shouldSample()`, so an unsampled
+  allocation touches no TLS and makes no syscall. A sampled allocation is then
+  dropped if the raw thread identity is exit-marked. Otherwise `maybeRecord()`
+  acquires the thread's `ProfiledThread` (if there is none, it increments
+  `SAMPLES_DROPPED_THREAD_LOCAL`) and enters a `CriticalSection` to block re-entry
+  from the profiler's own allocations. Exit-marked and re-entrant samples increment
+  `MALLOC_SAMPLES_DROPPED`. `shouldSample()` is a lock-free CAS on a shared
+  `_bytes_until_sample`, with
   Poisson-distributed intervals from a shared xoroshiro128+ state.
   `recordMalloc()` records `BCI_NATIVE_MALLOC` through `recordSample(NULL,
   ...)`. A `PidController` retunes `_interval` about once per second.
@@ -734,9 +773,9 @@ In summary:
 ## Profiler Self-Accounting (`NativeMem`, `nativeMem.{h,cpp}`)
 
 `nativeMem.{h,cpp}` is **not** a profiling engine and does not observe
-application allocations. It tracks the profiler's **own** native memory in 14
+application allocations. It tracks the profiler's **own** native memory in 15
 categories, defined in `nativeMem.h`: `NM_CALLTRACE`, `NM_DICTIONARY`, ...,
-`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_CTIMER`, `NM_MISC`.
+`NM_PERF`, `NM_LIVENESS`, `NM_WALLCLOCK`, `NM_WALL_BLOCK_TRACKER`, `NM_CTIMER`, `NM_MISC`.
 
 - `record(cat, delta)` is a relaxed atomic add plus a lock-free CAS on the
   per-category peak. It is async-signal-safe, which matters because the
@@ -755,8 +794,9 @@ The engines above feed it: `PerfEvents` reports its tid-indexed event table
 (up to `pid_max × sizeof(PerfEvent)` bytes, two cache lines per slot; address
 space) and the per-thread ring pages (resident) as `NM_PERF`, `CTimer` reports
 its tid-indexed timer table (up to `pid_max × 4` bytes, `pid_max × sizeof(int)`;
-address space) as `NM_CTIMER`, `timerLoopCommon()` reports `NM_WALLCLOCK`, and
-`LivenessTracker` reports `NM_LIVENESS`.
+address space) as `NM_CTIMER`, `timerLoopCommon()` reports `NM_WALLCLOCK`,
+`WallClockBlockTracker` reports `NM_WALL_BLOCK_TRACKER`, and `LivenessTracker`
+reports `NM_LIVENESS`.
 
 Unlike the other categories, the two tid-indexed tables are allocated address
 space, not resident memory: each is `calloc`ed at `pid_max` slots, but only the
@@ -780,7 +820,7 @@ category list.
 |--------|-----------------------------------------------|--------------------|
 | CTimer / CTimerJvmti | `CTIMER_SIGNAL_OWN`, `CTIMER_SIGNAL_FOREIGN` | `SP_CPU` |
 | PerfEvents, ITimer, ITimerJvmti | none (the guard may increment `SAMPLES_DROPPED_THREAD_LOCAL`) | `SP_CPU` |
-| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_SIGNAL_SUPPRESSED_SAMPLED_RUN`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
+| WallClockASGCT / WallClockJvmti | `WALLCLOCK_SIGNAL_OWN`, `WALLCLOCK_SIGNAL_FOREIGN`, `WC_SIGNAL_QUEUE_FULL`, `WC_PRECHECK_REGISTRY_PROBE_EXHAUSTED` (TID lookup helper), `WC_SIGNAL_SUPPRESSED_SAMPLED_RUN`, `WC_UNOWNED_BLOCKED_SUPPRESSED`, `WC_UNOWNED_BLOCKED_RECORDED`, `SKIPPED_WALLCLOCK_UNWINDS` (ASGCT only) | `SP_WALL` |
 | J9WallClock | none | `SP_CPU` and `SP_WALL` |
 | ObjectSampler | none | `SP_ALLOC` (includes `SP_LIVENESS`) |
 | LivenessTracker | `LIVENESS_URGENT_BOOST_ADMITS`, `LIVENESS_URGENT_BOOST_BACKED_OFF` | `SP_LIVENESS` |

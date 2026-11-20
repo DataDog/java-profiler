@@ -19,6 +19,8 @@
 #define _J9_J9WALLCLOCK_H
 
 #include "engine.h"
+#include "guards.h"
+#include "threadExitRegistry.h"
 #include <pthread.h>
 
 class J9WallClock : public Engine {
@@ -33,6 +35,10 @@ private:
 
   static void *threadEntry(void *wall_clock) {
     ((J9WallClock *)wall_clock)->timerLoop();
+    // Block before the exit mark: a sampler must not fault on the marked
+    // identity (see Profiler::onThreadEnd).
+    blockProfilingForExit();
+    ThreadExitRegistry::markCurrent();
     return NULL;
   }
 

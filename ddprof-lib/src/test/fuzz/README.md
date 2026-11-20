@@ -172,6 +172,31 @@ running the wrong number of times (double free or leak across `clear()`, an over
 the next `get()`, and non-bit-exact round-trips for the `double` specialization (NaN,
 infinities, subnormals, -0.0).
 
+### fuzz_threadFilter.cpp
+**Target**: `ThreadFilter` / `WallClockBlockTracker` - the wall-clock thread
+identity registry and its block-run suppression sidecar (see
+`threadFilter.h` / `wallClockBlockTracker.h`).
+
+Drives `registerThread` / `unregisterThread` / `add` / `remove` /
+`enterBlockedRun` / `exitBlockedRun` / `init` (registry restart) over a small,
+fixed tid domain so slot reuse and registration collisions are frequent. A
+shadow model tracks which tid should currently own which slot and traps on
+any divergence.
+
+**Expected bugs**: a still-live tid handed a second slot, two live tids sharing
+one slot, a new unfiltered recording epoch failing to invalidate stale suppression,
+owner re-registration failing to reset recording-local block state, a stale or
+forged generation token clearing a newer block run, and out-of-bounds/use-after-free
+in lazy chunk allocation and slot reuse. Unfiltered refresh preserves logical
+context membership; it does not call `resetAll()`. Context-filtered starts clear
+membership and eagerly reset tracker slots via `clearActive()`.
+
+The fuzzer activates the registry with `init("", true)`. In production this requires
+an explicit empty `filter=` and a supported, activated wall engine with precheck;
+omitting `filter` defaults to context filtering. Unfiltered identities register
+lazily on context/block/park hooks. Suppression there applies only to owned blocks
+that remain outside context windows, not arbitrary unowned blocked observations.
+
 ## Corpus
 
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points

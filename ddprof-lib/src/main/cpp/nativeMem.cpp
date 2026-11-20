@@ -128,8 +128,8 @@ const char *NativeMem::categoryName(NativeMemCategory category) {
 
 void NativeMem::logLive(const char *when) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  // One line, within TEST_LOG's 512-byte limit: ~13 categories of
-  // " name=bytes" fit comfortably.
+  // One line, within TEST_LOG's 512-byte limit: 15 categories of
+  // " name=bytes" take about 330 bytes with 10-digit values.
   char buf[400];
   size_t pos = 0;
   buf[0] = '\0';
