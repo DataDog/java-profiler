@@ -152,6 +152,12 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
     runSuppressedPark(afterFirstPark);
   }
 
+  /** Park admission needs the wall engine's unfiltered owner tracking, not JNI classification. */
+  @Override
+  protected boolean isPlatformSupported() {
+    return TaskBlockAssertions.parkSupported();
+  }
+
   @Override
   protected String getProfilerCommand() {
     return "wall=1ms,filter=,wallprecheck=true";

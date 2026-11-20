@@ -672,6 +672,12 @@ Java_com_datadoghq_profiler_JavaProfiler_taskBlockSupportedForTest0(
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_wallRegistryTrackingSupportedForTest0(
+    JNIEnv* env, jclass unused) {
+  return Profiler::instance()->wallRegistryTrackingSupportedForTest() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_platformThreadForTest0(
     JNIEnv* env, jclass unused, jthread thread) {
   return JVMSupport::isPlatformThread(env, thread) ? JNI_TRUE : JNI_FALSE;

@@ -212,6 +212,22 @@ TEST_F(TaskBlockRuntimeSupportTest, HotspotCapabilityStillRequiresPlatformThread
     EXPECT_TRUE(Profiler::instance()->taskBlockSupportedForTest(&jni, thread));
 }
 
+TEST_F(TaskBlockRuntimeSupportTest, ParkEngineProbeSkipsClassificationOnNonHotspotJdk21) {
+    VMTestAccessor::runtime({true, false, 21, 7, &jvmti});
+    jni_version = 0x00150000;
+    EXPECT_TRUE(Profiler::instance()->wallRegistryTrackingSupportedForTest());
+    EXPECT_FALSE(Profiler::instance()->taskBlockSupportedForTest(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(TaskBlockRuntimeSupportTest, ParkEngineProbeRejectsEnginesWithoutOwnerTracking) {
+    VMTestAccessor::runtime({true, false, 17, 14, &jvmti});
+    EXPECT_FALSE(Profiler::instance()->wallRegistryTrackingSupportedForTest());
+    VMTestAccessor::runtime({true, false, 17, 15, &jvmti});
+    jvmti_sampler = true;
+    EXPECT_FALSE(Profiler::instance()->wallRegistryTrackingSupportedForTest());
+}
+
 TEST_P(JvmSupportThreadClassificationTest, NullInputsFailClosed) {
     EXPECT_FALSE(JVMSupport::isPlatformThread(nullptr, thread));
     EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, nullptr));
