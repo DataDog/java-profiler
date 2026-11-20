@@ -766,6 +766,8 @@ public:
   // stripes_held requires every recording stripe, as held by chunk sealing.
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event, u64 next_epoch_start,
                             bool stripes_held = false);
+  // Sampling-epoch mutex holder, no stripe held: drops closed epochs without segments.
+  void pruneClosedWallEpochs();
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   void writeLog(LogLevel level, const char *message);

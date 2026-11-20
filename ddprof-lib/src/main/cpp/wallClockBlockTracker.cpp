@@ -18,6 +18,7 @@
 #include "callTraceStorage.h"
 #include "counters.h"
 #include "signalSafety.h"
+#include <algorithm>
 #include <memory>
 #include <new>
 
@@ -426,7 +427,7 @@ void WallClockBlockTracker::collectLiveTraceIds(CallTraceIdSet& live) {
     }
 }
 
-void WallClockBlockTracker::collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const {
+void WallClockBlockTracker::collectUnownedEpochStarts(EpochStarts& epochs) const {
     DEBUG_ASSERT_NOT_IN_SIGNAL();
     SlotStorage* storage = _storage.load(std::memory_order_acquire);
     if (storage == nullptr) return;
@@ -437,11 +438,13 @@ void WallClockBlockTracker::collectUnownedEpochStarts(std::unordered_set<u64>& e
             if (storage->slots[slot_id].unowned_blocked_call_trace_id.load(std::memory_order_acquire) != 0) {
                 WeightSegment segments[kMaxWeightSegments];
                 size_t count = copyUnownedWeightSegments(slot_id, segments);
-                for (size_t i = 0; i < count; ++i) epochs.insert(segments[i].epoch_start);
+                for (size_t i = 0; i < count; ++i) epochs.push_back(segments[i].epoch_start);
             }
             bits &= bits - 1;
         }
     }
+    std::sort(epochs.begin(), epochs.end());
+    epochs.erase(std::unique(epochs.begin(), epochs.end()), epochs.end());
 }
 
 void WallClockBlockTracker::onUnpreservedTraceIds(const CallTraceIdSet& failed) {

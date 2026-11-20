@@ -20,9 +20,11 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <vector>
 
 #include "arch.h"
 #include "callTraceHashTable.h"
+#include "countingAllocator.h"
 #include "context.h"
 #include "threadFilter.h"
 #include "threadState.h"
@@ -281,7 +283,9 @@ public:
 #endif
     // Normal-thread callbacks; all recording stripes must exclude publication.
     void collectLiveTraceIds(CallTraceIdSet& live);
-    void collectUnownedEpochStarts(std::unordered_set<u64>& epochs) const;
+    using EpochStarts = std::vector<u64, CountingAllocator<u64, NM_WALLCLOCK>>;
+    // Appends the epoch starts of root slots' pending segments, sorted and unique.
+    void collectUnownedEpochStarts(EpochStarts& epochs) const;
     void onUnpreservedTraceIds(const CallTraceIdSet& failed);
 
     // Returns nullptr if slot_id is out of range or storage is not yet

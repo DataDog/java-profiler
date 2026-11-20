@@ -1189,7 +1189,12 @@ void Recording::switchChunk(int fd) {
   OS::truncateFile(_fd);
   _chunk_start = 0;
 
-  pruneWallEpochs();
+  {
+    // Dump holds every stripe, so no deferral can add a segment meanwhile.
+    WallClockBlockTracker::EpochStarts pending;
+    Profiler::instance()->blockTracker()->collectUnownedEpochStarts(pending);
+    pruneWallEpochs(pending);
+  }
 
   // the recording file is restarted, so write out all the info events again
   writeHeader(_buf);
@@ -1214,11 +1219,9 @@ void Recording::switchChunk(int fd) {
   flush(_buf);
 }
 
-void Recording::pruneWallEpochs() {
-  std::unordered_set<u64> pending_epochs;
-  Profiler::instance()->blockTracker()->collectUnownedEpochStarts(pending_epochs);
+void Recording::pruneWallEpochs(const WallClockBlockTracker::EpochStarts& pending) {
   for (auto it = _wall_epochs.begin(); it != _wall_epochs.end();) {
-    if (pending_epochs.count(it->first) == 0) {
+    if (!std::binary_search(pending.begin(), pending.end(), it->first)) {
       it = _wall_epochs.erase(it);
     } else {
       ++it;
@@ -2567,11 +2570,9 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
-void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event,
-                                     bool all_stripes_held) {
+void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   _wall_epochs.insert_or_assign(event->_start_time, *event);
-  if (all_stripes_held && _wall_epochs.size() >= _wall_epoch_prune_threshold) pruneWallEpochs();
   int start = buf->skip(1);
   buf->putVar64(T_WALLCLOCK_SAMPLE_EPOCH);
   buf->putVar64(event->_start_time);
@@ -2962,19 +2963,18 @@ Error FlightRecorder::dump(const char *filename, const int length) {
   return Error("No active recording");
 }
 
-void FlightRecorder::wallClockEpoch(int lock_index, WallClockEpochEvent *event,
-                                    bool all_stripes_held) {
+bool FlightRecorder::wallClockEpoch(int lock_index, WallClockEpochEvent *event) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
-  if (_rec != nullptr) {
-    _rec->recordWallClockEpoch(_rec->buffer(lock_index), event, all_stripes_held);
-  }
+  if (_rec == nullptr) return false;
+  _rec->recordWallClockEpoch(_rec->buffer(lock_index), event);
+  return _rec->wallEpochPruneDue();
 }
 
-bool FlightRecorder::wallEpochPruneDue() {
+void FlightRecorder::pruneWallEpochs(const WallClockBlockTracker::EpochStarts& pending) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  SharedLockGuard locker(&_rec_lock);
-  return _rec != nullptr && _rec->wallEpochPruneDue();
+  ExclusiveLockGuard locker(&_rec_lock);
+  if (_rec != nullptr) _rec->pruneWallEpochs(pending);
 }
 
 void FlightRecorder::recordTraceRoot(int lock_index, int tid,

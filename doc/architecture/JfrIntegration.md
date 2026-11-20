@@ -162,8 +162,10 @@ After extraction, the writer prunes epochs with no pending tail and replays the
 rest into its new chunk. Repeated dumps keep each retained tail's scale available.
 
 The map holds retained origins and recently closed epochs, charged to `NM_WALLCLOCK`.
-When it reaches twice its last pruned size (at least 64), the timer closes the next
-epoch under all stripes and prunes the map the same way. Its size stays bounded between dumps.
+The timer prunes it when it reaches twice the size the last prune kept, and at least 4096 entries.
+An entry takes about 100 bytes on 64-bit hosts, so the floor is about 400 KiB.
+Before that prune, the timer locks and unlocks each stripe in turn, never all at once.
+This waits for deferrals that read a closed epoch. Later deferrals read its successor.
 Dump collects pending origins while all stripes exclude tail writes and deferred
 weight publication. Signal handlers never access or allocate this map.
 See [TLSContext](TLSContext.md#retained-unowned-wall-context).

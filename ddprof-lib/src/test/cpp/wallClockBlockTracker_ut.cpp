@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include "callTraceStorage.h"
 #include "context_api.h"
 #include "livenessTracker.h"
@@ -563,9 +564,9 @@ TEST_F(UnownedContextSidecarTest, EpochStartsSkipSegmentsWithoutCachedRoot) {
     tracker->slotForId(rootless)->unowned_blocked_call_trace_id.store(0, std::memory_order_release);
     WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
     ASSERT_EQ(1U, tracker->copyUnownedWeightSegments(rootless, segments));
-    std::unordered_set<u64> epochs;
+    WallClockBlockTracker::EpochStarts epochs;
     tracker->collectUnownedEpochStarts(epochs);
-    EXPECT_EQ((std::unordered_set<u64>{kRootedEpoch}), epochs);
+    EXPECT_EQ((WallClockBlockTracker::EpochStarts{kRootedEpoch}), epochs);
 }
 
 TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFields) {
@@ -2328,9 +2329,9 @@ TEST(UnownedWallAttributionTest, FailedDeferralPreparationKeepsZeroPendingWriteO
         ASSERT_GT(next_epoch, request.sampling_epoch_start);
         {
             auto locks = scoped.profiler->recordingLocksForTest();
-            std::unordered_set<u64> pending;
+            WallClockBlockTracker::EpochStarts pending;
             tracker->collectUnownedEpochStarts(pending);
-            ASSERT_EQ(0U, pending.count(request.sampling_epoch_start));
+            ASSERT_EQ(pending.end(), std::find(pending.begin(), pending.end(), request.sampling_epoch_start));
             WallClockCounters::beginSamplingEpoch(next_epoch);
         }
         int writes = 0;
@@ -2431,9 +2432,9 @@ TEST(UnownedWallAttributionTest, PreStripeEpochSnapshotCannotResurrectPrunedMeta
         BaseWallClock::setUnownedContextProbeHookForTest(+[](void* arg) {
             auto* rotation = static_cast<Rotation*>(arg);
             auto locks = rotation->profiler->recordingLocksForTest();
-            std::unordered_set<u64> pending;
+            WallClockBlockTracker::EpochStarts pending;
             rotation->profiler->blockTracker()->collectUnownedEpochStarts(pending);
-            EXPECT_EQ(0U, pending.count(rotation->old_epoch));
+            EXPECT_EQ(pending.end(), std::find(pending.begin(), pending.end(), rotation->old_epoch));
             // The precheck has already captured old_epoch. Rotation may prune it
             // because this owner has not published any deferred segment yet.
             WallClockCounters::beginSamplingEpoch(rotation->next_epoch);
@@ -2456,7 +2457,7 @@ TEST(UnownedWallAttributionTest, PreStripeEpochSnapshotCannotResurrectPrunedMeta
 
 TEST(WallClockEpochRootsTest, EmptyBackingDoesNotInventEpochs) {
     WallClockBlockTracker tracker;
-    std::unordered_set<u64> epochs;
+    WallClockBlockTracker::EpochStarts epochs;
     tracker.collectUnownedEpochStarts(epochs);
     EXPECT_TRUE(epochs.empty());
 }
