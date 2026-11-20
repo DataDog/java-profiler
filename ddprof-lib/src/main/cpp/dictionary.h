@@ -22,6 +22,7 @@
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define ROW_BITS 7
 #define ROWS (1 << ROW_BITS)
@@ -51,6 +52,29 @@ private:
   const int _id;
   volatile unsigned int _base_index;
   volatile int _size;
+#ifdef UNIT_TEST
+  bool _fail_table_alloc_for_test = false;
+  int _table_alloc_failures_for_test = 0;
+  bool _fail_key_alloc_for_test = false;
+  int _key_alloc_failures_for_test = 0;
+  bool failKeyAlloc() {
+    if (_fail_key_alloc_for_test) {
+      _key_alloc_failures_for_test++;
+      return true;
+    }
+    return false;
+  }
+  bool failTableAlloc() {
+    if (_fail_table_alloc_for_test) {
+      _table_alloc_failures_for_test++;
+      return true;
+    }
+    return false;
+  }
+#else
+  bool failTableAlloc() const { return false; }
+  bool failKeyAlloc() const { return false; }
+#endif
 
   static void clear(DictTable *table, int id);
 
@@ -76,16 +100,73 @@ public:
 
   void clear();
 
+#ifdef UNIT_TEST
+  void failTableAllocationForTest(bool fail) {
+    _fail_table_alloc_for_test = fail;
+  }
+  int tableAllocFailuresForTest() const { return _table_alloc_failures_for_test; }
+  void failKeyAllocationForTest(bool fail) { _fail_key_alloc_for_test = fail; }
+  int keyAllocFailuresForTest() const { return _key_alloc_failures_for_test; }
+#endif
+
   bool         check(const char* key);
-  // NOT signal-safe: the inserting lookup overloads call malloc/calloc on miss
-  // (see allocateKey and the calloc in dictionary.cpp). Signal handlers must use
-  // bounded_lookup(key, length, 0) instead, which never inserts and returns
-  // INT_MAX on miss.
+  // NOT signal-safe: inserting lookups malloc/calloc on miss. Signal handlers use
+  // bounded_lookup(key, length, 0), which never inserts and returns INT_MAX on
+  // miss. A failed insert allocation returns 0 (lookup) or INT_MAX (bounded).
   unsigned int lookup(const char *key);
   unsigned int lookup(const char *key, size_t length);
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);
 
   void collect(std::map<unsigned int, const char *> &map);
+};
+
+// A Dictionary whose failed inserts resolve to reserved ids outside the table, so
+// a caller never stores 0 (no entry). The signature id's entry must stay a valid
+// descriptor: JFR consumers slice it at ')'. collect() emits a used reserved id.
+class SymbolDictionary : public Dictionary {
+private:
+  bool _name_failed = false;
+  bool _sig_failed = false;
+
+public:
+  static constexpr unsigned int UNRESOLVED_ID = 0xFFFFFFFFU;
+  static constexpr unsigned int UNRESOLVED_SIG_ID = 0xFFFFFFFEU;
+
+  unsigned int lookup(const char *key, size_t length) {
+    unsigned int id = Dictionary::lookup(key, length);
+    if (id == 0) {
+      _name_failed = true;
+      return UNRESOLVED_ID;
+    }
+    return id;
+  }
+  unsigned int lookup(const char *key) { return lookup(key, strlen(key)); }
+
+  unsigned int lookupSignature(const char *key, size_t length) {
+    unsigned int id = Dictionary::lookup(key, length);
+    if (id == 0) {
+      _sig_failed = true;
+      return UNRESOLVED_SIG_ID;
+    }
+    return id;
+  }
+  unsigned int lookupSignature(const char *key) {
+    return lookupSignature(key, strlen(key));
+  }
+
+  bool failed() const { return _name_failed || _sig_failed; }
+
+  // Hides Dictionary::collect: adds the reserved entries for the failed kinds,
+  // so every reference handed out has a pool entry.
+  void collect(std::map<unsigned int, const char *> &map) {
+    Dictionary::collect(map);
+    if (_name_failed) {
+      map[UNRESOLVED_ID] = "<unresolved>";
+    }
+    if (_sig_failed) {
+      map[UNRESOLVED_SIG_ID] = "()V";
+    }
+  }
 };
 
 #endif // _DICTIONARY_H

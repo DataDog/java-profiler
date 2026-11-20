@@ -519,6 +519,7 @@ tasks.register("qualityChecks") {
     "check-claude-md.py",
     "check-knowledgebase.py",
     "check-skills.py",
+    "check-native-agents.py",
   ).map { File(root, "utils/$it") }
 
   doLast {

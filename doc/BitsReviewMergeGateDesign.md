@@ -69,7 +69,8 @@ Copied markers from a User account are ignored.
 
 A dismissed FAIL is not a PASS. Resolving findings, replying to them, or receiving
 human approval does not clear FAIL. A new valid Bits PASS or an existing authorized
-admin bypass is needed.
+admin bypass is needed. The developer procedure for a red review, including one whose
+findings are all refuted, is in [BitsReviewRedReviewRunbook](BitsReviewRedReviewRunbook.md).
 
 ## Architecture
 
@@ -307,6 +308,21 @@ gate therefore depends on change control for these files. Candidate-controlled
 workflows must not obtain the publisher token. The app installation must cover
 only this repository. The installation permission, the installation scope, the
 pool allow list, and exact policy claims must be tested before activation.
+
+`.github/CODEOWNERS` keeps the repository-wide default rule for change
+attribution and marks the sensitive paths. The gate evaluator publishes the
+`codeowner-review/head` status: a head that changes a sensitive path passes
+only when a login listed in the checked-in owner roster
+(`.github/scripts/owner_roster.txt`) other than the pull request author
+approves that head; review of ordinary paths stays at the authors' discretion.
+The evaluator cannot soundly read a fork head's changed files: the fork author
+can swap a sensitive file for a benign one for the duration of the read, so
+`codeowner-review/head` fails closed for every fork pull request — an external
+contribution can only merge through the admin bypass, which a maintainer
+must exercise knowingly. The compare endpoint caps its file list and offers no
+pagination, so a pull request with 300 or more changed files also fails closed
+and can only merge through the bypass; this is an accepted cost. The context
+is not a required check until activation.
 The repository policy file `.github/chainguard/self.bits-review-gate.publish-status.sts.yaml`
 carries exactly these claims:
 
@@ -321,6 +337,13 @@ claim_pattern:
 permissions:
   statuses: write
 ```
+
+The codeowner-review evaluator reads the owner roster from the trusted
+`refs/heads/main` checkout the publish job makes, never from a pull request
+head; the roster file sits under `/.github/scripts/` in CODEOWNERS, so an
+edit to it is itself a sensitive-path change that the gate checks. The sts
+policy therefore carries only the status write; it grants no organization
+read. The bits gate itself never reads membership.
 
 Octo-STS matches every pattern against the entire claim or subject value: it
 compiles `subject_pattern` and each `claim_pattern` entry as `^(?:<pattern>)$`
@@ -384,6 +407,16 @@ Bits rollout settings. A PR that never gets a result remains blocked by policy.
 
 Do not add a numerical freshness or delivery-latency promise without measurement
 and approval. Stronger guarantees need a separate lifecycle or merge-path design.
+
+The same window applies to the codeowner-review approval: an owner approval
+dismissed after the evaluator's final review re-read but before the status POST
+lands leaves a success standing until a dismissal-triggered re-evaluation
+publishes failure. The receiver workflow drives that re-evaluation; the residual
+is the dispatch-to-publish delay, accepted here as part of the asynchronous
+model above. The owner roster is a checked-in file, so a roster edit is itself
+a sensitive-path change: it publishes failure for that head until a roster
+login other than the author approves it, and the next run reads the edited
+file (the 30-minute sweep bounds the staleness for scheduled heads).
 
 ## Alternatives not selected
 

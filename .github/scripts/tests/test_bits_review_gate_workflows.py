@@ -65,6 +65,7 @@ AGENTS_FILE = os.path.join(REPO_ROOT, "AGENTS.md")
 DISCOVER_PATTERN = "test_bits_review_gate_*.py"
 FAMILY_MODULES = {
     "test_bits_review_gate_api.py",
+    "test_bits_review_gate_codeowner.py",
     "test_bits_review_gate_policy.py",
     "test_bits_review_gate_publish.py",
     "test_bits_review_gate_workflows.py",
@@ -438,6 +439,19 @@ class PublisherWorkflowTest(unittest.TestCase):
     def test_no_environment_key(self):
         self.assertIsNone(re.search(r"^[ \t]+environment:", self.text, re.M))
 
+    def test_checkout_precedes_the_gate_steps_in_publish(self):
+        # The gate scripts and the owner roster are read from the checkout
+        # the publish job holds: the trusted-main checkout step must run
+        # before either gate script executes, or a PR-head checkout would
+        # let the author read their own roster and self-approve.
+        checkout_at = self.publish.find("uses: " + CHECKOUT_PIN)
+        self.assertGreaterEqual(checkout_at, 0, self.publish)
+        for script in ("bits_review_gate.py", "codeowner_review_gate.py"):
+            run_at = self.publish.find("python3 .github/scripts/" + script)
+            self.assertGreaterEqual(run_at, 0, self.publish)
+            self.assertLess(checkout_at, run_at,
+                            "checkout must precede %s" % (script,))
+
     def test_run_blocks_have_no_expressions(self):
         for block in run_blocks(self.text):
             self.assertNotIn("${{", block)
@@ -445,7 +459,8 @@ class PublisherWorkflowTest(unittest.TestCase):
     def test_publish_targets_explicit_matrix_sha(self):
         self.assertEqual(
             run_blocks(self.publish),
-            ['python3 .github/scripts/bits_review_gate.py publish --sha "$SHA"'],
+            ['python3 .github/scripts/bits_review_gate.py publish --sha "$SHA"',
+             'python3 .github/scripts/codeowner_review_gate.py publish --sha "$SHA"'],
         )
         for line in (
             "SHA: ${{ matrix.sha }}",

@@ -13,6 +13,7 @@
 #include "engine.h"
 #include "nativeMem.h"
 #include "os.h"
+#include "perfEvents.h"
 #include "profiler.h"
 
 #include <atomic>
@@ -212,6 +213,8 @@ public:
                                   int max_timers) {
     return engine.startWithTableSize(args, max_timers);
   }
+  static long interval() { return CTimer::_interval; }
+  static void interval(long v) { CTimer::_interval = v; }
   static int registerThread(CTimer &engine, int tid) {
     return engine.registerThread(tid);
   }
@@ -403,9 +406,47 @@ TEST_F(CTimerNativeMemTest, StartFailsWhenTableAllocationFails) {
   EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
 }
 
-// A table survives to start() only when stop() could not drain hook calls, so
-// a late registration may have left a timer in it. A same-size restart reuses
-// the table but sweeps that slot first, or registerThread() could not replace it.
+// Validates the value actually assigned, cpuSamplerInterval(), so a caller
+// setting only the cpu parameter is accepted. The deliberate allocation
+// failure bounds the test: it fails after the interval is assigned.
+TEST_F(CTimerNativeMemTest, StartValidatesCpuSamplerInterval) {
+  SKIP_IF_CALLOC_OVERFLOW_ABORTS();
+  CTimer engine;
+  Arguments args;
+  args._cpu = 1000000;
+  args._interval = -1;
+  void *handler_before = sigprofHandler();
+
+  Error error = CTimerTestAccessor::startWithTableSize(engine, args, -1);
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("Failed to allocate CPU timer table", error.message());
+  EXPECT_EQ(1000000, CTimerTestAccessor::interval());
+  EXPECT_EQ(handler_before, sigprofHandler());
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+}
+
+// cpuSamplerInterval() returns 0 for a non-CPU event; the engine must reject
+// it instead of arming zero (disarmed) per-thread timers. _interval stays at
+// its default 0 so the rejection cannot come from a negative-field shortcut.
+TEST_F(CTimerNativeMemTest, StartRejectsNonCpuEvent) {
+  CTimer engine;
+  Arguments args;
+  args._event = EVENT_WALL;
+  args._cpu = 1000000;
+  CTimerTestAccessor::interval(123456);
+  long interval_before = CTimerTestAccessor::interval();
+  void *handler_before = sigprofHandler();
+
+  Error error = CTimerTestAccessor::startWithTableSize(engine, args, -1);
+  EXPECT_TRUE((bool)error);
+  EXPECT_STREQ("interval must be positive", error.message());
+  EXPECT_EQ(interval_before, CTimerTestAccessor::interval());
+  EXPECT_EQ(handler_before, sigprofHandler());
+  EXPECT_EQ(nullptr, CTimerTestAccessor::timers());
+  EXPECT_EQ(0, NativeMem::live(NM_CTIMER));
+}
+
 TEST_F(CTimerNativeMemTest, SameSizeRestartSweepsKeptTable) {
   Profiler *profiler = Profiler::instance();
   ASSERT_TRUE(CTimerTestAccessor::resizeTimers(64));

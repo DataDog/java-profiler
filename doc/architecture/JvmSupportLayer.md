@@ -16,7 +16,7 @@ Zing. Code that depends on one implementation lives in a subdirectory of
 
 Shared code must stay independent of the JVM implementation. When it needs
 implementation-specific behavior, it calls one of the abstraction files
-(`AGENTS.md`, "JVM implementation specific code"):
+(`ddprof-lib/src/main/cpp/AGENTS.md`, "JVM abstraction"):
 
 - `jvmSupport.h`, `jvmSupport.inline.h`, `jvmSupport.cpp`: the `JVMSupport` facade
 - `jvmThread.h`, `jvmThread.cpp`: the `JVMThread` native-thread facade
@@ -121,6 +121,7 @@ If either step fails, profiling is disabled.
 | `enterRedefinitionCall` / `exitRedefinitionCall` / `beforeClassRedefinition` / `afterClassRedefinition` | forwarded to `HotspotSupport` | no-op, except that `afterClassRedefinition` reloads the class's jmethodIDs after a successful redefinition |
 | `beginDump` / `endDump` | forwarded to `HotspotSupport` | no-op |
 | `resolve(method, bci, result)` (inline) | `HotspotSupport::resolve` (raw `Method*` frames) | `assert(false)` and returns `false`. Raw frames come only from HotSpot `walkVM` |
+| `maxHeapBytes()` | `Runtime.maxMemory()` through JNI, resolved once in `initExecution()`. `-1` until resolved | same |
 | `isHidden(modifiers)` (inline) | shared modifier-mask test | shared |
 
 `jvmSupport.inline.h` includes `hotspot/hotspotSupport.h` directly
@@ -216,6 +217,23 @@ Java frame is an entry method such as `Thread.run`. A verified thawed crossing a
 preserves truncation established earlier in the walk. The blocking virtual-thread
 wall-clock regression checks truthful truncation when carrier ancestry is missing;
 carrier recovery itself remains a separate correctness requirement.
+
+### HotSpot vtable receiver frames
+
+VM walking and ASGCT stub recovery can emit `<vtable_receiver>` immediately before the leaf vtable stub.
+This requires `vtable_target` and class-name VMStructs; `cstack=no` omits both frames.
+The `cpu` option enables the feature; `event=cpu` and implicit CPU defaults do not.
+
+Capture runs inside the walker's crash-protection scope, before unwinding.
+`VMKlass::fromOop` reads the receiver header with `SafeAccess` and validates the decoded klass.
+An unreadable receiver drops only the receiver frame.
+PC/SP/FP must match the interrupted leaf to prevent redirected callers from using stale arguments.
+
+Capture reserves space for the stub and, with ASGCT, a retry or error frame.
+If an ASGCT recovery prefix fills the frame budget, the trace is marked truncated.
+
+Receiver frames store a raw `VMSymbol*`, not a `jmethodID`.
+Dump-time resolution reads the symbol with `SafeAccess` to assign the declaring class.
 
 ### `j9/`
 

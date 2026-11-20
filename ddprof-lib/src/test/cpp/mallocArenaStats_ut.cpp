@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "flightRecorder.h"
+#include "mallocArenaTestEnv.h"
 #include "mallocInfo.h"
 
 // malloc_trim is a glibc extension: musl also defines __linux__, but its
@@ -34,7 +35,36 @@
 class RecordingTestAccessor {
 public:
   static bool glibcMallocActive() { return Recording::glibcMallocActive(); }
+  static ArenaWalkStatus gateStatus(bool fault_recovery, bool glibc_active,
+                                    bool hugetlb) {
+    return Recording::gateStatus(fault_recovery, glibc_active, hugetlb);
+  }
 };
+
+// The walk may run only when all three gates pass, and the first failing gate
+// decides the reported status.
+TEST(MallocArenaGate, AllGatesPassAllowsWalk) {
+  EXPECT_EQ(ARENA_WALK_OK, RecordingTestAccessor::gateStatus(true, true, false));
+}
+
+TEST(MallocArenaGate, MissingFaultRecoveryWinsOverEverything) {
+  EXPECT_EQ(ARENA_WALK_UNSUPPORTED_JVM,
+            RecordingTestAccessor::gateStatus(false, true, false));
+  EXPECT_EQ(ARENA_WALK_UNSUPPORTED_JVM,
+            RecordingTestAccessor::gateStatus(false, false, true));
+}
+
+TEST(MallocArenaGate, ReplacedAllocatorWinsOverHugetlb) {
+  EXPECT_EQ(ARENA_WALK_REPLACED_ALLOCATOR,
+            RecordingTestAccessor::gateStatus(true, false, false));
+  EXPECT_EQ(ARENA_WALK_REPLACED_ALLOCATOR,
+            RecordingTestAccessor::gateStatus(true, false, true));
+}
+
+TEST(MallocArenaGate, HugetlbReportedLast) {
+  EXPECT_EQ(ARENA_WALK_HUGETLB_TUNABLE,
+            RecordingTestAccessor::gateStatus(true, true, true));
+}
 
 // Regression test for a review finding on the arena counters: LD_PRELOAD'ing
 // tcmalloc or jemalloc replaces malloc()/free() process-wide while leaving
@@ -101,6 +131,11 @@ static const size_t MMAPPED_BLOCK = (size_t)256 << 20;
 #define SKIP_UNLESS_GLIBC_MALLOC()                                             \
   if (!RecordingTestAccessor::glibcMallocActive()) {                           \
     GTEST_SKIP() << "glibc malloc is not the allocator in force";              \
+  }
+
+#define SKIP_IF_MALLOC_TUNED()                                                 \
+  if (mallocTuned()) {                                                         \
+    GTEST_SKIP() << "malloc tunables change the trim and mmap thresholds";     \
   }
 
 #define SKIP_UNLESS_MALLINFO2(out)                                             \
@@ -173,6 +208,7 @@ TEST(MallocArenaStats, SnapshotFieldsSatisfyGlibcAccountingIdentity) {
 // flush burst is not, by itself, an explanation for retained memory. The next
 // test shows what is actually required.
 TEST(MallocArenaStats, ContiguousChurnIsReturnedToTheOS) {
+  SKIP_IF_MALLOC_TUNED();
   SKIP_UNLESS_GLIBC_MALLOC();
   {
     std::vector<void *> warm;
@@ -236,6 +272,7 @@ TEST(MallocArenaStats, ContiguousChurnIsReturnedToTheOS) {
 // total free-but-held, and why arena slack is a property of the whole process's
 // allocation *pattern* rather than of any one subsystem's allocations.
 TEST(MallocArenaStats, InterleavedSurvivorsStrandFreeChunksBeyondTrim) {
+  SKIP_IF_MALLOC_TUNED();
   SKIP_UNLESS_GLIBC_MALLOC();
   // Probe before allocating anything, so a skip cannot strand the survivors.
   // Scratch only: the measurement must be taken after the churn is freed.
@@ -296,6 +333,7 @@ TEST(MallocArenaStats, InterleavedSurvivorsStrandFreeChunksBeyondTrim) {
 // are signed so an unsigned wrap can never satisfy >=; a dropped hblkhd copy
 // reads the SIZE_MAX sentinel (-1 as long long) in every snapshot, delta 0.
 TEST(MallocArenaStats, MmappedChunkIsReportedInHblkhdOnly) {
+  SKIP_IF_MALLOC_TUNED();
   SKIP_UNLESS_GLIBC_MALLOC();
   MallocArenaInfo before, held, released;
   if (!sentinelSnapshot(&before)) {
