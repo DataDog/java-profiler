@@ -57,6 +57,7 @@ jobs:
         id: compute-version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA_INPUT: ${{ inputs.source_sha }}
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           TYPE="${{ inputs.release_type }}"
@@ -66,7 +67,6 @@ jobs:
           # pinning goes through the input), else the dispatch ref's HEAD.
           # The input reaches the script through env: interpolating it into
           # the shell program would execute dispatcher-controlled text.
-          SOURCE_SHA_INPUT="${{ inputs.source_sha }}"
           TARGET_SHA="${SOURCE_SHA_INPUT:-$GITHUB_SHA}"
           if ! git rev-parse --verify --quiet "$TARGET_SHA^{commit}" >/dev/null; then
             echo "::error::Requested source SHA does not resolve to a commit: $TARGET_SHA" >&2
