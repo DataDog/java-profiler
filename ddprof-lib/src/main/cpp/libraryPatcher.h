@@ -184,7 +184,6 @@ public:
   static SocketImageFailureForTest exchangeSocketImageFailureForTest(
       SocketImageFailureForTest failure);
   // Treats the libc original of hook_index as missing for later installs; -1 clears.
-  // Only HOOK_EPOLL_PWAIT2 is honored.
   static int exchangeSocketMissingOriginalForTest(int hook_index);
   static void fill_socket_skipped_images_for_test();
   static int patch_socket_import_for_test(CodeCache* lib, ImportId import_id,
