@@ -30,27 +30,51 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
 
   private static final int SUDO_PROBE_TIMEOUT_SECONDS = 10;
 
-  /** Probe without prompting and bound the child wait when passwordless sudo is unavailable. */
+  /** False only when sudo exists and may prompt: JOL's sudo fallback would hang on the prompt. */
   private static boolean canAttachThroughSudo() {
     Boolean cached = passwordlessSudo;
     if (cached != null) {
       return cached;
     }
-    boolean ok = runBoundedProbe("sudo", "-n", "true");
-    // Only successes are cached: a transient sudo failure (fork pressure, a slow PAM
-    // lookup that hit the wait bound) must not pin the skip for the whole worker JVM.
-    if (ok) {
-      passwordlessSudo = true;
+    if (!sudoOnPath(System.getenv("PATH"))) {
+      // No executable sudo for JOL's fallback to launch: direct attach governs and a failed
+      // fallback exits fast instead of prompting.
+      return true;
     }
-    return ok;
+    if (runBoundedProbe("sudo", "-n", "true")) {
+      passwordlessSudo = true;
+      return true;
+    }
+    return false;
+  }
+
+  /** True when an executable {@code sudo} is on {@code path}; an unknown path probes instead. */
+  static boolean sudoOnPath(String path) {
+    return sudoOnPath(path, null);
   }
 
   /**
-   * Runs one probe command under the bounded wait; visible for tests so the bound itself is
-   * covered.
+   * As {@link #sudoOnPath(String)} with {@code workDir} resolving empty components, which POSIX
+   * lookup reads as the current directory; {@code null} uses the process working directory.
    */
+  static boolean sudoOnPath(String path, File workDir) {
+    if (path == null || path.trim().isEmpty()) {
+      return true;
+    }
+    // An empty component is the current directory for executable lookup; skipping it would
+    // let JOL resolve a prompting sudo the scan never saw.
+    for (String dir : path.split(File.pathSeparator, -1)) {
+      File sudo = dir.isEmpty() ? new File(workDir, "sudo") : new File(dir, "sudo");
+      if (sudo.canExecute()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Runs one probe command under the bounded wait; visible for tests so the bound is covered. */
   static boolean runBoundedProbe(String... command) {
-    boolean ok;
+    boolean ok = false;
     Process probe = null;
     try {
       probe =
@@ -61,9 +85,8 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
       ok = probe.waitFor(SUDO_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS) && probe.exitValue() == 0;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      ok = false;
     } catch (IOException e) {
-      ok = false;
+      // An unlaunchable command is inconclusive: report unavailable and let the caller skip.
     } finally {
       if (probe != null) {
         probe.destroyForcibly();
@@ -84,7 +107,7 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     }
     Assumptions.assumeFalse(isAsan() || isTsan());
     Assumptions.assumeTrue(
-        Platform.isMusl() || canAttachThroughSudo(), "JOL attach requires passwordless sudo");
+        Platform.isMusl() || canAttachThroughSudo(), "sudo may prompt on JOL's attach fallback");
 
     AllocatingTarget target1 = new AllocatingTarget();
     AllocatingTarget target2 = new AllocatingTarget();
