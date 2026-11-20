@@ -101,6 +101,9 @@ protected:
     JfrMetadata::initialize({});
     profiler->blockTracker()->setUnownedContextSnapshotsNeeded(true);
     profiler->threadFilter()->init("0");
+    WallClockBlockTracker::EpochStarts leaked;
+    profiler->blockTracker()->collectUnownedEpochStarts(leaked);
+    ASSERT_TRUE(leaked.empty()) << "A previous test left unowned tails pending";
     slot = profiler->threadFilter()->registerThread(OS::threadId());
     ASSERT_GE(slot, 0);
     Context context{};
@@ -128,6 +131,9 @@ protected:
     profiler->sampleWriteHookForTest = nullptr;
     profiler->sampleWriteHookArgForTest = nullptr;
     if (slot >= 0) profiler->threadFilter()->unregisterThread(slot, request.tid);
+    // The test's Recording ends without stop(): drop unwritten tails as stop() does,
+    // or retired slots replay them into the next test's Recording.
+    profiler->blockTracker()->resetUnownedBlockedTails();
     profiler->threadFilter()->deactivateRecording();
     profiler->blockTracker()->setUnownedContextSnapshotsNeeded(false);
     JfrMetadata::reset();
@@ -555,6 +561,9 @@ TEST_P(WallEpochRecordingTest, OpenEpochSurvivesDumpThenRetirementBeforeNormalCl
   ASSERT_GE(final.fd, 0);
   ASSERT_FALSE(profiler->dump(final.filename(), std::strlen(final.filename())));
   const auto events = decodeWallEpochs(final.fd);
+  for (const auto& weight : events.weights) {
+    EXPECT_EQ(1U, events.epochs.count(weight.first)) << "Sample epoch lacks metadata in its file";
+  }
   ASSERT_EQ(1U, events.weights.size());
   EXPECT_EQ(1ULL, events.weights.at(origin));
   ASSERT_EQ(1U, events.epochs.count(origin));
