@@ -146,19 +146,30 @@ jobs:
           # reached a terminal state. Cells can be created late: the pipeline
           # runs many stages before integration-test.
           declare -A STATUS
+          # Matrix expansion can push a dd-trace-integration pipeline past 100
+          # jobs; follow GitLab's page links until a short page arrives.
+          jobs_json=""
+          page=1
+          while :; do
+            page_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+              "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page" || echo "[]")
+            jobs_json="$jobs_json$page_json"
+            [ "$(echo "$page_json" | jq 'length')" -lt 100 ] && break
+            page=$((page+1))
+          done
           for attempt in $(seq 1 60); do
-            jobs_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              "$API/pipelines/$PIPELINE_ID/jobs?per_page=100" || echo "[]")
             missing=0; pending=0
             for job in "${REQUIRED_JOBS[@]}"; do
-              # GitLab matrix expansion appends suffixes (e.g. "name: [hotspot, 8]"),
-              # so match by prefix and aggregate: all cells success, else fail/pending.
+              # GitLab matrix expansion names cells "name: [hotspot, 8]": match
+              # the exact name or the matrix-suffixed form. Aggregate: every
+              # cell success → success; any terminal non-success (failed,
+              # canceled, skipped, manual) → failed; else pending.
               st=$(echo "$jobs_json" | jq -r --arg j "$job" \
-                '[.[] | select(.name | startswith($j)) | .status] |
+                '[.[] | select(.name == $j or (.name | startswith($j + ": ["))) | .status] |
                  if length == 0 then empty
-                 elif any(. != "success") then
-                   (if any(. == "failed" or . == "canceled") then "failed" else "pending" end)
-                 else "success" end')
+                 elif any(. == "created" or . == "waiting_for_resource" or . == "preparing" or . == "pending" or . == "running") then "pending"
+                 elif all(. == "success") then "success"
+                 else "failed" end')
               if [ -z "$st" ]; then missing=$((missing+1));
               elif [ "$st" != "success" ] && [ "$st" != "failed" ]; then pending=$((pending+1)); fi
               STATUS[$job]="${st:-pending}"
@@ -221,11 +232,12 @@ jobs:
               # cell may be listed first, so aggregate: any failed cell fails
               # the component.
               st=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
-                --slurp --jq "[.[].jobs[] | select(.name | startswith(\"$job\")) | .conclusion] as \$c \
-                  | if (\$c | index(\"failure\")) then \"failure\" \
-                    elif (\$c | index(\"cancelled\")) then \"cancelled\" \
-                    elif (\$c | index(\"timed_out\")) then \"timed_out\" \
-                    else (\$c | map(select(. != null and . != \"skipped\")) | first // \"unknown\") end")
+                --jq ".jobs[] | select(.name | startswith(\"$job\")) | .conclusion" | awk '
+                  $0 == "failure" { f = 1 }
+                  $0 == "cancelled" { c = 1 }
+                  $0 == "timed_out" { t = 1 }
+                  ($0 != "" && $0 != "skipped" && $0 != "failure" && $0 != "cancelled" && $0 != "timed_out") && !s { s = $0 }
+                  END { if (f) print "failure"; else if (c) print "cancelled"; else if (t) print "timed_out"; else if (s) print s; else print "unknown" }')
               echo "- ${job}: ${st:-unknown}"
             done
             if ls ./artifacts/failures_*.txt >/dev/null 2>&1; then
