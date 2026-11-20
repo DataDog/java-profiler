@@ -471,7 +471,7 @@ TEST_F(TaskBlockProducersTest, ParkLifecycleDoesNotRequireRegistryAdmission) {
     EXPECT_EQ(JNI_TRUE, Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
         &jni, nullptr, testThread(), JNI_FALSE));
     EXPECT_EQ(-1, current->filterSlotId());
-    EXPECT_EQ(0u, current->snapshotForTest().park_block_token);
+    EXPECT_EQ(0u, current->snapshotForTest().park_slot.block_token);
     EXPECT_EQ(JNI_FALSE, Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
         &jni, nullptr, testThread(), JNI_FALSE));
     Java_com_datadoghq_profiler_JavaProfiler_parkExit0(

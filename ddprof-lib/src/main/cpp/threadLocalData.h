@@ -230,7 +230,8 @@ public:
     u64 call_trace_id;
     u32 recording_epoch;
     u32 misc_flags;
-    u64 park_block_token;
+    BlockSlot park_slot;
+    BlockSlot monitor_slot;
     u64 task_block_start_ticks;
     u64 task_block_token;
     Context task_block_context;
@@ -255,7 +256,7 @@ public:
       __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED),
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
-      _park_slot.block_token, _task_block_slot.start_ticks, _task_block_slot.block_token,
+      _park_slot, _monitor_slot, _task_block_slot.start_ticks, _task_block_slot.block_token,
       _task_block_slot.context, _block_recording_epoch, _filter_slot_id, logicalContextWindowState(), _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
