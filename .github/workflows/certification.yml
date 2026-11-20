@@ -136,9 +136,11 @@ jobs:
             if [ "$attempt" -gt 18 ]; then REF_PARAM=""; fi
             # A trigger/child pipeline (e.g. a JDK-integration trigger) can
             # exist for the same SHA and lack the integration jobs entirely;
-            # certify against the push pipeline that has them.
+            # certify against the push pipeline that has them. sort=asc puts
+            # the push pipeline first: trigger pipelines are created after
+            # it and would push it off page 1 under sort=desc.
             PIPELINE_ID=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              "$API/pipelines?sha=$SHA$REF_PARAM&sort=desc&per_page=20" \
+              "$API/pipelines?sha=$SHA$REF_PARAM&sort=asc&per_page=100" \
               | jq -r '[.[] | select(.source == "push")][0].id // empty') || true
             [ -n "$PIPELINE_ID" ] && break
             echo "attempt $attempt/36: no pipeline for $SHA yet, retrying in 5 min"
