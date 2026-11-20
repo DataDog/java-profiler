@@ -95,10 +95,20 @@ static bool hasFreezeThawConfig(const char* name) {
     return strstr(name, "6ConfigIL8oop_kind") != nullptr;
 }
 
+// freeze<Config<...>>(JavaThread*, long) and thaw<Config<...>>(long, JavaThread*, int)
+// are static templates, so HotSpot exports them with internal linkage (_ZL).
+static bool isFreezeEntry(const char* name) {
+    return starts_with(name, "_ZL6freezeI") || starts_with(name, "_Z6freezeI");
+}
+
+static bool isThawEntry(const char* name) {
+    return starts_with(name, "_ZL4thawI") || starts_with(name, "_Z4thawI");
+}
+
 bool isContFreezeThawEntry(const char* blob_name) {
     return hasFreezeThawConfig(blob_name)
-        || starts_with(blob_name, "_Z6freezeI")   // freeze<Config<...>>(JavaThread*, long)
-        || starts_with(blob_name, "_Z4thawI")      // thaw<Config<...>>(long, JavaThread*, int)
+        || isFreezeEntry(blob_name)
+        || isThawEntry(blob_name)
         || starts_with(blob_name, "_ZN10FreezeBase")
         || starts_with(blob_name, "_ZN8ThawBase")
         || starts_with(blob_name, "_ZN6FreezeI")
@@ -114,12 +124,14 @@ bool VM::markContRuntimeAndClassify(CodeCache* lib) {
     // Substitution needs positive proof that the executing freeze and thaw
     // entry families were recognized; data-pointer symbols and address
     // getters the ELF reader also names prove nothing about them.
-    int freeze_entries = lib->mark([](const char* n) { return starts_with(n, "_Z6freezeI"); },
-                                  MARK_CONT_RUNTIME);
-    int thaw_entries = lib->mark([](const char* n) { return starts_with(n, "_Z4thawI"); },
-                                 MARK_CONT_RUNTIME);
-    lib->mark(isContFreezeThawEntry, MARK_CONT_RUNTIME);
-    return freeze_entries > 0 && thaw_entries > 0;
+    bool freeze_seen = false;
+    bool thaw_seen = false;
+    lib->mark([&](const char* n) {
+        freeze_seen = freeze_seen || isFreezeEntry(n);
+        thaw_seen = thaw_seen || isThawEntry(n);
+        return isContFreezeThawEntry(n);
+    }, MARK_CONT_RUNTIME);
+    return freeze_seen && thaw_seen;
 }
 
 static bool isZeroInterpreterMethod(const char *blob_name) {
