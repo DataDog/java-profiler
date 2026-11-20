@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-11-20 13:06:31 EST
+**Date:** 2026-11-20 13:22:27 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 288 |
-| Sample Rate | 4.80/sec |
-| Health Score | 300% |
-| Threads | 10 |
-| Allocations | 135 |
+| CPU Samples | 96 |
+| Sample Rate | 1.60/sec |
+| Health Score | 100% |
+| Threads | 11 |
+| Allocations | 68 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 86 |
-| Sample Rate | 1.43/sec |
-| Health Score | 89% |
-| Threads | 12 |
-| Allocations | 57 |
+| CPU Samples | 864 |
+| Sample Rate | 14.40/sec |
+| Health Score | 900% |
+| Threads | 11 |
+| Allocations | 486 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 29-29 cores)</summary>
 
 ```
-1795197728 29
-1795197733 29
-1795197738 29
-1795197743 29
-1795197748 29
-1795197753 29
-1795197758 29
-1795197763 29
-1795197768 29
-1795197773 29
-1795197778 29
-1795197783 29
-1795197788 29
-1795197793 29
-1795197798 29
-1795197803 29
-1795197808 29
-1795197813 29
-1795197818 29
-1795197823 29
+1795198587 29
+1795198592 29
+1795198597 29
+1795198602 29
+1795198607 29
+1795198612 29
+1795198617 29
+1795198623 29
+1795198628 29
+1795198633 29
+1795198638 29
+1795198643 29
+1795198648 29
+1795198653 29
+1795198658 29
+1795198663 29
+1795198668 29
+1795198673 29
+1795198678 29
+1795198683 29
 ```
 </details>
 
