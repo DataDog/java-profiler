@@ -151,7 +151,14 @@ jobs:
               "$API/pipelines/$PIPELINE_ID/jobs?per_page=100" || echo "[]")
             missing=0; pending=0
             for job in "${REQUIRED_JOBS[@]}"; do
-              st=$(echo "$jobs_json" | jq -r --arg j "$job" '.[] | select(.name == $j) | .status' | tail -1)
+              # GitLab matrix expansion appends suffixes (e.g. "name: [hotspot, 8]"),
+              # so match by prefix and aggregate: all cells success, else fail/pending.
+              st=$(echo "$jobs_json" | jq -r --arg j "$job" \
+                '[.[] | select(.name | startswith($j)) | .status] |
+                 if length == 0 then empty
+                 elif any(. != "success") then
+                   (if any(. == "failed" or . == "canceled") then "failed" else "pending" end)
+                 else "success" end')
               if [ -z "$st" ]; then missing=$((missing+1));
               elif [ "$st" != "success" ] && [ "$st" != "failed" ]; then pending=$((pending+1)); fi
               STATUS[$job]="${st:-pending}"
@@ -213,8 +220,8 @@ jobs:
               # Reusable-workflow jobs carry matrix suffixes and a cancelled
               # cell may be listed first, so aggregate: any failed cell fails
               # the component.
-              st=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
-                --jq "[.jobs[] | select(.name | startswith(\"$job\")) | .conclusion] as \$c \
+              st=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                --slurp --jq "[.[].jobs[] | select(.name | startswith(\"$job\")) | .conclusion] as \$c \
                   | if (\$c | index(\"failure\")) then \"failure\" \
                     elif (\$c | index(\"cancelled\")) then \"cancelled\" \
                     elif (\$c | index(\"timed_out\")) then \"timed_out\" \
