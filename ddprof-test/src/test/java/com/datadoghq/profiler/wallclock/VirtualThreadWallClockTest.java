@@ -6,12 +6,12 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.JfrEvent;
-import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.JfrFrame;
 import com.datadoghq.profiler.JfrStackTrace;
 import com.datadoghq.profiler.Platform;
@@ -79,7 +79,7 @@ public class VirtualThreadWallClockTest extends CStackAwareAbstractProfilerTest 
    * Asserts that carrier frames (ForkJoinWorkerThread) are visible in the stack traces, confirming
    * that continuation unwinding is working correctly.
    */
-  private void assertCarrierFramesVisible(JfrEvents events) {
+  private static void assertCarrierFramesVisible(Iterable<JfrEvent> events) {
     boolean carrierVisible = false;
     for (JfrEvent sample : events) {
       String stackTrace = sample.getStackTraceString();
@@ -197,14 +197,12 @@ public class VirtualThreadWallClockTest extends CStackAwareAbstractProfilerTest 
    *
    * <p>The VT parks itself 100 times. The main thread sleeps 10ms between each unpark so the
    * wall-clock sampler (1ms period) has time to fire while the VT is mounted with frozen frames
-   * still in the StackChunk (cont_returnBarrier as the return PC). Samples that do not recover
-   * carrier ancestry must report truncation.
+   * still in the StackChunk (cont_returnBarrier as the return PC).
    */
   @RetryTest(5)
   @TestTemplate
   @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
-  public void marksMissingCarrierFramesFromBlockingVTTruncated(@CStack String cstack)
-      throws Exception {
+  public void samplesCarrierFramesFromBlockingVT(@CStack String cstack) throws Exception {
     // Carrier-frame unwinding is only enabled for vmx (cstack=vm does not set carrier_frames).
     // fp/dwarf use ASGCT and cannot cross the continuation boundary at all.
     assumeTrue(cstack.equals("vmx"), "carrier-frame unwind requires cstack=vmx");
@@ -263,29 +261,37 @@ public class VirtualThreadWallClockTest extends CStackAwareAbstractProfilerTest 
 
     verifyCStackSettings();
 
+    assertBlockingSamplesComplete(verifyEvents("datadog.MethodSample"));
+  }
+
+  /** Test-only recording oracle shared with deterministic map-backed event checks. */
+  public static void assertBlockingSamplesComplete(Iterable<JfrEvent> events) {
+    assertCarrierFramesVisible(events);
     int workloadSamples = 0;
-    for (JfrEvent sample : verifyEvents("datadog.MethodSample")) {
+    for (JfrEvent sample : events) {
+      assertNotNull(sample.get("stackTrace"), "Method samples must contain stack traces");
       JfrStackTrace trace = sample.getStackTrace();
       boolean workload = false;
       boolean carrier = false;
       for (JfrFrame frame : trace.frames()) {
-        workload |=
-            getClass().getName().equals(frame.className())
-                && frame.methodName() != null
-                && frame
-                    .methodName()
-                    .startsWith("lambda$marksMissingCarrierFramesFromBlockingVTTruncated$");
-        carrier |=
-            "java.util.concurrent.ForkJoinWorkerThread".equals(frame.className())
-                && "run".equals(frame.methodName());
+        if (VirtualThreadWallClockTest.class.getName().equals(frame.className())
+            && frame.methodName() != null
+            && frame.methodName().startsWith("lambda$samplesCarrierFramesFromBlockingVT$")) {
+          workload = true;
+        }
+        if ("java.util.concurrent.ForkJoinWorkerThread".equals(frame.className())
+            && "run".equals(frame.methodName())) {
+          carrier = true;
+        }
       }
-      if (!workload) continue;
-      workloadSamples++;
-      assertTrue(
-          carrier || trace.isTruncated(),
-          "A blocking virtual-thread sample omitted carrier ancestry without reporting truncation: "
-              + sample.getStackTraceString());
+      if (workload) {
+        workloadSamples++;
+        assertTrue(
+            carrier || trace.isTruncated(),
+            "Blocking workload sample omitted carrier ancestry without truncation: "
+                + sample.getStackTraceString());
+      }
     }
-    assertTrue(workloadSamples > 0, "No sample captured the blocking virtual-thread workload");
+    assertTrue(workloadSamples > 0, "No exact blocking-workload lambda sample was recorded");
   }
 }

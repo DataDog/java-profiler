@@ -21,6 +21,17 @@ inline bool crashProtectionActive() {
     return false;
 }
 
+inline VMNMethod* VMStructs::enterSpecialNMethod() {
+    VMNMethod* nm = __atomic_load_n(&_enter_special_nm, __ATOMIC_ACQUIRE);
+    if (nm != nullptr) return nm;
+    // The native wrapper can be generated after profiler initialization. As with the
+    // initialization-time lookup, the result is kept; racing publishers store the same value.
+    const void* pc = contEntryReturnPc();
+    nm = pc != nullptr ? CodeHeap::findNMethod(pc) : nullptr;
+    if (nm != nullptr) __atomic_store_n(&_enter_special_nm, nm, __ATOMIC_RELEASE);
+    return nm;
+}
+
 template <typename T>
 inline T* cast_to(const void* ptr) {
     assert(VM::isHotspot()); // This should only be used in HotSpot-specific code

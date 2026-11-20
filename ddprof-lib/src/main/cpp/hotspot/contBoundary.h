@@ -11,9 +11,9 @@
 //   - completeness: whether the crossing proves no older Java callers remain
 //     frozen in a heap StackChunk (only Thawed does; everything else marks
 //     the sample truncated);
-//   - layout (JDK 21-26, no ContinuationEntry in vmStructs): whether the
-//     enterSpecial frame FP is the current fp (Thawed, Unverified) or the
-//     saved caller FP at *fp (Frozen).
+//   - layout: Frozen needs the bottom frame's stack arguments for SP-based
+//     entry recovery. Without entry metadata, only Thawed/Unverified permit
+//     guessing that the current fp is the enterSpecial frame FP.
 enum class ContBoundary : unsigned char {
     Thawed,      // verified: bottom VT frame returns to cont_entry_return_pc / enterSpecial
     Frozen,      // verified: bottom VT frame returns to cont_returnBarrier
@@ -26,7 +26,7 @@ constexpr bool contBoundaryProvesComplete(ContBoundary kind) {
     return kind == ContBoundary::Thawed;
 }
 
-// JDK 21-26 entry_fp derivation: fp itself, unless verified frozen (then *fp).
+// Whether entry recovery may fall back to the current fp without entry metadata.
 constexpr bool contBoundaryEntryFpIsCurrentFp(ContBoundary kind) {
     return kind != ContBoundary::Frozen;
 }
