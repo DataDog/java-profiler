@@ -50,17 +50,23 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
   /** Verifies that the first post-start TaskBlock call initializes carrier-local TLS. */
   @Test
   public void preExistingThreadCanRecordTaskBlockAfterProfilerStart() throws Exception {
-    Future<Boolean> recorded =
-        preExistingWorker.submit(
-            () -> {
-              assertSame(preExistingThread, Thread.currentThread());
-              long token = profiler.beginTaskBlock();
-              assertTrue(token != 0, "Pre-existing thread must initialize TaskBlock TLS");
-              Thread.sleep(200L);
-              return profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID);
-            });
-
-    assertTrue(recorded.get(5, TimeUnit.SECONDS));
+    // JVMTI monitor TaskBlocks on other threads share task_block_record_failed.
+    TaskBlockRecorderTestSupport.recordWithinAttempts(
+        profiler::getDebugCounters,
+        TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+        "pre-existing thread interval",
+        () -> {
+          Future<Boolean> recorded =
+              preExistingWorker.submit(
+                  () -> {
+                    assertSame(preExistingThread, Thread.currentThread());
+                    long token = profiler.beginTaskBlock();
+                    assertTrue(token != 0, "Pre-existing thread must initialize TaskBlock TLS");
+                    Thread.sleep(200L);
+                    return profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID);
+                  });
+          return recorded.get(5, TimeUnit.SECONDS);
+        });
     stopProfiler();
 
     JfrEvents events = verifyEvents("datadog.TaskBlock");

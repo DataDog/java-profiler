@@ -44,25 +44,31 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
       stopProfiler();
       profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + recording);
       started = true;
-      worker
-          .submit(
-              () -> {
-                // Refresh through a different hook first: producer TLS must independently
-                // notice the recording epoch even if registry membership is already current.
-                profiler.addThread();
-                profiler.removeThread();
-                long token = enter(producer);
-                assertTrue(token != 0, "An abandoned interval must not strand producer TLS");
-                if ("paired".equals(producer)) {
-                  assertFalse(
-                      profiler.endTaskBlock(oldToken, BLOCKER, UNBLOCKING_SPAN_ID),
-                      "The previous recording's token must not close the new interval");
-                }
-                Thread.sleep(30L);
-                exit(producer, token);
-                return null;
-              })
-          .get(5, TimeUnit.SECONDS);
+      // Void block/park exits cannot report rejection; only the paired close is retried.
+      TaskBlockRecorderTestSupport.recordWithinAttempts(
+          profiler::getDebugCounters,
+          TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+          producer + " interval after restart",
+          () ->
+              worker
+                  .submit(
+                      () -> {
+                        // Refresh through a different hook first: producer TLS must independently
+                        // notice the recording epoch even if registry membership is current.
+                        profiler.addThread();
+                        profiler.removeThread();
+                        long token = enter(producer);
+                        assertTrue(
+                            token != 0, "An abandoned interval must not strand producer TLS");
+                        if ("paired".equals(producer)) {
+                          assertFalse(
+                              profiler.endTaskBlock(oldToken, BLOCKER, UNBLOCKING_SPAN_ID),
+                              "The previous recording's token must not close the new interval");
+                        }
+                        Thread.sleep(30L);
+                        return exit(producer, token);
+                      })
+                  .get(5, TimeUnit.SECONDS));
       profiler.stop();
       started = false;
 
@@ -86,19 +92,25 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
         "paired API classification fails closed on non-HotSpot JDK 19+");
     ExecutorService worker = Executors.newSingleThreadExecutor();
     try {
-      worker
-          .submit(
-              () -> {
-                assertTrue(ProfilerOwnedBlockHooks.blockEnter(profiler, SLEEPING) != 0);
-                profiler.addThread();
-                profiler.removeThread();
-                long token = profiler.beginTaskBlock();
-                assertTrue(token != 0, "The registry retired the old generic run on context entry");
-                Thread.sleep(30L);
-                assertTrue(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-                return null;
-              })
-          .get(5, TimeUnit.SECONDS);
+      TaskBlockRecorderTestSupport.recordWithinAttempts(
+          profiler::getDebugCounters,
+          TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+          "paired interval after retired generic hook",
+          () ->
+              worker
+                  .submit(
+                      () -> {
+                        assertTrue(ProfilerOwnedBlockHooks.blockEnter(profiler, SLEEPING) != 0);
+                        profiler.addThread();
+                        profiler.removeThread();
+                        long token = profiler.beginTaskBlock();
+                        assertTrue(
+                            token != 0,
+                            "The registry retired the old generic run on context entry");
+                        Thread.sleep(30L);
+                        return profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID);
+                      })
+                  .get(5, TimeUnit.SECONDS));
     } finally {
       worker.shutdownNow();
       worker.awaitTermination(5, TimeUnit.SECONDS);
@@ -127,18 +139,20 @@ public class TaskBlockProducerCompatibilityTest extends AbstractProfilerTest {
     }
   }
 
-  /** Closes the selected producer with metadata that must survive into its JFR event. */
-  private void exit(String producer, long token) {
+  /**
+   * Closes the selected producer with metadata that must survive into its JFR event. Returns the
+   * paired close's result; void block/park exits report true and rely on the event check.
+   */
+  private boolean exit(String producer, long token) {
     switch (producer) {
       case "paired":
-        assertTrue(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-        break;
+        return profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID);
       case "block":
         ProfilerOwnedBlockHooks.blockExit(profiler, token, BLOCKER, UNBLOCKING_SPAN_ID);
-        break;
+        return true;
       case "park":
         ProfilerOwnedBlockHooks.parkExit(profiler, BLOCKER, UNBLOCKING_SPAN_ID);
-        break;
+        return true;
       default:
         throw new IllegalArgumentException(producer);
     }
