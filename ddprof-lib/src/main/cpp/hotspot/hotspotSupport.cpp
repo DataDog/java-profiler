@@ -432,10 +432,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     bool native_prefix_skipped = false;
     // Called after a Java frame is emitted, so a frame an anchor redirect
     // abandons can never become the origin.
-    auto recordJavaOrigin = [&](const void* pc) {
-        if (java_origin_pc != NULL) return;
-        VMNMethod* origin_nm = CodeHeap::findNMethod(pc);
-        if (origin_nm != NULL && (origin_nm->isInterpreter() || origin_nm->isNMethod())) java_origin_pc = pc;
+    auto recordJavaOrigin = [&](const void* pc, VMNMethod* origin_nm) {
+        if (java_origin_pc == NULL && origin_nm != NULL
+                && (origin_nm->isInterpreter() || origin_nm->isNMethod())) java_origin_pc = pc;
     };
     bool anchor_recovery_used = false;
 
@@ -807,7 +806,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         const char* bcp = ((const char**)fp)[bcp_offset];
                         int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
                         HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
-                        recordJavaOrigin(walk_pc.raw());
+                        recordJavaOrigin(walk_pc.raw(), nm);
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         walk_pc.setReturnAddress(stripPointer(((void**)fp)[FRAME_PC_SLOT]));
                         fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
@@ -821,7 +820,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     if (method_id != JMETHODID_NOT_WALKABLE) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
-                        recordJavaOrigin(walk_pc.raw());
+                        recordJavaOrigin(walk_pc.raw(), nm);
                         if (is_plausible_interpreter_frame) {
                             uintptr_t* fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
                             walk_pc.setReturnAddress(stripPointer(((void**)fp_addr)[FRAME_PC_SLOT]));
@@ -860,7 +859,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 VMMethod* method = nm->method();
                 jmethodID method_id = method->id();
                 HotspotSupport::fillJavaFrame(frames[depth++], type, 0, method_id, method);
-                recordJavaOrigin(walk_pc.raw());
+                recordJavaOrigin(walk_pc.raw(), nm);
 
                 // Prologue/epilogue unwinds can reach a return barrier without the frame-size step.
                 if (features.carrier_frames && VMContinuationEntry::type_size() == 0) {
@@ -1131,7 +1130,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             // callers below it unvisited.
                             if (java_origin_pc == NULL) native_prefix_skipped = true;
                             // The anchor frame's own PC, not the sender's.
-                            recordJavaOrigin(recovery_pc);
+                            if (java_origin_pc == NULL) recordJavaOrigin(recovery_pc, CodeHeap::findNMethod(recovery_pc));
                             continuation_stack_args = 0;
                             sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
                             walk_pc.setReturnAddress(stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]));
@@ -1245,7 +1244,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     fp = *(uintptr_t*)anchor_fp;
                     // The verified frame's own PC, not the sender's: a lone
                     // mounted frame advances straight to a stub sender.
-                    recordJavaOrigin(fallback_origin_pc);
+                    if (java_origin_pc == NULL) recordJavaOrigin(fallback_origin_pc, CodeHeap::findNMethod(fallback_origin_pc));
                     if (sp != 0 && sp < bottom && aligned(sp)) {
                         goto unwind_loop;
                     }
