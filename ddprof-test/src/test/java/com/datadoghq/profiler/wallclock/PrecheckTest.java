@@ -289,38 +289,54 @@ public class PrecheckTest extends AbstractProfilerTest {
             + sampleCount);
   }
 
+  /** Requires nonzero prior suppression so a stale cross-recording baseline cannot pass. */
   @Test
   public void suppressionCounterIsZeroWhenPrecheckDisabled() throws Exception {
     Assumptions.assumeTrue(!Platform.isJ9());
     Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
-
-    // Stop the wallprecheck=true recording started by @BeforeEach before starting a new one.
-    stopProfiler();
-
-    Map<String, Long> before = profiler.getDebugCounters();
-    if (!before.containsKey("wc_signals_suppressed_owned_block")) {
-      return; // counter not available in this build
+    String counter = "wc_signals_suppressed_owned_block";
+    assertNotNull(profiler.getDebugCounters().get(counter), "Missing owned suppression counter");
+    leaveClearedInitializedContext();
+    registerOutsideContextWindow();
+    long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+    assertTrue(token != 0, "The enabled recording must admit the positive-control owner");
+    try {
+      long deadline = System.nanoTime() + 5_000_000_000L;
+      while (profiler.getDebugCounters().get(counter) == 0 && System.nanoTime() < deadline) {
+        Thread.sleep(10);
+      }
+      assertTrue(
+          profiler.getDebugCounters().get(counter) > 0,
+          "The enabled recording must actually suppress before testing the reset");
+    } finally {
+      ProfilerOwnedBlockHooks.blockExit(profiler, token);
     }
-    long suppressedBefore = before.get("wc_signals_suppressed_owned_block");
+    stopProfiler();
 
     Path recordingB =
         Files.createTempFile(Paths.get("/tmp/recordings"), "PrecheckTest_disabled_", ".jfr");
-    profiler.execute(
-        "start,"
-            + getPrecheckDisabledProfilerCommand()
-            + ",attributes=tag1;tag2;tag3,jfr,file="
-            + recordingB.toAbsolutePath());
-    Thread.sleep(300);
-    profiler.stop();
-
-    long suppressedAfter =
-        profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
-    Files.deleteIfExists(recordingB);
-
-    assertEquals(
-        suppressedBefore,
-        suppressedAfter,
-        "wc_signals_suppressed_owned_block must not increment when wallprecheck=false");
+    try {
+      profiler.execute(
+          "start,"
+              + getPrecheckDisabledProfilerCommand()
+              + ",attributes=tag1;tag2;tag3,jfr,file="
+              + recordingB.toAbsolutePath());
+      try {
+        assertEquals(
+            Long.valueOf(0L),
+            profiler.getDebugCounters().get(counter),
+            "A fresh recording must reset the preceding recording's suppression counter");
+        Thread.sleep(300);
+      } finally {
+        stopRetryingOnTransientFailure(profiler);
+      }
+      assertEquals(
+          Long.valueOf(0L),
+          profiler.getDebugCounters().get(counter),
+          "wc_signals_suppressed_owned_block must stay zero when wallprecheck=false");
+    } finally {
+      Files.deleteIfExists(recordingB);
+    }
   }
 
   /** Leaves an initialized but cleared and invalid native OTEP record. */

@@ -256,8 +256,8 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid, u64 logical_window_st
 void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch,
                                           u64 logical_window_state) {
     if (slot == nullptr || epoch == 0) return;
-    // registerThread() holds _registry_lock against mode closure. The snapshot
-    // belongs to this normal owner, not an independently mutable slot authority.
+    // The registry lock excludes mode closure and slot allocation. The caller
+    // validates native ownership before any recording payload is torn down.
     if (slot->recordingEpoch() == epoch) {
         if (slot->rawContextWindowState() != logical_window_state) {
             if (_block_tracker != nullptr) {
@@ -277,6 +277,33 @@ void ThreadFilter::refreshSlotForRecording(SlotID slot_id, Slot* slot, Recording
     slot->context_window_state.store(logical_window_state, std::memory_order_release);
     // Eligibility is the final publication, after both payload and membership.
     slot->recording_epoch.store(epoch, std::memory_order_release);
+}
+
+bool ThreadFilter::refreshOwnerSlotForRecording(const ThreadEntry& owner,
+                                                 u64 logical_window_state) {
+#ifdef UNIT_TEST
+    if (_post_active_check_hook != nullptr) {
+        _post_active_check_hook(_post_active_check_hook_arg);
+    }
+#endif
+    std::lock_guard<std::mutex> lock(_registry_lock);
+    Slot* slot = slotForId(owner.slot_id);
+    if (!registryActive() || owner.recording_epoch == 0 ||
+        recordingEpoch() != owner.recording_epoch || slot == nullptr ||
+        slot != owner.slot || owner.tid < 0 || slot->nativeTid() != owner.tid ||
+        slot->lifecycleGeneration() != owner.lifecycle_generation) {
+        return false;
+    }
+    // Retained owners need the same cold provisioning as registerThread():
+    // snapshot mode may have changed, or an earlier allocation may have failed.
+    if (_block_tracker != nullptr) {
+        _block_tracker->ensureAllocated();
+        _block_tracker->ensureUnownedContextAllocated(owner.slot_id);
+    }
+    // Validate under the allocation lock before resetSlot() can clear a run.
+    // Native ownership survives recording changes until the owner tears down.
+    refreshSlotForRecording(owner.slot_id, slot, owner.recording_epoch, logical_window_state);
+    return true;
 }
 
 ThreadFilter::SlotID ThreadFilter::ensureOwnerSlot(ProfiledThread& owner) {
@@ -299,6 +326,16 @@ ThreadFilter::SlotID ThreadFilter::ensureOwnerSlot(ProfiledThread& owner) {
             return -1;
         }
         if (activeSlotForId(id, tid) == slot) return id;
+        owner.setFilterSlotId(-1);
+        return -1;
+    }
+    slot = slotForId(id);
+    if (slot != nullptr && slot->nativeTid() == tid && unfilteredWallTrackingActive()) {
+        ThreadEntry request{tid, slot, id, slot->lifecycleGeneration(), recordingEpoch()};
+        if (refreshOwnerSlotForRecording(request, owner.logicalContextWindowState()) &&
+            activeSlotForId(id, tid) == slot) {
+            return id;
+        }
         owner.setFilterSlotId(-1);
         return -1;
     }

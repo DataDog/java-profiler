@@ -17,6 +17,7 @@
 #include "threadExitRegistry.h"
 
 #include <algorithm>
+#include <iterator>
 #include <assert.h>
 #include <dlfcn.h>
 #include <link.h>
@@ -43,6 +44,8 @@ u64 LibraryPatcher::_socket_generation = 0;
 std::vector<SocketPatchEntry> LibraryPatcher::_socket_entries;
 std::vector<SocketPatchedLibrary> LibraryPatcher::_socket_libraries;
 const void* LibraryPatcher::_socket_bases[SOCKET_BASE_TABLE_SIZE] = {};
+SocketSkippedImage LibraryPatcher::_socket_skipped_images[SOCKET_SKIPPED_IMAGE_CAPACITY] = {};
+int LibraryPatcher::_socket_skipped_image_count = 0;
 std::atomic<bool> LibraryPatcher::_socket_active{false};
 LibraryRef LibraryPatcher::_live_refs[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_live_count = 0;
@@ -200,6 +203,15 @@ int LibraryPatcher::visit_loaded_object(struct dl_phdr_info* info, size_t size, 
 #ifdef UNIT_TEST
 static std::atomic<LibraryPatcher::SocketImportFailureForTest>
     socket_import_failure_for_test{nullptr};
+static std::atomic<LibraryPatcher::SocketImageFailureForTest>
+    socket_image_failure_for_test{nullptr};
+static std::atomic<int> socket_missing_original_for_test{-1};
+
+static bool socket_image_fails_for_test(CodeCache* lib, const char* step) {
+  LibraryPatcher::SocketImageFailureForTest failure =
+      socket_image_failure_for_test.load(std::memory_order_acquire);
+  return failure != nullptr && failure(lib, step);
+}
 #endif
 
 static_assert(SOCKET_BASE_TABLE_SIZE > 0 &&
@@ -216,7 +228,16 @@ static const char* library_basename(const char* path) {
 
 static SocketPatchTarget socket_patch_target_for_library(
     CodeCache* lib, const char* name, bool in_jdk_directory) {
-  if (lib == nullptr || name == nullptr || !in_jdk_directory) {
+  if (lib == nullptr || name == nullptr) {
+    return SOCKET_PATCH_NONE;
+  }
+
+  // Netty unlinks extracted images and shading renames them; use cached JNI markers.
+  if (lib->hasNettyEpollMarkers()) {
+    return SOCKET_PATCH_NETTY_NATIVE_EPOLL;
+  }
+
+  if (!in_jdk_directory) {
     return SOCKET_PATCH_NONE;
   }
 
@@ -319,6 +340,40 @@ void LibraryPatcher::remember_socket_library_unlocked(const void* image_base) {
     slot = (slot + 1) & (SOCKET_BASE_TABLE_SIZE - 1);
   }
   _socket_bases[slot] = image_base;
+}
+
+bool LibraryPatcher::socket_image_skipped_unlocked(const CodeCache* lib) {
+  for (int index = 0; index < _socket_skipped_image_count; index++) {
+    if (_socket_skipped_images[index]._image_base == lib->imageBase() &&
+        _socket_skipped_images[index]._fingerprint == lib->imageFingerprint()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool LibraryPatcher::skip_socket_image_unlocked(CodeCache* lib, const char* reason) {
+  if (socket_image_skipped_unlocked(lib)) return true;
+  if (_socket_skipped_image_count == SOCKET_SKIPPED_IMAGE_CAPACITY) {
+    Log::warn("native I/O hooks disabled: too many skipped Netty epoll images");
+    return false;
+  }
+  Log::warn("native I/O hooks skipped Netty epoll image %s: %s", lib->name(), reason);
+  Counters::increment(NATIVE_IO_NETTY_IMAGES_SKIPPED);
+  _socket_skipped_images[_socket_skipped_image_count++] = {lib->imageBase(),
+                                                           lib->imageFingerprint()};
+  return true;
+}
+
+bool LibraryPatcher::skip_socket_image(CodeCache* lib, u64 generation, bool require_active,
+                                       const char* reason) {
+  ExclusiveLockGuard locker(&_lock);
+  // A stale discovery must not record a skip into a newer installation.
+  if (_socket_generation != generation ||
+      (require_active && !_socket_active.load(std::memory_order_relaxed))) {
+    return true;
+  }
+  return skip_socket_image_unlocked(lib, reason);
 }
 
 void LibraryPatcher::initialize_persistent() {
@@ -992,15 +1047,6 @@ public:
   SocketPatchCandidate& operator=(SocketPatchCandidate&&) noexcept = default;
 };
 
-static bool mappingMatches(const CodeCache* lib) {
-  if (lib->imageBase() == nullptr) {
-    return false;
-  }
-  Dl_info info;
-  return dladdr(lib->imageBase(), &info) != 0 &&
-         info.dli_fbase == lib->imageBase();
-}
-
 #ifdef UNIT_TEST
 static std::atomic<LibraryPatcher::SocketPatchObserverForTest> socket_patch_observer{nullptr};
 
@@ -1013,6 +1059,79 @@ static void observeSocketPatchForTest(const char* phase) {
   if (observer != nullptr) observer(phase);
 }
 #endif
+
+static void** socket_import_slot(CodeCache* lib, ImportId import_id, size_t index) {
+  void** location = lib->findImport(import_id, index);
+#ifdef UNIT_TEST
+  LibraryPatcher::SocketImportFailureForTest failure =
+      socket_import_failure_for_test.load(std::memory_order_acquire);
+  if (failure != nullptr && failure(lib, import_id, index)) location = nullptr;
+#endif
+  return location;
+}
+
+static bool socket_import_slots_present(CodeCache* lib,
+                                        const NativeSocketInterposer::NativeIoHookSpec* hooks,
+                                        int unhooked_index) {
+  for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
+       hook_index++) {
+    if (hook_index == unhooked_index) continue;
+    ImportId import_id = hooks[hook_index].import_id;
+    for (size_t index = 0; index < lib->importCount(import_id); index++) {
+      if (socket_import_slot(lib, import_id, index) == nullptr) return false;
+    }
+  }
+  return true;
+}
+
+static bool socket_image_pinned(CodeCache* lib, UnloadProtection& protection) {
+#ifdef UNIT_TEST
+  // Models a mapped image that dlopen(RTLD_NOLOAD) rejects.
+  if (protection.isValid() && socket_image_fails_for_test(lib, "pin")) {
+    void* handle = protection.release();
+    if (handle != nullptr) dlclose(handle);
+  }
+#endif
+  return protection.isValid();
+}
+
+static bool socket_imports_writable(CodeCache* lib) {
+#ifdef UNIT_TEST
+  if (socket_image_fails_for_test(lib, "writable")) return false;
+#endif
+  return lib->makeImportsWritable();
+}
+
+// The loader walk owns the headers and pathname until the callback returns.
+static bool mappingMatches(const CodeCache* lib, char* loader_name = nullptr) {
+  if (lib->imageBase() == nullptr || lib->imageFingerprint() == 0) return false;
+  struct Query {
+    const CodeCache* lib;
+    char* loader_name;
+  } query{lib, loader_name};
+  return dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) {
+    Query* query = static_cast<Query*>(data);
+    const CodeCache* lib = query->lib;
+    uintptr_t min_vaddr = UINTPTR_MAX;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+      if (info->dlpi_phdr[i].p_type == PT_LOAD) {
+        min_vaddr = std::min(min_vaddr, static_cast<uintptr_t>(info->dlpi_phdr[i].p_vaddr));
+      }
+    }
+    if (min_vaddr == UINTPTR_MAX ||
+        ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) !=
+            reinterpret_cast<uintptr_t>(lib->imageBase())) return 0;
+    // A loader alias may no longer exist; base plus layout identifies the slots.
+    u64 fingerprint = Symbols::imageFingerprint(info->dlpi_phdr, info->dlpi_phnum,
+                                                 info->dlpi_addr);
+    if (fingerprint != lib->imageFingerprint()) return 2;
+    if (query->loader_name != nullptr && info->dlpi_name != nullptr) {
+      size_t length = strlen(info->dlpi_name);
+      if (length < PATH_MAX) memcpy(query->loader_name, info->dlpi_name, length + 1);
+    }
+    return 1;
+  }, &query) == 1;
+}
 
 bool LibraryPatcher::patch_socket_functions(bool require_active,
                                             std::atomic<bool>* activating_owner) {
@@ -1117,6 +1236,21 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     Log::warn("native I/O hooks disabled: all original symbol lookups failed");
     return disable_and_unpatch();
   }
+  void* originals[NativeSocketInterposer::NUM_NATIVE_IO_HOOKS];
+  std::copy(std::begin(cached_originals), std::end(cached_originals), originals);
+#ifdef UNIT_TEST
+  // Simulates a libc without this symbol; the call_once cache itself stays intact.
+  const int missing = socket_missing_original_for_test.load(std::memory_order_acquire);
+  if (missing >= 0 && missing < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS) {
+    originals[missing] = nullptr;
+  }
+#endif
+  const bool epoll_pwait2_original =
+      originals[NativeSocketInterposer::HOOK_EPOLL_PWAIT2] != nullptr;
+  // Before glibc 2.35 libc has no epoll_pwait2. Its optional imports, including
+  // non-NULL lazy-binding stubs, then stay untouched instead of disabling the hooks.
+  const int unhooked_index =
+      epoll_pwait2_original ? -1 : static_cast<int>(NativeSocketInterposer::HOOK_EPOLL_PWAIT2);
 
   // Publish the process that owns profiler state before any fork-safe hook can
   // become reachable. A post-fork child observes a different getpid() value
@@ -1151,50 +1285,91 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     if (is_profiler_library(lib)) {
       continue;
     }
-    char path[PATH_MAX];
-    char* resolved_path = realpath(lib->name(), path);
-    if (resolved_path == nullptr) {
-      continue;
-    }
-    SocketPatchTarget target =
-        socket_patch_target(lib, resolved_path, jdk_library_directory);
+    SocketPatchTarget target = socket_patch_target_for_library(
+        lib, library_basename(lib->name()), false);
     if (target == SOCKET_PATCH_NONE) {
-      continue;
+      char path[PATH_MAX];
+      char* resolved_path = realpath(lib->name(), path);
+      if (resolved_path == nullptr) continue;
+      target = socket_patch_target(lib, resolved_path, jdk_library_directory);
+      if (target == SOCKET_PATCH_NONE) continue;
+    }
+    // Failures local to one Netty image skip that image; JDK images stay fail-closed.
+    bool netty_image = target == SOCKET_PATCH_NETTY_NATIVE_EPOLL;
+    if (netty_image) {
+      ExclusiveLockGuard locker(&_lock);
+      if (socket_image_skipped_unlocked(lib)) continue;
     }
 
+    // Optional weak GOT entries may be NULL; retain the image before reading them.
+    UnloadProtection protection(lib);
+    if (!socket_image_pinned(lib, protection)) {
+      char loader_name[PATH_MAX] = {};
+      if (!mappingMatches(lib, loader_name)) continue;
+#ifdef UNIT_TEST
+      observeSocketPatchForTest("loader_name_lookup");
+#endif
+      // NOLOAD needs the loader's alias when the cached maps pathname is gone.
+      // Copy it outside _lock, then revalidate identity after acquiring the pin.
+      if (loader_name[0] != '\0') protection = UnloadProtection(lib, loader_name);
+      if (!socket_image_pinned(lib, protection)) {
+        if (!mappingMatches(lib)) continue;
+        if (netty_image) {
+          if (!skip_socket_image(lib, generation, require_active, "cannot retain mapped DSO")) {
+            return disable_and_unpatch();
+          }
+          continue;
+        }
+        Log::warn("native I/O hooks disabled: cannot retain mapped DSO %s",
+                  lib->name());
+        return disable_and_unpatch();
+      }
+    }
+#ifdef UNIT_TEST
+    observeSocketPatchForTest("mapping_lookup");
+#endif
+    if (!mappingMatches(lib)) continue;
     size_t patch_count = 0;
+    bool imports_incomplete = false;
     for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
          hook_index++) {
+      if (hook_index == unhooked_index) continue;
       ImportId import_id = hooks[hook_index].import_id;
       if (!lib->importsComplete(import_id)) {
+        if (netty_image) {
+          imports_incomplete = true;
+          break;
+        }
         Log::warn("native I/O hooks disabled: incomplete %s imports in %s",
                   hooks[hook_index].name, lib->name());
         return disable_and_unpatch();
       }
       size_t count = lib->importCount(import_id);
-      if (count == 0) {
-        continue;
+      if (count == 0) continue;
+      if (hook_index == NativeSocketInterposer::HOOK_EPOLL_PWAIT2) {
+        for (size_t i = 0; i < lib->importCount(import_id); i++) {
+          void** location = lib->findImport(import_id, i);
+          if (location != nullptr && __atomic_load_n(location, __ATOMIC_ACQUIRE) == nullptr) {
+            count--;
+          }
+        }
+        if (count == 0) continue;
       }
-      if (cached_originals[hook_index] == nullptr) {
+      if (originals[hook_index] == nullptr) {
         Log::warn("native I/O hooks disabled: no original for imported %s in %s",
                   hooks[hook_index].name, lib->name());
         return disable_and_unpatch();
       }
       patch_count += count;
     }
-    if (patch_count == 0 || !mappingMatches(lib)) {
+    if (imports_incomplete) {
+      if (!skip_socket_image(lib, generation, require_active, "incomplete imports")) {
+        return disable_and_unpatch();
+      }
       continue;
     }
+    if (patch_count == 0) continue;
 
-    UnloadProtection protection(lib);
-    if (!protection.isValid()) {
-      if (!mappingMatches(lib)) {
-        continue;
-      }
-      Log::warn("native I/O hooks disabled: cannot retain mapped DSO %s",
-                lib->name());
-      return disable_and_unpatch();
-    }
     try {
       candidates.emplace_back(lib, std::move(protection), patch_count, target);
     } catch (const std::bad_alloc&) {
@@ -1219,58 +1394,66 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
       return false;
     }
 
+    // Validate every new image before any write, so a skipped Netty image has no
+    // partial patch. Its pin is released with the candidate table.
+    auto skipped = [](const SocketPatchCandidate& candidate) {
+      return candidate._target == SOCKET_PATCH_NETTY_NATIVE_EPOLL &&
+             socket_image_skipped_unlocked(candidate._lib);
+    };
+    for (SocketPatchCandidate& candidate : candidates) {
+      CodeCache* lib = candidate._lib;
+      if (socket_library_patched_unlocked(lib->imageBase()) || skipped(candidate)) continue;
+      bool netty_image = candidate._target == SOCKET_PATCH_NETTY_NATIVE_EPOLL;
+      const char* failure = nullptr;
+      // A released pin permits an identical-base reload whose full-RELRO GOT
+      // is read-only again, even though this append-only cache says writable.
+      if (!socket_imports_writable(lib)) {
+        failure = "cannot make imports writable";
+      } else if (netty_image && !socket_import_slots_present(lib, hooks, unhooked_index)) {
+        failure = "missing import slot";
+      }
+      if (failure == nullptr) continue;
+      if (netty_image && skip_socket_image_unlocked(lib, failure)) continue;
+      Log::warn("native I/O hooks disabled: %s in %s", failure, lib->name());
+      success = false;
+      break;
+    }
+
     size_t additional_patches = 0;
     size_t additional_libraries = 0;
     for (SocketPatchCandidate& candidate : candidates) {
-      if (!socket_library_patched_unlocked(candidate._lib->imageBase())) {
+      if (!skipped(candidate) && !socket_library_patched_unlocked(candidate._lib->imageBase())) {
         additional_patches += candidate._patch_count;
         additional_libraries++;
       }
     }
 
-    try {
-      _socket_entries.reserve(_socket_entries.size() + additional_patches);
-      _socket_libraries.reserve(_socket_libraries.size() + additional_libraries);
-    } catch (const std::bad_alloc&) {
-      Log::warn("native I/O hooks disabled: unable to reserve patch transaction");
-      success = false;
-    }
-
     if (success) {
-      for (SocketPatchCandidate& candidate : candidates) {
-        // A released pin permits an identical-base reload whose full-RELRO GOT
-        // is read-only again, even though this append-only cache says writable.
-        if (!socket_library_patched_unlocked(candidate._lib->imageBase()) &&
-            !candidate._lib->makeImportsWritable()) {
-          Log::warn("native I/O hooks disabled: cannot make imports writable in %s",
-                    candidate._lib->name());
-          success = false;
-          break;
-        }
+      try {
+        _socket_entries.reserve(_socket_entries.size() + additional_patches);
+        _socket_libraries.reserve(_socket_libraries.size() + additional_libraries);
+      } catch (const std::bad_alloc&) {
+        Log::warn("native I/O hooks disabled: unable to reserve patch transaction");
+        success = false;
       }
     }
 
     if (success) {
       for (SocketPatchCandidate& candidate : candidates) {
         CodeCache* lib = candidate._lib;
-        if (socket_library_patched_unlocked(lib->imageBase())) {
+        if (skipped(candidate) || socket_library_patched_unlocked(lib->imageBase())) {
           continue;
         }
         size_t first_patch = _socket_entries.size();
         for (int hook_index = 0;
              hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS && success;
              hook_index++) {
+          if (hook_index == unhooked_index) continue;
           ImportId import_id = hooks[hook_index].import_id;
           size_t count = lib->importCount(import_id);
           for (size_t import_index = 0; import_index < count; import_index++) {
-            void** location = lib->findImport(import_id, import_index);
-#ifdef UNIT_TEST
-            SocketImportFailureForTest failure =
-                socket_import_failure_for_test.load(std::memory_order_acquire);
-            if (failure != nullptr && failure(lib, import_id, import_index)) {
-              location = nullptr;
-            }
-#endif
+            void** location = socket_import_slot(lib, import_id, import_index);
+            // Netty images were validated above; a hit here still rolls back every image.
             if (location == nullptr) {
               Log::warn("native I/O hooks disabled: missing import slot for "
                         "%s in %s", hooks[hook_index].name, lib->name());
@@ -1279,6 +1462,10 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
             }
             void* original =
                 reinterpret_cast<void*>(__atomic_load_n(location, __ATOMIC_ACQUIRE));
+            // A weak NULL import must remain NULL: Netty uses it as an availability probe.
+            if (hook_index == NativeSocketInterposer::HOOK_EPOLL_PWAIT2 && original == nullptr) {
+              continue;
+            }
             _socket_entries.push_back({location, original});
             void* hook = socket_hook_for_target(candidate._target,
                                                 hooks[hook_index]);
@@ -1340,6 +1527,23 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
 LibraryPatcher::SocketImportFailureForTest
 LibraryPatcher::exchangeSocketImportFailureForTest(SocketImportFailureForTest failure) {
   return socket_import_failure_for_test.exchange(failure, std::memory_order_acq_rel);
+}
+
+LibraryPatcher::SocketImageFailureForTest
+LibraryPatcher::exchangeSocketImageFailureForTest(SocketImageFailureForTest failure) {
+  return socket_image_failure_for_test.exchange(failure, std::memory_order_acq_rel);
+}
+
+int LibraryPatcher::exchangeSocketMissingOriginalForTest(int hook_index) {
+  return socket_missing_original_for_test.exchange(hook_index, std::memory_order_acq_rel);
+}
+
+void LibraryPatcher::fill_socket_skipped_images_for_test() {
+  ExclusiveLockGuard locker(&_lock);
+  // A NULL base with fingerprint 0 never matches a validated image.
+  while (_socket_skipped_image_count < SOCKET_SKIPPED_IMAGE_CAPACITY) {
+    _socket_skipped_images[_socket_skipped_image_count++] = {nullptr, 0};
+  }
 }
 
 int LibraryPatcher::patch_socket_import_for_test(CodeCache* lib, ImportId import_id,
@@ -1435,6 +1639,7 @@ void LibraryPatcher::unpatch_socket_functions_unlocked(
   }
   _socket_entries.clear();
   memset(_socket_bases, 0, sizeof(_socket_bases));
+  _socket_skipped_image_count = 0;
   _socket_libraries.swap(libraries_to_release);
   // Original function pointers are intentionally NOT nulled.
   // In-flight hook invocations that entered before PLT entries were restored

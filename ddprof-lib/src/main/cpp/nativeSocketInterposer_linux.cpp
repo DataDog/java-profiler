@@ -175,6 +175,7 @@ std::atomic<NativeSocketInterposer::recvfrom_fn> NativeSocketInterposer::_orig_r
 std::atomic<NativeSocketInterposer::recvmsg_fn> NativeSocketInterposer::_orig_recvmsg{nullptr};
 std::atomic<NativeSocketInterposer::epoll_wait_fn> NativeSocketInterposer::_orig_epoll_wait{nullptr};
 std::atomic<NativeSocketInterposer::epoll_pwait_fn> NativeSocketInterposer::_orig_epoll_pwait{nullptr};
+std::atomic<NativeSocketInterposer::epoll_pwait2_fn> NativeSocketInterposer::_orig_epoll_pwait2{nullptr};
 std::atomic<NativeSocketInterposer::poll_fn> NativeSocketInterposer::_orig_poll{nullptr};
 std::atomic<NativeSocketInterposer::ppoll_fn> NativeSocketInterposer::_orig_ppoll{nullptr};
 std::atomic<NativeSocketInterposer::select_fn> NativeSocketInterposer::_orig_select{nullptr};
@@ -224,6 +225,8 @@ const NativeSocketInterposer::NativeIoHookSpec* NativeSocketInterposer::hookSpec
        reinterpret_cast<void*>(fork_safe_select_hook)},
       {im_pselect, "pselect", reinterpret_cast<void*>(pselect_hook),
        reinterpret_cast<void*>(fork_safe_pselect_hook)},
+      {im_epoll_pwait2, "epoll_pwait2", reinterpret_cast<void*>(epoll_pwait2_hook),
+       reinterpret_cast<void*>(fork_safe_epoll_pwait2_hook)},
   };
   return specs;
 }
@@ -260,6 +263,8 @@ bool NativeSocketInterposer::markProfilerHooks() {
     hooks_marked &= markJavaProfilerHook(specs[hook_index].hook);
     hooks_marked &= markJavaProfilerHook(specs[hook_index].fork_safe_hook);
   }
+  hooks_marked &= markJavaProfilerHook(specs[HOOK_EPOLL_PWAIT2].hook);
+  hooks_marked &= markJavaProfilerHook(specs[HOOK_EPOLL_PWAIT2].fork_safe_hook);
   return hooks_marked;
 }
 
@@ -341,6 +346,10 @@ bool NativeSocketInterposer::setOriginalFunction(int hook_index, void* original)
     case HOOK_PSELECT:
       _orig_pselect.store(reinterpret_cast<pselect_fn>(original),
                           std::memory_order_release);
+      return true;
+    case HOOK_EPOLL_PWAIT2:
+      _orig_epoll_pwait2.store(reinterpret_cast<epoll_pwait2_fn>(original),
+                             std::memory_order_release);
       return true;
     default:
       return false;
@@ -597,6 +606,18 @@ int NativeSocketInterposer::epoll_pwait_hook(int epfd, struct epoll_event* event
       });
 }
 
+int NativeSocketInterposer::epoll_pwait2_hook(
+    int epfd, struct epoll_event* events, int maxevents,
+    const struct timespec* timeout, const sigset_t* sigmask) {
+  bool eligible = instance()->active() && maxevents > 0 && nonZeroTimespec(timeout);
+  return runNativeIoHook<int>(
+      eligible, NativeBlockKind::EPOLL_WAIT, epfd,
+      _orig_epoll_pwait2.load(std::memory_order_acquire),
+      [&](epoll_pwait2_fn fn) {
+        return fn(epfd, events, maxevents, timeout, sigmask);
+      });
+}
+
 int NativeSocketInterposer::poll_hook(struct pollfd* fds, nfds_t nfds, int timeout) {
   bool eligible = fds != nullptr && nfds > 0 && timeout != 0;
   return runNativeIoHook<int>(eligible, NativeBlockKind::POLL, 0,
@@ -826,6 +847,20 @@ int NativeSocketInterposer::fork_safe_epoll_pwait_hook(
     return epoll_pwait_hook(epfd, events, maxevents, timeout, sigmask);
   }
   epoll_pwait_fn original = _orig_epoll_pwait.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(epfd, events, maxevents, timeout, sigmask);
+}
+
+int NativeSocketInterposer::fork_safe_epoll_pwait2_hook(
+    int epfd, struct epoll_event* events, int maxevents,
+    const struct timespec* timeout, const sigset_t* sigmask) {
+  if (!isForkChild()) {
+    return epoll_pwait2_hook(epfd, events, maxevents, timeout, sigmask);
+  }
+  epoll_pwait2_fn original = _orig_epoll_pwait2.load(std::memory_order_acquire);
   if (original == nullptr) {
     errno = ENOSYS;
     return -1;

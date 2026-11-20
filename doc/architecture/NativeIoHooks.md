@@ -5,8 +5,9 @@
 The Linux native I/O interposer and native socket bytes sampler share imported
 function patches. `NativeSocketInterposer` produces synchronous TaskBlock events;
 `NativeSocketSampler` samples stream-socket bytes and elapsed time. Patching is
-restricted to selected JDK networking libraries; non-Linux implementations do
-not install these hooks.
+restricted to selected JDK networking libraries and validated Netty native epoll
+images, including shaded images with cached markers. Non-Linux implementations
+do not install these hooks.
 
 ## Ownership and forwarding
 
@@ -16,6 +17,7 @@ together under the patch lock, before library discovery.
 producer eligibility. Stop disables the consumer before conditionally removing
 the patches; patches remain installed while the other consumer is active.
 A current installation failure disables both consumers and restores saved import values.
+A failure local to one Netty image is the exception; see [Netty epoll](#netty-epoll).
 A failed discovery from an older generation cannot disable a newer owner.
 Original libc function pointers remain available for hooks entered before
 restoration.
@@ -185,6 +187,15 @@ new hook fault or of successful EFAULT recovery.
 - `LibraryPatcherSocketTransactionTest.OwnerRestartMakesReloadedFullRelroImportsWritable`:
   production owner start/stop, actual unmap/reload at the same base, read-only GOT
   precondition, restarted installation/forwarding and restored originals.
+- `NettyEpollImageSkipTest`: a missing slot, incomplete imports, a failed pin of a
+  mapped image or a GOT that cannot be made writable skip only the
+  Netty image beside a patched JDK libnet, with both owners active, the counter,
+  no retained pin and no retry before the next installation. A Netty failure after
+  validation, a libnet failure or a full skip table still fails closed. A stale
+  generation or an inactive refresh records no skip. A missing libc `epoll_pwait2`
+  leaves a non-NULL Netty slot untouched and keeps the other hooks.
+- `NettyEpollAliasDiscoveryTest`: removed loader symlinks with live/deleted backing
+  files, forwarding/restoration, final-close retention and unload before fallback pin.
 - `LibraryPatcherSocketTransactionTest.OwnersPreserveDisplacedJdk8PollAdapterForwardingAndRestoration`:
   both owner modes retain the ppoll adapter, without redirecting ordinary poll calls.
 - `libraryPatcherUnload_ut.cpp`: pin/restore socket safety, pthread live-walk
@@ -238,3 +249,52 @@ new hook fault or of successful EFAULT recovery.
 
 These units do not replace real JVM/JFR, unload/reload, architecture, sanitizer
 or release-performance qualification.
+
+## Netty epoll
+
+Netty images are selected by the exact epoll JNI load/unload markers cached during
+symbol ingestion. Discovery validates the mapped base and fingerprint, not pathname
+equality. It pins each image before reading cached imports and retains the pin until restoration.
+
+If the cached maps pathname cannot pin an image, discovery copies its loader-owned
+name outside the patch lock. It pins by that name and revalidates the fingerprint.
+This supports deleted backing files and removed symlinks after marker ingestion.
+
+Initial ingestion is not guaranteed when neither pathname can retain the image.
+
+A failure local to one Netty image skips only that image. These failures are a
+failed pin, incomplete imports, a GOT that cannot be made writable and a missing
+import slot. The commit validates each new Netty image before any GOT write.
+A skipped image has no patch, and its pin is released before the transaction
+returns. Other libraries keep their patches, and both owners stay active. Each
+skip increments `native_io_netty_images_skipped`.
+
+The patcher remembers a skipped image by base and fingerprint until the socket
+patches are removed. This also skips other cached descriptions of the same image.
+Library refreshes and a second owner start do not retry it. The next
+installation, normally the next recording, retries it once. An unmapped image or
+a fingerprint mismatch is not a failure: discovery ignores it without a skip.
+
+These failures still disable both owners and restore every image: a missing libc
+original, a candidate-table or transaction allocation failure, any JDK image
+failure, a full table of 64 skipped images and a missing slot found after
+writes started. A stale generation still
+abandons the transaction without changing a newer owner.
+A NULL weak `epoll_pwait2` import stays NULL; supported imports use the same
+errno-preserving scope as the other epoll waits. When libc has no `epoll_pwait2`
+(glibc before 2.35), every `epoll_pwait2` import stays untouched. This includes a
+non-NULL lazy-binding stub. Such an import does not disable the hooks or skip the image.
+
+Recording admission validates the requesting native TID, lifecycle generation and
+recording epoch under the registry lock before provisioning suppression backing
+and resetting its payload. Cold admission retries failed allocations and prepares
+context sidecars when a later recording enables snapshots.
+The registry retains live ownership across restarts; an old completion cannot
+consume another worker's run. This lock is independent of loader/patcher locks.
+
+The real-Netty JVM fixture qualifies Linux glibc: the published Netty native
+artifacts require glibc. Missing epoll availability fails that fixture on glibc;
+musl retains the profiler's native epoll, weak-import and lifecycle tests instead.
+Qualification runs five positive-timeout JNI waits on a verified `EpollEventLoop`
+worker (`inEventLoop()`), separately from the unchanged default-select-strategy
+case, and retains matching syscall, JFR and independently owned child-exit evidence.

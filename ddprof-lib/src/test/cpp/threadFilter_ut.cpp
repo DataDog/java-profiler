@@ -1753,6 +1753,95 @@ TEST_F(ThreadRegistryTest, LogicalWindowReentryInvalidatesOwnedRun) {
     EXPECT_EQ(OSThreadState::SLEEPING, block->activeBlockState());
 }
 
+TEST_F(ThreadRegistryTest, RecordingAdmissionRejectsPreviousNativeOwnerBeforeTeardown) {
+    auto previous = registryOwner(6250);
+    int id = registry.ensureOwnerSlot(*previous);
+    ASSERT_GE(id, 0);
+    auto* slot = registry.slotForId(id);
+    ThreadEntry stale{previous->tid(), slot, id, slot->lifecycleGeneration(),
+                      registry.recordingEpoch()};
+    registry.unregisterThreadByTid(previous->tid());
+    auto next = registryOwner(6251);
+    ASSERT_EQ(id, registry.ensureOwnerSlot(*next));
+    registry.init("", true);
+    ASSERT_EQ(id, registry.ensureOwnerSlot(*next));
+    stale.recording_epoch = registry.recordingEpoch();
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(
+        &registry, id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE));
+    ASSERT_NE(0u, run.token());
+    auto* block = tracker.slotForId(id);
+    EXPECT_FALSE(registry.refreshOwnerSlotForRecording(stale, 3));
+    EXPECT_EQ(next->tid(), slot->nativeTid());
+    EXPECT_EQ(0u, slot->rawContextWindowState());
+    EXPECT_EQ(OSThreadState::IO_WAIT, block->activeBlockState());
+    EXPECT_EQ(WallClockBlockTracker::tokenGeneration(run.token()), block->blockGeneration());
+}
+
+TEST_F(ThreadRegistryTest, RecordingAdmissionRejectsReusedTidAndOldRecording) {
+    auto previous = registryOwner(6252);
+    int id = registry.ensureOwnerSlot(*previous);
+    ASSERT_GE(id, 0);
+    auto* slot = registry.slotForId(id);
+    ThreadEntry stale{previous->tid(), slot, id, slot->lifecycleGeneration(),
+                      registry.recordingEpoch()};
+    registry.unregisterThreadByTid(previous->tid());
+    auto next = registryOwner(previous->tid());
+    ASSERT_EQ(id, registry.ensureOwnerSlot(*next));
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(
+        &registry, id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE));
+    ASSERT_NE(0u, run.token());
+    EXPECT_FALSE(registry.refreshOwnerSlotForRecording(stale, 3));
+    EXPECT_EQ(OSThreadState::IO_WAIT, tracker.slotForId(id)->activeBlockState());
+    ThreadEntry old_recording{next->tid(), slot, id, slot->lifecycleGeneration(),
+                              registry.recordingEpoch()};
+    registry.init("", true);
+    ASSERT_EQ(id, registry.ensureOwnerSlot(*next));
+    EXPECT_FALSE(registry.refreshOwnerSlotForRecording(old_recording, 3));
+    EXPECT_EQ(0u, slot->rawContextWindowState());
+}
+
+TEST_F(ThreadRegistryTest, RecordingAdmissionProvisionsNewlyEnabledContextSnapshots) {
+    tracker.setUnownedContextSnapshotsNeeded(false);
+    auto owner = registryOwner(6253);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    ASSERT_NE(nullptr, tracker.slotForId(id));
+    ASSERT_FALSE(tracker.canPublishUnownedContext(id));
+    auto* slot = registry.slotForId(id);
+    ThreadEntry old_recording{owner->tid(), slot, id, slot->lifecycleGeneration(),
+                              registry.recordingEpoch()};
+
+    registry.deactivateRecording();
+    tracker.setUnownedContextSnapshotsNeeded(true);
+    registry.init("", true);
+    EXPECT_FALSE(registry.refreshOwnerSlotForRecording(old_recording, 0));
+    EXPECT_FALSE(tracker.canPublishUnownedContext(id));
+    ASSERT_EQ(id, registry.ensureOwnerSlot(*owner));
+    EXPECT_TRUE(tracker.canPublishUnownedContext(id));
+}
+
+TEST_F(ThreadRegistryTest, RecordingAdmissionRetriesFailedSuppressionAllocations) {
+    tracker.setUnownedContextSnapshotsNeeded(true);
+    tracker.setAllocationFailureForTest(true);
+    tracker.exchangeUnownedContextAllocationFailureForTest(true);
+    auto owner = registryOwner(6254);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    ASSERT_EQ(nullptr, tracker.slotForId(id));
+    ASSERT_FALSE(tracker.canPublishUnownedContext(id));
+
+    registry.deactivateRecording();
+    tracker.setAllocationFailureForTest(false);
+    tracker.exchangeUnownedContextAllocationFailureForTest(false);
+    registry.init("", true);
+    ASSERT_EQ(id, registry.ensureOwnerSlot(*owner));
+    ASSERT_NE(nullptr, tracker.slotForId(id));
+    EXPECT_TRUE(tracker.canPublishUnownedContext(id));
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(
+        &registry, id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE));
+    EXPECT_NE(0u, run.token());
+}
+
 TEST_F(ThreadRegistryTest, StaleRefreshCannotPublishAfterRecordingCloses) {
     auto owner = registryOwner(6204);
     registry.onContextWindowEnter(*owner);
