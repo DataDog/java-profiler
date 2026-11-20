@@ -623,12 +623,18 @@ protected:
             frame.fp() = 1;
         } else
 #endif
-        if (leaf_native_prefix || x64_exception_prefix || undecodable_return ||
-                test_case == EntryCase::BarrierInteriorNativePrefix) {
+        if (leaf_native_prefix || x64_exception_prefix || test_case == EntryCase::BarrierInteriorNativePrefix) {
             stack[-4] = sampled_fp;
             stack[-3] = (uintptr_t)sampled_pc;
             frame.pc() = (uintptr_t)LEAF_PC;
             frame.sp() = (uintptr_t)(stack - 4);
+        }
+        if (undecodable_return) {
+            // The leaf's caller SP is then stack, where the entry under test lives.
+            stack[-2] = sampled_fp;
+            stack[-1] = (uintptr_t)sampled_pc;
+            frame.pc() = (uintptr_t)LEAF_PC;
+            frame.sp() = (uintptr_t)(stack - 2);
         }
         if (tracked_child) {
             // Cross a child first, recover its parent's unlinked resolver frame,

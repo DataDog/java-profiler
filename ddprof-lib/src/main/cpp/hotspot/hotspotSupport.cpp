@@ -483,7 +483,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (!HotspotStackFrame::continuationEntryExceptionLayout(continuation_entry_nm, walk_pc.raw(), !sampled_entry, layout)) {
                     // enterSpecial publishes its entry at SP, and cleanup unlinks it, so
                     // the exported chain remains valid for an undecoded return only then.
-                    VMContinuationEntry* next_entry = sampled_entry || VMContinuationEntry::type_size() == 0 ? nullptr
+                    VMContinuationEntry* next_entry = sampled_entry ? nullptr
                             : cont_entry != nullptr ? cont_entry->parent() : vm_thread->contEntry();
                     if (next_entry == nullptr || reinterpret_cast<uintptr_t>(next_entry) != sp) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
