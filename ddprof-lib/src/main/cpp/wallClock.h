@@ -325,6 +325,8 @@ public:
     WallSampleRequest prepareWallSampleRequestForTest(ProfiledThread* current, bool& suppressed);
 #endif
 #if defined(UNIT_TEST) || defined(DEBUG)
+    // Normal-thread drivers wait for the timer's real epoch without publishing one.
+    static bool awaitInitialSamplingEpochForTest(u64 timeout_nanos);
     static void setForceStartFailureForTest(bool force) {
         _force_start_failure_for_test.store(force, std::memory_order_release);
     }
@@ -341,9 +343,6 @@ public:
     static bool wallPrecheckForTest(
         ProfiledThread* current, bool unowned_fallback, OSThreadState observed_state,
         u64& weight, bool recorded = false);
-#endif
-#if defined(DEBUG) || defined(UNIT_TEST)
-    static bool awaitInitialSamplingEpochForTest(u64 timeout_nanos);
 #endif
 #ifdef DEBUG
     // Drives the real precheck/recording path with controlled OS-state inputs

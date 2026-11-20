@@ -12,7 +12,7 @@ before working on a subsystem.
 | Call trace storage (triple-buffered ACTIVE/STANDBY/SCRATCH, 64-bit instance+slot trace IDs, lock-free rotation, freed on stop, reusable unowned wall-clock roots) | [doc/architecture/CallTraceStorage.md](/doc/architecture/CallTraceStorage.md) |
 | String dictionary (lazily allocated arena chunks, rotation/clear/release protocols) | [doc/architecture/StringDictionary.md](/doc/architecture/StringDictionary.md) |
 | RefCountGuard (lock-free RAII reader-drain before reclamation) | [doc/architecture/RefCountGuard.md](/doc/architecture/RefCountGuard.md) |
-| TLS context (thread-local tracing, owner context-window membership, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](/doc/architecture/TLSContext.md) |
+| TLS context (thread-local tracing, owner context-window membership, paired TaskBlock interval recovery, retained unowned wall context and sampling-epoch weight provenance) | [doc/architecture/TLSContext.md](/doc/architecture/TLSContext.md) |
 | JVM support (HotSpot, J9, Zing) | [doc/architecture/JvmSupportLayer.md](/doc/architecture/JvmSupportLayer.md) |
 | Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; timer TID metadata lookup is capped at 256 probes and fails open to ordinary signals; lazy wall-block backing survives recording resets; unowned teardown tails retain slot custody until written, and stop counts the weight of the ones it cannot write as dropped; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](/doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers; bounded DEBUG TaskBlock transition receipts survive recording teardown; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; stop archives full thread tables before bounded tail-admission retries) | [doc/architecture/JfrIntegration.md](/doc/architecture/JfrIntegration.md) |
@@ -197,6 +197,14 @@ See [CallTraceStorage](/doc/architecture/CallTraceStorage.md#reusable-unowned-wa
 **Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.
 Only owner-side entry/exit changes membership; signals and timers do not walk remote TLS.
 See [TLSContext](/doc/architecture/TLSContext.md#context-window-membership).
+
+**Paired TaskBlock intervals.** Run begin admission checks before discarding a pending interval.
+Recovery emits no event and closes only the token's matching current slot and generation.
+See [TLSContext](/doc/architecture/TLSContext.md#paired-taskblock-intervals).
+
+**Platform-thread classification.** Verify the caller before mutating Java-owned TaskBlock TLS.
+`JVMSupport::isPlatformThread()` rejects non-HotSpot JNI >= 19 without reading slot 234.
+See [JvmSupportLayer](/doc/architecture/JvmSupportLayer.md#platform-thread-classification).
 
 **Atomic memory ordering (arm64).** arm64 is weakly ordered (x86 is TSO); relaxed-ordering
 bugs are silent arm64-only lockups. Cross-thread reads: acquire ordering

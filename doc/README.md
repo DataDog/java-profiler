@@ -27,11 +27,11 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; wall reservoir, retained-weight epoch provenance and retryable teardown-tail flush; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
-- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness and vtable receiver frames
+- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), paired TaskBlock platform-thread classification, continuation completeness and vtable receiver frames
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
 - [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching (persistent sigaction/pthread_create hooks); crash-handler bootstrap (raw-identity thread-exit registry, Linux-only fault/profiling-mask fence)
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, release, and rotation protocols; lazy storage
-- [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership and retained filtered/unfiltered unowned wall context
+- [TLSContext](architecture/TLSContext.md) - Thread-local tracing, owner context-window membership, paired TaskBlock interval recovery and retained filtered/unfiltered unowned wall context
 
 ### Build System
 - [BuildSystemGuide](building/BuildSystemGuide.md) - Build conventions, Java formatting, TestKit verification and independent JDK 21 build-logic CI
