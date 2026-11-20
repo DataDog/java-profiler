@@ -78,6 +78,9 @@ public:
     JNIEnv_ mock_jni{};
 
     std::unordered_map<void *, jlong> tags;
+    std::unordered_set<void *> fail_get_tag;
+    std::unordered_set<void *> fail_get_superclass;
+    std::unordered_set<void *> malformed_interfaces;
     std::vector<ScriptedClass> classes;
     std::vector<ScriptedEdge> script;
     std::vector<jlong> node_tags;
@@ -319,6 +322,10 @@ public:
 
     static jvmtiError JNICALL mock_GetTag(jvmtiEnv *, jobject object, jlong *tag_ptr) {
         MockAllocPause alloc_pause;
+        if (active_fixture->fail_get_tag.count(object) > 0) {
+            *tag_ptr = 0;
+            return JVMTI_ERROR_INTERNAL;
+        }
         int idx = active_fixture->indexOfNode(object);
         if (idx >= 0) {
             *tag_ptr = active_fixture->node_tags[idx];
@@ -401,6 +408,10 @@ public:
         return JVMTI_ERROR_NONE;
     }
     static jclass JNICALL mock_JniGetSuperclass(JNIEnv *, jclass cls) {
+        if (active_fixture->fail_get_superclass.count(cls) > 0) {
+            active_fixture->pending_exception = true;
+            return nullptr;
+        }
         auto it = active_fixture->field_decode_hierarchy.find(cls);
         return it == active_fixture->field_decode_hierarchy.end()
                        ? nullptr
@@ -411,6 +422,11 @@ public:
         auto it = active_fixture->field_decode_hierarchy.find(cls);
         if (it == active_fixture->field_decode_hierarchy.end()) {
             return JVMTI_ERROR_INVALID_CLASS;
+        }
+        if (active_fixture->malformed_interfaces.count(cls) > 0) {
+            *count_ptr = 1;
+            *ifaces_ptr = nullptr;
+            return JVMTI_ERROR_NONE;
         }
         const std::vector<void *> &ifaces = it->second.interfaces;
         *count_ptr = (jint)ifaces.size();
