@@ -413,12 +413,13 @@ public class PrecheckTest extends AbstractProfilerTest {
   private void assertUnownedSamples(String threadName) {
     long count = 0;
     long weight = 0;
+    boolean weighted = usesWeightedUnownedFallback();
     JfrEvents events = verifyEvents("datadog.MethodSample", false);
     for (JfrEvent item : events) {
       if (threadName.equals(item.getThreadName("eventThread"))) {
         count++;
         weight += item.getLong(WEIGHT, 0);
-        if (!usesWeightedUnownedFallback()) {
+        if (!weighted) {
           assertEquals(
               1L, item.getLong(WEIGHT, 0), "Delegated unowned samples must retain unit weight");
         }
@@ -428,7 +429,7 @@ public class PrecheckTest extends AbstractProfilerTest {
     Map<String, Long> counters = profiler.getDebugCounters();
     long suppressed = counters.getOrDefault("wc_unowned_blocked_suppressed", 0L);
     long recorded = counters.getOrDefault("wc_unowned_blocked_recorded", 0L);
-    if (usesWeightedUnownedFallback()) {
+    if (weighted) {
       assertTrue(
           weight > count,
           "Expected suppressed observations to be represented by weight for "
