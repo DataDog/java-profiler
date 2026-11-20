@@ -790,6 +790,34 @@ TEST_F(WallClockBlockTrackerTest, FilteredRestartAllocatesContextForRetainedSlot
     EXPECT_EQ(id, filter->registerThread(7754));
 }
 
+TEST_F(WallClockBlockTrackerTest, FilteredRestartSkipsChunksWithoutLiveOwners) {
+    for (int i = 0; i <= ThreadFilter::kChunkSize; ++i) {
+        ASSERT_EQ(i, filter->registerThread(20000 + i));
+    }
+    const int retired = ThreadFilter::kChunkSize;
+    filter->unregisterThread(retired, 20000 + retired);
+    tracker->setUnownedContextSnapshotsNeeded(true);
+    const long long before = NativeMem::live(NM_WALL_BLOCK_TRACKER);
+    filter->init("0");
+    EXPECT_TRUE(tracker->canPublishUnownedContext(0));
+    EXPECT_FALSE(tracker->canPublishUnownedContext(retired)) << "A chunk without live owners stays unallocated";
+    EXPECT_EQ(before + static_cast<long long>(WallClockBlockTracker::unownedContextChunkSizeForTest()),
+              NativeMem::live(NM_WALL_BLOCK_TRACKER));
+}
+
+TEST_F(WallClockBlockTrackerTest, FilteredRestartCountsContextAllocationFailure) {
+    const int id = filter->registerThread(7755);
+    ASSERT_GE(id, 0);
+    tracker->setUnownedContextSnapshotsNeeded(true);
+    const long long failures = Counters::getCounter(WC_UNOWNED_CONTEXT_ALLOCATION_FAILED);
+    {
+        ScopedUnownedContextAllocationFailure failure(*tracker);
+        filter->init("0");
+    }
+    EXPECT_EQ(failures + 1, Counters::getCounter(WC_UNOWNED_CONTEXT_ALLOCATION_FAILED));
+    EXPECT_FALSE(tracker->canPublishUnownedContext(id));
+}
+
 TEST_F(UnownedContextSidecarTest, NormalColdAllocationBalancesMemory) {
     long long before = NativeMem::live(NM_WALL_BLOCK_TRACKER);
     {

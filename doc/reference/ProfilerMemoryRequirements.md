@@ -280,7 +280,7 @@ Retained unowned wall contexts use separate lazy tracker backing:
 | Backing | Accounted bytes | Lifetime |
 |---------|-----------------|----------|
 | `SlotStorage` | `2048 × 64 + 32 × 8 = 131,328` | First cold registration to tracker destruction |
-| Context chunks | `C × 256 × 128 = C × 32,768`, with `0 ≤ C ≤ 8` | Cold registration, or a context-filtered start for assigned slots, in the enabled retention mode to tracker destruction |
+| Context chunks | `C × 256 × 128 = C × 32,768`, with `0 ≤ C ≤ 8` | Cold registration, or a context-filtered start for chunks with live owners, in the enabled retention mode to tracker destruction |
 
 These allocations are charged to `NM_WALL_BLOCK_TRACKER`. Recording resets retain backing;
 disabled retention does not allocate context chunks. Existing backing is released

@@ -224,10 +224,16 @@ bool WallClockBlockTracker::ensureUnownedContextAllocated(ThreadFilter::SlotID s
     auto& pointer = _context_chunks[slot_id >> ThreadFilter::kChunkShift];
     if (pointer.load(std::memory_order_acquire) != nullptr) return true;
 #ifdef UNIT_TEST
-    if (_context_allocation_failure.load(std::memory_order_acquire)) return false;
+    if (_context_allocation_failure.load(std::memory_order_acquire)) {
+        Counters::increment(WC_UNOWNED_CONTEXT_ALLOCATION_FAILED);
+        return false;
+    }
 #endif
     std::unique_ptr<UnownedContextChunk> fresh(new (std::nothrow) UnownedContextChunk());
-    if (!fresh) return false;
+    if (!fresh) {
+        Counters::increment(WC_UNOWNED_CONTEXT_ALLOCATION_FAILED);
+        return false;
+    }
     // All callers hold the same registry mutex (or are quiescent tests).
     // No competing allocator or fallible operation follows allocation, so no
     // rejected allocation needs freeing inside the registry critical section.

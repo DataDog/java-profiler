@@ -336,6 +336,8 @@ private:
     // Caller holds _registry_lock. Moves every retired-pending slot to the
     // free list (unindex, reset, push).
     void drainRetiredLocked();
+    // Allocates unowned context chunks that hold a live owner; caller holds _registry_lock.
+    void ensureLiveOwnerContextsLocked();
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
     void rollbackFailedIndex(Slot& slot);

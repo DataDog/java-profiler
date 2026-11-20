@@ -22,6 +22,7 @@
 #include "threadFilter.h"
 #include "arch.h"
 #include "counters.h"
+#include "log.h"
 #include "nativeMem.h"
 #include "os.h"
 #include "signalSafety.h"
@@ -905,11 +906,7 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
             ensureTidIndexLocked();
         }
         if (context_filter && _block_tracker != nullptr) {
-            // Retained owners reuse slots through ensureOwnerSlot() without registering.
-            const SlotID assigned = std::min<SlotID>(_next_index.load(std::memory_order_acquire), kMaxThreads);
-            for (SlotID first = 0; first < assigned; first += kChunkSize) {
-                _block_tracker->ensureUnownedContextAllocated(first);
-            }
+            ensureLiveOwnerContextsLocked();
         }
     }
     RecordingEpoch epoch = 0;
@@ -927,6 +924,22 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     _registry_active.store(unfiltered_tracking || context_filter,
                            std::memory_order_release);
     _enabled.store(context_filter, std::memory_order_release);
+}
+
+void ThreadFilter::ensureLiveOwnerContextsLocked() {
+    // Retained owners reuse slots through ensureOwnerSlot() without registering.
+    const SlotID assigned = std::min<SlotID>(_next_index.load(std::memory_order_acquire), kMaxThreads);
+    bool failed = false;
+    for (SlotID first = 0; first < assigned; first += kChunkSize) {
+        const SlotID end = std::min<SlotID>(first + kChunkSize, assigned);
+        for (SlotID id = first; id < end; ++id) {
+            if (slotForId(id)->nativeTid() >= 0) {
+                failed |= !_block_tracker->ensureUnownedContextAllocated(first);
+                break;
+            }
+        }
+    }
+    if (failed) Log::warn("Unowned wall context unavailable for some retained threads");
 }
 
 bool ThreadFilter::enabled() const {
