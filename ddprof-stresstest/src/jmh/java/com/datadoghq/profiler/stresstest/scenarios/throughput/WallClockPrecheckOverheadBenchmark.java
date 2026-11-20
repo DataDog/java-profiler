@@ -165,7 +165,11 @@ public class WallClockPrecheckOverheadBenchmark {
       profiler.stop();
     }
     if (recording != null) {
-      Files.deleteIfExists(recording);
+      if (Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+        System.out.println("===> benchmark recording: " + recording.toAbsolutePath());
+      } else {
+        Files.deleteIfExists(recording);
+      }
     }
   }
 

@@ -35,6 +35,7 @@
 #include "threadState.h"
 #include "tsc.h"
 #include "hotspot/vmStructs.h"
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>
@@ -1185,6 +1186,13 @@ void Recording::switchChunk(int fd) {
   OS::truncateFile(_fd);
   _chunk_start = 0;
 
+  {
+    // Dump holds every stripe, so no deferral can add a segment meanwhile.
+    WallClockBlockTracker::EpochStarts pending;
+    Profiler::instance()->blockTracker()->collectUnownedEpochStarts(pending);
+    pruneWallEpochs(pending);
+  }
+
   // the recording file is restarted, so write out all the info events again
   writeHeader(_buf);
   writeMetadata(_buf);
@@ -1202,7 +1210,21 @@ void Recording::switchChunk(int fd) {
   } else {
     _recorded_lib_count = -1;
   }
+  for (auto& entry : _wall_epochs) {
+    recordWallClockEpoch(_buf, &entry.second);
+  }
   flush(_buf);
+}
+
+void Recording::pruneWallEpochs(const WallClockBlockTracker::EpochStarts& pending) {
+  for (auto it = _wall_epochs.begin(); it != _wall_epochs.end();) {
+    if (!std::binary_search(pending.begin(), pending.end(), it->first)) {
+      it = _wall_epochs.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  _wall_epoch_prune_threshold = std::max(kMinWallEpochPruneThreshold, 2 * _wall_epochs.size());
 }
 
 void Recording::cpuMonitorCycle() {
@@ -2478,7 +2500,7 @@ void Recording::writeUnwindFailures(Buffer *buf) {
 #endif // DEBUG
 }
 
-void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
+void Recording::writeContextSnapshot(Buffer *buf, const Context &context) {
   buf->putVar64(context.spanId);
   buf->putVar64(context.rootSpanId);
 
@@ -2509,18 +2531,23 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
   buf->put8(start, size);
 }
 
-void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
-                                      u64 correlation_id,
-                                      ExecutionEvent *event) {
-  int start = buf->skip(1);
-  buf->putVar64(T_EXECUTION_SAMPLE);
-  buf->putVar64(TSC::ticks());
+void Recording::writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
+                                  u64 correlation_id, ExecutionEvent *event) {
+  buf->putVar64(type);
+  buf->putVar64(event->_sample_ticks != 0 ? event->_sample_ticks : TSC::ticks());
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
   buf->putVar64(correlation_id);
+}
+
+void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
+                                      u64 correlation_id,
+                                      ExecutionEvent *event) {
+  int start = buf->skip(1);
+  writeSampleHeader(buf, T_EXECUTION_SAMPLE, tid, call_trace_id, correlation_id, event);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -2528,22 +2555,21 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
 
 void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
                                    u64 correlation_id,
-                                   ExecutionEvent *event) {
+                                   ExecutionEvent *event, const Context *context) {
   int start = buf->skip(1);
-  buf->putVar64(T_METHOD_SAMPLE);
-  buf->putVar64(TSC::ticks());
-  buf->putVar64(tid);
-  buf->putVar64(call_trace_id);
-  buf->put8(static_cast<int>(event->_thread_state));
-  buf->put8(static_cast<int>(event->_execution_mode));
-  buf->putVar64(event->_weight);
-  buf->putVar64(correlation_id);
-  writeCurrentContext(buf);
+  writeSampleHeader(buf, T_METHOD_SAMPLE, tid, call_trace_id, correlation_id, event);
+  if (context != nullptr) {
+    writeContextSnapshot(buf, *context);
+  } else {
+    writeCurrentContext(buf);
+  }
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
 
 void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  _wall_epochs.insert_or_assign(event->_start_time, *event);
   int start = buf->skip(1);
   buf->putVar64(T_WALLCLOCK_SAMPLE_EPOCH);
   buf->putVar64(event->_start_time);
@@ -2934,16 +2960,18 @@ Error FlightRecorder::dump(const char *filename, const int length) {
   return Error("No active recording");
 }
 
-void FlightRecorder::wallClockEpoch(int lock_index,
-                                    WallClockEpochEvent *event) {
-  OptionalSharedLockGuard locker(&_rec_lock);
-  if (locker.ownsLock()) {
-    Recording* rec = _rec;
-    if (rec != nullptr) {
-      Buffer *buf = rec->buffer(lock_index);
-      rec->recordWallClockEpoch(buf, event);
-    }
-  }
+bool FlightRecorder::wallClockEpoch(int lock_index, WallClockEpochEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  ExclusiveLockGuard locker(&_rec_lock);
+  if (_rec == nullptr) return false;
+  _rec->recordWallClockEpoch(_rec->buffer(lock_index), event);
+  return _rec->wallEpochPruneDue();
+}
+
+void FlightRecorder::pruneWallEpochs(const WallClockBlockTracker::EpochStarts& pending) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  ExclusiveLockGuard locker(&_rec_lock);
+  if (_rec != nullptr) _rec->pruneWallEpochs(pending);
 }
 
 void FlightRecorder::recordTraceRoot(int lock_index, int tid,
@@ -3068,6 +3096,22 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
   return false;
+}
+
+bool FlightRecorder::recordWallSample(int lock_index, int tid, u64 call_trace_id,
+                                      ExecutionEvent *event, const Context &context) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (!locker.ownsLock()) {
+    Counters::increment(SAMPLES_DROPPED_REC_LOCK);
+    return false;
+  }
+  Recording* rec = _rec;
+  if (rec == nullptr) return false;
+  RecordingBuffer* buf = rec->buffer(lock_index);
+  rec->recordMethodSample(buf, tid, call_trace_id, 0, event, &context);
+  rec->flushIfNeeded(buf);
+  rec->addThread(lock_index, tid);
+  return true;
 }
 
 bool FlightRecorder::recordEventDelegated(int lock_index, int tid,

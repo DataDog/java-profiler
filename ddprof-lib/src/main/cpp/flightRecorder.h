@@ -37,6 +37,7 @@
 #include "threadFilter.h"
 #include "threadIdTable.h"
 #include "vmEntry.h"
+#include "wallClockBlockTracker.h"
 
 class VMSymbol;  // hotspot/vmStructs.h
 class ProfiledThread;
@@ -288,6 +289,10 @@ private:
                                      const char *name, u64 count);
 #endif
 
+  // A zero event->_sample_ticks timestamps the sample with the current TSC.
+  static void writeSampleHeader(Buffer *buf, u64 type, int tid, u64 call_trace_id,
+                                u64 correlation_id, ExecutionEvent *event);
+
   // Encodes the stack-pool record header. A Java entry root can establish
   // completeness only when the walker has not already reported missing frames.
   static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
@@ -302,6 +307,14 @@ private:
   int _fd;
   off_t _chunk_start;
   MethodMap _method_map;
+  // Normal-thread writers hold _rec_lock exclusively; signals never access this map.
+  // Pruning keeps only closed epochs still referenced by retained wall segments.
+  std::map<u64, WallClockEpochEvent, std::less<u64>,
+           CountingAllocator<std::pair<const u64, WallClockEpochEvent>, NM_WALLCLOCK>> _wall_epochs;
+  // About 100 bytes per entry; this floor keeps the unpruned map near 400 KiB.
+  static constexpr size_t kMinWallEpochPruneThreshold = 4096;
+  // At least as many inserts as retained entries separate two close-time prunes.
+  size_t _wall_epoch_prune_threshold = kMinWallEpochPruneThreshold;
 
   Arguments _args;
 
@@ -369,6 +382,9 @@ public:
 
   off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
+  // Caller holds _rec_lock exclusively; pending is sorted and covers every
+  // segment that can still reference a closed epoch.
+  void pruneWallEpochs(const WallClockBlockTracker::EpochStarts& pending);
 
   void cpuMonitorCycle();
   void appendRecording(const char *target_file, size_t size);
@@ -479,14 +495,18 @@ public:
 
   void writeUnwindFailures(Buffer *buf);
 
-  void writeContextSnapshot(Buffer *buf, Context &context);
+  void writeContextSnapshot(Buffer *buf, const Context &context);
   void writeCurrentContext(Buffer *buf);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                              u64 correlation_id, ExecutionEvent *event);
   void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
-                          u64 correlation_id, ExecutionEvent *event);
+                          u64 correlation_id, ExecutionEvent *event,
+                          const Context *context = nullptr);
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
+  bool wallEpochPruneDue() const {
+    return _wall_epochs.size() >= _wall_epoch_prune_threshold;
+  }
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
@@ -656,6 +676,9 @@ public:
 
 class FlightRecorder {
   friend Profiler;
+#ifdef UNIT_TEST
+  friend class ProfilerTestAccessor;
+#endif
 
 private:
   std::string _filename;
@@ -671,7 +694,9 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
-  void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
+  // Returns whether the closed-epoch map has reached its prune threshold.
+  bool wallClockEpoch(int lock_index, WallClockEpochEvent *event);
+  void pruneWallEpochs(const WallClockBlockTracker::EpochStarts& pending);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
 
@@ -679,6 +704,8 @@ public:
 
   bool recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
+  bool recordWallSample(int lock_index, int tid, u64 call_trace_id,
+                       ExecutionEvent *event, const Context &context);
 
   // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
   // recording. `correlation_id` is the same jlong passed to the HotSpot

@@ -87,14 +87,14 @@ def repo_flag(tokens):
 
 def ready_target(args, repo, cwd):
     """(PR number, node id, head oid, check arguments) for the PR the PR-ready subcommand
-    targets, from GitHub so the commits the PR holds are checked; ("", "", "", []) means
-    the current branch, None that it cannot be resolved."""
+    targets, from GitHub so the commits the PR holds are checked; None means the PR
+    cannot be resolved."""
     selector = pr_selector(args)
     out = gh_query(["pr", "view", *selector[:1], *(["-R", repo] if repo else []), "--json",
                     "id,number,headRefName,headRefOid,baseRefName", "-q",
                     '"\\(.id) \\(.number) \\(.headRefName) \\(.headRefOid) \\(.baseRefName)"'], cwd)
     if not out or len(out.split()) != 5:
-        return None if selector else ("", "", "", [])
+        return None
     pr_id, number, head, oid, base = out.split()
     return number, pr_id, oid, ["--branch", head, "--commit", oid, "--base", origin(base)]
 

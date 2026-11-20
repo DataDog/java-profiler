@@ -134,9 +134,13 @@ Profiler::start()
    which only `unregisterThread()` closes; the wall engines and `ITimer` have
    no `unregisterThread()`. Only a CPU engine's `start()` replaces its table:
    `CTimer` under `ThreadTablesFreeze`, `PerfEvents` without it (PROF-16359).
-4. Then, in order: `_alloc_engine->stop()`, reference-chain teardown,
-   `malloc_tracer.stop()`, the socket sampler, `_wall_engine->stop()`,
-   `_cpu_engine->stop()`.
+4. Then, in order: allocation, reference-chain teardown, native malloc, the
+   socket sampler, wall-clock and CPU teardown. Engine stops use `_activated_mask`,
+   not the requested mask: a mixed-success start must not stop an engine that failed.
+
+Stop deactivates the thread-registry recording projection after engine teardown.
+`rollBackStart()` also deactivates it on each post-JFR start failure, including a
+CPU registration-drain failure; its existing signal-drain preconditions still apply.
 
 `Profiler::check()` runs the same selection and calls each engine's `check()`
 without starting anything. It runs only while the profiler is `IDLE`
@@ -492,13 +496,19 @@ loop while _running:
   collectThreads(threads)       ThreadFilter::collect() if the filter is on,
                                 else OS::listThreads() minus self and the
                                 Libraries refresher thread
-  NativeMem::record(NM_WALLCLOCK, change_in_capacity * sizeof(entry))
-  sample = ReservoirSampler(threads)     at most _reservoir_size threads
+  account vector-capacity changes in NM_WALLCLOCK
+  sample = ReservoirSampler(threads)   at most _reservoir_size threads
   for each: sampleThreads(t)    OS::sendSignalWithCookie(tid, SIGVTALRM,
                                 SignalCookie::wallclock())
-  update WallClockEpochEvent; emit it on change or every >= 1 s
-  OS::sleep(normal(interval, interval/10)), clamped to [1, 2*interval-1] ns
+  update WallClockEpochEvent; emit it on a pool or outcome change, or every >= 1 s
+  advance monotonic opportunity deadline by the dithered interval
+  OS::sleep(remaining time)             overdue deadline -> now + interval
 ```
+
+The dithered interval is clamped to `[1, 2*interval-1]` ns. Timer work
+and wake lateness shorten the next wait; missed opportunities never cause catch-up
+bursts. Optional fixed-size phase diagnostics are emitted after join; see
+[SamplerPerfCounters](../reference/SamplerPerfCounters.md#wall-timer-cadence-and-phase-diagnostics).
 
 Both context-filtered and unfiltered prechecks run **after** uniform reservoir
 selection, so timer suppression and registry lookups visit at most the reservoir
@@ -506,7 +516,32 @@ size. Suppressed selections consume capacity and count in `numSuccessfulSamples`
 just like signals suppressed by the handler; failed sends do not count. This keeps
 `samplePoolSize / numSuccessfulSamples` upscaling consistent with selection
 probability. `samplePoolSize` includes all collected candidates, and
-`numSuppressedSampledRun` reports suppression separately. There is no backfill.
+`numSuppressedSampledRun` reports suppression separately. It is the total for
+all passes of the epoch. A suppression never closes an epoch. There is no backfill.
+Retained blocked units keep each epoch window's start tick and serialize at that
+tick. This requires consumers to scale by the sample timestamp's epoch, not flush
+time. Mixed-window tails serialize separately; same-window periodic weights can
+compact. Closed epoch metadata follows pending segments across dumps; see
+[JfrIntegration](JfrIntegration.md#event-encoding).
+
+Deferred publication and periodic matching read the epoch under their acquired
+recording stripe. Contention records normally. A weight-1 observation keeps its
+serialization timestamp; only a roll-up uses the matching pending window start.
+
+The normal timer holds an epoch mutex during each pass, not during sleep.
+Dump takes that mutex, then all stripes, and settles the open window before sealing.
+Timer exit settles the final window. Signals never access this mutex or timer state.
+
+A changed population closes the preceding window before dispatch. Changed send
+results close it with its prior statistics before installing the new counts.
+The new counts open the next window. They do not close it in the same pass.
+With unchanged population, failures discovered later in a pass can leave
+pass-straddling units coalesced under the prior success ratio. For example,
+16/16 to 16/14 gives the straddling units about 12.5% attribution error. The writer
+cannot split those already-coalesced units retroactively. Stable-window compaction
+is retained; epochs are not emitted unconditionally on every timer pass.
+`wc_unowned_blocked_tail_recorded` counts successful deferred-segment writes,
+not ordinary periodic samples or failed writes.
 
 The timer's TID metadata lookup inspects at most 256 hash buckets per candidate,
 including tombstones. Exhaustion increments `wc_precheck_registry_probe_exhausted`
@@ -526,18 +561,19 @@ Registry identity survives recording restarts until thread teardown. A new
 unfiltered epoch invalidates suppression state, which the owner resets lazily
 on its next hook; an open logical context survives that refresh, and matching
 context exits still work while stopped or stale. Context-filtered starts instead
-clear membership and eagerly reset all tracker slots. Context entry/exit drops
-unowned deferred tails: original context attributes are not retained with them.
+clear membership and eagerly reset all tracker slots. Same-recording context transitions retain unowned deferred tails with their
+original fields; see [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 Timer backing capacity is accounted with allocation deltas and retracted on exit,
-not by replacing the shared `NM_WALLCLOCK` gauge. The tracker allocates its backing
-on first registry registration and keeps it until destruction. In-flight owner hooks can
-carry slot IDs across `stop()`, so the backing outlives the recording; it is charged
-to its own `NM_WALL_BLOCK_TRACKER` category because `NM_WALLCLOCK` reads 0 when idle.
-Allocation failure leaves suppression inactive; a later registration retries.
+not by replacing the shared `NM_WALLCLOCK` gauge. The tracker's slots and context sidecars
+are allocated lazily and kept until tracker destruction. In-flight owner hooks can carry
+slot IDs across `stop()`, so this backing outlives the recording; it is charged to its own
+`NM_WALL_BLOCK_TRACKER` category because `NM_WALLCLOCK` reads 0 when idle.
+Block-slot allocation failure leaves suppression inactive; a later registration retries.
+Context boundaries skip clean owned-run writes and retain unowned context and epoch segments.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
-(`SIGIO`, `os.h:23`), and joins it (`wallClock.cpp:330-339`).
+(`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.
 
 ### Signal delivery per platform
 
@@ -794,9 +830,10 @@ The engines above feed it: `PerfEvents` reports its tid-indexed event table
 (up to `pid_max × sizeof(PerfEvent)` bytes, two cache lines per slot; address
 space) and the per-thread ring pages (resident) as `NM_PERF`, `CTimer` reports
 its tid-indexed timer table (up to `pid_max × 4` bytes, `pid_max × sizeof(int)`;
-address space) as `NM_CTIMER`, `timerLoopCommon()` reports `NM_WALLCLOCK`,
-`WallClockBlockTracker` reports `NM_WALL_BLOCK_TRACKER`, and `LivenessTracker`
-reports `NM_LIVENESS`.
+address space) as `NM_CTIMER`, `timerLoopCommon()` accounts its candidate-vector capacity under `NM_WALLCLOCK`,
+`WallClockBlockTracker` reports its lazy slots and retained-context chunks as
+`NM_WALL_BLOCK_TRACKER`, and `LivenessTracker` reports `NM_LIVENESS`; see
+[ProfilerMemoryRequirements](../reference/ProfilerMemoryRequirements.md#9-native-owners-and-retained-context-storage).
 
 Unlike the other categories, the two tid-indexed tables are allocated address
 space, not resident memory: each is `calloc`ed at `pid_max` slots, but only the

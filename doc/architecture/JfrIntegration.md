@@ -46,13 +46,15 @@ Profiler
 - `dump(filename)` calls `Recording::switchChunk()`; dumping to the recording's
   own file is rejected (`flightRecorder.cpp:2754-2776`).
 
-These three take `_rec_lock` exclusively. Every record path takes it shared
-through `OptionalSharedLockGuard`, which gives up after
-`DEFAULT_SHARED_SPIN_BUDGET` (256) failed CAS attempts or as soon as it sees the
-exclusive lock held (`spinLock.h:59`, `77-90`, `128-143`). `recordEvent()` and
-`recordEventDelegated()` count such drops in `SAMPLES_DROPPED_REC_LOCK`
-(`flightRecorder.cpp:2908-2910`, `2939-2941`); the other record paths skip the
-event silently.
+These three and the normal timer's `wallClockEpoch()` take `_rec_lock` exclusively.
+The timer waits for ownership so closed scaling metadata cannot be dropped.
+Other record paths take it shared through `OptionalSharedLockGuard`.
+
+Shared acquisition stops after `DEFAULT_SHARED_SPIN_BUDGET` (256) failed CAS
+attempts or when an exclusive owner is observed. `recordEvent()` and
+`recordEventDelegated()` count these drops in `SAMPLES_DROPPED_REC_LOCK`.
+
+Other shared record paths skip contention silently.
 
 ## Event Buffers
 
@@ -79,6 +81,10 @@ the thread appears in the chunk's thread pool (`flightRecorder.cpp:2873-2906`).
 `recordEventDelegated()` handles CPU and wall samples whose stack is captured by
 the JVM instead (HotSpot `RequestStackTrace`): it writes a stack-trace ID of 0
 and the correlation ID (`flightRecorder.cpp:2914-2943`, `flightRecorder.h:646-651`).
+
+ASGCT wall sampling keeps the stripe through cached-ID publication and tail commit.
+Ordinary and deferred writes return independent success results. A failed tail write
+must not consume its retained ID, context, state or weight.
 
 ### Buffer layout and thresholds
 
@@ -141,6 +147,28 @@ attribute (`writeCurrentContext()`, `flightRecorder.cpp:2354-2368`). Liveness
 events write the context snapshot taken when the allocation was tracked
 (`writeContextSnapshot()`, `flightRecorder.cpp:2345-2352`,
 `livenessTracker.cpp:2411`).
+
+Retained unowned wall tails write their saved span/root IDs and tags, not live TLS.
+Each pending epoch segment also writes its original epoch-window start timestamp.
+Consumers must apply the scale of the window containing that timestamp, not the
+later serialization time. Ordinary unit samples keep serialization timestamps;
+the MethodSample schema is unchanged.
+
+`Recording` keeps closed wall epochs under exclusive `_rec_lock` access.
+Dump locks the normal timer's epoch mutex before all recording stripes and closes
+the open window before sealing. Timer exit closes its final window before JFR stop.
+
+After extraction, the writer prunes epochs with no pending tail and replays the
+rest into its new chunk. Repeated dumps keep each retained tail's scale available.
+
+The map holds retained origins and recently closed epochs, charged to `NM_WALLCLOCK`.
+The timer prunes it when it reaches twice the size the last prune kept, and at least 4096 entries.
+An entry takes about 100 bytes on 64-bit hosts, so the floor is about 400 KiB.
+Before that prune, the timer locks and unlocks each stripe in turn, never all at once.
+This waits for deferrals that read a closed epoch. Later deferrals read its successor.
+Dump collects pending origins while all stripes exclude tail writes and deferred
+weight publication. Signal handlers never access or allocate this map.
+See [TLSContext](TLSContext.md#retained-unowned-wall-context).
 
 ### Writers outside `recordEvent()`
 

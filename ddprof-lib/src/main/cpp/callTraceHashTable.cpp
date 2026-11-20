@@ -520,7 +520,11 @@ void CallTraceHashTable::collect(CallTraceSet &traces, std::function<void(CallTr
 }
 
 
-void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) {
+#ifdef UNIT_TEST
+u64 CallTraceHashTable::failedPreservationIdForTest = 0;
+#endif
+
+bool CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) {
   // Trace preservation for standby tables (no contention with new puts)
   // This is safe because new put() operations go to the new active table
   
@@ -538,13 +542,13 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
        search_table != nullptr; search_table = search_table->prev()) {
     CallTrace *existing_trace = findCallTrace(search_table, hash);
     if (existing_trace != nullptr) {
-      return;
+      return existing_trace->trace_id == source_trace->trace_id;
     }
   }
 
   LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
   if (table == nullptr) {
-    return; // Table allocation failed
+    return false; // Table allocation failed
   }
   
   u64 *keys = table->keys();
@@ -564,7 +568,11 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
         // Create a copy of the source trace preserving its exact ID
         const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
         const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
-        void *memory = _allocator.alloc(total_size);
+        void *memory = nullptr;
+#ifdef UNIT_TEST
+        if (source_trace->trace_id != failedPreservationIdForTest)
+#endif
+        memory = _allocator.alloc(total_size);
         if (memory != nullptr) {
           // Use placement new to invoke constructor in-place
           CallTrace* copied_trace = new (memory) CallTrace(source_trace->truncated, source_trace->num_frames, source_trace->trace_id);
@@ -577,6 +585,7 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
           // Grow like put(): one entry per live trace ID can exceed the
           // initial capacity (LivenessTracker tracks up to 262,144 objects).
           expandTableIfNeeded(table, table->incSize());
+          return true;
         } else {
           // Allocation failure - clear the key we claimed
           __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
@@ -592,4 +601,5 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       break;
     }
   }
+  return false;
 }
