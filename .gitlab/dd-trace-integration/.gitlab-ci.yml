@@ -138,11 +138,11 @@ prepare-patched-agent:
 
         if [ "${JDK_LIBC}" = "musl" ]; then
           case "${JAVA_VERSION}" in
-            8)  LIBERICA_VERSION="8u482+10" ;;
-            11) LIBERICA_VERSION="11.0.30+9" ;;
-            17) LIBERICA_VERSION="17.0.18+10" ;;
-            21) LIBERICA_VERSION="21.0.10+10" ;;
-            25) LIBERICA_VERSION="25.0.2+12" ;;
+            8)  LIBERICA_VERSION="8u514+5" ;;
+            11) LIBERICA_VERSION="11.0.33+11" ;;
+            17) LIBERICA_VERSION="17.0.21+11" ;;
+            21) LIBERICA_VERSION="21.0.13+11" ;;
+            25) LIBERICA_VERSION="25.0.5+11" ;;
             *) echo "ERROR: Unsupported JDK version: ${JAVA_VERSION}"; exit 1 ;;
           esac
           case "${JDK_ARCH}" in
