@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk8
 ---
 
-## glibc-arm64-openj9-jdk8 - ❌ FAIL
+## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-22 00:01:34 EST
+**Date:** 2026-11-22 05:47:55 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 29 |
-| CPU Cores (end) | 29 |
+| CPU Cores (start) | 18 |
+| CPU Cores (end) | 18 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 229 |
+| Sample Rate | 3.82/sec |
+| Health Score | 239% |
+| Threads | 12 |
+| Allocations | 0 |
 
-#### Scenario 2: Tracer+Profiler ❌
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 80 |
+| Sample Rate | 1.33/sec |
+| Health Score | 83% |
+| Threads | 12 |
+| Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 29-29 cores)</summary>
+<summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
 
 ```
-1795323448 29
-1795323453 29
-1795323458 29
-1795323463 29
-1795323468 29
-1795323473 29
-1795323478 29
-1795323483 29
-1795323488 29
-1795323493 29
-1795323498 29
-1795323503 29
-1795323508 29
-1795323513 29
-1795323518 29
-1795323523 29
-1795323528 29
-1795323533 29
-1795323538 29
-1795323543 29
+1795344276 18
+1795344281 18
+1795344286 18
+1795344291 18
+1795344296 18
+1795344301 18
+1795344306 18
+1795344311 18
+1795344316 18
+1795344321 18
+1795344326 18
+1795344331 18
+1795344336 18
+1795344341 18
+1795344346 18
+1795344351 18
+1795344356 18
+1795344361 18
+1795344366 18
+1795344371 18
 ```
 </details>
 

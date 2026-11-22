@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-hotspot-jdk11
 ---
 
-## glibc-arm64-hotspot-jdk11 - ❌ FAIL
+## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-11-22 00:01:33 EST
+**Date:** 2026-11-22 05:47:54 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: glibc-arm64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 26 |
-| CPU Cores (end) | 25 |
+| CPU Cores (start) | 40 |
+| CPU Cores (end) | 40 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 66 |
+| Sample Rate | 1.10/sec |
+| Health Score | 69% |
+| Threads | 7 |
+| Allocations | 75 |
 
-#### Scenario 2: Tracer+Profiler ❌
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 65 |
+| Sample Rate | 1.08/sec |
+| Health Score | 68% |
+| Threads | 11 |
+| Allocations | 43 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 26-26 cores)</summary>
+<summary>CPU Timeline (1 unique values: 40-40 cores)</summary>
 
 ```
-1795323412 26
-1795323417 26
-1795323422 26
-1795323427 26
-1795323432 26
-1795323437 26
-1795323442 26
-1795323447 26
-1795323452 26
-1795323457 26
-1795323462 26
-1795323467 26
-1795323472 26
-1795323477 26
-1795323482 26
-1795323487 26
-1795323492 26
-1795323497 26
-1795323502 26
-1795323507 26
+1795344217 40
+1795344222 40
+1795344227 40
+1795344232 40
+1795344237 40
+1795344242 40
+1795344247 40
+1795344252 40
+1795344257 40
+1795344262 40
+1795344267 40
+1795344272 40
+1795344277 40
+1795344282 40
+1795344287 40
+1795344292 40
+1795344297 40
+1795344302 40
+1795344307 40
+1795344312 40
 ```
 </details>
 

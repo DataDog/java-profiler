@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-hotspot-jdk11
 ---
 
-## musl-x64-hotspot-jdk11 - ❌ FAIL
+## musl-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-11-22 00:01:36 EST
+**Date:** 2026-11-22 05:47:58 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: musl-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 33 |
-| CPU Cores (end) | 41 |
+| CPU Cores (start) | 81 |
+| CPU Cores (end) | 81 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 518 |
+| Sample Rate | 8.63/sec |
+| Health Score | 539% |
+| Threads | 8 |
+| Allocations | 382 |
 
-#### Scenario 2: Tracer+Profiler ❌
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 707 |
+| Sample Rate | 11.78/sec |
+| Health Score | 736% |
+| Threads | 9 |
+| Allocations | 533 |
 
 <details>
-<summary>CPU Timeline (4 unique values: 33-66 cores)</summary>
+<summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1795323372 33
-1795323377 33
-1795323382 33
-1795323387 33
-1795323392 33
-1795323397 33
-1795323402 33
-1795323407 33
-1795323412 33
-1795323417 33
-1795323422 33
-1795323427 33
-1795323432 33
-1795323437 33
-1795323442 66
-1795323447 66
-1795323452 46
-1795323457 46
-1795323462 46
-1795323467 46
+1795344193 81
+1795344198 81
+1795344203 81
+1795344208 81
+1795344213 81
+1795344218 81
+1795344223 81
+1795344228 81
+1795344233 81
+1795344238 81
+1795344243 81
+1795344248 81
+1795344253 81
+1795344258 81
+1795344263 81
+1795344268 81
+1795344273 81
+1795344278 81
+1795344283 81
+1795344288 81
 ```
 </details>
 
