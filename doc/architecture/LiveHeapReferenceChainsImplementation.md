@@ -204,71 +204,7 @@ An object can change after its first expansion. For example, a long-lived collec
 | Leak accumulation | 16 | Select parents that accumulate instances of watched classes. |
 | Stale expanded entries | 256 | Provide eventual low-priority rechecks across the frontier table. |
 | Transient root kinds | 16 | Improve root attribution when later observations provide a more durable root kind. |
-<<<<<<< HEAD
 | Anchors | 32 selected, plus 16 FIFO entries | Descend from indexed anchors: objects held by static fields or JNI globals, and confirmed collection/map holders first seen as stack or JNI locals. See [Anchor index](#anchor-index). |
-=======
-| Anchor walks | Up to 32 indexed tags, plus up to 16 FIFO tags | Best-effort revisits of durable roots and container-classified local roots; an at-risk FIFO covers reparenting. |
-
-### Anchor index and selection
-
-`_static_anchor_index` stores frontier tags in index-insertion order. The tag-keyed
-`_static_anchor_index_class_tags` map stores each holder's class tag. `_class_shape_cache`
-stores the result of a bounded check for `Collection` or `Map`.
-
-Static-field and JNI-global edges add holders to the index. Root callbacks also index
-positive frontier tags for stack/JNI-local holders when their class tag is known and shape
-is unknown or `CONTAINER`; raw leak tags are excluded.
-
-`reconcileAnchorClassShapes()` can classify up to 128 distinct unknown anchor classes
-in a pass that reaches rotation. Each class walk checks at most 64 worklist entries for
-`Collection` or `Map`; duplicate interfaces consume entries in this bound.
-
-The shape cache uses process-lifetime class tags and survives search restarts.
-The index and side map are per-search.
-
-If interface tags are unavailable, shapes remain unknown. A walk with missing class metadata,
-failed hierarchy lookup, or pending entries at the 64-pop limit caches `UNKNOWN_TRUNCATED`; only a
-complete no-match walk caches `NON_CONTAINER`.
-
-An indexed root-attached `STATIC_FIELD` or `JNI_GLOBAL` entry can be selected regardless of
-shape when its state is `FRONTIER` or `EXPANDED` and it is not queued.
-
-Unknown local-root holders remain indexed but are not selected until classified `CONTAINER` or
-`UNKNOWN_TRUNCATED`. A definitive `NON_CONTAINER` removes transient-only entries from both index and
-side map; durable static/JNI-global roots remain indexed and root-attached entries stay selectable.
-
-An indexed holder classified `CONTAINER` can remain eligible after reparenting because its
-cached shape still matches when its frontier entry has a parent tag. A truncated classification
-also remains eligible rather than being mistaken for a completed non-match.
-
-Anchor selection removes entries whose frontier lookup fails or whose state is
-`ABANDONED`. It compacts survivors in admission order and removes pruned class-tag entries.
-
-When rotation reaches anchor selection, the selector takes up to 32 entries.
-Its order is leak-tagged, fresh, known containers, then other eligible anchors.
-
-Separate position cursors scan container and other tiers.
-Pruning can shift their positions relative to surviving tags.
-
-An at-risk FIFO offers a best-effort first look after reparenting or a static-field edge.
-Admission is capped globally and per class; excess pushes are dropped.
-Rotation drains up to 16 tags and skips tags already selected by the index.
-
-Drained entries can be lost if no rotation budget remains, object resolution fails, or a
-frontier lookup fails during the walk or requeue.
-
-Budget, deadline, and frontier-cap stops return resolved-but-unwalked entries to the FIFO
-front when their frontier entries still exist.
-
-The index and FIFO share the rotation budget. The 32 plus 16 limit counts tags, not edges
-or elapsed time.
->>>>>>> origin/main
-
-Leak accumulation has two levels. The first groups admissions by leaf class and parent class. The second ranks parent object tags within the selected group.
-
-When a class first becomes watched, the tracker scans existing expanded entries for matching stable class tags. This scan supplies data that admission-time tracking could not collect before the class became watched.
-
-Rotation improves coverage but remains bounded and best effort.
 
 ### Anchor index
 
@@ -283,21 +219,36 @@ Rotation improves coverage but remains bounded and best effort.
 - **Local share.** Holders that root enumeration reports as `STACK_LOCAL` or `JNI_LOCAL` roots.
   `heapRootCallback()` passes them to `noteLocalRootHolder()`. A holder is indexed only after
   `reconcileAnchorClassShapes()` classifies its class as implementing `java.util.Collection` or
-  `java.util.Map`. A confirmed collection remains selectable after expansion reparents it into a
+  `java.util.Map` (or leaves a bounded hierarchy walk truncated - see below). A confirmed collection remains selectable after expansion reparents it into a
   deeper chain, so the tracker still observes replacement backing storage such as a resized
   `HashMap.table`. Local holders of any other class are never indexed.
 
 Classification needs JNI, which the heap-root callback cannot use. A holder whose class is not
 yet classified waits in `_pending_local_anchors`, capped at 1024 entries.
 `resolvePendingLocalAnchors()` runs after each `reconcileAnchorClassShapes()`. It indexes the
-confirmed collections and drops everything else, including holders whose class is still
-unclassified. The next root enumeration reports a dropped holder again. Reconciliation
+confirmed collections and holders whose walk ended truncated, and drops everything else,
+including holders whose class is still unclassified. The next root enumeration reports a dropped holder again. Reconciliation
 classifies pending holder classes before unclassified durable-anchor classes, within the
 128-classes-per-pass budget. When the pending buffer is full, a holder already confirmed as a
 collection (met while the local share is at its cap) evicts the oldest entry not confirmed as a
 collection. An unclassified holder that meets a full buffer is dropped, and so is a confirmed
 collection when the buffer holds only confirmed collections. Either way the next root enumeration
 reports it again.
+
+The index carries a tag-keyed view (`_static_anchor_index_class_tags`) with each holder's runtime
+class tag and index position. A root first reported before its class was tagged stores 0 there;
+the later edge that delivers the resolved tag upgrades it in place, or a reparented holder could
+never re-enter the container-shape fallback.
+
+`classImplementsContainerOrMap()` walks at most 64 worklist entries per class (duplicate
+interfaces consume entries). A walk that ends without proving a non-match - missing metadata, a
+failed hierarchy lookup, or pending entries at the 64-pop limit - caches `UNKNOWN_TRUNCATED`,
+which keeps the holder selectable; only a complete no-match walk caches `NON_CONTAINER`. The
+shape cache uses process-lifetime class tags and survives search restarts.
+
+Anchor selection skips entries whose frontier lookup fails or whose state is `ABANDONED`; the
+index itself is compacted only by local-share compaction and durable-cap eviction, not per
+selection.
 
 The local share is capped at 4096 entries (`LOCAL_ANCHOR_INDEX_CAP`), bounding its scan contribution.
 At the cap, `compactLocalAnchors()` scans only the local share but its erasure runs
