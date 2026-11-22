@@ -992,14 +992,14 @@ expect "T10h2 file mode skips stale detection" 1 "$rc" "$out" "(try)"
 if [[ "$out" == *"no longer found"* ]]; then fail "T10h2 file mode reports a stale entry:"$'\n'"$out"; else pass; fi
 rc=0; out=$(run_exc_module exempt_first) || rc=$?
 expect "T10g first try exempt, second still flagged" 1 "$rc" "$out" "$SRC/bad.cpp:3: C++ exceptions are forbidden in native code (try)"
-if [[ "$out" == *"bad.cpp:2:* (try)"* ]]; then
+if printf '%s' "$out" | grep -q "$SRC/bad.cpp:2: .* (try)"; then
   fail "T10g the listed occurrence is not exempt:"$'\n'"$out"
 else
   pass
 fi
 rc=0; out=$(run_exc_module exempt_second) || rc=$?
 expect "T10g2 second try exempt, first still flagged" 1 "$rc" "$out" "$SRC/bad.cpp:2: C++ exceptions are forbidden in native code (try)"
-if [[ "$out" == *"bad.cpp:3:* (try)"* ]]; then
+if printf '%s' "$out" | grep -q "$SRC/bad.cpp:3: .* (try)"; then
   fail "T10g2 the listed occurrence is not exempt:"$'\n'"$out"
 else
   pass
