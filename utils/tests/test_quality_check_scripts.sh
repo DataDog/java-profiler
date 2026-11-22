@@ -1006,13 +1006,6 @@ else
 fi
 rc=0; out=$(run_exc_module stale) || rc=$?
 expect "T10h stale exception entry fails" 1 "$rc" "$out" "known exception goto #1 no longer found"
-if [[ "$out" == *"(throw)"* ]] && [[ "$out" == *"(catch)"* ]]; then
-  pass
-else
-  fail "T10g unlisted keywords must stay flagged:"$'\n'"$out"
-fi
-rc=0; out=$(run_exc_module stale) || rc=$?
-expect "T10h stale exception entry fails" 1 "$rc" "$out" "known exception goto no longer found"
 
 # --- Summary -----------------------------------------------------------------
 
