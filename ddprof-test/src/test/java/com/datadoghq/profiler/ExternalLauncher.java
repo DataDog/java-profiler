@@ -231,13 +231,24 @@ public class ExternalLauncher {
     spinSink += acc;
   }
 
-  private static void startSpinThread() {
+  private static void startSpinThread() throws InterruptedException {
     if (spinThread != null) {
       throw new IllegalStateException("spin thread already running");
     }
+    spinRounds = 0;
     spinRunning = true;
     spinThread = new Thread(ExternalLauncher::runSpinWorkload, "admission-spin");
     spinThread.start();
+    // Thread.start() does not guarantee the workload entered its loop before SPINSTOP runs;
+    // wait for the first completed round, or the lifecycle assertion on spinRounds would race.
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+    while (spinRounds == 0) {
+      if (!spinThread.isAlive() || System.nanoTime() - deadline >= 0) {
+        spinRunning = false;
+        throw new IllegalStateException("spin workload did not start within 5s");
+      }
+      Thread.sleep(1);
+    }
   }
 
   private static void stopSpinThread() throws InterruptedException {
