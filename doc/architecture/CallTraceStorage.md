@@ -175,11 +175,11 @@ its stripe lock and drops the sample when its buffer is `NULL`.
 `processTraces()` reuses two member collections instead of allocating per call:
 `_traces_buffer` (`CallTraceSet`) and `_preserve_set_buffer` (`CallTraceIdSet`).
 Both use `CountingAllocator`, so their memory is reported under `NM_CALLTRACE`.
-`clear()` keeps the bucket arrays and frees the nodes, so after the first
-rotation only node allocation repeats per rotation. The bucket arrays allocate
-on first use, not in `acquire()`: std containers cannot pre-size without the
-throwing allocator contract, and `acquire()` must fail without exceptions.
-`release()` frees the collections.
+`clear()` keeps the bucket arrays; node allocation repeats on every rotation,
+and the buckets rehash when a rotation holds more traces than any earlier one.
+The bucket arrays allocate on first use, not in `acquire()`: std containers
+cannot pre-size without the throwing allocator contract, and `acquire()` must
+fail without exceptions. `release()` frees the collections.
 
 ## Liveness Preservation
 

@@ -888,10 +888,14 @@ mkdir -p "$EXC_ROOT/$SRC" && git -C "$EXC_ROOT" init -q
 cat > "$EXC_ROOT/$SRC/bad.cpp" <<'EOF'
 void f() {
   try { g(); } catch (const std::bad_alloc&) { }
+  try { h(); }
   throw std::logic_error("unreachable");
   // comments may say try, catch, throw and std::rethrow_exception
   const char* s = "and strings may say throw";
-  char digit_sep = 1'0;
+  const char* raw = R"(raw strings may say throw)";
+  int a = 1'000; int b = 2'000;
+  std::rethrow_exception(e);
+  __cxa_throw(o);
 }
 EOF
 cp "$EXC_ROOT/$SRC/bad.cpp" "$EXC_ROOT/$SRC/bad.h"
@@ -907,12 +911,37 @@ mkdir -p "$EXC2_ROOT/$SRC" && git -C "$EXC2_ROOT" init -q
 cp "$EXC_ROOT/$SRC/bad.cpp" "$EXC2_ROOT/$SRC/bad.cpp"
 git -C "$EXC2_ROOT" add -f "$SRC"
 
-# File mode: every keyword hits; comments, strings and digit separators do not.
+# File mode: every keyword hits; comments, strings, raw strings and digit
+# separators do not.
 rc=0; out=$(python3 "$EXC" --root "$EXC_ROOT" "$SRC/bad.cpp" 2>&1) || rc=$?
 expect "T10a file mode flags keywords" 1 "$rc" "$out" "$SRC/bad.cpp:2: C++ exceptions are forbidden"
 expect "T10b catch flagged" 1 "$rc" "$out" "(catch)"
+expect "T10b2 helper flagged" 1 "$rc" "$out" "(rethrow_exception)"
+expect "T10b3 cxa flagged" 1 "$rc" "$out" "(__cxa_throw)"
 n=$(printf '%s' "$out" | grep -c 'forbidden in native code' || true)
-if [ "$n" -eq 3 ]; then pass; else fail "T10c exactly 3 hits in bad.cpp, got $n"; fi
+if [ "$n" -eq 6 ]; then pass; else fail "T10c exactly 6 hits in bad.cpp (try x2, throw, rethrow_exception, __cxa_throw; catch), got $n"; fi
+if [[ "$out" == *"1'000"* ]]; then fail "T10c2 digit separators blanked as literals:"$'\n'"$out"; else pass; fi
+
+# A keyword between digit separators must stay flagged: blanking them as
+# character literals would hide it.
+DS_ROOT="$TEMP_DIR/exc-ds"
+mkdir -p "$DS_ROOT/$SRC"
+printf 'int a = 1%s000; throw 1; int b = 2%s000;\n' "'" "'" > "$DS_ROOT/$SRC/sep.cpp"
+rc=0; out=$(python3 "$EXC" --root "$DS_ROOT" "$SRC/sep.cpp" 2>&1) || rc=$?
+expect "T10c3 throw between digit separators flagged" 1 "$rc" "$out" "(throw)"
+
+# Raw-string bodies are blanked: a throw inside one must not be flagged.
+RS_ROOT="$TEMP_DIR/exc-rs"
+mkdir -p "$RS_ROOT/$SRC"
+printf 'const char* s = R"(throw inside raw string)";\n' > "$RS_ROOT/$SRC/raw.cpp"
+rc=0; out=$(python3 "$EXC" --root "$RS_ROOT" "$SRC/raw.cpp" 2>&1) || rc=$?
+expect "T10c4 raw-string body blanked" 0 "$rc" "$out" "native exceptions: OK (0 keywords"
+
+# Environment error: the root is not a git checkout.
+NC_ROOT="$TEMP_DIR/exc-nogit"
+mkdir -p "$NC_ROOT/$SRC"
+rc=0; out=$(python3 "$EXC" --root "$NC_ROOT" 2>&1) || rc=$?
+expect "T10c5 environment error outside a checkout" 2 "$rc" "$out" "error: git ls-files failed"
 
 rc=0; out=$(python3 "$EXC" --root "$EXC_ROOT" 2>&1) || rc=$?
 expect "T10d tracked mode checks .cpp and .h" 1 "$rc" "$out" "$SRC/bad.h:3: C++ exceptions are forbidden"
@@ -921,10 +950,11 @@ if [[ "$out" == *notes.md* ]]; then fail "T10e tracked mode reads a non-source f
 # The real tree is clean and has no known exceptions; a new compliant native
 # source must not fail this.
 rc=0; out=$(python3 "$EXC" 2>&1) || rc=$?
-expect "T10f tracked tree clean" 0 "$rc" "$out" "native exceptions: OK (0 calls, 0 known exception(s))"
+expect "T10f tracked tree clean" 0 "$rc" "$out" "native exceptions: OK (0 keywords, 0 known exception(s))"
 
-# Exception-list behavior, exercised through the module: a listed site is
-# exempt (once), an entry whose site disappeared fails as stale.
+# Exception-list behavior, exercised through the module: an entry exempts
+# exactly one occurrence of its keyword, and an entry whose occurrence
+# disappeared fails as stale.
 run_exc_module() {
   # Tracked mode: the stale-exception check runs only without file arguments.
   python3 - "$EXC" "$EXC2_ROOT" "$1" <<'EOF' 2>&1
@@ -936,20 +966,46 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 # Exception keys are relative to mod.SRC (the tracked-mode view of the file).
 rel = "bad.cpp"
-if case == "exempt":
-    mod.KNOWN_EXCEPTIONS = {(rel, "try")}
+if case == "exempt_first":
+    mod.KNOWN_EXCEPTIONS = {(rel, "try", 1)}
+elif case == "exempt_second":
+    mod.KNOWN_EXCEPTIONS = {(rel, "try", 2)}
 elif case == "stale":
-    mod.KNOWN_EXCEPTIONS = {(rel, "goto")}
+    mod.KNOWN_EXCEPTIONS = {(rel, "goto", 1)}
 sys.exit(mod.main(["--root", root]))
 EOF
 }
-rc=0; out=$(run_exc_module exempt) || rc=$?
-expect "T10g listed site exempt once" 1 "$rc" "$out" "$SRC/bad.cpp:2: C++ exceptions are forbidden in native code (catch)"
-if [[ "$out" == *"(try)"* ]]; then
+# File mode skips stale detection by design: the same stale key over a file
+# argument must not report it.
+rc=0; out=$(python3 - "$EXC" "$EXC2_ROOT" <<'EOF' 2>&1
+import importlib.util, sys
+
+path, root = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("check_cpp_exceptions", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.KNOWN_EXCEPTIONS = {("bad.cpp", "goto", 1)}
+sys.exit(mod.main(["--root", root, "ddprof-lib/src/main/cpp/bad.cpp"]))
+EOF
+) || rc=$?
+expect "T10h2 file mode skips stale detection" 1 "$rc" "$out" "(try)"
+if [[ "$out" == *"no longer found"* ]]; then fail "T10h2 file mode reports a stale entry:"$'\n'"$out"; else pass; fi
+rc=0; out=$(run_exc_module exempt_first) || rc=$?
+expect "T10g first try exempt, second still flagged" 1 "$rc" "$out" "$SRC/bad.cpp:3: C++ exceptions are forbidden in native code (try)"
+if [[ "$out" == *"bad.cpp:2:* (try)"* ]]; then
   fail "T10g the listed occurrence is not exempt:"$'\n'"$out"
 else
   pass
 fi
+rc=0; out=$(run_exc_module exempt_second) || rc=$?
+expect "T10g2 second try exempt, first still flagged" 1 "$rc" "$out" "$SRC/bad.cpp:2: C++ exceptions are forbidden in native code (try)"
+if [[ "$out" == *"bad.cpp:3:* (try)"* ]]; then
+  fail "T10g2 the listed occurrence is not exempt:"$'\n'"$out"
+else
+  pass
+fi
+rc=0; out=$(run_exc_module stale) || rc=$?
+expect "T10h stale exception entry fails" 1 "$rc" "$out" "known exception goto #1 no longer found"
 if [[ "$out" == *"(throw)"* ]] && [[ "$out" == *"(catch)"* ]]; then
   pass
 else

@@ -92,18 +92,18 @@ private:
 
     bool allocateTables();
 #ifdef UNIT_TEST
-    int _unusable_table_for_test = NO_UNUSABLE_TABLE;
-    int _null_table_for_test = NO_UNUSABLE_TABLE;
+    int _unusable_table_for_test = NO_TABLE_FOR_TEST;
+    int _null_table_for_test = NO_TABLE_FOR_TEST;
 #endif
     // Swaps the three table pointers to nullptr and deletes the tables once
     // drained (a table still guarded after the timeout is leaked).
     void freeTables();
     
     // Per-rotation collections for processTraces (single-threaded operation).
-    // clear() keeps the bucket arrays and frees the nodes, so after the first
-    // rotation only node allocation (unavoidable: every collected trace gets a
-    // node) repeats per rotation. The bucket arrays allocate on first use, not
-    // in acquire(): std containers cannot pre-size without the throwing
+    // clear() keeps the bucket arrays; node allocation repeats on every
+    // rotation, and the buckets rehash when a rotation holds more traces than
+    // any earlier one. The bucket arrays allocate on first use, not in
+    // acquire(): std containers cannot pre-size without the throwing
     // allocator contract, and acquire() must fail without exceptions.
     CallTraceSet _traces_buffer;           // All traces for JFR processing
     CallTraceIdSet _preserve_set_buffer;           // Preserve set for current cycle
@@ -160,14 +160,14 @@ public:
     bool acquire();
 
 #ifdef UNIT_TEST
-    static constexpr int NO_UNUSABLE_TABLE = -1;
+    static constexpr int NO_TABLE_FOR_TEST = -1;
     // Both hooks take the table index (0 active, 1 standby, 2 scratch). An
     // out-of-range index is a test bug: assert in debug, abort in release
     // builds of the test binary (NDEBUG compiles the assert out).
     // Makes allocateTables() build table `index` as if its first allocation
     // failed (the table exists but usable() is false).
     void unusableTableForTest(int index) {
-        if (index < NO_UNUSABLE_TABLE || index > 2) {
+        if (index < NO_TABLE_FOR_TEST || index > 2) {
             assert(false);
             abort();
         }
@@ -176,7 +176,7 @@ public:
     // Makes allocateTables() fail to construct table `index` at all (the
     // nothrow allocation of the table object itself returns null).
     void nullTableForTest(int index) {
-        if (index < NO_UNUSABLE_TABLE || index > 2) {
+        if (index < NO_TABLE_FOR_TEST || index > 2) {
             assert(false);
             abort();
         }

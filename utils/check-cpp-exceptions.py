@@ -14,19 +14,20 @@
 # limitations under the License.
 """Check that native sources under ddprof-lib/src/main/cpp never use C++ exceptions.
 
-Flags the `throw`, `try` and `catch` keywords and the throwing std helpers
-(`std::rethrow_exception`, `std::rethrow_if_nested`, `std::throw_with_nested`,
-`__cxa_throw`, `__cxa_rethrow`, `__cxa_begin_catch`, `__cxa_end_catch`,
-`__throw_*`) after blanking comments and string literals. An uncaught
-exception crossing a JVMTI callback or a signal handler terminates the JVM,
-and exception unwinding is incompatible with the allocation and signal
-disciplines; see AGENTS.md ("C++ exceptions"). Known exceptions are listed
+Flags the `throw`, `try` and `catch` keywords and the listed throwing std
+helpers (`std::rethrow_exception`, `std::rethrow_if_nested`,
+`std::throw_with_nested`, `__cxa_throw`, `__cxa_rethrow`, `__cxa_begin_catch`,
+`__cxa_end_catch`, `__throw_*`) after blanking comments and string literals.
+An uncaught exception crossing a JVMTI callback or a signal handler terminates
+the JVM; see AGENTS.md ("C++ exceptions"). Known exceptions are listed
 explicitly below; a listed site that disappears fails the check.
 
-Known blanking limitations, both fail loud (a stray false positive, never a
-silent miss): digit separators (`1'000'000ULL`) look like character literals
-to the blanking regex, and raw string literals (R"(...)") are not parsed, so
-their bodies are scanned as code.
+Blanking is heuristic and errs toward false positives, never silent misses:
+- raw string literals (R"delim(...)delim") are parsed and their bodies blanked;
+- character literals match only the single-character form, so digit
+  separators (1'000'000) stay code and cannot swallow a keyword between them;
+- an unbalanced quote or comment opener still blanks the rest of the file and
+  hides keywords behind it — the same limitation as check-sigsetjmp-shape.py.
 
 Exit codes: 0 clean, 1 violations or stale exceptions, 2 environment error.
 """
@@ -40,17 +41,21 @@ import sys
 SRC = "ddprof-lib/src/main/cpp"
 SOURCES = (".c", ".cc", ".cpp", ".h", ".hpp")
 
-# Sanctioned exception sites, as (relative path, stripped source snippet).
-# The snippet is the exact keyword-bearing text the check found; each entry
-# exempts one occurrence, counted in order of appearance within the file.
-# An entry whose snippet no longer appears fails the check. Keep this list
-# empty: a new exception site needs an engineer-approved reason in AGENTS.md.
+# Sanctioned exception sites, as (relative path, keyword, occurrence) where
+# occurrence is the 1-based index of that exact keyword text within the file,
+# counted in order of appearance. One entry exempts exactly one occurrence; a
+# new occurrence inserted before it shifts the indexes and fails the check
+# (the real site is flagged). An entry whose occurrence no longer exists fails
+# as stale. Keep this list empty: a new exception site needs an
+# engineer-approved reason in AGENTS.md.
 KNOWN_EXCEPTIONS = set()
 
 _CALL = re.compile(
     r"\b(?:throw|try|catch|rethrow_exception|rethrow_if_nested|throw_with_nested"
     r"|__cxa_throw|__cxa_rethrow|__cxa_begin_catch|__cxa_end_catch|__throw_\w+)\b")
-_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
+_RAW_STRING = r'R"([^()\\\s]*)\(.*?\)\1"'
+_COMMENT_OR_STRING = re.compile(
+    r'//[^\n]*|/\*.*?\*/|' + _RAW_STRING + r'|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])\'', re.S)
 
 
 def blank(m):
@@ -61,20 +66,25 @@ def blank(m):
     return re.sub(r"[^\n]", " ", t)
 
 
-def check_file(path, text):
-    code = _COMMENT_OR_STRING.sub(blank, text)
-    rel = path[len(SRC) + 1:]
+def blank_comments_and_strings(text):
+    return _COMMENT_OR_STRING.sub(blank, text)
+
+
+def check_file(path, rel, code):
     errors, exceptions = [], []
+    seen_counts = {}
     for m in _CALL.finditer(code):
         line = code.count("\n", 0, m.start()) + 1
-        snippet = re.sub(r"\s+", " ", m.group(0))
-        key = (rel, snippet)
+        keyword = re.sub(r"\s+", " ", m.group(0))
+        occurrence = seen_counts.get((rel, keyword), 0) + 1
+        seen_counts[(rel, keyword)] = occurrence
+        key = (rel, keyword, occurrence)
         if key in KNOWN_EXCEPTIONS:
             exceptions.append(key)
             continue
         errors.append("%s:%d: C++ exceptions are forbidden in native code (%s); "
                       "bugs are assert/abort, expected failures are error codes"
-                      % (path, line, snippet))
+                      % (path, line, keyword))
     return errors, exceptions
 
 
@@ -95,7 +105,7 @@ def main(argv):
             print("error: git ls-files failed: %s" % e, file=sys.stderr)
             return 2
 
-    errors, seen, calls = [], set(), 0
+    errors, seen, keywords = [], set(), 0
     for path in files:
         try:
             with open(os.path.join(root, path), encoding="utf-8", errors="replace") as f:
@@ -103,19 +113,20 @@ def main(argv):
         except OSError as e:
             print("error: %s" % e, file=sys.stderr)
             return 2
-        code = _COMMENT_OR_STRING.sub(blank, text)
-        calls += len(_CALL.findall(code))
-        e, s = check_file(path, text)
+        rel = path[len(SRC) + 1:] if path.startswith(SRC + os.sep) else path
+        code = blank_comments_and_strings(text)
+        keywords += len(_CALL.findall(code))
+        e, s = check_file(path, rel, code)
         errors += e
         seen |= set(s)
     if not args.files:
-        for rel, snippet in sorted(KNOWN_EXCEPTIONS - seen):
-            errors.append("%s/%s: known exception %s no longer found; remove it from "
-                          "KNOWN_EXCEPTIONS" % (SRC, rel, snippet))
+        for rel, keyword, occurrence in sorted(KNOWN_EXCEPTIONS - seen):
+            errors.append("%s/%s: known exception %s #%d no longer found; remove it from "
+                          "KNOWN_EXCEPTIONS" % (SRC, rel, keyword, occurrence))
     for e in errors:
         print(e)
     print("native exceptions: %s" % ("%d problem(s)" % len(errors) if errors
-                                     else "OK (%d calls, %d known exception(s))" % (calls, len(seen))))
+                                     else "OK (%d keywords, %d known exception(s))" % (keywords, len(seen))))
     return 1 if errors else 0
 
 

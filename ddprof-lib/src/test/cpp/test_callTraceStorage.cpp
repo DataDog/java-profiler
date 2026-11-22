@@ -76,8 +76,9 @@ TEST_F(CallTraceStorageTest, BasicFunctionality) {
 
 // A table whose construction failed (the nothrow allocation of the table
 // object returned null) leaves no table published, and acquire() still
-// succeeds on the next attempt. The unique_ptrs must free any table built
-// before the failing one: each table mmaps an 8 MB chunk.
+// succeeds on the next attempt. LeakSanitizer pins the cleanup: when a later
+// slot fails, the unique_ptrs must free the tables built before it (each
+// table mmaps an 8 MB chunk).
 TEST(CallTraceStorageAcquireTest, NullTableLeavesNoTablePublished) {
     CallTraceStorage storage;
     storage.release();
@@ -88,7 +89,7 @@ TEST(CallTraceStorageAcquireTest, NullTableLeavesNoTablePublished) {
         EXPECT_EQ(nullptr, storage.activeTableForTest()) << "null table " << index;
     }
 
-    storage.nullTableForTest(CallTraceStorage::NO_UNUSABLE_TABLE);
+    storage.nullTableForTest(CallTraceStorage::NO_TABLE_FOR_TEST);
     EXPECT_TRUE(storage.acquire());
     EXPECT_NE(nullptr, storage.activeTableForTest());
     EXPECT_TRUE(storage.acquire());  // idempotent once allocated
@@ -110,8 +111,7 @@ TEST(CallTraceStorageAcquireTest, UnusableTableLeavesNoTablePublished) {
     // builds of the test binary; both raise SIGABRT.
     EXPECT_EXIT(storage.unusableTableForTest(3), ::testing::KilledBySignal(SIGABRT), "");
     EXPECT_EXIT(storage.nullTableForTest(3), ::testing::KilledBySignal(SIGABRT), "");
-    storage.unusableTableForTest(CallTraceStorage::NO_UNUSABLE_TABLE);
-    storage.nullTableForTest(CallTraceStorage::NO_UNUSABLE_TABLE);
+    storage.unusableTableForTest(CallTraceStorage::NO_TABLE_FOR_TEST);
     EXPECT_TRUE(storage.acquire());
     EXPECT_NE(nullptr, storage.activeTableForTest());
 }
