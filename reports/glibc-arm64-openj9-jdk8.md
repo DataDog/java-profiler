@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk8
 ---
 
-## glibc-arm64-openj9-jdk8 - ✅ PASS
+## glibc-arm64-openj9-jdk8 - ❌ FAIL
 
-**Date:** 2026-11-21 05:47:00 EST
+**Date:** 2026-11-22 00:01:34 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 34 |
-| CPU Cores (end) | 34 |
+| CPU Cores (start) | 29 |
+| CPU Cores (end) | 29 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 98 |
-| Sample Rate | 1.63/sec |
-| Health Score | 102% |
-| Threads | 8 |
-| Allocations | 0 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 24 |
-| Sample Rate | 0.40/sec |
-| Health Score | 25% |
-| Threads | 8 |
-| Allocations | 0 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
+<summary>CPU Timeline (1 unique values: 29-29 cores)</summary>
 
 ```
-1795257818 34
-1795257823 34
-1795257828 34
-1795257833 34
-1795257838 34
-1795257843 34
-1795257848 34
-1795257853 34
-1795257858 34
-1795257863 34
-1795257868 34
-1795257873 34
-1795257878 34
-1795257883 34
-1795257888 34
-1795257893 34
-1795257898 34
-1795257903 34
-1795257908 34
-1795257913 34
+1795323448 29
+1795323453 29
+1795323458 29
+1795323463 29
+1795323468 29
+1795323473 29
+1795323478 29
+1795323483 29
+1795323488 29
+1795323493 29
+1795323498 29
+1795323503 29
+1795323508 29
+1795323513 29
+1795323518 29
+1795323523 29
+1795323528 29
+1795323533 29
+1795323538 29
+1795323543 29
 ```
 </details>
 

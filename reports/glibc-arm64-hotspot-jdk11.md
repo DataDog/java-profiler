@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-hotspot-jdk11
 ---
 
-## glibc-arm64-hotspot-jdk11 - ✅ PASS
+## glibc-arm64-hotspot-jdk11 - ❌ FAIL
 
-**Date:** 2026-11-21 05:46:58 EST
+**Date:** 2026-11-22 00:01:33 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: glibc-arm64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 29 |
-| CPU Cores (end) | 34 |
+| CPU Cores (start) | 26 |
+| CPU Cores (end) | 25 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 107 |
-| Sample Rate | 1.78/sec |
-| Health Score | 111% |
-| Threads | 12 |
-| Allocations | 60 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 113 |
-| Sample Rate | 1.88/sec |
-| Health Score | 117% |
-| Threads | 13 |
-| Allocations | 53 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 29-34 cores)</summary>
+<summary>CPU Timeline (1 unique values: 26-26 cores)</summary>
 
 ```
-1795257790 29
-1795257795 29
-1795257800 29
-1795257805 29
-1795257810 29
-1795257815 29
-1795257820 29
-1795257825 29
-1795257830 29
-1795257835 29
-1795257840 29
-1795257845 29
-1795257850 29
-1795257855 29
-1795257860 29
-1795257865 29
-1795257870 29
-1795257875 29
-1795257880 29
-1795257885 34
+1795323412 26
+1795323417 26
+1795323422 26
+1795323427 26
+1795323432 26
+1795323437 26
+1795323442 26
+1795323447 26
+1795323452 26
+1795323457 26
+1795323462 26
+1795323467 26
+1795323472 26
+1795323477 26
+1795323482 26
+1795323487 26
+1795323492 26
+1795323497 26
+1795323502 26
+1795323507 26
 ```
 </details>
 
