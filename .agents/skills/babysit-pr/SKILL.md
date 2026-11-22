@@ -144,7 +144,10 @@ heads.
    (status contexts: `bits-review/head`, `dd-gitlab/*`, the rest; every page's
    contexts are read — the envelope's top-level combined state is not a poll
    signal and no poll decision consumes it). Dedupe checks by name keeping the
-   run with the newest `started_at` — a head carries cancelled runs of earlier
+   in-flight attempt over any completed run — a queued or `in_progress` run
+   supersedes every completed run for that name, so a stale completed result can
+   never drive a green verdict or a stop while a rerun is pending — and among
+   completed runs the newest `started_at`; a head carries cancelled runs of earlier
    retries beside their reruns. A check is red only when its `status` is `completed`
    and its `conclusion` is none of success/skipped/neutral — a queued or running
    check has `conclusion` null and is pending, never red; it is pending while
