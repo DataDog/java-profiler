@@ -664,6 +664,12 @@ void ReferenceChainTracker::eraseAnchorEntries(
   // or the class-tag upgrade would write into the wrong slot.
   for (size_t i = 0; i < _static_anchor_index.size(); i++) {
     auto entry = _static_anchor_index_class_tags.find(_static_anchor_index[i]);
+    if (entry == _static_anchor_index_class_tags.end()) {
+      // The set and the map are maintained together (every push updates both, every erase
+      // clears both); a missing entry means a divergence, which must not turn into an
+      // end()-dereference here.
+      continue;
+    }
     entry->second.pos = i;
   }
   if (!preserve_pending_turns) {

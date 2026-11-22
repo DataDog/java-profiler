@@ -173,7 +173,8 @@ public:
     return true;
   }
 
-  // Clears the replayed prefix; a no-op for a stale or non-owning token.
+  // Clears the whole journal: the only caller (flush()) has just replayed every record the
+  // snapshot returned. A no-op for a stale or non-owning token.
   void clearPrefix(const AnchorObservationLease &lease) {
     ExclusiveLockGuard guard(&_lock);
     if (!owns(lease)) {
