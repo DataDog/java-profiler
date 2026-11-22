@@ -128,7 +128,9 @@ and close the run log with the stop summary — commits pushed, findings
 flagged, threads left for the author, `bits_triggered` and `bits_rerequested`
 heads.
 
-1. **Poll.** Every 10 minutes (20 while idle, below) — `git fetch origin`, then read
+1. **Poll.** The first poll runs immediately at start — fetch every signal and post
+   before any wait. Thereafter every 10 minutes (20 while idle, below) — `git fetch
+   origin`, then read
    every signal through the REST API only: `gh pr checks` and `gh pr view --json` run
    on GraphQL (the whole CI rollup paginated there costs ~13 of 5000 points per poll)
    and must not come back. First
@@ -143,10 +145,11 @@ heads.
    contexts are read — the envelope's top-level combined state is not a poll
    signal and no poll decision consumes it). Dedupe checks by name keeping the
    run with the newest `started_at` — a head carries cancelled runs of earlier
-   retries beside their reruns. A check is red when its `conclusion`
-   is none of success/skipped/neutral and pending while `status` is not `completed`
-   (REST statuses are lowercase: `queued`, `in_progress`, `completed`); a status
-   context is red or pending by its `state`. Then the comment surfaces, in
+   retries beside their reruns. A check is red only when its `status` is `completed`
+   and its `conclusion` is none of success/skipped/neutral — a queued or running
+   check has `conclusion` null and is pending, never red; it is pending while
+   `status` is not `completed` (REST statuses are lowercase: `queued`,
+   `in_progress`, `completed`); a status context is red or pending by its `state`. Then the comment surfaces, in
    three REST reads: `$GH api --paginate repos/datadog/java-profiler/issues/<n>/comments?per_page=100`
    for top-level comments, `$GH api --paginate repos/datadog/java-profiler/pulls/<n>/reviews?per_page=100`
    for review bodies, and
