@@ -95,8 +95,7 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         ctx->anchor_scope.reserveLocalStaging(observation_tag, class_tag);
   }
   AnchorObservationReservationGuard reservation;
-  if (((durable_root && *tag_ptr > 0 && !completed_durable_report) ||
-       stage_local) &&
+  if (((durable_root && !completed_durable_report) || stage_local) &&
       !reservation.acquire(ctx->anchor_scope)) {
     ctx->abortForObservationOverflow(/*static_attachment=*/false);
     return JVMTI_ITERATION_ABORT;
@@ -116,6 +115,16 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
     ctx->truncated = true;
     ctx->frontier_cap_hit = true;
     return JVMTI_ITERATION_ABORT;
+  case AdmitResult::ADMITTED:
+    // A fresh durable root's first admission must journal its anchor effect like the
+    // FollowReferences admission branch does: without it the holder waits for a later
+    // enumeration to re-report it before it enters the rotation index.
+    if (durable_root) {
+      actions |= AnchorObservation::DURABLE_ADD;
+      durable_kind = translated_root_kind;
+      durable_observation_complete = true;
+    }
+    break;
   case AdmitResult::ALREADY_ADMITTED: {
     if (isLeakTag(*tag_ptr)) {
       // Leak-tagged object met as a DIRECT heap root (JNI global, stack local, ...): convert the

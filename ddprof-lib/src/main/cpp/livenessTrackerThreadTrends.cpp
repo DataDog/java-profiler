@@ -86,7 +86,9 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch, jint tid,
   }
 }
 
-void LivenessTracker::promoteThreadGenCandidates(KlassCountScratch &scratch) {
+void LivenessTracker::promoteThreadGenCandidates(
+    KlassCountScratch &scratch, KlassCountScratch::ThreadGens *displaced,
+    int *displaced_count) {
   for (int i = 0; i < scratch.challenger_count; i++) {
     const auto &candidate = scratch.challengers[i];
     if (scratch.thread_count < KlassCountScratch::MAX_THREADS_PER_KLASS) {
@@ -107,6 +109,10 @@ void LivenessTracker::promoteThreadGenCandidates(KlassCountScratch &scratch) {
     if (candidate.count > weakest.count ||
         (candidate.count == weakest.count &&
          candidate.age_count > weakest.age_count)) {
+      if (displaced != nullptr && displaced_count != nullptr &&
+          *displaced_count < KlassCountScratch::MAX_THREAD_CHALLENGERS_PER_KLASS) {
+        displaced[(*displaced_count)++] = weakest;
+      }
       scratch.threads[victim] = candidate;
     }
   }
@@ -118,8 +124,31 @@ void LivenessTracker::recordTidTrendSamplesLocked(
   if (slot < 0 || slot >= _klass_population_size) {
     return;
   }
-  promoteThreadGenCandidates(scratch);
+  KlassCountScratch::ThreadGens displaced
+      [KlassCountScratch::MAX_THREAD_CHALLENGERS_PER_KLASS];
+  int displaced_count = 0;
+  promoteThreadGenCandidates(scratch, displaced, &displaced_count);
   KlassPopulationEntry &entry = _klass_population[slot];
+  auto push_trend_sample =
+      [&](KlassPopulationEntry::TidTrend *trend,
+          const KlassCountScratch::ThreadGens &gen) {
+        trend->ring[trend->ring_head] = (u8)gen.age_count;
+        trend->count_ring[trend->ring_head] =
+            (u8)std::min<u32>(gen.count, UINT8_MAX);
+        trend->ring_head =
+            (u8)((trend->ring_head + 1) %
+                 KlassPopulationEntry::TID_TREND_RING_SIZE);
+        if (trend->ring_fill < KlassPopulationEntry::TID_TREND_RING_SIZE) {
+          trend->ring_fill++;
+        }
+        if (tidPushQualifies(*trend, gen.count)) {
+          if (trend->consecutive_positive < UINT8_MAX) {
+            trend->consecutive_positive++;
+          }
+        } else {
+          trend->consecutive_positive = 0;
+        }
+      };
   // Present tids first: find-or-create their trend and push this epoch's
   // distinct-age count. Every scratch thread has a surviving instance.
   for (int ti = 0; ti < scratch.thread_count; ti++) {
@@ -196,21 +225,24 @@ void LivenessTracker::recordTidTrendSamplesLocked(
       trend->consecutive_positive = 0;
       trend->synthetic = false;
     }
-    trend->ring[trend->ring_head] = (u8)scratch.threads[ti].age_count;
-    trend->count_ring[trend->ring_head] =
-        (u8)std::min<u32>(scratch.threads[ti].count, UINT8_MAX);
-    trend->ring_head = (u8)((trend->ring_head + 1) %
-                            KlassPopulationEntry::TID_TREND_RING_SIZE);
-    if (trend->ring_fill < KlassPopulationEntry::TID_TREND_RING_SIZE) {
-      trend->ring_fill++;
-    }
-    if (tidPushQualifies(*trend, scratch.threads[ti].count)) {
-      if (trend->consecutive_positive < UINT8_MAX) {
-        trend->consecutive_positive++;
+    push_trend_sample(trend, scratch.threads[ti]);
+  }
+  // A promotion that replaced an incumbent discarded the victim's current-epoch sample: the
+  // absent-tid pass below would write the still-live thread a zero epoch and reset its
+  // qualification. A displaced incumbent with a tracked (non-synthetic) trend records its live
+  // sample instead; one without a trend slot has no qualification to lose.
+  for (int d = 0; d < displaced_count; d++) {
+    KlassPopulationEntry::TidTrend *trend = nullptr;
+    for (int i = 0; i < entry.tid_trend_count; i++) {
+      if (entry.tid_trends[i].tid == displaced[d].tid) {
+        trend = &entry.tid_trends[i];
+        break;
       }
-    } else {
-      trend->consecutive_positive = 0;
     }
+    if (trend == nullptr || trend->synthetic) {
+      continue;
+    }
+    push_trend_sample(trend, displaced[d]);
   }
   // Absent tids receive a zero epoch so stale trends cannot remain qualified.
   for (int i = 0; i < entry.tid_trend_count; i++) {
@@ -224,6 +256,9 @@ void LivenessTracker::recordTidTrendSamplesLocked(
         present = true;
         break;
       }
+    }
+    for (int d = 0; !present && d < displaced_count; d++) {
+      present = displaced[d].tid == trend.tid;
     }
     if (present) {
       continue;

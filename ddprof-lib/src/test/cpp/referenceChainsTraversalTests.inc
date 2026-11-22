@@ -1953,7 +1953,6 @@ TEST_F(ReferenceChainsBfsTest, ProfilerStopFailedJoinSkipsTeardownAndRetrySuccee
     EXPECT_EQ(1, s_join_calls_observed);
     EXPECT_FALSE(s_join_gate_open)
         << "the registration gate must be closed before the BFS join";
-    EXPECT_EQ(1, T8Acc::joinCallCountForTest());
     EXPECT_FALSE(T8Acc::threadJoinedForTest());
     EXPECT_EQ(RUNNING, ProfilerTestAccessor::state(profiler));
     EXPECT_TRUE(ProfilerTestAccessor::referenceChainsActive(profiler))

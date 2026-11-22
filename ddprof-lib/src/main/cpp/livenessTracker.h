@@ -771,7 +771,11 @@ private:
   void insertOldestSample(KlassCountScratch &scratch, jweak sample_source,
                            u32 age, jint tid);
   void insertThreadGen(KlassCountScratch &scratch, jint tid, u32 age);
-  void promoteThreadGenCandidates(KlassCountScratch &scratch);
+  // `displaced` (optional, capacity MAX_THREAD_CHALLENGERS_PER_KLASS) receives the incumbents
+  // promotion replaced, with their pre-replacement epoch sample.
+  void promoteThreadGenCandidates(KlassCountScratch &scratch,
+                                  KlassCountScratch::ThreadGens *displaced = nullptr,
+                                  int *displaced_count = nullptr);
 
   // Pushes `count` into klass_id's ring buffer, creating the entry (evicting
   // the least-recently-updated entry first if the table is already at

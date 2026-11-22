@@ -722,6 +722,26 @@ public:
     static std::vector<jlong> staticAnchorIndexTagsForTest() {
         return ReferenceChainTracker::instance()->_static_anchor_index;
     }
+    // Drops one tag from the durable index the way eviction does: the tag leaves the index and
+    // its parallel views while any queued first look stays alive.
+    static void evictStaticAnchorIndexEntryForTest(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        auto pos_it = t->_static_anchor_index_class_tags.find(tag);
+        if (pos_it == t->_static_anchor_index_class_tags.end()) {
+            return;
+        }
+        size_t pos = pos_it->second.pos;
+        t->_static_anchor_index_class_tags.erase(pos_it);
+        t->_static_anchor_index_tags.erase(tag);
+        t->_static_anchor_index.erase(t->_static_anchor_index.begin() + pos);
+        t->_static_anchor_own_class_tags.erase(
+            t->_static_anchor_own_class_tags.begin() + pos);
+        for (auto &entry : t->_static_anchor_index_class_tags) {
+            if (entry.second.pos > pos) {
+                entry.second.pos--;
+            }
+        }
+    }
     static size_t anchorOwnClassTagsSizeForTest() {
         return ReferenceChainTracker::instance()->_static_anchor_own_class_tags.size();
     }

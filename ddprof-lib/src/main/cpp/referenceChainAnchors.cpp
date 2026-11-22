@@ -251,12 +251,19 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
       // spend their first look now (the old queue.clear() semantics) so they fall back to the
       // fair tiers at their index positions once the leak tier ebbs. With a positive fresh
       // budget the queue keeps its entries' turns across passes (FIFO order, nothing jumps the
-      // queue).
+      // queue). An entry no longer in the durable index has no fair-tier fallback, so its turn
+      // stays queued for the pass the leak tier ebbs instead of being spent here.
+      std::deque<FreshAnchor> pending;
       while (!_static_anchor_fresh_queue.empty()) {
-        fresh_spent_tags.push_back(
-            _static_anchor_fresh_queue.front().tag);
+        FreshAnchor anchor = _static_anchor_fresh_queue.front();
         _static_anchor_fresh_queue.pop_front();
+        if (_static_anchor_index_tags.count(anchor.tag) != 0) {
+          fresh_spent_tags.push_back(anchor.tag);
+        } else {
+          pending.push_back(anchor);
+        }
       }
+      _static_anchor_fresh_queue.swap(pending);
     }
     while (!_static_anchor_fresh_queue.empty() && fresh_room > 0) {
       FreshAnchor anchor = _static_anchor_fresh_queue.front();
@@ -343,16 +350,21 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
     // to the queue front. Erase the tags whose look IS spent this pass and that must not sit in
     // the queue: selected tags (leak- or fair-tier picks - their look happens via the walk, and
     // leaving them queued would re-serve them next pass) and the cap-skipped leak suffix (spent
-    // in the scan above).
+    // in the scan above). A fair-tier pick can still hold a queue entry; it goes to fresh_picked
+    // with the fresh-lane picks so the caller's unwalked requeue restores its queued turn.
     std::unordered_set<jlong> served(selected.begin(), selected.end());
     served.insert(leak_spent_tags.begin(), leak_spent_tags.end());
-    _static_anchor_fresh_queue.erase(
-        std::remove_if(_static_anchor_fresh_queue.begin(),
-                       _static_anchor_fresh_queue.end(),
-                       [&](const FreshAnchor &anchor) {
-                         return served.count(anchor.tag) != 0;
-                       }),
-        _static_anchor_fresh_queue.end());
+    for (auto it = _static_anchor_fresh_queue.begin();
+         it != _static_anchor_fresh_queue.end();) {
+      if (served.count(it->tag) != 0) {
+        if (fresh_picked != nullptr) {
+          fresh_picked->push_back(*it);
+        }
+        it = _static_anchor_fresh_queue.erase(it);
+      } else {
+        ++it;
+      }
+    }
   }
   // First looks spent WITHOUT a walk: entries the fresh-lane filters rejected (dead, leak-tier,
   // non-container), the leak-tier cap's skipped suffix, and the no-budget overflow drain. These

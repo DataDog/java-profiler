@@ -1578,6 +1578,110 @@ TEST_F(ReferenceChainsBfsTest, LeakSaturatedBudgetSpendsQueuedFirstLooks) {
     tracker->stop();
 }
 
+// An entry evicted from the durable index has no fair-tier fallback: the saturated pass must keep
+// its queued turn instead of spending it, so the fresh lane can still walk it once the leak tier
+// ebbs.
+TEST_F(ReferenceChainsBfsTest, LeakSaturatedBudgetKeepsEvictedQueuedTurns) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3305;
+    const jlong evicted = 43101;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, evicted, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        evicted, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ReferenceChainsTestAccessor::evictStaticAnchorIndexEntryForTest(evicted);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(evicted));
+
+    // Leak-tagged anchors saturate the selection budget.
+    for (jlong tag = evicted + 100; tag < evicted + 120; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        frontier->setLeakTag(tag, 777, /*leak_tag_incarnation=*/0);
+    }
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    ASSERT_EQ(16u, selected.size());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(evicted))
+        << "the evicted entry keeps its queued turn through the saturated pass";
+
+    // Once the leak tier ebbs, the fresh lane walks the evicted holder's queued turn.
+    for (jlong tag = evicted + 100; tag < evicted + 120; tag++) {
+        frontier->setLeakTag(tag, 0, /*leak_tag_incarnation=*/0);
+    }
+    std::vector<jlong> after =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    EXPECT_NE(std::find(after.begin(), after.end(), evicted), after.end())
+        << "the kept turn is spent by the fresh lane, not lost";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshQueueTagsForTest().empty());
+
+    tracker->stop();
+}
+
+// A fair-tier pick whose holder still sits in the fresh queue must not strand the queued first
+// look: the selection hands the queue entry to the caller's requeue path alongside the
+// fresh-lane picks.
+TEST_F(ReferenceChainsBfsTest, FairTierPickRestoresItsQueuedFirstLook) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong leak_class_tag = -3306;
+    const jlong container_class_tag = -3307;
+    const jlong fresh_pick = 43201;
+    const jlong deep = 43202;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(leak_class_tag, true);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class_tag, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, fresh_pick, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        fresh_pick, container_class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    // Deeper in the fresh queue, selected by the container tier before the fresh lane reaches it.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, deep, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        deep, container_class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    const jlong leak_anchor = 43301;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, leak_anchor, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        leak_anchor, leak_class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    frontier->setLeakTag(leak_anchor, 778, /*leak_tag_incarnation=*/0);
+
+    std::vector<ReferenceChainsTestAccessor::FreshAnchor> fresh_picked;
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            3, &fresh_picked);
+    ASSERT_EQ(3u, selected.size());
+    // The fresh lane spent its whole room on the queue's head entry; the deep entry's selection
+    // came from the container tier while it was still queued. Every selected tag's queue entry
+    // is handed to the caller's requeue path - the leak pick's too - so an unwalked selection
+    // keeps its queued turn for the next pass.
+    ASSERT_EQ(3u, fresh_picked.size());
+    EXPECT_EQ(fresh_pick, fresh_picked[0].tag);
+    EXPECT_EQ(deep, fresh_picked[1].tag);
+    EXPECT_EQ(container_class_tag, fresh_picked[1].own_class_tag);
+    EXPECT_EQ(leak_anchor, fresh_picked[2].tag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshQueueTagsForTest().empty());
+
+    tracker->stop();
+}
+
 // A fresh pick's first look is consumed by the WALK, not the selection: a pick the caller never
 // walked (budget exhausted before its descent, or unwalked mid-batch) is requeued to the fresh
 // queue's front with its pending turn intact.
@@ -1604,11 +1708,14 @@ TEST_F(ReferenceChainsBfsTest, UnwalkedFreshPicksKeepTheirQueuedTurn) {
             4, &fresh_picked);
     // 2 fresh-lane picks (half the post-leak budget); the fair container tier fills the rest of
     // the selection from the index (it may pick a still-queued entry - the fresh queue is not
-    // exclusive).
+    // exclusive). The fair picks' queue entries are handed to the caller's requeue path with the
+    // lane picks, so an unwalked fair pick keeps its queued turn.
     ASSERT_EQ(4u, selected.size());
-    ASSERT_EQ(2u, fresh_picked.size());
+    ASSERT_EQ(4u, fresh_picked.size());
     EXPECT_EQ(first, fresh_picked[0].tag);
     EXPECT_EQ(class_tag, fresh_picked[0].own_class_tag);
+    EXPECT_EQ(first + 2, fresh_picked[2].tag);
+    EXPECT_EQ(first + 3, fresh_picked[3].tag);
     // Selection alone must not spend the picks' first look.
     for (jlong tag : selected) {
         FrontierEntry entry{};

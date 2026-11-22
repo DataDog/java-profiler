@@ -420,6 +420,56 @@ TEST(LivenessThreadTrendTest, SustainedTrendsAreNeverTakeoverVictims) {
         << "no sustaining trend may be evicted, whatever the newcomer's strength";
 }
 
+// A challenger promotion that replaces an incumbent must not discard the victim's live epoch
+// sample: the displaced incumbent's tracked trend records its current-epoch count instead of
+// the absent-tid pass writing the still-live thread a zero epoch and resetting qualification.
+TEST(LivenessThreadTrendTest, PromotionKeepsDisplacedIncumbentQualification) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const u32 klass_id = 774;
+    // Epochs 1-2: 16 incumbents; tids 1-8 (count 9) win the 8 trend slots, all qualifying.
+    for (int epoch = 1; epoch <= 2; epoch++) {
+        ScratchGuard epoch_scratch{LivenessThreadTrendTestAccessor::newScratch()};
+        for (jint tid = 1; tid <= 16; tid++) {
+            u32 count = tid <= 8 ? 9 : 12;
+            for (u32 i = 0; i < count; i++) {
+                LivenessThreadTrendTestAccessor::add(tracker, epoch_scratch,
+                                                     tid, 1);
+            }
+        }
+        LivenessThreadTrendTestAccessor::fold(tracker, epoch_scratch, klass_id,
+                                              epoch);
+    }
+    ASSERT_EQ(2, LivenessThreadTrendTestAccessor::consecutivePositive(
+                     tracker, klass_id, 1))
+        << "setup: tid 1's trend must be qualified before the displacement";
+
+    // Epoch 3: the same cohort plus four stronger challengers; promotion replaces the four
+    // weakest incumbents - the trend-holding tids 1-4.
+    ScratchGuard epoch3{LivenessThreadTrendTestAccessor::newScratch()};
+    for (jint tid = 1; tid <= 16; tid++) {
+        u32 count = tid <= 8 ? 9 : 12;
+        for (u32 i = 0; i < count; i++) {
+            LivenessThreadTrendTestAccessor::add(tracker, epoch3, tid, 1);
+        }
+    }
+    for (jint tid = 100; tid < 104; tid++) {
+        for (u32 i = 0; i < 20; i++) {
+            LivenessThreadTrendTestAccessor::add(tracker, epoch3, tid, 1);
+        }
+    }
+    LivenessThreadTrendTestAccessor::fold(tracker, epoch3, klass_id, 3);
+    for (jint tid = 1; tid <= 4; tid++) {
+        EXPECT_EQ(3, LivenessThreadTrendTestAccessor::consecutivePositive(
+                         tracker, klass_id, tid))
+            << "displaced incumbent " << tid
+            << " keeps its qualification through the live sample";
+    }
+    for (jint tid = 5; tid <= 8; tid++) {
+        EXPECT_EQ(3, LivenessThreadTrendTestAccessor::consecutivePositive(
+                         tracker, klass_id, tid));
+    }
+}
+
 // The slot bounds guard on recordTidTrendSamplesLocked(): out-of-range slots must be a no-op
 // (removing the guard would index the population table out of bounds).
 TEST(LivenessThreadTrendTest, OutOfRangeFoldSlotIsANoOp) {
