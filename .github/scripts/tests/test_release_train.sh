@@ -293,9 +293,11 @@ git rm -q dd-java-agent/ddprof-lib/gradle.lockfile
 printf 'ddprof = "1.49.0"\n' > gradle/libs.versions.toml
 git -C "$TEMP_DIR/ddrepo" add -A && git -C "$TEMP_DIR/ddrepo" commit -qm "drop lockfile"
 git -C "$TEMP_DIR/ddrepo" push -q origin HEAD:refs/heads/main
-run_bump "1.50.0" "$TEMP_DIR/bump3.rc"
+# A version unique to this case: the assertion must only pass if THIS run
+# pushed, not on the branch test 1 created.
+run_bump "1.50.1" "$TEMP_DIR/bump3.rc"
 assert_eq "$(cat "$TEMP_DIR/bump3.rc")" "0" "missing lockfile does not fail the bump"
-assert_contains "$(git -C "$DDORIGIN" show ddprof/bump-1.50.0:gradle/libs.versions.toml)" 'ddprof = "1.50.0"' "missing-lockfile bump still updates the TOML"
+assert_contains "$(git -C "$DDORIGIN" show ddprof/bump-1.50.1:gradle/libs.versions.toml)" 'ddprof = "1.50.1"' "missing-lockfile bump still updates the TOML"
 
 # 4. No token: documented skip exit 3.
 ( set +e

@@ -145,11 +145,12 @@ jobs:
           # the concurrency group; (2) a queued dispatch pinned to an older
           # commit must not publish after a newer release landed while it
           # waited for the lock — checked against the tags of the branch the
-          # release actually targets (main for major/minor, whatever the
-          # dispatch ref is for patch/retag), so maintenance tags never leak
-          # into the mainline check and a tag-named dispatch ref cannot break
-          # the comparison. retag re-points an existing tag at the same commit
-          # by design; the guard exists to stop double releases, not recovery.
+          # release actually targets: main for major/minor (the dispatch ref
+          # may be a branch or tag, and stale branches must not hide newer
+          # mainline tags), the release branch for patch/retag, which always
+          # dispatch from that branch. retag re-points an existing tag at the
+          # same commit by design; the guard exists to stop double releases,
+          # not recovery.
           HISTORY_BRANCH="$BRANCH"
           if [ "$TYPE" == "major" ] || [ "$TYPE" == "minor" ]; then
             HISTORY_BRANCH="main"

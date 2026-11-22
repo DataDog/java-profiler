@@ -60,7 +60,9 @@ fi
 # pins a newer mainline version; downgrading the pin is impossible, and the
 # release itself published fine, so this is a skip, not a failure.
 if [ "$(printf '%s\n%s\n' "$OLD_VERSION" "$VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" == "$VERSION" ]; then
-  echo "dd-trace-java already pins newer ddprof ${OLD_VERSION}; skipping ${VERSION}"
+  # ::warning:: keeps the skip visible in the workflow run; the exit code
+  # alone is indistinguishable from a completed bump.
+  echo "::warning::dd-trace-java already pins newer ddprof ${OLD_VERSION}; skipping ${VERSION}"
   exit 0
 fi
 
@@ -70,6 +72,7 @@ git checkout -B "$BRANCH"
 # and BSD; the backups are removed right after the verification greps.
 sed -i.bak "s/^ddprof = \"${OLD_VERSION}\"/ddprof = \"${VERSION}\"/" "$TOML"
 if ! grep -q "^ddprof = \"${VERSION}\"" "$TOML"; then
+  rm -f "$TOML.bak"
   echo "ERROR: failed to update $TOML" >&2
   exit 1
 fi
@@ -78,6 +81,7 @@ rm -f "$TOML.bak"
 if [ -f "$LOCK" ]; then
   sed -i.bak "s/^com\.datadoghq:ddprof:${OLD_VERSION}=/com.datadoghq:ddprof:${VERSION}=/" "$LOCK"
   if ! grep -q "^com\.datadoghq:ddprof:${VERSION}=" "$LOCK"; then
+    rm -f "$LOCK.bak"
     echo "ERROR: failed to update $LOCK" >&2
     exit 1
   fi
