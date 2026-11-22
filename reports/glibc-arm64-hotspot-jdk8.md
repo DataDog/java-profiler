@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-22 15:36:10 EST
+**Date:** 2026-11-22 15:41:00 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 24 |
-| CPU Cores (end) | 24 |
+| CPU Cores (start) | 10 |
+| CPU Cores (end) | 10 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 66 |
-| Sample Rate | 1.10/sec |
-| Health Score | 69% |
-| Threads | 12 |
+| CPU Samples | 62 |
+| Sample Rate | 1.03/sec |
+| Health Score | 64% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 19-24 cores)</summary>
+<summary>CPU Timeline (2 unique values: 8-10 cores)</summary>
 
 ```
-1795379490 24
-1795379495 24
-1795379500 24
-1795379505 24
-1795379510 24
-1795379515 24
-1795379520 24
-1795379525 24
-1795379530 24
-1795379535 19
-1795379540 19
-1795379545 19
-1795379550 19
-1795379555 19
-1795379560 19
-1795379565 19
-1795379570 19
-1795379575 19
-1795379580 19
-1795379585 24
+1795379765 10
+1795379770 10
+1795379775 10
+1795379780 10
+1795379785 10
+1795379790 10
+1795379795 10
+1795379800 10
+1795379805 8
+1795379810 8
+1795379815 8
+1795379820 8
+1795379825 8
+1795379830 8
+1795379835 8
+1795379840 8
+1795379845 10
+1795379850 10
+1795379855 10
+1795379860 10
 ```
 </details>
 
