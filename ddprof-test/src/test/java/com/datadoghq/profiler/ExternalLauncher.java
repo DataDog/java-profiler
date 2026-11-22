@@ -237,18 +237,29 @@ public class ExternalLauncher {
     }
     spinRounds = 0;
     spinRunning = true;
-    spinThread = new Thread(ExternalLauncher::runSpinWorkload, "admission-spin");
-    spinThread.start();
+    Thread thread = new Thread(ExternalLauncher::runSpinWorkload, "admission-spin");
+    thread.start();
     // Thread.start() does not guarantee the workload entered its loop before SPINSTOP runs;
     // wait for the first completed round, or the lifecycle assertion on spinRounds would race.
     long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
-    while (spinRounds == 0) {
-      if (!spinThread.isAlive() || System.nanoTime() - deadline >= 0) {
-        spinRunning = false;
-        throw new IllegalStateException("spin workload did not start within 5s");
+    boolean started = false;
+    try {
+      while (spinRounds == 0) {
+        if (!thread.isAlive() || System.nanoTime() - deadline >= 0) {
+          throw new IllegalStateException("spin workload did not start within 5s");
+        }
+        Thread.sleep(1);
       }
-      Thread.sleep(1);
+      started = true;
+    } finally {
+      if (!started) {
+        // Clear the state a failed start leaves behind, whatever threw (timeout, dead
+        // thread, interrupted wait); the workload exits at its next spinRunning check.
+        spinRunning = false;
+        thread.join(5_000);
+      }
     }
+    spinThread = thread;
   }
 
   private static void stopSpinThread() throws InterruptedException {
@@ -300,6 +311,18 @@ public class ExternalLauncher {
    * test can assert the child outcome without parsing a JFR file from this process.
    */
   private static void runNativememExclusionScenario(String spec) throws Exception {
+    try {
+      runNativememExclusionSteps(spec);
+    } finally {
+      // A scenario abort after SPINSTART must not leave the non-daemon spin workload
+      // running: the JVM would wait for it instead of exiting after the scenario.
+      if (spinThread != null) {
+        stopSpinThread();
+      }
+    }
+  }
+
+  private static void runNativememExclusionSteps(String spec) throws Exception {
     boolean loaded = false;
     for (String step : spec.split(";")) {
       if (step.isEmpty()) {
