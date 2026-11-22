@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-22 16:32:01 EST
+**Date:** 2026-11-22 16:32:53 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,31 +28,26 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 65 |
-| Sample Rate | 1.08/sec |
-| Health Score | 68% |
-| Threads | 10 |
+| CPU Samples | 96 |
+| Sample Rate | 1.60/sec |
+| Health Score | 100% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 183 |
-| Sample Rate | 3.05/sec |
-| Health Score | 191% |
-| Threads | 12 |
+| CPU Samples | 64 |
+| Sample Rate | 1.07/sec |
+| Health Score | 67% |
+| Threads | 13 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
 
 ```
-1795382863 10
-1795382868 10
-1795382873 10
-1795382878 10
-1795382883 10
 1795382888 10
 1795382893 10
 1795382898 10
@@ -64,10 +59,15 @@ title: glibc-arm64-hotspot-jdk8
 1795382928 10
 1795382933 10
 1795382938 10
-1795382943 10
-1795382948 10
-1795382953 10
-1795382958 10
+1795382944 10
+1795382949 10
+1795382954 10
+1795382959 10
+1795382964 10
+1795382969 10
+1795382974 10
+1795382979 10
+1795382984 10
 ```
 </details>
 

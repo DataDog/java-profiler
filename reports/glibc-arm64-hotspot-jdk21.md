@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-22 16:32:01 EST
+**Date:** 2026-11-22 16:32:52 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 92 |
-| Sample Rate | 1.53/sec |
-| Health Score | 96% |
-| Threads | 7 |
-| Allocations | 76 |
+| CPU Samples | 349 |
+| Sample Rate | 5.82/sec |
+| Health Score | 364% |
+| Threads | 8 |
+| Allocations | 342 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 58 |
-| Sample Rate | 0.97/sec |
-| Health Score | 61% |
+| CPU Samples | 465 |
+| Sample Rate | 7.75/sec |
+| Health Score | 484% |
 | Threads | 10 |
-| Allocations | 34 |
+| Allocations | 493 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
 
 ```
-1795382876 10
-1795382881 10
-1795382886 10
-1795382891 10
-1795382896 10
-1795382901 10
-1795382906 10
-1795382911 10
-1795382916 10
-1795382921 10
-1795382926 10
-1795382931 10
-1795382936 10
-1795382941 10
-1795382946 10
-1795382951 10
-1795382956 10
-1795382961 10
-1795382966 10
-1795382971 10
+1795382909 10
+1795382914 10
+1795382919 10
+1795382925 10
+1795382930 10
+1795382935 10
+1795382940 10
+1795382945 10
+1795382950 10
+1795382955 10
+1795382960 10
+1795382965 10
+1795382970 10
+1795382975 10
+1795382980 10
+1795382985 10
+1795382990 10
+1795382995 10
+1795383000 10
+1795383005 10
 ```
 </details>
 
