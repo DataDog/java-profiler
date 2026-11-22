@@ -139,15 +139,16 @@ heads.
    and merge state; then, for that head sha, the CI rollup in two REST reads:
    `$GH api --paginate repos/datadog/java-profiler/commits/<sha>/check-runs?per_page=100 --jq '.check_runs[]'`
    (the paginated REST call emits one JSON object per page; `--jq '.check_runs[]'`
-   reads each page's checks: name, status, conclusion, details_url) and
+   reads each page's checks: name, status, conclusion, details_url, started_at) and
    `$GH api --paginate repos/datadog/java-profiler/commits/<sha>/status?per_page=100 --jq '.statuses[]'`
    (status contexts: `bits-review/head`, `dd-gitlab/*`, the rest; every page's
    contexts are read — the envelope's top-level combined state is not a poll
    signal and no poll decision consumes it). Dedupe checks by name keeping the
    in-flight attempt over any completed run — a queued or `in_progress` run
    supersedes every completed run for that name, so a stale completed result can
-   never drive a green verdict or a stop while a rerun is pending — and among
-   completed runs the newest `started_at`; a head carries cancelled runs of earlier
+   never drive a green verdict or a stop while a rerun is pending — among in-flight
+   runs the newest `started_at`, and among completed runs the newest `started_at`;
+   a head carries cancelled runs of earlier
    retries beside their reruns. A check is red only when its `status` is `completed`
    and its `conclusion` is none of success/skipped/neutral — a queued or running
    check has `conclusion` null and is pending, never red; it is pending while
@@ -209,8 +210,8 @@ heads.
 2. **CI red.** One flaky rerun per underlying target: for GitHub Actions,
    one `$GH run rerun --failed <run>` per workflow RUN, not per failing check —
    when two checks fail in the same run, a second rerun is refused while the
-   first is in progress, so defer classifying that run's other failed checks
-   until the in-flight rerun finishes. For `dd-gitlab/*`, the
+   first is in progress, so classify that run's other failed checks on a later
+   poll. For `dd-gitlab/*`, the
    `default-pipeline` check is a pipeline summary, not a job — follow its
    details link to the failed jobs and retry each underlying job once (the
    mosaic job page, or the GitLab API). A failure that
