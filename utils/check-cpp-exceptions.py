@@ -22,12 +22,12 @@ An uncaught exception crossing a JVMTI callback or a signal handler terminates
 the JVM; see AGENTS.md ("C++ exceptions"). Known exceptions are listed
 explicitly below; a listed site that disappears fails the check.
 
-Blanking is heuristic and errs toward false positives, never silent misses:
-- raw string literals (R"delim(...)delim") are parsed and their bodies blanked;
-- character literals match only the single-character form, so digit
-  separators (1'000'000) stay code and cannot swallow a keyword between them;
-- an unbalanced quote or comment opener still blanks the rest of the file and
-  hides keywords behind it — the same limitation as check-sigsetjmp-shape.py.
+Blanking is heuristic. Raw string literals (R"delim(...)delim") are parsed and
+their bodies blanked; character literals match only the single-character form,
+so digit separators (1'000'000) stay code and cannot swallow a keyword between
+them. An unbalanced quote or comment opener still blanks the rest of the file
+and can hide keywords behind it — the same limitation as
+check-sigsetjmp-shape.py.
 
 Exit codes: 0 clean, 1 violations or stale exceptions, 2 environment error.
 """
