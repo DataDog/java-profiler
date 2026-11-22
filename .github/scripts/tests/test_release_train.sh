@@ -192,4 +192,118 @@ PICK_RC=$(cat "$TEMP_DIR/pick.rc")
 assert_eq "$PICK_RC" "0" "pick survives multiple certified commits"
 assert_eq "$OUT" "$C3" "pick candidate is the tip-most certified commit"
 
+# --- bump-ddtrace.sh ----------------------------------------------------------
+# The script clones DataDog/dd-trace-java through gh; a stub gh serves a local
+# bare remote clone and records the PR operations. Everything else runs for
+# real: the TOML/LOCK edits, the commit, the push.
+
+BUMP="$ROOT/.github/scripts/bump-ddtrace.sh"
+DDORIGIN="$TEMP_DIR/dd-origin"
+GH_STUB_BIN="$TEMP_DIR/gh-stub-bin"
+mkdir "$GH_STUB_BIN"
+# The stub clone checks out the remote's default HEAD; both repos must be on
+# main or the clone's working tree is empty (unborn HEAD) and the script's
+# TOML read fails.
+git init -q --bare -b main "$DDORIGIN"
+git init -q -b main "$TEMP_DIR/ddrepo"
+cd "$TEMP_DIR/ddrepo"
+git config user.email "test@example.com"
+git config user.name "Test"
+git remote add origin "$DDORIGIN"
+mkdir -p gradle dd-java-agent/ddprof-lib
+printf 'ddprof = "1.49.0"\n' > gradle/libs.versions.toml
+printf 'com.datadoghq:ddprof:1.49.0=runtimeClasspath\n' > dd-java-agent/ddprof-lib/gradle.lockfile
+git add -A
+git commit -qm "dd-trace-java baseline"
+git push -q origin main
+
+# gh stub: `gh repo clone` copies the local bare repo; `gh pr list` reports
+# no open PR; `gh pr create` prints a URL; `gh auth setup-git` succeeds.
+cat > "$GH_STUB_BIN/gh" <<EOF
+#!/usr/bin/env bash
+echo "gh stub: \$*" >> "$TEMP_DIR/gh.log"
+case "\$1" in
+  auth) exit 0 ;;
+  repo) shift; [ "\$1" == clone ] && git clone -q "$DDORIGIN" "\$3" --depth 1 --no-tags && exit 0 ;;
+  pr)
+    case "\$2" in
+      list) exit 0 ;;
+      create) echo "https://example/dd-trace-java/pull/1" ; exit 0 ;;
+    esac ;;
+esac
+echo "unexpected gh invocation: \$*" >&2
+exit 90
+EOF
+chmod +x "$GH_STUB_BIN/gh"
+
+# The script uses GNU sed -i; BSD sed (macOS) treats the expression as the
+# backup suffix. Shim only the -i form: GNU runs through unchanged, BSD gets
+# an explicit empty suffix.
+cat > "$GH_STUB_BIN/sed" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" == "-i" ]; then
+  shift
+  # Never probe with sed --version: BSD sed consumes it as a script and
+  # blocks on stdin. uname is the reliable GNU-vs-BSD signal here.
+  # Absolute path: the shim itself is first on PATH, so a bare "sed" would
+  # recurse into the shim forever.
+  case "$(uname -s)" in
+    Darwin) exec /usr/bin/sed -i '' "$@" ;;
+    *) exec /usr/bin/sed -i "$@" ;;
+  esac
+fi
+exec /usr/bin/sed "$@"
+EOF
+chmod +x "$GH_STUB_BIN/sed"
+
+run_bump() {
+  # run_bump <version> <rc-file> [out-file]; the script clones through the gh
+  # stub and pushes to the local bare origin; the rc is captured inside the
+  # subshell so the parent's set -e never sees the script's exit status.
+  local version="$1"
+  (
+    set +e
+    cd "$TEMP_DIR/ddrepo"
+    PATH="$GH_STUB_BIN:$PATH" DDTRACE_GH_TOKEN=stub-token \
+      "$BUMP" "$version" "https://example/notes" 2>"$TEMP_DIR/bump.err"
+    echo $? > "$2"
+  ) > "${3:-$TEMP_DIR/bump.out}"
+}
+
+# 1. Forward bump: updates both files, commits, pushes, opens a PR.
+run_bump "1.50.0" "$TEMP_DIR/bump.rc" "$TEMP_DIR/bump.out"
+assert_eq "$(cat "$TEMP_DIR/bump.rc")" "0" "bump succeeds on a forward version"
+assert_contains "$(cat "$TEMP_DIR/bump.out")" "https://example/dd-trace-java/pull/1" "bump opens the PR"
+assert_contains "$(git -C "$DDORIGIN" show ddprof/bump-1.50.0:gradle/libs.versions.toml)" 'ddprof = "1.50.0"' "bump updates the TOML"
+assert_contains "$(git -C "$DDORIGIN" show ddprof/bump-1.50.0:dd-java-agent/ddprof-lib/gradle.lockfile)" 'com.datadoghq:ddprof:1.50.0=' "bump updates the lockfile"
+
+# 2. Downgrade against a newer pin: skip with exit 0, no PR.
+git -C "$TEMP_DIR/ddrepo" checkout -q main
+printf 'ddprof = "1.51.0"\n' > gradle/libs.versions.toml
+git -C "$TEMP_DIR/ddrepo" add -A && git -C "$TEMP_DIR/ddrepo" commit -qm "pin 1.51.0"
+git -C "$TEMP_DIR/ddrepo" push -q origin HEAD:refs/heads/main
+run_bump "1.50.0" "$TEMP_DIR/bump2.rc" "$TEMP_DIR/bump2.out"
+assert_eq "$(cat "$TEMP_DIR/bump2.rc")" "0" "downgrade against a newer pin skips with exit 0"
+assert_contains "$(cat "$TEMP_DIR/bump2.out")" "skipping 1.50.0" "downgrade skip names the versions"
+assert_contains "$(git -C "$DDORIGIN" show main:gradle/libs.versions.toml)" 'ddprof = "1.51.0"' "downgrade skip leaves the pin untouched"
+
+# 3. Missing lockfile: the TOML still updates and the PR still opens.
+git -C "$TEMP_DIR/ddrepo" checkout -q main
+git rm -q dd-java-agent/ddprof-lib/gradle.lockfile
+printf 'ddprof = "1.49.0"\n' > gradle/libs.versions.toml
+git -C "$TEMP_DIR/ddrepo" add -A && git -C "$TEMP_DIR/ddrepo" commit -qm "drop lockfile"
+git -C "$TEMP_DIR/ddrepo" push -q origin HEAD:refs/heads/main
+run_bump "1.50.0" "$TEMP_DIR/bump3.rc"
+assert_eq "$(cat "$TEMP_DIR/bump3.rc")" "0" "missing lockfile does not fail the bump"
+assert_contains "$(git -C "$DDORIGIN" show ddprof/bump-1.50.0:gradle/libs.versions.toml)" 'ddprof = "1.50.0"' "missing-lockfile bump still updates the TOML"
+
+# 4. No token: documented skip exit 3.
+( set +e
+  cd "$TEMP_DIR/ddrepo"
+  env -u DDTRACE_GH_TOKEN PATH="$GH_STUB_BIN:$PATH" "$BUMP" 1.52.0 \
+    >"$TEMP_DIR/bump4.out" 2>"$TEMP_DIR/bump4.err"
+  echo $? > "$TEMP_DIR/bump4.rc"
+)
+assert_eq "$(cat "$TEMP_DIR/bump4.rc")" "3" "missing token skips with exit 3"
+
 echo "PASS: $TESTS assertions"

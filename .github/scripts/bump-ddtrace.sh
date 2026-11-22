@@ -56,27 +56,32 @@ if [ "$OLD_VERSION" == "$VERSION" ]; then
   echo "dd-trace-java already pins ddprof ${VERSION}; nothing to do"
   exit 0
 fi
-# Refuse a downgrade: the train only ever bumps forward, and an equality-
-# only guard would silently regress the pin if an older version ever came in.
+# A downgrade means a maintenance-line release while dd-trace-java already
+# pins a newer mainline version; downgrading the pin is impossible, and the
+# release itself published fine, so this is a skip, not a failure.
 if [ "$(printf '%s\n%s\n' "$OLD_VERSION" "$VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" == "$VERSION" ]; then
-  echo "ERROR: refusing to downgrade ddprof from ${OLD_VERSION} to ${VERSION}" >&2
-  exit 1
+  echo "dd-trace-java already pins newer ddprof ${OLD_VERSION}; skipping ${VERSION}"
+  exit 0
 fi
 
 git checkout -B "$BRANCH"
 
-sed -i "0,/^ddprof = \"${OLD_VERSION}\"/s//ddprof = \"${VERSION}\"/" "$TOML"
+# The .bak suffix form is the only sed -i variant that is identical on GNU
+# and BSD; the backups are removed right after the verification greps.
+sed -i.bak "s/^ddprof = \"${OLD_VERSION}\"/ddprof = \"${VERSION}\"/" "$TOML"
 if ! grep -q "^ddprof = \"${VERSION}\"" "$TOML"; then
   echo "ERROR: failed to update $TOML" >&2
   exit 1
 fi
+rm -f "$TOML.bak"
 
 if [ -f "$LOCK" ]; then
-  sed -i "s/^com\.datadoghq:ddprof:${OLD_VERSION}=/com.datadoghq:ddprof:${VERSION}=/" "$LOCK"
+  sed -i.bak "s/^com\.datadoghq:ddprof:${OLD_VERSION}=/com.datadoghq:ddprof:${VERSION}=/" "$LOCK"
   if ! grep -q "^com\.datadoghq:ddprof:${VERSION}=" "$LOCK"; then
     echo "ERROR: failed to update $LOCK" >&2
     exit 1
   fi
+  rm -f "$LOCK.bak"
 fi
 
 # An open PR from a previous run means the bump is already tracked; a lookup
@@ -90,7 +95,8 @@ fi
 
 git config user.email "java-profiler@datadoghq.com"
 git config user.name "Datadog Java Profiler"
-git add "$TOML" "$LOCK"
+git add "$TOML"
+[ -f "$LOCK" ] && git add "$LOCK"
 git commit -m "Bump java-profiler (ddprof) to ${VERSION}"
 # The branch is bot-owned and version-scoped. Push plainly first; only a
 # non-fast-forward reject (a stale branch from a closed previous run)

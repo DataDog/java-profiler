@@ -98,7 +98,10 @@ jobs:
     # pipeline. Those cells run on every push to main; this job waits for
     # them and reads their results.
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # The pipeline lookup allows 36x5min and the cell polling 60x3min; the
+    # timeout must exceed both budgets combined or GitHub cancels the job
+    # before the verdict or the failure summary is written.
+    timeout-minutes: 420
     steps:
       - name: Wait for and evaluate integration cells
         env:
@@ -171,7 +174,11 @@ jobs:
               if [ -z "$jobs_json" ]; then
                 jobs_json="$page_json"
               else
-                jobs_json=$(jq -cn --argjson a "$jobs_json" --argjson b "$page_json" '$a + $b')
+                # Merge through stdin: a full 100-job page as --argjson can
+                # exceed the kernel's per-argument limit and jq would fail
+                # with "Argument list too long". A failed merge aborts the
+                # fetch so the caller retries the whole listing.
+                jobs_json=$(printf '%s\n%s\n' "$jobs_json" "$page_json" | jq -sc 'add') || return 1
               fi
               [ "$(echo "$page_json" | jq 'length')" -lt 100 ] && break
               page=$((page+1))

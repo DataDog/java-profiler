@@ -90,5 +90,7 @@ The certification suite cannot certify without the GitLab token: the
   and notifies Slack. Re-run the train by hand (`workflow_dispatch`, same
   candidate) after fixing the cause; the candidate is still unreleased.
 - **Missed certification window** (no green nightly all week) → the train
-  skips. Release from an older certified commit by hand via `workflow_dispatch`
-  with an explicit `sha`.
+  skips. The train never releases an older certified commit once a newer
+  one exists, and the pinned-sha override enforces the same rule, so the
+  recovery path is a manual release via `utils/release.sh` or a manual
+  re-run of the certification workflow on a newer commit.

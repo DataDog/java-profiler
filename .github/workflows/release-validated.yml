@@ -111,6 +111,13 @@ jobs:
               echo "::error::Patch/retag release commit must be an ancestor of $BRANCH"
               exit 1
             fi
+            # retag force-pushes the release branch back to the release
+            # commit; a non-tip target would rewind the branch and drop
+            # commits that landed after the failed release attempt.
+            if [ "$TYPE" == "retag" ] && [ "$TARGET_SHA" != "$(git rev-parse "origin/$BRANCH")" ]; then
+              echo "::error::Retag must target the current tip of $BRANCH"
+              exit 1
+            fi
           else
             RC=0
             git merge-base --is-ancestor "$TARGET_SHA" origin/main || RC=$?
@@ -133,19 +140,20 @@ jobs:
             git checkout -q --detach "$TARGET_SHA"
           fi
 
-          # A concurrent dispatch for the same candidate may have released it
-          # while this run queued behind the concurrency group: the queued run
-          # would otherwise compute the next version and release the same
-          # commit twice.
           # One pass over all release tags: (1) a concurrent dispatch for the
           # same candidate may have released it while this run queued behind
           # the concurrency group; (2) a queued dispatch pinned to an older
           # commit must not publish after a newer release landed while it
           # waited for the lock — checked against the tags of the branch the
-          # release targets (main for major/minor, the release branch for
-          # patch), so maintenance tags never leak into the mainline check.
-          # retag re-points an existing tag at the same commit by design; the
-          # guard exists to stop double releases, not recovery.
+          # release actually targets (main for major/minor, whatever the
+          # dispatch ref is for patch/retag), so maintenance tags never leak
+          # into the mainline check and a tag-named dispatch ref cannot break
+          # the comparison. retag re-points an existing tag at the same commit
+          # by design; the guard exists to stop double releases, not recovery.
+          HISTORY_BRANCH="$BRANCH"
+          if [ "$TYPE" == "major" ] || [ "$TYPE" == "minor" ]; then
+            HISTORY_BRANCH="main"
+          fi
           for tag in $(git tag --list 'v_*'); do
             TAG_COMMIT=$(git rev-parse "$tag^{commit}")
             if [ "$TYPE" != "retag" ] && [ "$TAG_COMMIT" == "$TARGET_SHA" ]; then
@@ -153,9 +161,9 @@ jobs:
               exit 1
             fi
             RC=0
-            git merge-base --is-ancestor "$TAG_COMMIT" "origin/$BRANCH" || RC=$?
+            git merge-base --is-ancestor "$TAG_COMMIT" "origin/$HISTORY_BRANCH" || RC=$?
             if [ "$RC" -gt 1 ]; then
-              echo "::error::Cannot resolve $tag against $BRANCH" >&2
+              echo "::error::Cannot resolve $tag against $HISTORY_BRANCH" >&2
               exit 1
             fi
             if [ "$RC" -eq 0 ]; then
@@ -166,7 +174,7 @@ jobs:
                 exit 1
               fi
               if [ "$RC" -ne 0 ]; then
-                echo "::error::Release commit $TARGET_SHA predates release $tag on $BRANCH"
+                echo "::error::Release commit $TARGET_SHA predates release $tag on $HISTORY_BRANCH"
                 exit 1
               fi
             fi
@@ -296,6 +304,10 @@ jobs:
         id: create-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # release.sh computes the base branch from this override; without
+          # it the fallback reads the checked-out branch, which only matches
+          # by the previous step's checkout.
+          RELEASE_BASE_BRANCH: ${{ needs.validate-inputs.outputs.base_branch }}
         run: |
           cd java-profiler
 
@@ -306,7 +318,6 @@ jobs:
           fi
 
           TYPE="${{ inputs.release_type }}"
-          RELEASE_BASE_BRANCH="${{ needs.validate-inputs.outputs.base_branch }}"
           ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN
 
       - name: Output Release Summary
