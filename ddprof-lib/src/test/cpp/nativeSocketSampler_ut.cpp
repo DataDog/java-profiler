@@ -480,13 +480,20 @@ static void count_record(int, u64, u64, ssize_t, u8) {
 }
 
 // Spans enough TSC ticks that a 1-tick sampling interval always samples.
-static ssize_t slow_write(int, const void*, size_t) {
-    g_write_calls++;
+static void spin_sampled_duration() {
     u64 start = TSC::ticks();
     while (TSC::ticks() - start < 100000) {
     }
+}
+
+static ssize_t slow_write(int, const void*, size_t) {
+    g_write_calls++;
+    spin_sampled_duration();
     return 1;
 }
+static ssize_t slow_send(int, const void*, size_t, int) { spin_sampled_duration(); return 1; }
+static ssize_t slow_recv(int, void*, size_t, int) { spin_sampled_duration(); return 1; }
+static ssize_t slow_read(int, void*, size_t) { spin_sampled_duration(); return 1; }
 
 static ssize_t positive_send(int, const void*, size_t, int) { g_send_calls++; return 1; }
 static ssize_t positive_recv(int, void*, size_t, int) { g_recv_calls++; return 1; }
@@ -1275,6 +1282,42 @@ TEST(NativeSocketSamplerFdTypeTest,
         EXPECT_EQ(1, g_probe_calls.load());
     }
     inst->clearFdCache();
+}
+
+
+/** Sampled events from every hook reach Profiler::recordSample() inside the CriticalSection. */
+TEST_F(NativeSocketSamplerHookTest, SampledHooksRecordInsideCriticalSection) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    ScopedSamplerProbeOverride override(stub_probe);
+    bool saved_installed = LibraryPatcher::_socket_active.exchange(true, std::memory_order_acq_rel);
+    long saved_interval = NativeSocketSamplerTestAccessor::samplingInterval();
+    State saved_state = ProfilerTestAccessor::exchangeState(RUNNING);
+    NativeSocketSamplerTestAccessor::setRecordSampleHook(record_sample_probe);
+    NativeSocketSamplerTestAccessor::setSamplingInterval(1);
+    NativeSocketSampler::setOriginalFunctions(slow_send, slow_recv, slow_write, slow_read);
+    inst->clearFdCache();
+    g_probe_rc = 0;
+    g_probe_errno = 0;
+    g_probe_so_type = SOCK_STREAM;
+    g_recorder_calls = 0;
+    g_nested_section_entered = true;
+
+    const int fd = 64;
+    char byte = 'x';
+    ssize_t rets[4] = {NativeSocketSampler::send_hook(fd, &byte, 1, 0),
+                       NativeSocketSampler::recv_hook(fd, &byte, 1, 0),
+                       NativeSocketSampler::write_hook(fd, &byte, 1),
+                       NativeSocketSampler::read_hook(fd, &byte, 1)};
+
+    NativeSocketSamplerTestAccessor::setRecordSampleHook(nullptr);
+    ProfilerTestAccessor::exchangeState(saved_state);
+    NativeSocketSamplerTestAccessor::setSamplingInterval(saved_interval);
+    LibraryPatcher::_socket_active.store(saved_installed, std::memory_order_release);
+    inst->clearFdCache();
+
+    for (ssize_t ret : rets) EXPECT_EQ(1, ret);
+    EXPECT_EQ(4, g_recorder_calls) << "every sampled hook must reach the recorder";
+    EXPECT_FALSE(g_nested_section_entered) << "a nested signal could re-enter put()";
 }
 
 #endif // __linux__
