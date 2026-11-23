@@ -134,6 +134,25 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   default:
     break;
   }
+  // Record durable roots even when the holder already had a frontier entry:
+  // neither first admission nor a retained chain path may skip the index.
+  if (*tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    ctx->tracker->addToStaticAnchorIndex(*tag_ptr, class_tag,
+                                         translated_root_kind);
+  }
+  // Record local holders before expansion can reparent them into a deeper chain.
+  // Known collections need bounded revisits after reparenting to observe replaced storage.
+  // Classification runs later; unknown types are indexed but cannot be walked yet.
+  if (isTransientRootKind(translated_root_kind) && class_tag != 0 &&
+      *tag_ptr > 0 && !isLeakTag(*tag_ptr)) {
+    auto shape = ctx->tracker->_class_shape_cache.find(class_tag);
+    if (shape == ctx->tracker->_class_shape_cache.end() ||
+        shape->second == static_cast<u8>(AnchorClassShape::CONTAINER) ||
+        shape->second == static_cast<u8>(
+            ReferenceChainTracker::AnchorClassShape::UNKNOWN_TRUNCATED)) {
+      ctx->tracker->indexAnchorForRotation(*tag_ptr, class_tag, true);
+    }
+  }
   return JVMTI_ITERATION_CONTINUE;
 }
 
@@ -145,6 +164,19 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::stackRefCallback(
   // richer shape, but FrontierEntry has nowhere to record it (depth/method/slot are not part of the
   // record) - admission is otherwise identical to heapRootCallback() above, so this just forwards.
   return heapRootCallback(root_kind, class_tag, size, tag_ptr, user_data);
+}
+
+void ReferenceChainTracker::mergeAtRiskAnchors(
+    std::vector<jlong> &selection,
+    const std::vector<AtRiskAnchor> &drained) {
+  for (const AtRiskAnchor &at_risk : drained) {
+    // The persistent tiers may already have selected this tag. The combined selection holds at most
+    // STATIC_ANCHOR_ROTATION_BUDGET persistent plus STATIC_ANCHOR_FIFO_DRAIN drained entries.
+    if (std::find(selection.begin(), selection.end(), at_risk.tag) ==
+        selection.end()) {
+      selection.push_back(at_risk.tag);
+    }
+  }
 }
 
 void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -190,11 +222,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                               STALE_EXPANDED_ROTATION_BUDGET);
   int budget = expand_budget - rotation_reserved_budget;
 
-  // Root/stack-ref enumeration alone (unlike a root-seeded FollowReferences call on the fallback
-  // path) never discovers a root's own transitive children - IterateOverReachableObjects's
-  // root/stack-ref callbacks are given no oop, only a tag_ptr (see heapRootCallback()'s own
-  // comment) - so even when it runs this pass, the expandFrontier() call below is still needed to
-  // make any further progress.
+  // Root/stack-ref enumeration never discovers a root's transitive children (its callbacks get no
+  // oop, only a tag_ptr), so even when it runs this pass, expandFrontier() below is still needed
+  // to make progress.
   if (run_root_enum) {
     jlong resolved_chain_tags[MAX_RESOLVED_CHAINS];
     ReferenceChainPassContext ctx;
@@ -373,10 +403,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   std::vector<jlong> leak_accumulation_tags =
       collectLeakAccumulationCandidatesForRotation(
           LEAK_ACCUMULATION_ROTATION_BUDGET);
-  // Also re-walk a bounded, rotating subset of EXPANDED entries regardless of root attribution: a
-  // mutable field reassigned since an object's one-time expansion - e.g. HashMap.table on resize -
-  // is otherwise never observed again, silently orphaning everything only reachable through the
-  // field's current value.
+  // Revisit a bounded, rotating subset of EXPANDED entries: their one-time expansion cannot observe
+  // later mutable-field replacements (e.g. HashMap.table resize) without this rotation.
   std::vector<jlong> stale_expanded_tags =
       collectStaleExpandedEntriesForRotation(STALE_EXPANDED_ROTATION_BUDGET);
   // Candidate-scoped reach, prong 2: root-attached static holders are descend-walked directly (see
@@ -387,9 +415,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
       collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
   drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
-  for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
-    static_anchor_tags.push_back(at_risk.tag);
-  }
+  mergeAtRiskAnchors(static_anchor_tags, static_anchor_fifo_drained);
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
       stale_expanded_tags.empty() && static_anchor_tags.empty()) {
     return;
@@ -1070,6 +1096,9 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   if (manual_first_pass) {
     _search_started = true;
     store(_search_start_ns, OS::nanotime());
+    // Poll before the first walk: with no watched klass, a pass that drains the frontier completes
+    // and releases its tags before the loop's post-pass poll can register candidates or build chains.
+    pollWatchedTargets(jvmti, jni);
   }
 
   // Root/stack-ref enumeration alone never discovers a root's transitive children

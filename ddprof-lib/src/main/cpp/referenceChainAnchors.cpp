@@ -120,8 +120,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   if (max_count <= 0 || _static_anchor_index.empty()) {
     return selected;
   }
-  // Tiered selection over _static_anchor_index (O(anchors) per pass, under ONE shared lock - the
-  // lookups below are lookupLocked()).
+  // Tiered selection over _static_anchor_index (O(anchors) per pass). The tracker thread, holding
+  // _engine_lock, is the only production index writer and runs this prune; the frontier shared lock
+  // covers frontier lookups, not index members, so production writers must stay serialized.
   size_t idx_size = _static_anchor_index.size();
   if (_anchor_container_cursor >= idx_size) {
     _anchor_container_cursor = 0;
@@ -143,45 +144,64 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   std::unordered_set<jlong> fresh_kept_tags;
   const size_t fresh_queue_len = _static_anchor_fresh_queue.size();
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
-    // Index scan: partition every eligible anchor into the leak tier or one of the two fair tiers
-    // (the fresh lane is decided by the queue drain below - a fresh-kept anchor also lands in a
-    // fair pick vector here and is skipped at consumption time via fresh_kept_tags).
-    for (size_t i = 0; i < idx_size; i++) {
+    // Drop dead/ABANDONED entries and compact survivors in admission order before tier selection.
+    // Released tags are re-minted, so a later observation can re-index the holder under its fresh
+    // tag. Cursors are not shifted on compaction: survivors left of a cursor may wait one lap.
+    size_t kept = 0;
+    for (size_t i = 0; i < _static_anchor_index.size(); i++) {
       jlong tag = _static_anchor_index[i];
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
-          entry.parent_tag != 0 ||
-          (entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
-           entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) ||
+          entry.state == FrontierEntryState::ABANDONED) {
+        _static_anchor_index_class_tags.erase(tag);
+        continue;
+      }
+      jlong own_class_tag = 0;
+      bool transient_root = false;
+      auto class_it = _static_anchor_index_class_tags.find(tag);
+      if (class_it != _static_anchor_index_class_tags.end()) {
+        own_class_tag = class_it->second.class_tag;
+        transient_root = class_it->second.transient_root;
+      }
+      auto shape_it = _class_shape_cache.find(own_class_tag);
+      if (transient_root && shape_it != _class_shape_cache.end() &&
+          shape_it->second == static_cast<u8>(AnchorClassShape::NON_CONTAINER)) {
+        _static_anchor_index_class_tags.erase(tag);
+        continue;
+      }
+      _static_anchor_index[kept] = tag;
+      size_t pos = kept;
+      kept++;
+      if (!isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag)) {
         continue;
       }
       if (entry.leak_tag != 0) {
-        leak_picks.push_back(TierPick{i, tag});
-      } else if (i < _static_anchor_own_class_tags.size()) {
-        auto shape_it =
-            _class_shape_cache.find(_static_anchor_own_class_tags[i]);
-        if (shape_it != _class_shape_cache.end() &&
-            shape_it->second == (u8)AnchorClassShape::CONTAINER) {
-          container_picks.push_back(TierPick{i, tag});
-        } else {
-          other_picks.push_back(TierPick{i, tag});
-        }
+        leak_picks.push_back(TierPick{pos, tag});
+      } else if (shape_it != _class_shape_cache.end() &&
+                 (shape_it->second == static_cast<u8>(AnchorClassShape::CONTAINER) ||
+                  shape_it->second ==
+                      static_cast<u8>(AnchorClassShape::UNKNOWN_TRUNCATED))) {
+        container_picks.push_back(TierPick{pos, tag});
       } else {
-        other_picks.push_back(TierPick{i, tag});
+        other_picks.push_back(TierPick{pos, tag});
       }
     }
-    // Fresh-lane drain. Every queue entry is popped (its ONE first look is spent either way): kept
-    // if eligible AND (container-shaped OR not-yet-classified) AND room remains in the budget;
-    // dropped otherwise.
+    _static_anchor_index.resize(kept);
+    idx_size = kept;
+    // Fresh-lane drain. Every queue entry is popped (its ONE first look is spent either way): keep
+    // selectable anchors (durable root-attached, container-shaped, or truncated) if room remains;
+    // unknown transient anchors wait for class-shape reconciliation before selection.
     int fresh_room = max_count - (int)leak_picks.size();
     size_t drain_pos = fresh_queue_len <= idx_size ? idx_size - fresh_queue_len : 0;
     while (!_static_anchor_fresh_queue.empty()) {
       if (fresh_room <= 0) {
         // Budget exhausted before the queue drained: everything remaining spends its first look now
         // and falls back to the fair tiers at its index position (covered, not urgent).
+        Counters::increment(REFERENCE_CHAIN_STATIC_FRESH_DROPPED,
+                            (long long)_static_anchor_fresh_queue.size());
         _static_anchor_fresh_queue.clear();
         break;
       }
@@ -190,9 +210,9 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
       size_t pos = drain_pos;
       drain_pos++;
       if (pos >= idx_size || _static_anchor_index[pos] != tag) {
-        // The suffix-window invariant broke (cannot happen today; defensive): fall back to a search
-        // rather than mis-shape the entry - the queue is small, this is not a hot path once
-        // healthy.
+        // Reachable: the prune above dropped a queued tag, shifting the suffix window for entries
+        // queued before it. Search the whole index for the tag; a pruned tag is absent, so it is
+        // skipped. Cost: one index scan per mismatched entry, at most STATIC_ANCHOR_FRESH_CAP.
         auto it =
             std::find(_static_anchor_index.begin(),
                      _static_anchor_index.end(), tag);
@@ -201,30 +221,27 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
         }
         pos = (size_t)(it - _static_anchor_index.begin());
       }
+      jlong own_class_tag = 0;
+      auto class_it = _static_anchor_index_class_tags.find(tag);
+      if (class_it != _static_anchor_index_class_tags.end()) {
+        own_class_tag = class_it->second.class_tag;
+      }
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
-          entry.parent_tag != 0 ||
-          (entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
-           entry.root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) ||
+          !isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag) || entry.leak_tag != 0) {
-        continue; // dead/demoted/queued/leak-tier: first look spent, not
+        continue; // dead/ineligible/queued/leak-tier: first look spent, not
                   // fresh-kept (the leak tier selects it via the scan if it is leak-tagged)
       }
-      bool keep = false; // container or not-yet-classified rides the
-                         // lane; the wrapper admits one pass before reconcile can classify its
-                         // class
-      if (pos < _static_anchor_own_class_tags.size()) {
-        auto shape_it =
-            _class_shape_cache.find(_static_anchor_own_class_tags[pos]);
-        keep = shape_it == _class_shape_cache.end() ||
-               shape_it->second == (u8)AnchorClassShape::CONTAINER;
-      } else {
-        keep = true; // no own-class tag recorded - treat as unknown
-      }
+      auto shape_it = _class_shape_cache.find(own_class_tag);
+      bool keep = shape_it == _class_shape_cache.end() ||
+                  shape_it->second == static_cast<u8>(AnchorClassShape::CONTAINER) ||
+                  shape_it->second ==
+                      static_cast<u8>(AnchorClassShape::UNKNOWN_TRUNCATED);
       if (!keep) {
-        continue; // classified non-container: the other tier owns it
+        continue; // classified non-container: the other tier owns it (durable roots only)
       }
       fresh_picks.push_back(TierPick{pos, tag});
       fresh_kept_tags.insert(tag);
@@ -333,16 +350,48 @@ void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
       root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
     return;
   }
+  indexAnchorForRotation(tag, own_class_tag, false);
+}
+
+bool ReferenceChainTracker::isSelectableAnchor(const FrontierEntry &entry,
+                                               jlong own_class_tag) const {
+  if (entry.parent_tag == 0 &&
+      (entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+       entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL)) {
+    return true;
+  }
+  auto shape = _class_shape_cache.find(own_class_tag);
+  return shape != _class_shape_cache.end() &&
+         (shape->second == static_cast<u8>(AnchorClassShape::CONTAINER) ||
+          shape->second == static_cast<u8>(AnchorClassShape::UNKNOWN_TRUNCATED));
+}
+
+void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
+                                                   jlong own_class_tag,
+                                                   bool transient_root) {
   // Dedup: a push at first admission and another at upgrade would double-add.
-  if (!_static_anchor_index_tags.insert(tag).second) {
+  auto inserted = _static_anchor_index_class_tags.try_emplace(
+      tag, StaticAnchorIndexEntry{own_class_tag, transient_root});
+  if (!inserted.second) {
+    StaticAnchorIndexEntry &entry = inserted.first->second;
+    // First sight may report class_tag == 0; a later resolved-tag callback must upgrade it
+    // or the container-shape fallback stays unavailable for this holder.
+    if (own_class_tag != 0 && entry.class_tag == 0) {
+      entry.class_tag = own_class_tag;
+    }
+    // A durable observation keeps the anchor eligible even if a later callback also reports a
+    // transient root for the same holder.
+    if (!transient_root) {
+      entry.transient_root = false;
+    }
     return;
   }
   _static_anchor_index.push_back(tag);
-  _static_anchor_own_class_tags.push_back(own_class_tag);
   // Walk newly admitted anchors before the fair cursors.
   _static_anchor_fresh_queue.push_back(tag);
   if (_static_anchor_fresh_queue.size() > STATIC_ANCHOR_FRESH_CAP) {
     _static_anchor_fresh_queue.pop_front();
+    Counters::increment(REFERENCE_CHAIN_STATIC_FRESH_DROPPED);
   }
 }
 
@@ -392,24 +441,24 @@ bool ReferenceChainTracker::resolveContainerInterfaceTags(
   return _collection_iface_class_tag != 0 && _map_iface_class_tag != 0;
 }
 
-bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
-                                                          JNIEnv *jni,
-                                                          jclass klass) {
-  // LIFO (depth-first) walk over the superclass chain + every visited class's interfaces, not BFS:
-  // interfaces are pushed after the superclass, so under LIFO every interface subtree is explored
-  // before the superclass chain - the only path to an inherited Collection/Map. The 64-pop budget
-  // counts duplicate pops too (already-visited classes burn hops). GetTag() is compared against the
-  // two cached interface class tags.
+ReferenceChainTracker::AnchorClassShape
+ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
+                                                      JNIEnv *jni,
+                                                      jclass klass) {
+  // LIFO (depth-first) walk over superclasses and interfaces; the 64-pop budget includes duplicate
+  // tagged classes so hierarchy diamonds cannot expand this per-class walk without a bound.
   std::vector<jclass> work;
   std::unordered_set<jlong> visited;
   work.push_back(klass);
   bool found = false;
+  bool incomplete = false;
   int hops = 0;
   while (!found && !work.empty() && hops++ < 64) {
     jclass cur = work.back();
     work.pop_back();
     jlong cur_tag = 0;
     if (jvmti->GetTag(cur, &cur_tag) != JVMTI_ERROR_NONE || cur_tag == 0) {
+      incomplete = true;
       // Early exit: the popped ref is this walk's own (GetSuperclass/ GetImplementedInterfaces
       // local, or the caller's klass) - delete it like the loop bottom does, or the long-lived
       // engine thread leaks a JNI local ref per untagged hop.
@@ -437,22 +486,36 @@ bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
       break;
     }
     jclass super = jni->GetSuperclass(cur);
-    if (!jniExceptionCheck(jni) && super != nullptr) {
+    if (jniExceptionCheck(jni)) {
+      incomplete = true;
+      if (super != nullptr) {
+        jni->DeleteLocalRef(super);
+      }
+    } else if (super != nullptr) {
       work.push_back(super);
-    } else {
-      jni->ExceptionClear();
     }
     jint iface_count = 0;
     jclass *ifaces = nullptr;
-    if (jvmti->GetImplementedInterfaces(cur, &iface_count, &ifaces) ==
-            JVMTI_ERROR_NONE &&
-        ifaces != nullptr) {
-      for (jint i = 0; i < iface_count; i++) {
-        if (ifaces[i] != nullptr) {
-          work.push_back(ifaces[i]);
+    jvmtiError interfaces_error =
+        jvmti->GetImplementedInterfaces(cur, &iface_count, &ifaces);
+    if (interfaces_error == JVMTI_ERROR_NONE) {
+      if (iface_count > 0 && ifaces == nullptr) {
+        incomplete = true;
+      } else if (ifaces != nullptr) {
+        for (jint i = 0; i < iface_count; i++) {
+          if (ifaces[i] == nullptr) {
+            // A null element hides an unexamined interface, like a lookup error does.
+            incomplete = true;
+          } else {
+            work.push_back(ifaces[i]);
+          }
         }
       }
-      jvmti->Deallocate((unsigned char *)ifaces);
+    } else {
+      incomplete = true;
+    }
+    if (ifaces != nullptr) {
+      jvmti->Deallocate(reinterpret_cast<unsigned char *>(ifaces));
     }
     // `cur` is either the caller-provided klass (caller-managed ref - NOT deleted here) or a ref
     // this walk minted (GetSuperclass/ GetImplementedInterfaces locals, deleted immediately after
@@ -461,15 +524,20 @@ bool ReferenceChainTracker::classImplementsContainerOrMap(jvmtiEnv *jvmti,
       jni->DeleteLocalRef(cur);
     }
   }
-  // Single exit: every remaining ref minted into `work` (early hop-bound exit or the found-break)
+  // Single exit: every remaining ref minted into `work` (budget exhaustion or the found-break)
   // is deleted here rather than leaking locals for the process lifetime (the engine thread never
   // detaches).
+  bool truncated = incomplete || (!found && !work.empty());
   for (jclass r : work) {
     if (r != nullptr && r != klass) {
       jni->DeleteLocalRef(r);
     }
   }
-  return found;
+  if (found) {
+    return AnchorClassShape::CONTAINER;
+  }
+  return truncated ? AnchorClassShape::UNKNOWN_TRUNCATED
+                   : AnchorClassShape::NON_CONTAINER;
 }
 
 void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
@@ -477,7 +545,7 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
   if (jni == nullptr) {
     return;
   }
-  if (_static_anchor_own_class_tags.empty()) {
+  if (_static_anchor_index_class_tags.empty()) {
     return;
   }
   // Collect up to ANCHOR_SHAPE_RECONCILE_BUDGET distinct class tags that appear in the anchor index
@@ -485,7 +553,8 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
   std::vector<jlong> unknown;
   unknown.reserve(8);
   std::unordered_set<jlong> seen;
-  for (jlong class_tag : _static_anchor_own_class_tags) {
+  for (const auto &index_entry : _static_anchor_index_class_tags) {
+    jlong class_tag = index_entry.second.class_tag;
     if (class_tag == 0 || seen.count(class_tag) > 0 ||
         _class_shape_cache.count(class_tag) > 0) {
       continue;
@@ -537,9 +606,7 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
       }
       continue;
     }
-    AnchorClassShape shape = classImplementsContainerOrMap(jvmti, jni, klass)
-                                 ? AnchorClassShape::CONTAINER
-                                 : AnchorClassShape::NON_CONTAINER;
+    AnchorClassShape shape = classImplementsContainerOrMap(jvmti, jni, klass);
     _class_shape_cache[class_tag] = (u8)shape;
     // GetObjectsWithTags() returned a local ref for every resolved class - this runs on the
     // long-lived BFS thread, where undeleted locals accumulate until detach and pin their classes
