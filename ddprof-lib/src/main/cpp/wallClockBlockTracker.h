@@ -321,6 +321,13 @@ public:
     bool unownedWeightMatchesEpoch(ThreadFilter::SlotID slot_id, u64 epoch_start) const;
     void commitUnownedWeightSegment(ThreadFilter::SlotID slot_id, const WeightSegment& segment);
     void clearUnownedWeightSegments(ThreadFilter::SlotID slot_id);
+    struct PendingUnownedWeight {
+        u64 total = 0;
+        u64 max_segment = 0;
+    };
+    // Release-available test support: lock-free read of tid's slot in the registry's current
+    // recording epoch, all zero when the tid has no entry. Normal threads only (JNI test seam).
+    PendingUnownedWeight pendingUnownedWeightForTest(const ThreadFilter& registry, int tid) const;
     // Publication requires a recording stripe (or a quiescent unit fixture).
     bool publishUnownedTrace(ThreadFilter::SlotID slot_id, u64 trace_id, OSThreadState state,
                              const Context& context);
