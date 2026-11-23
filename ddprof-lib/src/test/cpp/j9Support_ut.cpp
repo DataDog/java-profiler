@@ -108,6 +108,9 @@ TEST(J9ReportSamplerRisks, warnsAboutDeadlockOnlyWhenAsgctMeetsAProneBuild) {
   EXPECT_NE(std::string::npos, err.find("AsyncGetCallTrace can deadlock")) << err;
   EXPECT_NE(std::string::npos,
             err.find("java.vm.version=17.0.20+8-openj9-0.60.0")) << err;
+  // An explicit CPU event without a cpu= interval ignores the sampler property.
+  EXPECT_NE(std::string::npos,
+            err.find("explicit itimer, ctimer or perf event also needs")) << err;
   EXPECT_EQ(std::string::npos, err.find("using the JVMTI sampler")) << err;
 
   testing::internal::CaptureStderr();

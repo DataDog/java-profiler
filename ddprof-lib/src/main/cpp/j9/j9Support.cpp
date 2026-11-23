@@ -238,7 +238,9 @@ J9SamplerRisk J9Support::reportSamplerRisks(J9SamplerChoice cpu,
   if (risk.deadlock_risk) {
     LOG_WARN("J9 AsyncGetCallTrace can deadlock the JVM on this build "
              "(java.vm.version=%s, java.runtime.version=%s). Upgrade to OpenJ9 "
-             "0.61+ (IBM SDK 8.0.8.75+) or set -Ddd.profiling.ddprof.j9.sampler=jvmti",
+             "0.61+ (IBM SDK 8.0.8.75+), or set -Ddd.profiling.ddprof.j9.sampler=jvmti "
+             "(an explicit itimer, ctimer or perf event also needs cpu=<interval> or "
+             "event=cpu)",
              orUnknown(props.vm_version), orUnknown(props.runtime_version));
   }
   if (risk.gated_fallback) {
