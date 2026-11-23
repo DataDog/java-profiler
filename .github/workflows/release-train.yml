@@ -186,8 +186,21 @@ jobs:
         env:
           RUN_ID: ${{ steps.dispatch.outputs.run_id }}
         run: |
-          CONCLUSION=$(gh run watch "$RUN_ID" --exit-status --interval 60 >/dev/null 2>&1 && echo success || \
-            gh run view "$RUN_ID" --json conclusion --jq '.conclusion')
+          # gh run watch fails on transient transport errors as well as on a
+          # failed conclusion, and the fallback view of an in-progress run
+          # has no conclusion. Resume monitoring until a terminal status is
+          # confirmed, or the train would report a live release as failed.
+          while true; do
+            if gh run watch "$RUN_ID" --exit-status --interval 60 >/dev/null 2>&1; then
+              CONCLUSION=success
+              break
+            fi
+            CONCLUSION=$(gh run view "$RUN_ID" --json status,conclusion \
+              --jq 'if .status == "completed" then (.conclusion // "") else "" end') || CONCLUSION=""
+            [ -n "$CONCLUSION" ] && break
+            echo "::warning::Release run $RUN_ID has no confirmed conclusion; retrying monitoring"
+            sleep 60
+          done
           echo "conclusion=$CONCLUSION" >> "$GITHUB_OUTPUT"
           if [ "$CONCLUSION" != "success" ]; then
             # A ::error:: annotation alone does not fail the step; the train

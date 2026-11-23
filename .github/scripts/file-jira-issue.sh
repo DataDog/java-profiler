@@ -18,9 +18,10 @@ set -euo pipefail
 #                      [--label <label> ...]
 #
 # Dedupe: when an unresolved issue in the project already matches the
-# summary text (JQL '~' is a text match, not exact equality), a dedupe
-# comment is added to it instead of creating a new issue. A failed dedupe
-# lookup only warns: a duplicate ticket beats a lost failure report.
+# summary as an exact phrase (unquoted JQL '~' is OR term matching, so any
+# shared word would match another commit's ticket), a dedupe comment is
+# added to it instead of creating a new issue. A failed dedupe lookup only
+# warns: a duplicate ticket beats a lost failure report.
 # Prints the created/updated issue key on stdout.
 
 usage() {
@@ -67,7 +68,10 @@ API="$BASE/rest/api/3"
 # the callers (no quotes), but escape anyway. The /search endpoint is retired;
 # /search/jql takes a POST body and may return issues or issueKeys.
 JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\""; "\\\\\"")')
-JQL="project = $PROJECT AND summary ~ \"$JQL_SUMMARY\" AND resolution = Unresolved"
+# The inner escaped quotes make Jira phrase-match the whole summary; without
+# them the per-term OR match lets one commit's failure dedupe onto another
+# commit's ticket (the shared fixed words match even though the SHA differs).
+JQL="project = $PROJECT AND summary ~ \\\"$JQL_SUMMARY\\\" AND resolution = Unresolved"
 EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
   -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
   "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
