@@ -64,10 +64,11 @@ enum ChildExit {
   CHILD_STATE_DIRTY = 17,       // initialized/patched/running/patchable written
   CHILD_SLOT_DIRTY = 18,        // a fixture GOT slot changed on rejection
   CHILD_DEADLOCK = 19,          // the concurrent loader loop hit the alarm
-  CHILD_UNLOADABLE = 21,        // dlclose did not unmap the fixture
+  CHILD_UNLOADABLE = 21,        // dlclose did not unmap the churn image
 };
 
 char g_fixture_path[PATH_MAX];
+char g_churn_path[PATH_MAX];
 
 const char* const DDPROF_LITERAL =
     "Native-memory profiling was not started: an allocation target points to a ddprof hook. "
@@ -76,12 +77,12 @@ const char* const INDETERMINATE_LITERAL =
     "Native-memory profiling was not started: allocation-target ownership could not be determined.";
 const char* const RESOLUTION_LITERAL = "Failed to resolve malloc symbols; native memory profiling unavailable";
 
-// Skips unless dlclose() really unmaps the fixture (it never does on musl).
-void requireUnloadableFixture() {
-  void* handle = dlopen(g_fixture_path, RTLD_NOW | RTLD_LOCAL);
+// Skips unless dlclose() really unmaps the image (it never does on musl).
+void requireUnloadableFixture(const char* path) {
+  void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (handle == NULL) _exit(CHILD_DLOPEN_FAILED);
   dlclose(handle);
-  if (dlopen(g_fixture_path, RTLD_NOLOAD | RTLD_LAZY) != NULL) _exit(CHILD_UNLOADABLE);
+  if (dlopen(path, RTLD_NOLOAD | RTLD_LAZY) != NULL) _exit(CHILD_UNLOADABLE);
 }
 
 // Resolves the ddprof-marker fixture relative to the test binary. A missing
@@ -95,6 +96,11 @@ void resolveFixturePath() {
   snprintf(g_fixture_path, sizeof(g_fixture_path),
            "%s/../../../test/resources/native-libs/ddprof-admission/libddprof-fixture-gnu.so", exe);
   if (access(g_fixture_path, R_OK) != 0) _exit(CHILD_FAIL);
+  // The churn image for the concurrent-loader test: no ddprof markers, so its
+  // load/unload cycle cannot alter the admission verdict it races with.
+  snprintf(g_churn_path, sizeof(g_churn_path),
+           "%s/../../../test/resources/native-libs/ddprof-admission/libddprof-fixture-nomark.so", exe);
+  if (access(g_churn_path, R_OK) != 0) _exit(CHILD_FAIL);
 }
 
 // The own CodeCache: this test binary statically contains the profiler, so
@@ -184,7 +190,7 @@ void runInChild(Scenario scenario) {
     GTEST_SKIP() << "own image has no allocation import in this sanitizer configuration";
   }
   if (code == CHILD_UNLOADABLE) {
-    GTEST_SKIP() << "dlclose does not unmap the fixture on this libc (musl)";
+    GTEST_SKIP() << "dlclose does not unmap the churn image on this libc (musl)";
   }
   ASSERT_EQ(code, CHILD_OK) << "admission scenario failed in the child, exit code " << code;
 }
@@ -536,27 +542,33 @@ TEST(MallocHookerAdmissionTest, UnmappedFixtureTargetIsNoOwner) {
 
 namespace {
 
-volatile sig_atomic_t g_loader_loop_stop = 0;
+int g_loader_loop_stop = 0;  // cross-thread flag: only __atomic accesses
 
 void* loaderLoop(void* arg) {
   int iterations = *(int*)arg;
-  for (int i = 0; i < iterations && !g_loader_loop_stop; i++) {
-    void* handle = dlopen(g_fixture_path, RTLD_NOW | RTLD_LOCAL);
+  for (int i = 0; i < iterations && !__atomic_load_n(&g_loader_loop_stop, __ATOMIC_ACQUIRE); i++) {
+    void* handle = dlopen(g_churn_path, RTLD_NOW | RTLD_LOCAL);
     if (handle == NULL) return (void*)1;
     dlclose(handle);
+    // The churn only stresses the walk if dlclose really unmaps: fail the
+    // child rather than spin on a pinned mapping.
+    if (dlopen(g_churn_path, RTLD_NOLOAD | RTLD_LAZY) != NULL) return (void*)2;
   }
   return NULL;
 }
 
 } // namespace
 
-// Admission repeats while another thread loads and unloads a fixture image:
-// the walk finishes under a timeout with no deadlock (AC-10). glibc only:
-// the scenario needs dlclose to unmap (musl keeps the mapping).
+// Admission repeats while another thread loads and unloads a churn image:
+// the walk finishes under a timeout with no deadlock (AC-10). The
+// hook-target fixture stays pinned the whole time — the own slot points
+// into it — so the churn uses a separate marker-less DSO and verifies that
+// dlclose really unmaps it. glibc only: the scenario needs dlclose to unmap
+// (musl keeps the mapping).
 TEST(MallocHookerAdmissionTest, AdmissionConcurrentWithDlopenLoop) {
   resolveFixturePath();
   runInChild([]() {
-    requireUnloadableFixture();
+    requireUnloadableFixture(g_churn_path);
     alarm(120);  // a hang surfaces as SIGALRM, reported as a crashed child
 
     void* handle = loadFixtureHandle();
@@ -578,7 +590,7 @@ TEST(MallocHookerAdmissionTest, AdmissionConcurrentWithDlopenLoop) {
       if (!e) _exit(CHILD_START_UNEXPECTED);
       if (strcmp(e.message(), DDPROF_LITERAL) != 0) _exit(CHILD_FAIL);
     }
-    g_loader_loop_stop = 1;
+    __atomic_store_n(&g_loader_loop_stop, 1, __ATOMIC_RELEASE);
     void* thread_result = NULL;
     pthread_join(thread, &thread_result);
     if (thread_result != NULL) _exit(CHILD_FAIL);
