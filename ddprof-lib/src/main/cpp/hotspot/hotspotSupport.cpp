@@ -476,7 +476,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
         bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && in_entry_nm;
         // A remount samples enterSpecial before thaw while its callers are still frozen,
-        // so no PC sampled inside it proves the stack complete.
+        // so no PC sampled inside it proves the stack complete, its exception exit included.
         if (sampled_entry && truncated != nullptr) *truncated = true;
         if (depth >= actual_max_depth) return false;
         if (!features.carrier_frames) {

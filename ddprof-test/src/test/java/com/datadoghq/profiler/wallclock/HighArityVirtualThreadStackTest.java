@@ -137,8 +137,10 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                 // A walk that stopped before the boundary, at a break marker or silently at a
                 // compiled frame, never exercised continuation recovery.
                 JfrFrame last = trace.frames().get(trace.frames().size() - 1);
+                // An unflagged silent stop is a truncation bug, so it stays in the checks below.
                 boolean silentStop =
                     otherBreak == null
+                        && trace.isTruncated()
                         && ("JIT compiled".equals(last.typeDescription())
                             || "C1 compiled".equals(last.typeDescription())
                             || "Inlined".equals(last.typeDescription()));
