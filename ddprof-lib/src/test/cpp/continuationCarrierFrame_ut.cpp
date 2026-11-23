@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 #include <climits>
+#include <set>
+#include <string>
 #include "hotspot/vmStructs.inline.h"
 
 class VMStructsTestAccessor {
@@ -124,4 +126,32 @@ TEST_F(ContinuationCarrierFrameTest, ObservesEntryWrapperGeneratedAfterInitializ
     return_pc = expected_pc;
     EXPECT_TRUE(VMStructs::isContEntryReturnPc(expected_pc));
     EXPECT_FALSE(VMStructs::isContEntryReturnPc(&_stack[10]));
+}
+
+namespace {
+#define COLLECT_NOTHING(...)
+#define COLLECT_FIELD(var, field_type, names) fields.insert(#var);
+#define COLLECT_FIELD_WITH_VERSION(var, field_type, min_ver, max_ver, names) fields.insert(#var);
+std::set<std::string> verifiedFields() {
+    std::set<std::string> fields;
+    DECLARE_TYPE_FIELD_DO(COLLECT_NOTHING, COLLECT_FIELD, COLLECT_FIELD_WITH_VERSION, COLLECT_NOTHING)
+    return fields;
+}
+std::set<std::string> optionalFields() {
+    std::set<std::string> fields;
+    DECLARE_OPTIONAL_TYPE_FIELD_DO(COLLECT_NOTHING, COLLECT_FIELD, COLLECT_FIELD_WITH_VERSION, COLLECT_NOTHING)
+    return fields;
+}
+#undef COLLECT_FIELD_WITH_VERSION
+#undef COLLECT_FIELD
+#undef COLLECT_NOTHING
+} // namespace
+
+// Debug builds assert every DECLARE_TYPE_FIELD_DO offset; a JVM that omits these
+// exports must fall back to -1 instead of aborting at initialization.
+TEST(ContinuationCarrierMetadata, RecoveryOffsetsAreOptional) {
+    for (const char* name : {"_nmethod_entry_bci_offset", "_constmethod_stack_arg_slots_offset"}) {
+        EXPECT_EQ(0u, verifiedFields().count(name)) << name;
+        EXPECT_EQ(1u, optionalFields().count(name)) << name;
+    }
 }

@@ -174,6 +174,16 @@ T* cast_or_null(const void* ptr) {
         field_with_version(_cont_entry_parent_offset,  offset,  27, MAX_VERSION, MATCH_SYMBOLS("_parent"))    \
     type_end()
 
+// Continuation-recovery metadata that a JDK 21+ build may not export. Callers treat -1 as
+// unknown (possible OSR, unknown stack arguments), so these stay out of verify_offsets().
+#define DECLARE_OPTIONAL_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
+    type_begin(VMNMethod, MATCH_SYMBOLS("CompiledMethod", "nmethod"))                \
+        field_with_version(_nmethod_entry_bci_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_entry_bci")) \
+    type_end()                                                                     \
+    type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                        \
+        field_with_version(_constmethod_stack_arg_slots_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_num_stack_arg_slots")) \
+    type_end()
+
 /**
  * Following macros define field offsets, addresses or values of JVM classes that are exported by
  * vmStructs.
@@ -203,7 +213,6 @@ typedef void* address;
         field_with_version(_nmethod_entry_address, offset, 8, 22, MATCH_SYMBOLS("_verified_entry_point"))           \
         field(_nmethod_state_offset, offset, MATCH_SYMBOLS("_state"))                                               \
         field(_nmethod_level_offset, offset, MATCH_SYMBOLS("_comp_level"))                                          \
-        field_with_version(_nmethod_entry_bci_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_entry_bci"))           \
         field_with_version(_nmethod_metadata_offset, offset, MIN_VERSION, 24, MATCH_SYMBOLS("_metadata_offset"))    \
         field_with_version(_nmethod_immutable_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_immutable_data"))    \
         field(_scopes_pcs_offset, offset, MATCH_SYMBOLS("_scopes_pcs_offset"))                                      \
@@ -221,7 +230,6 @@ typedef void* address;
         field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
         field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags", "_flags._flags"))                          \
         field(_constmethod_code_size_offset, offset, MATCH_SYMBOLS("_code_size"))                                   \
-        field_with_version(_constmethod_stack_arg_slots_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_num_stack_arg_slots")) \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -476,6 +484,7 @@ class VMStructs {
 
     DECLARE_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
     DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
+    DECLARE_OPTIONAL_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
 #undef DECLARE_TYPE_FIELD
 #undef DECLARE_TYPE_FIELD_WITH_VERSION
 #undef DO_NOTHING
