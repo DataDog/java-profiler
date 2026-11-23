@@ -55,7 +55,7 @@ static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 // JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
 // so a well-formed LineNumberTable can never have more entries than that.
 // Used to sanity-bound line_number_table_size before it drives the byte-count
-// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
+// probed with SafeAccess::isReadableRange(): if GetLineNumberTable()
 // returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
 // documented in fillJavaMethodInfo below), the paired out-param size is just
 // as likely to be corrupted, and an implausible size should be rejected
@@ -778,7 +778,6 @@ MethodInfo *Lookup::fillRawMethod(const ASGCT_CallFrame &frame) {
   // checked it again. The fill reads only `resolved`, never VM metadata, so
   // unlike fillMethod() it needs no landing pad.
   MethodInfo *mi = &(*_method_map)[MethodMap::makeRawKey(key.method, key.tag)];
-  mi->_unloaded = false;
   fillJavaMethodInfo(mi, resolved);
   if (mi->_key == 0) {
     mi->_key = _method_map->allocId();  // see fillMethod() on why not size()+1

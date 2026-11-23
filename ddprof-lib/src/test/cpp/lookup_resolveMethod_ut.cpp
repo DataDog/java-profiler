@@ -486,7 +486,10 @@ MethodInfo* resolveJavaFrame(Lookup& lookup, jmethodID method) {
 
 // Asserts mi is an "<unloaded>" row counted once, under `reason` only.
 void expectSkippedFor(Lookup& lookup, MethodInfo* mi, const SkipCounters& before, CounterId reason) {
-    ASSERT_NE(nullptr, mi);
+    if (mi == nullptr) {
+        ADD_FAILURE() << "resolveMethod() returned no row";
+        return;
+    }
     EXPECT_EQ(lookup.getSymbol("<unloaded>"), mi->_name);
     SkipCounters after;
     EXPECT_EQ(before.skipped + 1, after.skipped);

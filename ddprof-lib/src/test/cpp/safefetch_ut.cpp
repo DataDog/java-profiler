@@ -378,13 +378,16 @@ TEST_F(SafeFetchTest, safeCopy_sentinelLikeData_stillSucceeds) {
 // isReadableCString: readable up to a NUL found within max_len bytes.
 // ---------------------------------------------------------------------------
 
+// Any bound larger than the strings below; the tests at max_len pass their own.
+static constexpr size_t kMaxLen = 65538;
+
 TEST_F(SafeFetchTest, isReadableCString_acceptsNulOnLastReadableByte) {
   GuardedPage region;
   ASSERT_TRUE(region.ok());
   const char* s = region.placeAtEnd("join");
   // The fixed 256-byte probe this replaces rejected exactly this string.
   ASSERT_FALSE(SafeAccess::isReadableRange(s, 256));
-  EXPECT_TRUE(SafeAccess::isReadableCString(s, 65538));
+  EXPECT_TRUE(SafeAccess::isReadableCString(s, kMaxLen));
 }
 
 TEST_F(SafeFetchTest, isReadableCString_acceptsStringSpanningTwoReadablePages) {
@@ -393,7 +396,7 @@ TEST_F(SafeFetchTest, isReadableCString_acceptsStringSpanningTwoReadablePages) {
   char* second_page = region.guardStart() - OS::page_size;
   char* s = second_page - 3;
   memcpy(s, "abcdef", 7);  // crosses into the second page, NUL there
-  EXPECT_TRUE(SafeAccess::isReadableCString(s, 65538));
+  EXPECT_TRUE(SafeAccess::isReadableCString(s, kMaxLen));
 }
 
 TEST_F(SafeFetchTest, isReadableCString_acceptsNulAtMaxLenMinusOne) {
@@ -409,13 +412,13 @@ TEST_F(SafeFetchTest, isReadableCString_rejectsZeroMaxLen) {
 }
 
 TEST_F(SafeFetchTest, isReadableCString_rejectsNull) {
-  EXPECT_FALSE(SafeAccess::isReadableCString(nullptr, 65538));
+  EXPECT_FALSE(SafeAccess::isReadableCString(nullptr, kMaxLen));
 }
 
 TEST_F(SafeFetchTest, isReadableCString_rejectsUnreadableFirstPage) {
   GuardedPage region;
   ASSERT_TRUE(region.ok());
-  EXPECT_FALSE(SafeAccess::isReadableCString(region.guardStart(), 65538));
+  EXPECT_FALSE(SafeAccess::isReadableCString(region.guardStart(), kMaxLen));
 }
 
 TEST_F(SafeFetchTest, isReadableCString_rejectsStringRunningIntoGuardPage) {
@@ -423,5 +426,5 @@ TEST_F(SafeFetchTest, isReadableCString_rejectsStringRunningIntoGuardPage) {
   ASSERT_TRUE(region.ok());
   char* s = region.guardStart() - 8;
   memset(s, 'x', 8);  // no NUL before the guard page
-  EXPECT_FALSE(SafeAccess::isReadableCString(s, 65538));
+  EXPECT_FALSE(SafeAccess::isReadableCString(s, kMaxLen));
 }
