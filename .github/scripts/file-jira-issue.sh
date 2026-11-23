@@ -74,7 +74,7 @@ JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\
 # another commit's ticket. The phrase form needs escaped quotes INSIDE the
 # operand; quotes in the summary arrive pre-escaped by JQL_SUMMARY and stay
 # JQL escapes.
-JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\"\\\" AND resolution = Unresolved"
+JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\\\"\" AND resolution = Unresolved"
 EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
   -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
   "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
