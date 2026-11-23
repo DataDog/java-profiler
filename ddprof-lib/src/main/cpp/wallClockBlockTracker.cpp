@@ -341,7 +341,11 @@ WallClockBlockTracker::PendingUnownedWeight WallClockBlockTracker::pendingUnowne
         const ThreadFilter& registry, int tid) const {
     PendingUnownedWeight result;
     ThreadFilter::SlotID slot_id = -1;
-    if (registry.lookupByTid(tid, registry.recordingEpoch(), &slot_id) == nullptr) return result;
+    // Filtered recordings run at registry epoch 0, so the epoch-matched lookup cannot see them.
+    if (registry.lookupByTid(tid, &slot_id) == nullptr ||
+        registry.activeSlotForId(slot_id, tid) == nullptr) {
+        return result;
+    }
     auto* block = slotForId(slot_id);
     if (block == nullptr) return result;
     result.total = block->unowned_blocked_pending_weight.load(std::memory_order_acquire);
