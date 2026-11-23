@@ -1527,6 +1527,35 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
 
+// Read-only test observations: no registry allocation, state seeding or admission changes.
+// The tid and pending-weight reads are compiled in release too, so release tests can gate
+// on the target worker's own slot instead of process-wide counters.
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_currentTid0(
+    JNIEnv* env, jclass unused) {
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  return current != nullptr ? current->tid() : -1;
+}
+
+static WallClockBlockTracker::PendingUnownedWeight pendingUnownedWeightForTest(jint tid) {
+  if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return {};
+  Profiler* profiler = Profiler::instance();
+  return profiler->blockTracker()->pendingUnownedWeightForTest(*profiler->threadFilter(), tid);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_pendingUnownedWeight0(
+    JNIEnv* env, jclass unused, jint tid) {
+  return static_cast<jlong>(pendingUnownedWeightForTest(tid).total);
+}
+
+// A deferred wire event contains one epoch segment, not the aggregate pending weight.
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_maxPendingUnownedSegmentWeight0(
+    JNIEnv* env, jclass unused, jint tid) {
+  return static_cast<jlong>(pendingUnownedWeightForTest(tid).max_segment);
+}
+
 // LivenessTracker/ReferenceChainTracker test seams. They mutate real tracker
 // state, so they are only implemented in DEBUG builds; release builds get the
 // no-op stubs below.
