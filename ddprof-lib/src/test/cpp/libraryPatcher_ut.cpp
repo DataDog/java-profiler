@@ -11,6 +11,9 @@
 #include "libraryPatcher.h"
 #include "libraryPatcherTestAccessor.h"
 
+#include <memory>
+#include <vector>
+
 #include <dlfcn.h>
 #include <pthread.h>
 #include <string.h>
@@ -281,12 +284,16 @@ TEST_F(LibraryPatcherPatching, LeavesForeignWrapperInPlaceOnFirstPatch) {
 
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
   EXPECT_EQ(foreign, slot);
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
+  // Recorded as pending, so later passes find the entry instead of treating the
+  // library as new each time.
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 
   LibraryPatcher::unpatch_recording_hooks();  // stop
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);  // start
   EXPECT_EQ(foreign, slot);
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
 // The rule is per slot: the slot that holds the loader's binding is hooked, the
@@ -357,7 +364,8 @@ TEST_F(LibraryPatcherPatching, NeverHooksNullSlotEvenIfABindingIsNull) {
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
 
   EXPECT_EQ(nullptr, slot);
-  EXPECT_EQ(0, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
 // A reload resolved into a preloaded interposer (the sanitizer runtime, say) is
@@ -371,6 +379,35 @@ TEST_F(LibraryPatcherRehook, RehooksSlotHoldingPreloadedInterposer) {
 
   EXPECT_EQ(hooked, slot);
   EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
+}
+
+// Libraries left alone are recorded only up to MAX_UNHOOKED_ENTRIES: past it a
+// foreign-only library takes no entry, and a library with a hookable slot still does.
+TEST_F(LibraryPatcherPatching, UnhookedEntriesAreBoundedAndLeaveRoomForHookedOnes) {
+  const int limit = LibraryPatcherTestAccessor::maxUnhookedEntries();
+  void* const foreign = reinterpret_cast<void*>(&fake_original_pthread_create);
+  std::vector<void*> slots(limit + 1, foreign);
+  std::vector<std::unique_ptr<CodeCache>> libs;
+  for (int i = 0; i <= limit; i++) {
+    libs.emplace_back(new CodeCache(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                                    /* imports_patchable */ true));
+    libs.back()->addImport(&slots[i], "pthread_create");
+    LibraryPatcherTestAccessor::patchLibraryUnlocked(libs.back().get());
+  }
+
+  EXPECT_EQ(limit, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(libs[limit - 1].get()));
+  EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(libs[limit].get()));
+  EXPECT_EQ(foreign, slots[limit]);
+
+  void* hookable = real_pthread_create();
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(&hookable, "pthread_create");
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_NE(real_pthread_create(), hookable);
+  EXPECT_EQ(limit + 1, LibraryPatcherTestAccessor::patchedCount());
 }
 
 // A slot left alone marks the entry pending; the visit that hooks it again

@@ -55,6 +55,14 @@ static PthreadCreateEntry* find_pthread_create_entry(PthreadCreateTable& table, 
   return nullptr;
 }
 
+static int count_pending_entries(const PthreadCreateTable& table) {
+  int count = 0;
+  for (int index = 0; index < table.size; index++) {
+    count += table.entries[index].pending;
+  }
+  return count;
+}
+
 static bool has_entry_for(const PatchEntry* entries, int size, CodeCache* lib) {
   return find_entry(entries, size, lib) >= 0;
 }
@@ -711,16 +719,20 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   if (entry != nullptr) {
     entry->mapped = true;  // this walk found it mapped
     entry->pending = pending;
-  }
-  if (!any_patch) {
-    return;
-  }
-  if (entry == nullptr) {
+  } else if (any_patch || pending) {
     if (_pthread_create.size >= MAX_NATIVE_LIBS) {
       TEST_LOG("Patching: entry table full, %s is not routed through the hook", lib->name());
       return;
     }
+    // Not recorded, so a later pass sees it as new again: bounded cost, no table space.
+    if (!any_patch && count_pending_entries(_pthread_create) >= MAX_UNHOOKED_ENTRIES) {
+      TEST_LOG("Patching: %s is left alone and not recorded", lib->name());
+      return;
+    }
     _pthread_create.entries[_pthread_create.size++] = {lib, true, pending};
+  }
+  if (!any_patch) {
+    return;
   }
   TEST_LOG("Patching: %s", lib->name());
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {

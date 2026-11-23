@@ -42,6 +42,8 @@ public:
     return -1;
   }
 
+  static int maxUnhookedEntries() { return MAX_UNHOOKED_ENTRIES; }
+
   static void* loaderPthreadCreate() { return LibraryPatcher::_loader_pthread_create; }
   static void* nextPthreadCreate() { return LibraryPatcher::_next_pthread_create; }
 
@@ -51,10 +53,9 @@ public:
 
   static void* pltBinding(void* global, void* next) { return LibraryPatcher::plt_binding(global, next); }
 
-  // Drops the patch table without writing the saved originals back, unlike
-  // unpatch_recording_hooks(). Tests patch GOT slots that live in the test body's
-  // frame, so by the time a fixture could restore them the addresses are dead;
-  // forgetting the entries is what keeps one test from reaching into the next.
+  // Drops the patch table without restoring the saved originals: tests patch GOT
+  // slots in the test body's frame, dead by the time a fixture could restore them.
+  // Forgetting the entries keeps one test from reaching into the next.
   static void forgetPatchTable() {
     memset(&LibraryPatcher::_pthread_create, 0, sizeof(LibraryPatcher::_pthread_create));
     LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);

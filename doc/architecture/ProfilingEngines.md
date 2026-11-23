@@ -200,22 +200,27 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
    happened: an unload (`dlpi_subs`) since the last full pass, or a load
    (`dlpi_adds`) since then while any unload has ever happened (the unload of a
    reload can fall in an earlier pass than its load). Otherwise only unpatched
-   libraries enter the identity-checking walk. The first patch and a re-check
-   hook a slot only if it holds one of the loader's bindings, captured by
-   `initialize_persistent()`: `dlsym(RTLD_DEFAULT)` (a preloaded interposer
-   included) or, only when that address lies in the main executable (a non-PIE
-   executable that takes `&pthread_create`), `dlsym(RTLD_NEXT)`, which PLT
-   calls bind to then (that executable with a preloaded interposer is not
-   supported); or the library's own lazy-binding stub. Any other value
-   is left alone: another interposer's wrapper, whose threads are then not
-   registered, an unresolved weak import, or a GOT the loader has not
-   relocated yet. An entry left with such a slot is pending and is visited on
-   every pass until a visit hooks it, because the counters move when a library
-   is mapped, not when its relocation finishes; a slot that never changes costs
-   that one library's walk per pass. The wrapper passes the routine's
-   return value to `pthread_exit()`, so `pthread_join()` still sees it even
-   though the hook outlives every recording. The hook runs without
-   `_state_lock`, so both calls are gated:
+   libraries enter the identity-checking walk.
+   - The first patch and a re-check hook a slot only if it holds one of the
+     loader's bindings, captured by `initialize_persistent()`:
+     `dlsym(RTLD_DEFAULT)` (a preloaded interposer included) or the library's
+     own lazy-binding stub. Only when that address lies in the main executable (a
+     non-PIE executable that takes `&pthread_create`) is `dlsym(RTLD_NEXT)`
+     accepted too, which PLT calls bind to then; that executable with a preloaded
+     interposer is not supported.
+   - Any other value is left alone: another interposer's wrapper, whose threads
+     are then not registered, an unresolved weak import, or a GOT the loader has
+     not relocated yet.
+   - An entry left with such a slot is pending and is visited on every pass until
+     a visit hooks it, because the counters move when a library is mapped, not
+     when its relocation finishes; a slot that never changes costs that one
+     library's walk per pass. A library with no hooked slot is recorded the same
+     way, up to `MAX_UNHOOKED_ENTRIES`, so it cannot crowd out hooked libraries;
+     beyond that it takes no entry and is treated as new on each pass.
+   - The wrapper passes the routine's return value to `pthread_exit()`, so
+     `pthread_join()` still sees it even though the hook outlives every
+     recording.
+   - The hook runs without `_state_lock`, so both calls are gated:
    - `registerThread()` needs `_engines_ready`, which `CTimer::start()` and
      `PerfEvents::start()` set via `Profiler::openThreadRegistration()` once
      their table is sized and before they list threads, and which

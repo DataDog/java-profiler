@@ -23,8 +23,8 @@ typedef struct _patchEntry {
   void*  _func;
 } PatchEntry;
 
-// A library whose pthread_create slots are hooked. The slots are found again
-// through lib->findImport().
+// A library with a pthread_create import the patcher visited, hooked or not. The
+// slots are found again through lib->findImport().
 struct PthreadCreateEntry {
   CodeCache* lib;
   // Set by every visit and cleared only by a full pass: false means the last full
@@ -34,6 +34,10 @@ struct PthreadCreateEntry {
   // weak import or another interposer's wrapper. Visited on every pass while set.
   bool pending;
 };
+
+// Most entries that may be recorded without a hooked slot, so that libraries
+// left alone cannot crowd out libraries that are hooked.
+const int MAX_UNHOOKED_ENTRIES = MAX_NATIVE_LIBS / 4;
 
 // The pthread_create entries, guarded by LibraryPatcher::_lock. All-zero is the
 // empty table.
