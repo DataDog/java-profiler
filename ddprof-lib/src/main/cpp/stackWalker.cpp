@@ -186,7 +186,9 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             } else if (JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
                 // Don't dereference pc as it may point to unreadable memory
                 // frame.adjustSP(page_start, pc, sp);
-                java_ctx->set(walk_pc.raw(), sp, fp);
+                // A context restored at a signal frame has its own LR, which the sampled one lacks.
+                java_ctx->set(walk_pc.raw(), sp, fp,
+                              depth > 0 && atInterruptedContext(frame, walk_pc) ? frame.link() : 0);
                 break;
             }
         }

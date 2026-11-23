@@ -832,6 +832,25 @@ TEST_P(AsgctVtableReceiverTest, CapturesReceiverBeforeUnwindingAndReservesRetryS
     expectCanary(3);
 }
 
+TEST_P(AsgctVtableReceiverTest, SignalRestoredLinkRegisterDrivesTheStubRetry) {
+#ifndef __aarch64__
+    GTEST_SKIP() << "x64 keeps return addresses on the stack, not in a link register";
+#else
+    // walkDwarf exported a context restored at a signal frame; the sampled context still
+    // holds the handler's LR, which the stub unwind must not follow.
+    const uintptr_t handler_lr = 0x5a5f00000908ULL;
+    StackContext java_ctx{};
+    java_ctx.set(reinterpret_cast<const void*>(leafPC()), reinterpret_cast<uintptr_t>(_stack), 0, callerAddress());
+    prepareWalk();
+    HotspotStackFrame(&_ctx).setLink(handler_lr);
+    ASSERT_EQ(3, HotspotSupportTestAccessor::getJavaTraceAsync(&_ctx, _frames, 3, &java_ctx));
+    EXPECT_EQ(reinterpret_cast<jmethodID>(0x1230), _frames[2].method_id);
+    EXPECT_EQ(std::vector<uintptr_t>({leafPC(), retryPC()}), asgct_pcs);
+    EXPECT_EQ(handler_lr, HotspotStackFrame(&_ctx).link()) << "the snapshot restores the sampled LR";
+    expectCanary(3);
+#endif
+}
+
 TEST_P(AsgctVtableReceiverTest, DepthBudgetsDoNotWritePastThePrefixOrRetryLimit) {
     for (int budget : {0, 1, 2}) {
         SCOPED_TRACE(budget);

@@ -41,6 +41,10 @@ uintptr_t StackFrame::link() const {
     return (uintptr_t)REG(regs[30], lr);
 }
 
+void StackFrame::setLink(uintptr_t value) {
+    REG(regs[30], lr) = value;
+}
+
 uintptr_t StackFrame::arg0() const {
     return (uintptr_t)REG(regs[0], x[0]);
 }

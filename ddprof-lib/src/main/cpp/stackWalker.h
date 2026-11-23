@@ -22,11 +22,15 @@ struct StackContext {
     uintptr_t sp;
     uintptr_t fp;
     u64 cpu;
+    // Nonzero only for a context restored at a signal frame, whose LR differs from the
+    // sampled context's; Java walkers that fall back to frame.link() need it.
+    uintptr_t lr;
 
-    void set(const void* pc, uintptr_t sp, uintptr_t fp) {
+    void set(const void* pc, uintptr_t sp, uintptr_t fp, uintptr_t lr = 0) {
         this->pc = pc;
         this->sp = sp;
         this->fp = fp;
+        this->lr = lr;
     }
 };
 

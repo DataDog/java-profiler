@@ -39,6 +39,9 @@ uintptr_t StackFrame::link() const {
     return 0;
 }
 
+void StackFrame::setLink(uintptr_t) {
+}
+
 uintptr_t StackFrame::arg0() const {
     return (uintptr_t)REG(RDI, rdi);
 }

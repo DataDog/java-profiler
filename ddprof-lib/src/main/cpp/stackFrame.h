@@ -60,6 +60,7 @@ class StackFrame {
                 _pc = frame.pc();
                 _sp = frame.sp();
                 _fp = frame.fp();
+                _lr = frame.link();
             }
         }
         virtual ~RegisterSnapshot() {
@@ -67,7 +68,9 @@ class StackFrame {
         }
 
        virtual void restore() {
-            StackFrame(_ucontext).restore(_pc, _sp, _fp);
+            StackFrame frame(_ucontext);
+            frame.restore(_pc, _sp, _fp);
+            if (_ucontext != nullptr) frame.setLink(_lr);
         }
 
         uintptr_t pc() const { return _pc; }
@@ -76,7 +79,7 @@ class StackFrame {
 
       private:
         void* _ucontext;
-        uintptr_t _pc = 0, _sp = 0, _fp = 0;
+        uintptr_t _pc = 0, _sp = 0, _fp = 0, _lr = 0;
     };
 
     uintptr_t stackAt(int slot) {
@@ -89,6 +92,8 @@ class StackFrame {
 
     uintptr_t& retval();
     uintptr_t link() const;
+    // Writes the link register where the ABI has one; x64 keeps return addresses on the stack.
+    void setLink(uintptr_t value);
     uintptr_t arg0() const;
     uintptr_t arg1() const;
     uintptr_t arg2() const;

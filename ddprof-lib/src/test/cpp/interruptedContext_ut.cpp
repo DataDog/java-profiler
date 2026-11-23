@@ -40,4 +40,23 @@ TEST(AtInterruptedContextTest, RejectsAFrameWithoutContext) {
     EXPECT_FALSE(atInterruptedContext(frame, walk_pc));
 }
 
+TEST(AtInterruptedContextTest, RegisterSnapshotRestoresTheLinkRegister) {
+    ucontext_t context{};
+#ifdef __APPLE__
+    _STRUCT_MCONTEXT64 machine_context{};
+    context.uc_mcontext = &machine_context;
+#endif
+    StackFrame frame(&context);
+    frame.setLink(0x5a6000002000ULL);
+    {
+        StackFrame::RegisterSnapshot snapshot(&context);
+        frame.setLink(0x5a6000003000ULL);
+    }
+#ifdef __aarch64__
+    EXPECT_EQ(0x5a6000002000ULL, frame.link());
+#else
+    EXPECT_EQ(0u, frame.link()) << "x64 has no link register";
+#endif
+}
+
 } // namespace

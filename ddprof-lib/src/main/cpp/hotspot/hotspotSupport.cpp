@@ -1308,6 +1308,8 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   if (in_java && java_ctx->sp != 0) {
     // skip ahead to the Java frames before calling AGCT.
     frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
+    // ASGCT retries read frame.link(); ctx_snapshot restores the signal context's own LR.
+    if (java_ctx->lr != 0) frame.setLink(java_ctx->lr);
   } else if (state != _thread_uninitialized) {
     VMJavaFrameAnchor* a = vm_thread->anchor();
     if (a == nullptr || a->lastJavaSP() == 0) {
