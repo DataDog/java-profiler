@@ -130,8 +130,8 @@ jobs:
           fi
 
           # GDB watchdog for debug config: dumps all native threads if the JVM hangs
-          # inside JVMTI before the 180-min
-          # job timeout fires, so a thread dump lands in the test-reports artifact.
+          # inside JVMTI before the 180-min job timeout fires, so a thread dump lands
+          # in the test-reports artifact.
           # prepare_reports.sh copies build/logs/gdb-watchdog.log, and the test
           # reports are uploaded on failure or, if the dump exists, on timeout.
           if [[ "${{ matrix.config }}" == "debug" ]]; then
