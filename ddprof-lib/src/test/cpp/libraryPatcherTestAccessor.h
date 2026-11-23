@@ -42,6 +42,15 @@ public:
     return -1;
   }
 
+  // What a full pass does to an entry its walk does not visit.
+  static void clearEntryPending(CodeCache* lib) {
+    for (int index = 0; index < LibraryPatcher::_pthread_create.size; index++) {
+      if (LibraryPatcher::_pthread_create.entries[index].lib == lib) {
+        LibraryPatcher::_pthread_create.entries[index].pending = false;
+      }
+    }
+  }
+
   static int maxUnhookedEntries() { return MAX_UNHOOKED_ENTRIES; }
 
   static void* loaderPthreadCreate() { return LibraryPatcher::_loader_pthread_create; }

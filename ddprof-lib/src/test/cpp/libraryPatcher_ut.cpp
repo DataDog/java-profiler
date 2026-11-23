@@ -400,6 +400,14 @@ TEST_F(LibraryPatcherPatching, UnhookedEntriesAreBoundedAndLeaveRoomForHookedOne
   EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(libs[limit].get()));
   EXPECT_EQ(foreign, slots[limit]);
 
+  // The bound counts entries never hooked, whether or not a full pass cleared
+  // their pending flag, so entries of unloaded libraries keep counting.
+  for (int i = 0; i < limit; i++) {
+    LibraryPatcherTestAccessor::clearEntryPending(libs[i].get());
+  }
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(libs[limit].get());
+  EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(libs[limit].get()));
+
   // An entry that gets hooked no longer counts against the bound.
   slots[0] = real_pthread_create();
   LibraryPatcherTestAccessor::patchLibraryUnlocked(libs[0].get());

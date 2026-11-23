@@ -699,12 +699,14 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   bool patch[NUM_IMPORT_TYPES] = {};
   bool any_patch = false;
   bool pending = false;
+  bool hooked = false;
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
     if (slots[ty] == nullptr) {
       continue;
     }
     void* current = __atomic_load_n(slots[ty], __ATOMIC_RELAXED);
     if (current == func) {
+      hooked = true;
       continue;
     }
     // The loader leaves one of its bindings or, with lazy binding, the library's
@@ -719,18 +721,18 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   if (entry != nullptr) {
     entry->mapped = true;  // this walk found it mapped
     entry->pending = pending;
-    entry->unhooked &= !any_patch;
+    entry->unhooked &= !(hooked || any_patch);
   } else if (any_patch || pending) {
     if (_pthread_create.size >= MAX_NATIVE_LIBS) {
       TEST_LOG("Patching: entry table full, %s is not routed through the hook", lib->name());
       return;
     }
     // Not recorded, so a later pass sees it as new again: bounded cost, no table space.
-    if (!any_patch && count_unhooked_entries(_pthread_create) >= MAX_UNHOOKED_ENTRIES) {
+    if (!(hooked || any_patch) && count_unhooked_entries(_pthread_create) >= MAX_UNHOOKED_ENTRIES) {
       TEST_LOG("Patching: %s is left alone and not recorded", lib->name());
       return;
     }
-    _pthread_create.entries[_pthread_create.size++] = {lib, true, pending, !any_patch};
+    _pthread_create.entries[_pthread_create.size++] = {lib, true, pending, !(hooked || any_patch)};
   }
   if (!any_patch) {
     return;

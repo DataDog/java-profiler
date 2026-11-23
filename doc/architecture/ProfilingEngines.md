@@ -215,8 +215,9 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      a visit hooks it, because the counters move when a library is mapped, not
      when its relocation finishes; a slot that never changes costs that one
      library's walk per pass. A library with no hooked slot is recorded the same
-     way, up to `MAX_UNHOOKED_ENTRIES`, so it cannot crowd out hooked libraries;
-     beyond that it takes no entry and is treated as new on each pass.
+     way, up to `MAX_UNHOOKED_ENTRIES` entries never hooked, unloaded libraries
+     included, so they cannot crowd out hooked libraries. Beyond that a library
+     takes no entry and is treated as new on each pass.
    - The wrapper passes the routine's return value to `pthread_exit()`, so
      `pthread_join()` still sees it even though the hook outlives every
      recording.
