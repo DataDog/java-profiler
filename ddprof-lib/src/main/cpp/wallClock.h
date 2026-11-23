@@ -355,10 +355,13 @@ public:
     static bool recordUnownedWallTailAcrossDumpForTest(
         jthread thread, const char* path, int path_length, bool dump_after_primary,
         bool reset_before_tail);
-    // Seeds a real cached stack and five same-epoch deferred units. The caller
-    // blocks profiling signals until the tested ownership transition finishes.
-    static bool seedUnownedWallTailForTest(
+    // Seeds a real cached stack and five same-epoch deferred units; returns the
+    // failed step, or null. The caller blocks profiling signals until the tested
+    // ownership transition finishes.
+    static const char* seedUnownedWallTailForTest(
         jthread thread, OSThreadState state = OSThreadState::SLEEPING);
+private:
+    static const char* seedUnownedWallTailOnceForTest(jthread thread, OSThreadState state);
 #endif
 };
 

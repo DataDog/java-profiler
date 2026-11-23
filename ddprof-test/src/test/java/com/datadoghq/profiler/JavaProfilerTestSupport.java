@@ -77,7 +77,8 @@ public final class JavaProfilerTestSupport {
   /**
    * Seeds a PARKED stack with five same-epoch units, then runs a bounded owner transition with
    * profiling signals blocked and no recording stripe held. Returns false outside debug builds.
-   * Rejects null callbacks and propagates callback failures.
+   * Rejects null callbacks, propagates callback failures, and throws IllegalStateException naming
+   * the failed step when seeding fails.
    */
   public static boolean withUnownedWallTailForTest(Runnable transition) {
     return withUnownedWallTailForTest0(Thread.currentThread(), Objects.requireNonNull(transition));
