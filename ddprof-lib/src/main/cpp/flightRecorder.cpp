@@ -1493,6 +1493,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Log::LEVEL_NAME[Log::level()]);
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
+  writeBoolSetting(buf, T_ACTIVE_RECORDING, "j9AsgctDeadlockRisk",
+                   Profiler::instance()->j9AsgctDeadlockRisk());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "sanityCheckFailed",
                    Profiler::instance()->sanityCheckFailed());
   if (Profiler::instance()->sanityCheckFailed()) {

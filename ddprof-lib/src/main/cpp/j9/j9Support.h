@@ -19,6 +19,7 @@
 #define _J9_J9SUPPORT_H
 
 #include <jvmti.h>
+#include <string>
 
 #include "frame.h"
 #include "log.h"
@@ -71,6 +72,25 @@ static inline int sanitizeJ9FrameType(jint j9_type) {
   return FRAME_JIT_COMPILED;
 }
 
+/** Why engine selection did or did not pick J9's AsyncGetCallTrace. */
+enum class J9SamplerChoice : int {
+  NONE,             // engine off, or not running on J9
+  ASGCT,
+  JVMTI_REQUESTED,  // dd.profiling.ddprof.j9.sampler=jvmti or wallsampler=jvmti
+  JVMTI_GATED       // can_use_ASGCT() rejected this JVM version
+};
+
+struct J9SamplerRisk {
+  bool deadlock_risk;   // ASGCT in use on a deadlock-prone J9 build
+  bool gated_fallback;  // the version gate replaced ASGCT with the JVMTI sampler
+};
+
+/** Version properties that identify the J9 build; empty when unavailable. */
+struct J9VersionProps {
+  std::string vm_version;
+  std::string runtime_version;
+};
+
 class J9Support {
   friend class JVMThread;
   friend class J9WallClock;
@@ -93,6 +113,8 @@ public:
     // Fixed upstream in eclipse-openj9/openj9#20577 (0.51, April 2025 refresh):
     //   JDK 8u451 (IBM SDK SR8 FP45) / 8u452 (IBM Semeru), JDK 11.0.27,
     //   JDK 17.0.15, JDK 21.0.7
+    // OpenJ9 0.60 has a different ASGCT self-deadlock that this
+    // gate does not reject: see isAsgctDeadlockProneVersion().
     return (VM::java_version() == 8 && VM::java_update_version() >= 451) ||
            (VM::java_version() == 11 && VM::java_update_version() >= 27) ||
            (VM::java_version() == 17 && VM::java_update_version() >= 15) ||
@@ -126,6 +148,21 @@ public:
   }
 
   static bool initialize(jvmtiEnv *jvmti, const void *j9thread_self);
+
+  // True for J9 builds whose ASGCT re-takes a JIT monitor held by the thread it
+  // interrupted and self-deadlocks: OpenJ9 0.60 (fixed in 0.61) and IBM SDK 8
+  // SR8 FP70-FP74 (fixed in FP75). Null or unparseable input is unaffected.
+  static bool isAsgctDeadlockProneVersion(const char *vm_version,
+                                          const char *runtime_version);
+
+  // java.runtime.version is read through JNI because OpenJ9's JVMTI only sees
+  // VM-defined properties and Java code sets that one. Needs an attached thread.
+  static J9VersionProps readVersionProps();
+
+  static J9SamplerRisk assessSamplers(J9SamplerChoice cpu, J9SamplerChoice wall,
+                                      bool deadlock_prone);
+
+  static const char *choiceName(J9SamplerChoice choice);
 
   static JNIEnv *GetJ9vmThread(jthread thread) {
     JNIEnv *result;

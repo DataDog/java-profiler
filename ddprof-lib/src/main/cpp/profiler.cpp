@@ -1601,13 +1601,23 @@ void Profiler::updateNativeThreadNames(bool defer_initializing) {
   delete thread_list;
 }
 
-Engine *Profiler::selectCpuEngine(Arguments &args) {
+static void recordJ9Choice(J9SamplerChoice *choice, J9SamplerChoice value) {
+  if (choice != nullptr) {
+    *choice = value;
+  }
+}
+
+Engine *Profiler::selectCpuEngine(Arguments &args, J9SamplerChoice *choice) {
+  recordJ9Choice(choice, J9SamplerChoice::NONE);
   if (args._cpu < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_NOOP) == 0)) {
     return &noop_engine;
   } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
     if (VM::isOpenJ9()) {
-      if (!J9Support::shouldUseAsgct() || !J9Support::can_use_ASGCT()) {
+      bool jvmti_requested = !J9Support::shouldUseAsgct();
+      if (jvmti_requested || !J9Support::can_use_ASGCT()) {
+        recordJ9Choice(choice, jvmti_requested ? J9SamplerChoice::JVMTI_REQUESTED
+                                               : J9SamplerChoice::JVMTI_GATED);
         if (!J9Support::is_jvmti_jmethodid_safe()) {
           LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                     "CPU profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1617,6 +1627,7 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
         return &j9_engine;
       }
       TEST_LOG("J9[cpu]=asgct");
+      recordJ9Choice(choice, J9SamplerChoice::ASGCT);
     }
     // Prefer the JVMTI JFR-delegated engine when the HotSpot extension is
     // available and the user opted into jvmtistacks.  On Linux, CTimerJvmti
@@ -1639,7 +1650,12 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
                                            : (Engine *)&itimer);
   } else if (strcmp(args._event, EVENT_WALL) == 0) {
     return &noop_engine;
-  } else if (strcmp(args._event, EVENT_ITIMER) == 0) {
+  }
+  // Explicit CPU events skip the J9 sampler gate above and always use ASGCT.
+  if (VM::isOpenJ9()) {
+    recordJ9Choice(choice, J9SamplerChoice::ASGCT);
+  }
+  if (strcmp(args._event, EVENT_ITIMER) == 0) {
     return &itimer;
   } else if (strcmp(args._event, EVENT_CTIMER) == 0) {
     return &ctimer;
@@ -1648,13 +1664,17 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
-Engine *Profiler::selectWallEngine(Arguments &args) {
+Engine *Profiler::selectWallEngine(Arguments &args, J9SamplerChoice *choice) {
+  recordJ9Choice(choice, J9SamplerChoice::NONE);
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
     return &noop_engine;
   }
   if (VM::isOpenJ9()) {
-    if (args._wallclock_sampler == JVMTI || !J9Support::shouldUseAsgct() || !J9Support::can_use_ASGCT()) {
+    bool jvmti_requested = args._wallclock_sampler == JVMTI || !J9Support::shouldUseAsgct();
+    if (jvmti_requested || !J9Support::can_use_ASGCT()) {
+      recordJ9Choice(choice, jvmti_requested ? J9SamplerChoice::JVMTI_REQUESTED
+                                             : J9SamplerChoice::JVMTI_GATED);
       if (!J9Support::is_jvmti_jmethodid_safe()) {
         LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1665,6 +1685,7 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
       return (Engine *)&j9_engine;
     } else {
       TEST_LOG("J9[wall]=asgct");
+      recordJ9Choice(choice, J9SamplerChoice::ASGCT);
       return (Engine *)&wall_asgct_engine;
     }
   }
@@ -1681,6 +1702,35 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
         default:
             return (Engine*)&wall_asgct_engine;
     }
+}
+
+void Profiler::reportJ9SamplerRisks(J9SamplerChoice cpu, J9SamplerChoice wall) {
+  _j9_asgct_deadlock_risk = false;
+  if (!VM::isOpenJ9()) {
+    return;
+  }
+  TEST_LOG("J9[choice] cpu=%s wall=%s", J9Support::choiceName(cpu),
+           J9Support::choiceName(wall));
+  J9VersionProps props = J9Support::readVersionProps();
+  TEST_LOG("J9[props] vm=%s runtime=%s", props.vm_version.c_str(),
+           props.runtime_version.c_str());
+  J9SamplerRisk risk = J9Support::assessSamplers(
+      cpu, wall,
+      J9Support::isAsgctDeadlockProneVersion(props.vm_version.c_str(),
+                                             props.runtime_version.c_str()));
+  if (risk.deadlock_risk) {
+    LOG_WARN("J9 AsyncGetCallTrace can deadlock the JVM on this build "
+             "(java.vm.version=%s, java.runtime.version=%s). Upgrade to OpenJ9 "
+             "0.61+ (IBM SDK 8.0.8.75+) or set -Ddd.profiling.ddprof.j9.sampler=jvmti",
+             props.vm_version.empty() ? "unknown" : props.vm_version.c_str(),
+             props.runtime_version.empty() ? "unknown"
+                                           : props.runtime_version.c_str());
+  }
+  if (risk.gated_fallback) {
+    LOG_WARN("AsyncGetCallTrace is enabled only on OpenJ9 8u451+, 11.0.27+, "
+             "17.0.15+ and 21.0.7+; using the JVMTI sampler");
+  }
+  _j9_asgct_deadlock_risk = risk.deadlock_risk;
 }
 
 Engine *Profiler::selectAllocEngine(Arguments &args) {
@@ -1990,12 +2040,16 @@ Error Profiler::start(Arguments &args, bool reset) {
   _engines_ready.store(false, std::memory_order_seq_cst);
   // Records left by an earlier recording's freezes must not be replayed now.
   clearSkippedUnregistrations();
-  if (!replaceCpuEngine(selectCpuEngine(args))) {
+  J9SamplerChoice cpu_choice;
+  J9SamplerChoice wall_choice;
+  if (!replaceCpuEngine(selectCpuEngine(args, &cpu_choice))) {
     // Nothing replaced or released yet. Retryable, like the earlier error
     // returns in this function.
     return Error("thread hook calls did not drain; retry start()");
   }
-  __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
+  __atomic_store_n(&_wall_engine, selectWallEngine(args, &wall_choice), __ATOMIC_RELEASE);
+  // Before _jfr.start(): Recording::writeSettings() records the result.
+  reportJ9SamplerRisks(cpu_choice, wall_choice);
   _cstack = args._cstack;
   _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {

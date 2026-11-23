@@ -75,7 +75,8 @@ storing the raw pointer instead of copying the string is safe.
 
 `Recording::writeSettings()` (`ddprof-lib/src/main/cpp/flightRecorder.cpp`)
 writes the check result into every recording's `T_ACTIVE_RECORDING` settings
-event, alongside existing settings like `hotspot` and `openj9`:
+event, alongside existing settings like `hotspot`, `openj9` and
+`j9AsgctDeadlockRisk`:
 
 ```cpp
 writeBoolSetting(buf, T_ACTIVE_RECORDING, "sanityCheckFailed",
