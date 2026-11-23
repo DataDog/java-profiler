@@ -185,7 +185,7 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
     state._demangled = abi::__cxa_demangle(name, NULL, NULL, &status);
     if (state._demangled != NULL) {
       cutArguments(state._demangled);
-      mi->_sig = _symbols.lookup("()L;");
+      mi->_sig = _symbols.lookupSignature("()L;");
       mi->_type = FRAME_CPP;
 
       // Rust legacy demangling
@@ -204,11 +204,11 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
   size_t len = strlen(name);
   if (len >= 4 && strcmp(name + len - 4, "_[k]") == 0) {
     mi->_name = _symbols.lookup(name, len - 4);
-    mi->_sig = _symbols.lookup("(Lk;)L;");
+    mi->_sig = _symbols.lookupSignature("(Lk;)L;");
     mi->_type = FRAME_KERNEL;
   } else {
     mi->_name = _symbols.lookup(name);
-    mi->_sig = _symbols.lookup("()L;");
+    mi->_sig = _symbols.lookupSignature("()L;");
     mi->_type = FRAME_NATIVE;
   }
 }
@@ -221,7 +221,7 @@ void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
   // Store PC offset in hex format in the signature field
   char offset_hex[32];
   snprintf(offset_hex, sizeof(offset_hex), "0x%" PRIxPTR, rfi->pc_offset);
-  mi->_sig = _symbols.lookup(offset_hex);
+  mi->_sig = _symbols.lookupSignature(offset_hex);
 
   // Use same modifiers as regular native frames (0x100 = ACC_NATIVE for consistency)
   mi->_modifiers = 0x100;
@@ -387,7 +387,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       Counters::increment(JMETHODID_SKIPPED);
       mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       mi->_name = _symbols.lookup("<unloaded>");
-      mi->_sig = _symbols.lookup("()L;");
+      mi->_sig = _symbols.lookupSignature("()L;");
     }
 
     mi->_type = FRAME_INTERPRETED;
@@ -499,7 +499,7 @@ void Lookup::fillJavaMethodNames(MethodInfo *mi, const char *class_name,
 
   mi->_class = class_name_id;
   mi->_name = method_name_id;
-  mi->_sig = _symbols.lookup(method_sig);
+  mi->_sig = _symbols.lookupSignature(method_sig);
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
@@ -520,8 +520,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
   // from the first fill as on the jmethodID path.
   if (resolved.lineNumberTable() != nullptr) {
     int size = resolved.lineNumberTableSize();
-    // Built before ownership moves, so a std::bad_alloc here leaves the table
-    // with `resolved`, which frees it.
+    // Built before ownership moves: `resolved` keeps the table until the
+    // shared_ptr owns it, so no exit path leaves it unowned.
     auto table = std::make_shared<SharedLineNumberTable>(
         size, const_cast<jvmtiLineNumberEntry *>(resolved.lineNumberTable()),
         false /* malloc'd */);
@@ -778,9 +778,8 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
 
   assert(prof_thread != nullptr);
   assert(method_id != nullptr && "Already filtered by caller");
-  // Reinstates the thread's previous landing pad on every exit from this frame,
-  // including a std::bad_alloc thrown by one of the map or dictionary inserts
-  // underneath. Leaving ours installed past the end of this frame would leave
+  // Reinstates the thread's previous landing pad on every exit from this
+  // frame. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
   JmpCtxScope jmp_scope(prof_thread);
   ResolveMethodState state;
@@ -868,15 +867,12 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
         fillNativeMethodInfo(mi, "unknown_library", nullptr, state);
       }
     } else if (bci == BCI_VTABLE_RECEIVER) {
-      // Synthetic vtable-receiver frame: method_id holds a VMSymbol*
-      // captured in walkVM. The Symbol -> class_id resolution (with
-      // synthetic-accessor/LambdaForm normalisation) was already done
-      // above via resolveVTableReceiverCached, which also handles
-      // resolution failures by mapping them to "<unresolved_vtable_receiver>"
-      // and incrementing VTABLE_RECEIVER_RESOLVE_FAILED.
+      // HotSpot walkers store a raw VMSymbol* in method_id for this frame.
+      // resolveVTableReceiverCached supplies the class id or the unresolved
+      // fallback and counts VTABLE_RECEIVER_RESOLVE_FAILED on resolution failure.
       mi->_class = vtable_class_id;
       mi->_name = _symbols.lookup("<vtable_receiver>");
-      mi->_sig = _symbols.lookup("()V");
+      mi->_sig = _symbols.lookupSignature("()V");
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
     } else {
@@ -940,6 +936,7 @@ u32 Lookup::getPackage(const char *class_name) {
   if (class_name[0] == '[') {
     class_name = strchr(class_name, 'L') + 1;
   }
+  // A failed insert also yields 0, which means "no package".
   return _packages.lookup(class_name, package - class_name);
 }
 
@@ -1031,7 +1028,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // fjmethodid=lazy resolves raw frames only of these classes: they stay
   // pinned until the local references are deleted below. Always called, so a
   // failed GetLoadedClasses() leaves no list at all rather than a stale one,
-  // and ended on every exit from this function, including a std::bad_alloc.
+  // and ended on every exit from this function.
   JVMSupport::beginDump(env, err ? nullptr : classes, err ? 0 : count);
   struct DumpScope {
     ~DumpScope() { JVMSupport::endDump(); }
@@ -1797,7 +1794,13 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   pool_count += writeMethods(buf, &lookup);
   pool_count += writeClasses(buf, &lookup);
   pool_count += writePackages(buf, &lookup);
-  pool_count += writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+  {
+    // Must follow every pool that looks up a symbol: collect() adds the
+    // unresolved entry only once all lookups ran. The scope frees the map before the next pools collect theirs.
+    std::map<u32, const char *> symbols;
+    lookup._symbols.collect(symbols);
+    pool_count += writeConstantPoolSection(buf, T_SYMBOL, symbols);
+  }
   pool_count += writeConstantPoolSection(
       buf, T_STRING, Profiler::instance()->stringLabelMap()->standby());
   pool_count += writeConstantPoolSection(

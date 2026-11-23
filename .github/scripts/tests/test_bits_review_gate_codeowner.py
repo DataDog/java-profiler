@@ -4,12 +4,14 @@
 Hermetic through the shared fake transport: sensitive-pattern loading
 from CODEOWNERS (default rule excluded, comments and blanks ignored),
 path matching (exact, directory-prefix and fnmatch), latest-review
-selection with the id tie-breaker, the owner-approval contract (team
-member, not the PR author, latest review APPROVED), the per-SHA decision
-(no PR, no sensitive path, approval present, approval missing,
-self-approval rejected, conjunction) and fail-closed behavior for every
-failed read and malformed record. Status publishing carries the exact
-context and fails closed on unreadable CODEOWNERS and failed writes.
+selection with the id tie-breaker, the owner-approval contract (roster
+login, not the PR author, latest review APPROVED), roster loading
+(comments and blanks ignored; malformed, empty and oversized files
+rejected), the per-SHA decision (no PR, no sensitive path, approval
+present, approval missing, self-approval rejected, conjunction) and
+fail-closed behavior for every failed read and malformed record. Status
+publishing carries the exact context and fails closed on unreadable
+CODEOWNERS, an unreadable roster and failed writes.
 """
 
 import json
@@ -35,8 +37,19 @@ STATUS_TOKEN = "status-write-token"
 SHA = "1" * 40
 PULLS_URL = "%s/repos/%s/pulls?state=open&base=main&per_page=100" % (API, REPO)
 STATUSES_URL = "%s/repos/%s/commits/%s/statuses?per_page=100" % (API, REPO, SHA)
-MEMBERS_URL = "%s/orgs/DataDog/teams/profiling-java/members?per_page=100" % API
-TEAM_LOGINS = frozenset({"owner-a", "owner-b"})
+ROSTER_LOGINS = frozenset({"owner-a", "owner-b"})
+
+
+def seed_roster(testcase, logins=ROSTER_LOGINS):
+    """Write a roster temp file and point the gate at it for the test's
+    lifetime: the production path reads the file named by ROSTER_PATH."""
+    handle = tempfile.NamedTemporaryFile("w", suffix="roster", delete=False)
+    handle.write("".join("%s\n" % login for login in sorted(logins)))
+    handle.close()
+    patcher = unittest.mock.patch.object(cogate, "ROSTER_PATH", handle.name)
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+    testcase.addCleanup(os.unlink, handle.name)
 
 
 def make_client(transport):
@@ -187,6 +200,19 @@ class SensitivePatternsTest(unittest.TestCase):
             cogate.load_sensitive_patterns(
                 os.path.join(tempfile.gettempdir(), "no-such-codeowners-file"))
 
+    def test_non_utf8_file_is_fatal(self):
+        # readlines() decodes lazily: invalid bytes raise UnicodeDecodeError,
+        # which must be translated like any other unreadable file, or it
+        # escapes the caller's except gate.ApiError and crashes the publish
+        # before any status is written.
+        handle = tempfile.NamedTemporaryFile("wb", suffix="CODEOWNERS",
+                                             delete=False)
+        handle.write(b"/p @DataDog/profiling-java\n\xff\xfe\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        with self.assertRaises(gate.ApiError):
+            cogate.load_sensitive_patterns(handle.name)
+
 
 class SensitiveMatchTest(unittest.TestCase):
     PATTERNS = [".github/workflows/bits-review-gate.yml",
@@ -232,18 +258,6 @@ class SensitiveMatchTest(unittest.TestCase):
             "build.gradle.kts", ["/**/*.gradle.kts"]))
         self.assertTrue(cogate.is_sensitive(
             "ddprof-lib/build.gradle.kts", ["/**/*.gradle.kts"]))
-
-    def test_malformed_member_record_fails_the_roster_read(self):
-        transport = testlib.FakeTransport([
-            FakeResponse(200, ["not-a-member"]),
-        ])
-        with self.assertRaises(gate.ApiError):
-            make_client(transport).team_logins("DataDog", "profiling-java")
-        transport = testlib.FakeTransport([
-            FakeResponse(200, [{"login": None}]),
-        ])
-        with self.assertRaises(gate.ApiError):
-            make_client(transport).team_logins("DataDog", "profiling-java")
 
     def test_mid_pattern_double_star_covers_zero_directories(self):
         # GitHub's ** matches zero directories anywhere: /a/**/b also
@@ -299,7 +313,7 @@ class LatestReviewTest(unittest.TestCase):
             review("owner-a", "CHANGES_REQUESTED",
                    "2026-01-01T00:00:00.5Z", 2)]]
         self.assertFalse(cogate.owner_approval(
-            records, "pr-author", TEAM_LOGINS, SHA))
+            records, "pr-author", ROSTER_LOGINS, SHA))
 
     def test_equivalent_timestamps_fall_through_to_the_id_tiebreak(self):
         # .0Z and Z denote the same instant: the keys must compare equal so
@@ -309,7 +323,7 @@ class LatestReviewTest(unittest.TestCase):
             review("owner-a", "CHANGES_REQUESTED",
                    "2026-01-01T00:00:00Z", 2)]]
         self.assertFalse(cogate.owner_approval(
-            records, "pr-author", TEAM_LOGINS, SHA))
+            records, "pr-author", ROSTER_LOGINS, SHA))
 
     def test_records_without_login_are_ignored(self):
         records = [{"author_login": None, "state": "APPROVED",
@@ -318,15 +332,26 @@ class LatestReviewTest(unittest.TestCase):
 
 
 class OwnerApprovalTest(unittest.TestCase):
-    def test_team_member_approval_counts(self):
+    def test_roster_login_approval_counts(self):
         records = [gate.normalize_review(review("owner-a", "APPROVED",
                                             "2026-01-01T00:00:00Z"))]
-        self.assertTrue(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+        self.assertTrue(cogate.owner_approval(records, "pr-author", ROSTER_LOGINS, SHA))
 
     def test_self_approval_never_counts(self):
         records = [gate.normalize_review(review("pr-author", "APPROVED",
                                             "2026-01-01T00:00:00Z"))]
-        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+        self.assertFalse(cogate.owner_approval(records, "pr-author", ROSTER_LOGINS, SHA))
+
+    def test_self_approval_survives_a_casing_mismatch(self):
+        # GitHub logins are case-insensitive: an approval by the author,
+        # recorded with different casing than the PR author's login, must
+        # still be rejected as self-approval even though the lowercased
+        # login is in the roster. The reviewer is a roster member so the
+        # rejection comes from the exclusion, not the membership check.
+        records = [gate.normalize_review(review("OWNER-A", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        self.assertFalse(cogate.owner_approval(records, "Owner-A",
+                                               ROSTER_LOGINS, SHA))
 
     def test_author_in_the_roster_still_cannot_approve_own_pr(self):
         # The author being a roster member must not defeat the exclusion:
@@ -334,23 +359,23 @@ class OwnerApprovalTest(unittest.TestCase):
         records = [gate.normalize_review(review("owner-a", "APPROVED",
                                             "2026-01-01T00:00:00Z"))]
         self.assertFalse(cogate.owner_approval(
-            records, "owner-a", TEAM_LOGINS, SHA))
+            records, "owner-a", ROSTER_LOGINS, SHA))
         records.append(gate.normalize_review(
             review("owner-b", "APPROVED", "2026-01-02T00:00:00Z", 2)))
         self.assertTrue(cogate.owner_approval(
-            records, "owner-a", TEAM_LOGINS, SHA))
+            records, "owner-a", ROSTER_LOGINS, SHA))
 
-    def test_non_member_approval_does_not_count(self):
+    def test_non_roster_login_approval_does_not_count(self):
         records = [gate.normalize_review(review("outsider", "APPROVED",
                                             "2026-01-01T00:00:00Z"))]
-        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+        self.assertFalse(cogate.owner_approval(records, "pr-author", ROSTER_LOGINS, SHA))
 
     def test_superseded_approval_does_not_count(self):
         records = [gate.normalize_review(n) for n in [
             review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
             review("owner-a", "CHANGES_REQUESTED",
                    "2026-01-02T00:00:00Z", 2)]]
-        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+        self.assertFalse(cogate.owner_approval(records, "pr-author", ROSTER_LOGINS, SHA))
 
     def test_comment_after_approval_does_not_cancel_it(self):
         # A COMMENTED review states no decision: GitHub keeps the approval,
@@ -360,25 +385,27 @@ class OwnerApprovalTest(unittest.TestCase):
             review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
             review("owner-a", "COMMENTED", "2026-01-02T00:00:00Z", 2)]]
         self.assertTrue(cogate.owner_approval(
-            records, "pr-author", TEAM_LOGINS, SHA))
+            records, "pr-author", ROSTER_LOGINS, SHA))
 
     def test_pending_after_approval_does_not_cancel_it(self):
         records = [gate.normalize_review(n) for n in [
             review("owner-a", "APPROVED", "2026-01-01T00:00:00Z", 1),
             review("owner-a", "PENDING", "2026-01-02T00:00:00Z", 2)]]
         self.assertTrue(cogate.owner_approval(
-            records, "pr-author", TEAM_LOGINS, SHA))
+            records, "pr-author", ROSTER_LOGINS, SHA))
 
     def test_approval_on_another_commit_does_not_count(self):
         records = [gate.normalize_review(review(
             "owner-a", "APPROVED", "2026-01-01T00:00:00Z", commit_oid="2" * 40))]
-        self.assertFalse(cogate.owner_approval(records, "pr-author", TEAM_LOGINS, SHA))
+        self.assertFalse(cogate.owner_approval(records, "pr-author", ROSTER_LOGINS, SHA))
 
 
 class EvaluateShaTest(unittest.TestCase):
+    def setUp(self):
+        seed_roster(self)
+
     def evaluate(self, transport):
         client = make_client(transport)
-        client._team_logins = TEAM_LOGINS
         return cogate.evaluate_sha(SHA, client,
                                    [".github/scripts/bits_review_gate.py"])
 
@@ -431,7 +458,8 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         kind, state, description, target_url = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("approval from @DataDog/profiling-java required", description)
+        self.assertIn("approval from @DataDog/profiling-java (listed in "
+                      ".github/scripts/owner_roster.txt) required", description)
         self.assertEqual(target_url, "https://github.com/" + REPO + "/pull/101")
 
     def test_sensitive_path_with_owner_review_passes(self):
@@ -462,7 +490,8 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         kind, state, description, _ = self.evaluate(transport)
         self.assertEqual(state, "failure")
-        self.assertIn("approval from @DataDog/profiling-java required",
+        self.assertIn("approval from @DataDog/profiling-java (listed in "
+                      ".github/scripts/owner_roster.txt) required",
                       description)
 
     def test_review_with_null_submitted_at_fails_closed(self):
@@ -689,21 +718,23 @@ class EvaluateShaTest(unittest.TestCase):
         ])
         self.assertEqual(self.evaluate(transport)[1], "failure")
 
-    def test_failed_team_roster_read_fails_closed(self):
+    def test_unreadable_roster_fails_closed(self):
+        # The roster is a local file, but it is guarded like every other
+        # read: an unreadable roster fails the PR instead of crashing.
         transport = testlib.FakeTransport([
             FakeResponse(200, [pr(101)]),
             FakeResponse(200, compare_page(
                 ".github/scripts/bits_review_gate.py")),
             FakeResponse(200, reviews_page([])),
-            FakeResponse(500, []),
-            FakeResponse(500, []),
-            FakeResponse(500, []),
         ])
-        client = make_client(transport)
-        kind, state, description, _ = cogate.evaluate_sha(
-            SHA, client, [".github/scripts/bits_review_gate.py"])
+        with unittest.mock.patch.object(
+                cogate, "ROSTER_PATH",
+                os.path.join(tempfile.gettempdir(), "no-such-roster")):
+            kind, state, description, _ = cogate.evaluate_sha(
+                SHA, make_client(transport),
+                [".github/scripts/bits_review_gate.py"])
         self.assertEqual(state, "failure")
-        self.assertIn("team roster read failed", description)
+        self.assertIn("owner roster unreadable", description)
 
     def test_malformed_file_entry_fails_closed(self):
         transport = testlib.FakeTransport([
@@ -759,9 +790,11 @@ class EvaluateShaTest(unittest.TestCase):
 
 
 class PublishTest(unittest.TestCase):
+    def setUp(self):
+        seed_roster(self)
+
     def publish(self, transport, codeowners=None):
         client = make_client(transport)
-        client._team_logins = TEAM_LOGINS
         if codeowners is None:
             with unittest.mock.patch.object(
                     cogate, "load_sensitive_patterns",
@@ -781,7 +814,7 @@ class PublishTest(unittest.TestCase):
         """Responses for one PR flow: pulls, compare, reviews (sensitive
         only), the revalidation read, the statuses read for suppression,
         and the 200 that the status POST consumes. The roster comes from
-        the seeded client cache, not from a queued response."""
+        the temp file seeded in setUp, not from a queued response."""
         responses = [FakeResponse(200, [pr(101)]),
                      FakeResponse(
                          200, compare_page(".github/scripts/bits_review_gate.py"
@@ -815,25 +848,6 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(payload["context"], "codeowner-review/head")
         self.assertEqual(payload["state"], "success")
 
-    def test_membership_read_uses_the_status_token(self):
-        transport = testlib.FakeTransport([
-            FakeResponse(200, [pr(101)]),
-            FakeResponse(200, compare_page(
-                ".github/scripts/bits_review_gate.py")),
-            FakeResponse(200, reviews_page([])),
-            FakeResponse(200, [{"login": "owner-a"}]),
-            FakeResponse(200, pr(101)),
-            FakeResponse(200, []),
-            FakeResponse(200, []),
-        ])
-        client = make_client(transport)
-        self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 1)
-        member_calls = [call for call in transport.calls
-                        if "/teams/profiling-java/members" in call.full_url]
-        self.assertEqual(len(member_calls), 1)
-        self.assertEqual(member_calls[0].headers.get("Authorization"),
-                         "Bearer " + STATUS_TOKEN)
-
     def test_identical_status_is_not_republished(self):
         # Drop the plain statuses-read and the POST slot; the recorded
         # status becomes the statuses-read response.
@@ -841,7 +855,6 @@ class PublishTest(unittest.TestCase):
                                           + [FakeResponse(200, [
                                               self.recorded_status("success")])])
         client = make_client(transport)
-        client._team_logins = TEAM_LOGINS
         self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 0)
         self.assertFalse(
             any(call.full_url.endswith("/statuses/" + SHA)
@@ -852,7 +865,6 @@ class PublishTest(unittest.TestCase):
                                           + [FakeResponse(200, [
                                               self.recorded_status("success")])])
         client = make_client(transport)
-        client._team_logins = TEAM_LOGINS
         self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 1)
         self.assertTrue(
             any("/statuses/" in call.full_url for call in transport.calls))
@@ -915,7 +927,6 @@ class PublishTest(unittest.TestCase):
             FakeResponse(200, []),
         ])
         client = make_client(transport)
-        client._team_logins = TEAM_LOGINS
         self.assertEqual(cogate.publish(SHA, client, STATUS_TOKEN), 1)
         payload = json.loads(transport.calls[-1].data)
         self.assertEqual(payload["state"], "failure")
@@ -941,12 +952,75 @@ class PublishTest(unittest.TestCase):
                 cogate.main(["publish", "--sha", SHA])
 
 
-class MembershipTokenTest(unittest.TestCase):
-    def test_token_is_armed_through_the_method_not_a_private_attribute(self):
-        client = make_client(testlib.FakeTransport([]))
-        self.assertIsNone(client._membership_token)
-        client.set_membership_token("token-1")
-        self.assertEqual(client._membership_token, "token-1")
+class RosterTest(unittest.TestCase):
+    def roster(self, content):
+        handle = tempfile.NamedTemporaryFile("w", suffix="roster", delete=False)
+        handle.write(content)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def test_comments_blanks_and_logins_parse(self):
+        path = self.roster("# c\n\nowner-a\n\n# c\nowner-b\n")
+        self.assertEqual(cogate.load_roster(path),
+                         frozenset({"owner-a", "owner-b"}))
+
+    def test_line_without_a_single_login_is_rejected(self):
+        with self.assertRaises(gate.ApiError):
+            cogate.load_roster(self.roster("owner-a extra-token\n"))
+
+    def test_empty_roster_is_rejected(self):
+        # An empty roster could never pass a sensitive head: it is a
+        # maintenance accident, reported as an unreadable roster.
+        with self.assertRaises(gate.ApiError):
+            cogate.load_roster(self.roster("# only comments\n\n"))
+
+    def test_roster_at_the_cap_is_accepted_and_over_it_rejected(self):
+        path = self.roster("".join(
+            "u%d\n" % index for index in range(cogate.ROSTER_MAX_LINES)))
+        self.assertEqual(len(cogate.load_roster(path)), cogate.ROSTER_MAX_LINES)
+        path = self.roster("".join(
+            "u%d\n" % index for index in range(cogate.ROSTER_MAX_LINES + 1)))
+        with self.assertRaises(gate.ApiError):
+            cogate.load_roster(path)
+
+    def test_unreadable_file_is_fatal(self):
+        with self.assertRaises(gate.ApiError):
+            cogate.load_roster(
+                os.path.join(tempfile.gettempdir(), "no-such-roster-file"))
+
+    def test_non_utf8_file_is_fatal(self):
+        # Same contract as CODEOWNERS: a decode error must surface as an
+        # unreadable roster, not escape as UnicodeDecodeError and crash the
+        # publish before any status is written.
+        handle = tempfile.NamedTemporaryFile("wb", suffix="roster",
+                                             delete=False)
+        handle.write(b"owner-a\n\xff\xfe\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        with self.assertRaises(gate.ApiError):
+            cogate.load_roster(handle.name)
+
+    def test_roster_login_case_is_insensitive(self):
+        # GitHub logins are case-insensitive; the review record can report
+        # different casing than the roster line.
+        records = [gate.normalize_review(review("Owner-A", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        roster = cogate.load_roster(self.roster("owner-a\n"))
+        self.assertTrue(cogate.owner_approval(records, "pr-author",
+                                              roster, SHA))
+        records = [gate.normalize_review(review("owner-a", "APPROVED",
+                                            "2026-01-01T00:00:00Z"))]
+        roster = cogate.load_roster(self.roster("OWNER-A\n"))
+        self.assertTrue(cogate.owner_approval(records, "pr-author",
+                                              roster, SHA))
+
+    def test_repo_roster_parses_and_is_not_empty(self):
+        # The shipped roster must stay well-formed: a typo here would fail
+        # every sensitive-path head with an unreadable roster.
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "owner_roster.txt")
+        self.assertTrue(cogate.load_roster(path))
 
 
 class CompareBaseTest(unittest.TestCase):
@@ -1048,17 +1122,6 @@ class DesignDocPolicyDriftTest(unittest.TestCase):
             self.assertIn(stripped, block.group(1),
                           "policy line %r missing from the doc's yaml block; "
                           "update BitsReviewMergeGateDesign.md" % (stripped,))
-
-
-class TeamLoginsTest(unittest.TestCase):
-    def test_page_cap_fails_the_read(self):
-        transport = testlib.FakeTransport([
-            FakeResponse(200, [{"login": "owner-a"}],
-                         link="<%s&page=2>; rel=\"next\"" % MEMBERS_URL)
-        ] * (gate.MAX_FETCH_PAGES + 1))
-        client = make_client(transport)
-        with self.assertRaises(gate.ApiError):
-            client.team_logins("DataDog", "profiling-java")
 
 if __name__ == "__main__":
     unittest.main()

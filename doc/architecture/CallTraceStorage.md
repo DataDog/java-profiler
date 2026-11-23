@@ -170,13 +170,16 @@ before the first `start()`); `acquire()` is the only place they are allocated.
 `start()` reallocates them when `_calltrace_buffer[0]` is `NULL`. Every reader takes
 its stripe lock and drops the sample when its buffer is `NULL`.
 
-## Pre-allocated Buffers
+## Reused Collections
 
 `processTraces()` reuses two member collections instead of allocating per call:
-`_traces_buffer` (`CallTraceSet`, pre-sized for 2048 traces) and
-`_preserve_set_buffer` (`CallTraceIdSet`, pre-sized for 1024 IDs). Both use
-`CountingAllocator`, so their memory is reported under `NM_CALLTRACE`. They are
-pre-sized again by every `acquire()` and freed by `release()`.
+`_traces_buffer` (`CallTraceSet`) and `_preserve_set_buffer` (`CallTraceIdSet`).
+Both use `CountingAllocator`, so their memory is reported under `NM_CALLTRACE`.
+`clear()` keeps the bucket arrays; node allocation repeats on every rotation,
+and the buckets rehash when a rotation holds more traces than any earlier one.
+The bucket arrays allocate on first use, not in `acquire()`: std containers
+cannot pre-size without the throwing allocator contract, and `acquire()` must
+fail without exceptions. `release()` frees the collections.
 
 ## Liveness Preservation
 
@@ -220,7 +223,7 @@ never mix with `put()`'s stack-hash keys.
 
 | ID | Meaning |
 |----|---------|
-| `DROPPED_TRACE_ID = 1` | Sample dropped (no guard slot, storage swapped, allocation failed). A static `<dropped>` trace is added to every `processTraces()` output. |
+| `DROPPED_TRACE_ID = 1` | Sample dropped (no guard slot, storage swapped, allocation failed, zero-frame stack). A static `<dropped>` trace is added to every `processTraces()` output. |
 | `OVERFLOW_TRACE_ID = 0x7fffffffffffffff` | Hash-table probe exhausted. A `storage_overflow` trace is collected when the table overflowed. |
 
 Real IDs have an instance ID ≥ 1 in the upper half, so they cannot equal

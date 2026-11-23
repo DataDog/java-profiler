@@ -557,14 +557,13 @@ public:
       _raw_method_cache;
 
   Dictionary _packages;
-  Dictionary _symbols;
+  SymbolDictionary _symbols;
 
   // The single row every frame that could not be resolved collapses onto.
   //
   // Deliberately NOT a MethodMap entry: resolveMethod()'s siglongjmp landing pad
   // hands this row back with crash protection already disarmed, so it must be
-  // reachable without touching the map, whose operator[] allocates a node and
-  // can throw std::bad_alloc.
+  // reachable without touching the map, whose operator[] allocates a node.
   //
   // Because it is outside the map, the map walk in writeMethods() cannot see it,
   // so writeMethods() emits it separately. It has to reach the method pool:

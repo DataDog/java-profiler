@@ -29,6 +29,7 @@
 #include "dwarf.h"
 #include "sframe.h"
 #include "fdtransferClient.h"
+#include "loadedImage_linux.h"
 #include "log.h"
 #include "os.h"
 #include "symbols_linux.h"
@@ -289,7 +290,6 @@ struct SharedLibrary {
 const unsigned char ELFCLASS_SUPPORTED = ELFCLASS64;
 typedef Elf64_Ehdr ElfHeader;
 typedef Elf64_Shdr ElfSection;
-typedef Elf64_Phdr ElfProgramHeader;
 typedef Elf64_Nhdr ElfNote;
 typedef Elf64_Sym  ElfSymbol;
 typedef Elf64_Rel  ElfRelocation;
@@ -1283,14 +1283,11 @@ static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
 }
 
 static int matchImageBase(struct dl_phdr_info* info, size_t, void* data) {
-    uintptr_t min_vaddr = UINTPTR_MAX;
-    for (int i = 0; i < info->dlpi_phnum; i++) {
-        if (info->dlpi_phdr[i].p_type == PT_LOAD && info->dlpi_phdr[i].p_vaddr < min_vaddr) {
-            min_vaddr = info->dlpi_phdr[i].p_vaddr;
-        }
-    }
-    return min_vaddr != UINTPTR_MAX &&
-           ((info->dlpi_addr + min_vaddr) & ~OS::page_mask) == reinterpret_cast<uintptr_t>(data);
+    LoadedImage image(reinterpret_cast<const ElfProgramHeader*>(info->dlpi_phdr), info->dlpi_phnum,
+                      static_cast<uintptr_t>(info->dlpi_addr));
+    uintptr_t base;
+    // Overflow is a non-match so dl_iterate_phdr continues with other images.
+    return image.pageBase(base) && base == reinterpret_cast<uintptr_t>(data);
 }
 
 // musl's dlopen() links a library into the list dl_iterate_phdr() walks only after mapping
@@ -1343,60 +1340,12 @@ static u64 fnv1a(const void* data, size_t size, u64 hash) {
     return hash;
 }
 
-namespace {
-
-// A loaded ELF image, described by its program headers. Only the file-backed
-// parts of its PT_LOAD segments are known to be mapped.
-class LoadedImage {
-  private:
-    const ElfProgramHeader* _ph;
-    int _phnum;
-    uintptr_t _load_bias;
-
-  public:
-    LoadedImage(const ElfProgramHeader* ph, int phnum, uintptr_t load_bias)
-        : _ph(ph), _phnum(phnum), _load_bias(load_bias) {}
-
-    uintptr_t address(uintptr_t vaddr) const { return _load_bias + vaddr; }
-
-    // True if [addr, addr + size) lies inside the file-backed part of a PT_LOAD.
-    bool readable(uintptr_t addr, size_t size) const {
-        for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type != PT_LOAD) continue;
-            uintptr_t start = address(_ph[i].p_vaddr);
-            if (addr >= start && addr - start <= _ph[i].p_filesz
-                && size <= _ph[i].p_filesz - (addr - start)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    const ElfProgramHeader* find(uint32_t type) const {
-        for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type == type) return &_ph[i];
-        }
-        return NULL;
-    }
-
-    // A pointer from the dynamic section. glibc relocates them in place, musl
-    // and the vDSO do not; an unrelocated one is a vaddr below the image. The
-    // same test as ElfParser::dyn_ptr().
-    uintptr_t dynamicPointer(uintptr_t d_ptr) const {
-        uintptr_t min_vaddr = UINTPTR_MAX;
-        for (int i = 0; i < _phnum; i++) {
-            if (_ph[i].p_type == PT_LOAD && _ph[i].p_vaddr < min_vaddr) min_vaddr = _ph[i].p_vaddr;
-        }
-        return d_ptr < address(min_vaddr & ~OS::page_mask) ? address(d_ptr) : d_ptr;
-    }
-};
-
 // Hashes every relocation in rel (size bytes, entries relent apart) that names
 // a symbol: its offset, type and symbol index, and the symbol's name. Returns
 // false if a symbol or its name lies outside the readable image. relent must be
 // at least sizeof(ElfRelocation) (hashImportLayout() checks it), so every entry
 // the walk visits holds a whole r_offset and r_info and the walk advances.
-bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size, size_t relent,
+static bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size, size_t relent,
                            uintptr_t symtab, size_t syment, uintptr_t strtab, size_t strsz,
                            u64& hash) {
     for (size_t offs = 0; relent <= size - offs; offs += relent) {
@@ -1419,22 +1368,33 @@ bool hashSymbolRelocations(const LoadedImage& image, uintptr_t rel, size_t size,
 // Hashes the dynamic relocations that name a symbol, from DT_JMPREL and
 // DT_RELA/DT_REL: together they say which import each GOT slot holds.
 // Returns false if a table lies outside the readable image.
-bool hashImportLayout(const LoadedImage& image, u64& hash) {
+static bool hashImportLayout(const LoadedImage& image, u64& hash) {
     const ElfProgramHeader* dynamic = image.find(PT_DYNAMIC);
     if (dynamic == NULL) return true;  // nothing is imported
-    uintptr_t dyn_start = image.address(dynamic->p_vaddr);
-    if (!image.readable(dyn_start, dynamic->p_filesz)) return false;
+    uintptr_t dyn_start;
+    if (!image.address(dynamic->p_vaddr, dyn_start) ||
+        !image.readable(dyn_start, dynamic->p_filesz)) {
+        return false;
+    }
 
     uintptr_t symtab = 0, strtab = 0, jmprel = 0, rel = 0;
     size_t syment = 0, strsz = 0, pltrelsz = 0, relsz = 0, relent = 0, relcount = 0;
     size_t count = dynamic->p_filesz / sizeof(ElfDyn);
     for (const ElfDyn* dyn = (const ElfDyn*)dyn_start; count-- > 0 && dyn->d_tag != DT_NULL; dyn++) {
         switch (dyn->d_tag) {
-            case DT_SYMTAB:    symtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
-            case DT_STRTAB:    strtab = image.dynamicPointer(dyn->d_un.d_ptr); break;
-            case DT_JMPREL:    jmprel = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_SYMTAB:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, symtab)) return false;
+                break;
+            case DT_STRTAB:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, strtab)) return false;
+                break;
+            case DT_JMPREL:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, jmprel)) return false;
+                break;
             case DT_RELA:
-            case DT_REL:       rel = image.dynamicPointer(dyn->d_un.d_ptr); break;
+            case DT_REL:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, rel)) return false;
+                break;
             case DT_SYMENT:    syment = dyn->d_un.d_val; break;
             case DT_STRSZ:     strsz = dyn->d_un.d_val; break;
             case DT_PLTRELSZ:  pltrelsz = dyn->d_un.d_val; break;
@@ -1467,16 +1427,14 @@ bool hashImportLayout(const LoadedImage& image, u64& hash) {
     return true;
 }
 
-}  // namespace
-
 u64 Symbols::imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias) {
     const ElfProgramHeader* ph = (const ElfProgramHeader*)phdrs;
     LoadedImage image(ph, phnum, load_bias);
     u64 hash = fnv1a(ph, phnum * sizeof(ElfProgramHeader), 14695981039346656037ULL);
     for (int i = 0; i < phnum; i++) {
         if (ph[i].p_type != PT_NOTE) continue;
-        uintptr_t start = image.address(ph[i].p_vaddr);
-        if (image.readable(start, ph[i].p_filesz)) {
+        uintptr_t start;
+        if (image.address(ph[i].p_vaddr, start) && image.readable(start, ph[i].p_filesz)) {
             hash = fnv1a((const void*)start, ph[i].p_filesz, hash);
         }
     }

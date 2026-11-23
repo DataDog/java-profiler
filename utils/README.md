@@ -83,10 +83,9 @@ Only `failure` and `startup_failure` are labelled as workflow failures.
 
 `.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
 test. It validates release tag/branch creation, version computation,
-trivial-PR authorization, and recovery from workflow monitoring errors using
-temporary local Git repositories and a GitHub CLI fixture. It does not load
-credentials or contact GitHub, so it cannot publish, tag, push, or merge
-anything remotely.
+and recovery from workflow monitoring errors using temporary local Git
+repositories and a GitHub CLI fixture. It does not load credentials or contact
+GitHub, so it cannot publish, tag, push, or merge anything remotely.
 The terminal interaction tests require Python 3.
 
 ```bash
@@ -228,6 +227,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-jvm-boundary-includes.py` | Shared code in `ddprof-lib/src/main/cpp` does not `#include "hotspot/"`, `"j9/"` or `"zing/"` headers (quoted or angle-bracket form), except the boundary files and the known exceptions (mirrors `doc/architecture/JvmSupportLayer.md#known-boundary-exceptions`). |
 | `check-doc-index.py` | Every `doc/**/*.md` is linked from `doc/README.md` and has a PascalCase file name. |
 | `check-sigsetjmp-shape.py` | Every `sigsetjmp()` has a `JmpCtxScope` in effect, `savemask` 1, and a landing pad that starts with `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();` then `<scope>.restore();` (the `guards.h` pattern). The glibc cancellation buffer in `libraryPatcher_linux.cpp` is the one exception. |
+| `check-cpp-exceptions.py` | Native code under `ddprof-lib/src/main/cpp` never uses C++ exceptions: no `throw`, `try` or `catch` keyword and none of the listed throwing std helpers (`rethrow_exception`, `throw_with_nested`, `__cxa_throw`, ...), after blanking comments and string literals. Bugs are `assert`/`abort`, expected failures are error codes (`AGENTS.md`, "C++ exceptions"). The exception list starts empty. |
 | `check-tracked-artifacts.py` | No tracked path under `docs/sphinx/` or `.sphinx/`, and no `*.scratch*` path. |
 | `check-copyright.py` | Source files the branch adds or modifies since `--base` (default: the PR base in CI, else `origin/main`) follow the `AGENTS.md` copyright rule. |
 | `check-claude-md.py` | `CLAUDE.md` is the canonical stub that imports `AGENTS.md`, or the redirect to `AGENTS.md`; `--write` restores the stub. |
@@ -240,7 +240,7 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all nine; run by CI (ci.yml source-invariant-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all ten; run by CI (ci.yml source-invariant-checks job)
 ```
 
 CI runs every `utils/tests/*.sh` suite in the `script-tests` job of `.github/workflows/ci.yml`, with Node.js 22 for the Pi adapter cases.
