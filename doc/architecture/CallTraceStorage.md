@@ -273,7 +273,7 @@ OOM recoverable. Delegated JVMTI correlation IDs do not use this root protocol.
 
 | ID | Meaning |
 |----|---------|
-| `DROPPED_TRACE_ID = 1` | Sample dropped (no guard slot, storage swapped, allocation failed). A static `<dropped>` trace is added to every `processTraces()` output. |
+| `DROPPED_TRACE_ID = 1` | Sample dropped (no guard slot, storage swapped, allocation failed, zero-frame stack). A static `<dropped>` trace is added to every `processTraces()` output. |
 | `OVERFLOW_TRACE_ID = 0x7fffffffffffffff` | Hash-table probe exhausted. A `storage_overflow` trace is collected when the table overflowed. |
 
 Real IDs have an instance ID ≥ 1 in the upper half, so they cannot equal
