@@ -47,6 +47,12 @@
 // that path walkVM arrives one lower than walkDwarf does at the same logical
 // position. Passing it through is what keeps this a pure move; do not
 // "correct" it to a value derived here.
+// True when the frame's registers describe walk_pc: the sampled leaf, or a context
+// restored at a signal frame. Only then may LR-based recovery read frame.link().
+inline bool atInterruptedContext(StackFrame& frame, const WalkPc& walk_pc) {
+    return !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw());
+}
+
 __attribute__((always_inline))
 inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
                               uintptr_t bottom, int depth,
@@ -142,7 +148,7 @@ inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
             walk_pc.setRecoveredPc(
                 stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))),
                 f.isSignalFrame());
-        } else if (depth == 1 || (!walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()))) {
+        } else if (depth == 1 || atInterruptedContext(frame, walk_pc)) {
             // Matches the memory-slot path above: StackFrame::link() returns
             // the raw link register, which carries PAC bits on aarch64 and
             // would otherwise be fed to findFrameDesc as a nonsense address.
