@@ -341,26 +341,51 @@ the `Recording` across chunks. The top two key bits separate key kinds: a
 function-name address, a packed remote-symbolication frame, or a vtable-receiver
 class ID (`flightRecorder.h:149-213`).
 
-`Lookup::resolveMethod()` maps an `ASGCT_CallFrame` to a row
-(`flightRecorder.cpp:690-750`):
+`Lookup::resolveMethod()` maps an `ASGCT_CallFrame` to a row:
 
 1. Null or not-walkable `method_id`: the shared `_unknown_method` row, a
    `Lookup` member rather than a map entry so fault recovery can return it
-   without allocating (`flightRecorder.h:525-537`).
-2. Raw `Method*` frames: `fillRawMethod()`, cached per dump
-   (`flightRecorder.cpp:752-780`).
-3. Row already marked for this chunk: returned without arming crash protection
-   (`flightRecorder.cpp:722-735`).
+   without allocating (`Lookup::_unknown_method`).
+2. Raw `Method*` frames: `fillRawMethod()`, cached per dump.
+3. Row already marked for this chunk: returned without arming crash protection.
 4. Otherwise `fillMethod()` symbolicates inside a `sigsetjmp`/`siglongjmp`
    window; a SIGSEGV/SIGBUS on stale VM metadata yields `_unknown_method` and
-   increments `METHOD_RESOLVE_FAULT_RECOVERED` (`flightRecorder.cpp:782-932`).
+   increments `METHOD_RESOLVE_FAULT_RECOVERED`.
 
 `MethodInfo::_mark` means "filled for this chunk". `fillMethod()` sets it only
-after a fill completes (`flightRecorder.cpp:891-917`), and `writeMethods()`
-clears it after writing the row, so the next chunk resolves the row again
-against that chunk's symbol and package IDs (`flightRecorder.cpp:1981-1991`).
-`writeMethods()` writes every marked row, plus `_unknown_method` if it was used
-(`flightRecorder.cpp:1993-2030`).
+after a fill completes, and `writeMethods()` clears it after writing the row,
+so the next chunk resolves the row again against that chunk's symbol and
+package IDs (`writeMethodEntry()`). `writeMethods()` writes every marked row,
+plus `_unknown_method` if it was used.
+
+### Unresolved frames
+
+`fillJavaMethodInfo()` writes a `jmethodID` frame as `.<unloaded>()`, with an
+empty class and the signature `()L;`, when it cannot read the method's names.
+Each such fill increments `jmethodid_skipped_count` and exactly one reason
+counter:
+
+| Counter | Cause |
+| --- | --- |
+| `method_resolve_skipped_invalid_id` | `VMMethod::check_jmethodID()` rejects the ID, or J9 returns the class `-1` (its loader is unloaded). |
+| `method_resolve_skipped_jvmti_error` | `GetMethodDeclaringClass`, `GetClassSignature` or `GetMethodName` fails, or the declaring class is null. |
+| `method_resolve_skipped_unreadable_name` | A returned string is null, or is not readable up to its NUL. |
+
+The readability check is `SafeAccess::isReadableCString()`. It probes each
+page up to the string's NUL, so a valid name that ends just before an
+unreadable page resolves. These counters count methods, once per chunk.
+
+`writeStackTraces()` also counts frames through
+`Lookup::countUnresolvedFrame()`: `method_resolve_frames_unloaded` for each
+frame written as an `<unloaded>` row, and `method_resolve_frames_unknown` for
+each frame written as `_unknown_method`. The unit is one frame of one distinct
+stored trace in one dump. The count is not weighted by samples.
+
+Frames resolve in step 4 of `finishChunk()`, after step 2 writes the
+`datadog.ProfilerCounter` events. Counters are cumulative, so the next chunk
+reports these increments. A recording's last chunk never reports the
+increments of its own dump; `JavaProfiler.getDebugCounters()` returns the live
+values.
 
 Pool IDs (`MethodInfo::_key`) are allocated once per row by
 `MethodMap::allocId()`, which reuses IDs freed by erased rows and otherwise
