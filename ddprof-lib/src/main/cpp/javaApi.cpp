@@ -430,7 +430,9 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_withUnownedWallTailForTest0(
     JNIEnv *env, jclass unused, jthread thread, jobject transition) {
 #ifdef DEBUG
   SignalBlocker blocker;
-  if (!BaseWallClock::seedUnownedWallTailForTest(thread, OSThreadState::CONDVAR_WAIT)) {
+  const char* failure = BaseWallClock::seedUnownedWallTailForTest(thread, OSThreadState::CONDVAR_WAIT);
+  if (failure != nullptr) {
+    throwNew(env, "java/lang/IllegalStateException", failure);
     return JNI_FALSE;
   }
   jclass runnable = env->GetObjectClass(transition);
@@ -451,7 +453,7 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_recordUnownedWallTailBeforeO
     JNIEnv *env, jclass unused, jthread thread, jstring snapshot, jint producer) {
 #ifdef DEBUG
   SignalBlocker blocker;
-  if (!BaseWallClock::seedUnownedWallTailForTest(thread)) return JNI_FALSE;
+  if (BaseWallClock::seedUnownedWallTailForTest(thread) != nullptr) return JNI_FALSE;
   Profiler* profiler = Profiler::instance();
   JniString path(env, snapshot);
   if (profiler->dump(path.c_str(), path.length())) return JNI_FALSE;
