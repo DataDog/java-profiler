@@ -40,6 +40,29 @@ TEST(AtInterruptedContextTest, RejectsAFrameWithoutContext) {
     EXPECT_FALSE(atInterruptedContext(frame, walk_pc));
 }
 
+TEST(AtInterruptedContextTest, RestoredLinkIsExportedOnlyForSignalRestoredContexts) {
+    ucontext_t context{};
+#ifdef __APPLE__
+    _STRUCT_MCONTEXT64 machine_context{};
+    context.uc_mcontext = &machine_context;
+#endif
+    StackFrame frame(&context);
+    frame.pc() = reinterpret_cast<uintptr_t>(PC);
+    frame.setLink(0x5a6000002000ULL);
+    WalkPc walk_pc;
+    walk_pc.setExactAddress(PC);
+    EXPECT_EQ(0u, restoredLink(frame, walk_pc, 0)) << "the sampled context keeps its own LR";
+    EXPECT_EQ(frame.link(), restoredLink(frame, walk_pc, 2));
+    walk_pc.setReturnAddress(PC);
+    EXPECT_EQ(0u, restoredLink(frame, walk_pc, 2));
+}
+
+TEST(AtInterruptedContextTest, SetLinkWithoutContextIsANoOp) {
+    StackFrame frame(nullptr);
+    frame.setLink(0x5a6000002000ULL);
+    SUCCEED();
+}
+
 TEST(AtInterruptedContextTest, RegisterSnapshotRestoresTheLinkRegister) {
     ucontext_t context{};
 #ifdef __APPLE__

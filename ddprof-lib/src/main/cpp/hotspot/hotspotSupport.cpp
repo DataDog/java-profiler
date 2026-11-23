@@ -1264,7 +1264,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   HotspotStackFrame frame(ucontext);
-  // ctx_snapshot (passed in by the caller) snapshotted pc/sp/fp before this
+  // ctx_snapshot (passed in by the caller) snapshotted pc/sp/fp and LR before this
   // function starts feeding them to HotSpot's own AsyncGetCallTrace below (it
   // mutates them in place via frame.restore() / frame.unwindStub() /
   // frame.unwindCompiled() to try alternate frames), so they can be put back
@@ -1505,7 +1505,7 @@ int HotspotSupport::asyncJavaTraceWithPostProcessing(void* ucontext, ASGCT_CallF
                                                       bool* truncated, ProfiledThread* prof_thread) {
   // getJavaTraceAsync() dereferences VMThread/anchor state directly, calls
   // into HotSpot's own AsyncGetCallTrace, and mutates the real ucontext's
-  // pc/sp/fp (and, via saveJavaAnchor(), the JavaThread anchor) in place
+  // pc/sp/fp and LR (and, via saveJavaAnchor(), the JavaThread anchor) in place
   // while doing so, with no crash protection of its own. withUcontextFaultRecovery()
   // installs a jmp ctx around just that path, so a SIGSEGV there (except
   // inside HotSpot's own AsyncGetCallTrace call) is caught by

@@ -40,7 +40,7 @@ class StackFrame {
         }
     }
 
-    // Captures pc/sp/fp for a later restore() -- the null-safe save/restore
+    // Captures pc/sp/fp and the link register for a later restore() -- the null-safe save/restore
     // boilerplate needed around code that mutates the real ucontext in place
     // (e.g. HotspotSupport::getJavaTraceAsync()'s PROBE_SP loop, or
     // unwindStub()/unwindCompiled() writing pc()/sp()/fp() by reference).
@@ -70,7 +70,7 @@ class StackFrame {
        virtual void restore() {
             StackFrame frame(_ucontext);
             frame.restore(_pc, _sp, _fp);
-            if (_ucontext != nullptr) frame.setLink(_lr);
+            frame.setLink(_lr);
         }
 
         uintptr_t pc() const { return _pc; }
@@ -92,7 +92,8 @@ class StackFrame {
 
     uintptr_t& retval();
     uintptr_t link() const;
-    // Writes the link register where the ABI has one; x64 keeps return addresses on the stack.
+    // Writes the link register where the ABI has one (null-safe); x64 keeps return addresses
+    // on the stack.
     void setLink(uintptr_t value);
     uintptr_t arg0() const;
     uintptr_t arg1() const;

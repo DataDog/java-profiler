@@ -42,7 +42,9 @@ uintptr_t StackFrame::link() const {
 }
 
 void StackFrame::setLink(uintptr_t value) {
-    REG(regs[30], lr) = value;
+    if (_ucontext != nullptr) {
+        REG(regs[30], lr) = value;
+    }
 }
 
 uintptr_t StackFrame::arg0() const {
