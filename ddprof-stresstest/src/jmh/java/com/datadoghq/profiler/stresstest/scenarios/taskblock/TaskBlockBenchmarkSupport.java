@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import org.openjdk.jmh.infra.BenchmarkParams;
@@ -137,21 +138,28 @@ final class TaskBlockBenchmarkSupport {
       }
       String command = command(config);
       Path file = Files.createTempFile("taskblock-bench-", ".jfr");
-      profiler.execute("start," + command + ",jfr,file=" + file.toAbsolutePath());
-      long token = profiler.beginTaskBlock();
-      if (token != 0) {
-        profiler.endTaskBlock(token, 0, 0);
-      }
-      boolean active = token != 0;
-      if (active != requestsTaskBlock(command)) {
-        profiler.stop();
-        Files.deleteIfExists(file);
-        throw new IllegalStateException(
+      boolean started = false;
+      try {
+        profiler.execute("start," + command + ",jfr,file=" + file.toAbsolutePath());
+        started = true;
+        long token = profiler.beginTaskBlock();
+        if (token != 0) {
+          profiler.endTaskBlock(token, 0, 0);
+        }
+        boolean active = token != 0;
+        check(
+            active == requestsTaskBlock(command),
             "TaskBlock recording is " + (active ? "on" : "off") + " for command '" + command + "'");
+        Map<String, Long> counters = profiler.getDebugCounters();
+        check(counters.containsKey(EMITTED), "Profiler library was built without COUNTERS");
+        return new Recording(profiler, command, active, file, counters);
+      } catch (Exception | Error e) {
+        if (started) {
+          profiler.stop();
+        }
+        Files.deleteIfExists(file);
+        throw e;
       }
-      Map<String, Long> counters = profiler.getDebugCounters();
-      check(counters.containsKey(EMITTED), "Profiler library was built without COUNTERS");
-      return new Recording(profiler, command, active, file, counters);
     }
 
     boolean taskBlockActive() {
@@ -166,23 +174,22 @@ final class TaskBlockBenchmarkSupport {
      */
     Map<String, Long> stop(String benchmark) throws IOException {
       double seconds = (System.nanoTime() - startNanos) / 1e9;
-      Map<String, Long> deltas = Collections.emptyMap();
-      if (profiler != null) {
-        Map<String, Long> after = profiler.getDebugCounters();
-        for (Map.Entry<String, Long> entry : after.entrySet()) {
-          Long previous = before.get(entry.getKey());
-          entry.setValue(entry.getValue() - (previous != null ? previous : 0L));
-        }
-        deltas = after;
-      }
       long bytes = 0;
       if (file != null) {
+        // Stop before reading the counters, so intervals closed by stop are counted; counters
+        // are reset only by the next start.
         profiler.stop();
         bytes = Files.size(file);
         if (Boolean.getBoolean("ddprof_test.keep_jfrs")) {
           System.out.println("===> benchmark recording: " + file.toAbsolutePath());
         } else {
           Files.deleteIfExists(file);
+        }
+      }
+      Map<String, Long> deltas = new HashMap<>();
+      if (profiler != null) {
+        for (Map.Entry<String, Long> entry : profiler.getDebugCounters().entrySet()) {
+          deltas.put(entry.getKey(), entry.getValue() - delta(before, entry.getKey()));
         }
       }
       long emitted = delta(deltas, EMITTED);

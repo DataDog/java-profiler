@@ -148,8 +148,9 @@ public class TaskBlockNativeIoBenchmark {
       System.out.println("[taskblock-bench] native I/O hooks are Linux-only; checks skipped");
       return;
     }
+    // Absolute, not a delta: the hooks are patched during start, before the baseline snapshot.
     check(
-        profiler.getDebugCounters().get(NATIVE_IO_HOOKS_PATCHED) > 0,
+        delta(profiler.getDebugCounters(), NATIVE_IO_HOOKS_PATCHED) > 0,
         "Native I/O hooks were not patched");
     if ("blockingReadEmitting".equals(benchmark)) {
       check(emitted * 2 >= calls, benchmark + " emitted " + emitted + " of " + calls);

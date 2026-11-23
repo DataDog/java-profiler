@@ -114,15 +114,19 @@ public class TaskBlockMonitorBenchmark {
     }
   }
 
-  /** Per-thread lock, so the monitor is never contended; publishes its call count at teardown. */
+  /**
+   * Per-thread lock, so the monitor is never contended. Publishes its calls per iteration: JMH runs
+   * every iteration teardown before the benchmark state's trial teardown reads the total.
+   */
   @State(Scope.Thread)
   public static class ThreadLock {
     final Object lock = new Object();
     long calls;
 
-    @TearDown(Level.Trial)
+    @TearDown(Level.Iteration)
     public void publish(TaskBlockMonitorBenchmark benchmark) {
       benchmark.threadLocalCalls.addAndGet(calls);
+      calls = 0;
     }
   }
 
