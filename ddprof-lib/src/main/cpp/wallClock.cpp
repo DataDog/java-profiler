@@ -377,15 +377,36 @@ bool BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
   return recordAsgctWallSampleForTest(&event, tail.transaction, dump_test);
 }
 
-bool BaseWallClock::seedUnownedWallTailForTest(jthread thread, OSThreadState state) {
+// Recording takes its stripe and the JFR lock by try-and-drop, so a sample
+// signal on another thread can make one attempt fail; those failures retry.
+static const char* const kSeedStackDropped = "JVMTI stack capture dropped";
+static const char* const kSeedSampleDropped = "ordinary wall sample dropped";
+
+const char* BaseWallClock::seedUnownedWallTailForTest(jthread thread, OSThreadState state) {
+  constexpr u64 kRetryNanos = 2 * NANOTIME_FREQ;
+  const u64 start = OS::nanotime();
+  for (;;) {
+    const char* failure = seedUnownedWallTailOnceForTest(thread, state);
+    if ((failure != kSeedStackDropped && failure != kSeedSampleDropped) ||
+        OS::nanotime() - start >= kRetryNanos) {
+      return failure;
+    }
+    OS::sleep(1000000);
+  }
+}
+
+// Each attempt resets the slot first, so a dropped attempt leaves no state behind.
+const char* BaseWallClock::seedUnownedWallTailOnceForTest(jthread thread, OSThreadState state) {
   Profiler* profiler = Profiler::instance();
   ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
   ThreadFilter* registry = profiler->threadFilter();
-  if (current == nullptr || !profiler->isRunning() || !registry->registryActive()) return false;
+  if (current == nullptr) return "no ProfiledThread";
+  if (!profiler->isRunning() || !registry->registryActive()) return "profiler or registry inactive";
   ThreadFilter::SlotID slot_id = registry->ensureOwnerSlot(*current);
   WallClockBlockTracker::BlockState* slot = profiler->blockTracker()->slotForId(slot_id);
-  if (slot == nullptr || slot->activeBlockOwner() != BlockRunOwner::NONE) return false;
-  if (!awaitInitialSamplingEpochForTest(5 * NANOTIME_FREQ)) return false;
+  if (slot == nullptr) return "no block slot";
+  if (slot->activeBlockOwner() != BlockRunOwner::NONE) return "owned block active";
+  if (!awaitInitialSamplingEpochForTest(5 * NANOTIME_FREQ)) return "no sampling epoch within 5s";
   {
     auto locks = profiler->recordingLocksForTest();
     profiler->blockTracker()->resetSlot(slot_id);
@@ -394,22 +415,25 @@ bool BaseWallClock::seedUnownedWallTailForTest(jthread thread, OSThreadState sta
   event._thread_state = state;
   event._execution_mode = ExecutionMode::JAVA;
   WallPrecheckResult first = prepareWallPrecheck(current, true, true, state);
-  if (first.suppress || !first.transaction.unowned_sample) return false;
+  if (first.suppress) return "precheck suppressed the first sample";
+  if (!first.transaction.unowned_sample) return "precheck did not select an unowned sample";
   u64 trace_id = profiler->recordJVMTISample(
       1, current->tid(), thread, BCI_WALL, &event, true, profiler->recordingSession());
+  if (trace_id == 0) return kSeedStackDropped;
   first.transaction.trace_epoch = profiler->recordingEpoch();
-  if (trace_id == 0 || !profiler->recordWallSample(
-      nullptr, 1, trace_id, &event, first.transaction).ordinary_recorded) return false;
+  if (!profiler->recordWallSample(nullptr, 1, trace_id, &event, first.transaction).ordinary_recorded) {
+    return kSeedSampleDropped;
+  }
   finishWallPrecheck(first, true);
   auto epoch_lock = samplingOpportunityLockForTest(5 * NANOTIME_FREQ);
-  if (!epoch_lock.owns_lock()) return false;
+  if (!epoch_lock.owns_lock()) return "no successful sampling opportunity within 5s";
   auto locks = profiler->recordingLocksForTest();
   const u64 epoch = WallClockCounters::samplingEpochStart();
   for (int i = 0; i < 5; i++) {
-    if (!profiler->blockTracker()->deferUnownedWeight(slot_id, epoch)) return false;
+    if (!profiler->blockTracker()->deferUnownedWeight(slot_id, epoch)) return "deferral rejected";
     Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
   }
-  return true;
+  return nullptr;
 }
 #endif
 
