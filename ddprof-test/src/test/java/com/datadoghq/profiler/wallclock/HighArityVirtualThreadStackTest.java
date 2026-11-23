@@ -134,10 +134,10 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                   otherBreak = frame.methodName();
               }
               if (compiled && !outer) {
-                // Only a walk that stopped before reaching the carrier is outside this test's
-                // scope.
-                if (otherBreak != null && !crossedBoundary && errors == 0 && carriers == 0) {
-                  excludedBreaks.merge(otherBreak, 1, Integer::sum);
+                // A walk that stopped before the boundary, with a break marker or silently at a
+                // compiled frame, never exercised continuation recovery.
+                if (!crossedBoundary && errors == 0 && carriers == 0) {
+                  excludedBreaks.merge(otherBreak != null ? otherBreak : "silent", 1, Integer::sum);
                   count[4]++;
                   return;
                 }
