@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk17
 
 ## glibc-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-23 05:49:35 EST
+**Date:** 2026-11-23 05:50:35 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 298 |
-| Sample Rate | 4.97/sec |
-| Health Score | 311% |
+| CPU Samples | 81 |
+| Sample Rate | 1.35/sec |
+| Health Score | 84% |
 | Threads | 11 |
-| Allocations | 159 |
+| Allocations | 64 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 84 |
-| Sample Rate | 1.40/sec |
-| Health Score | 87% |
+| CPU Samples | 83 |
+| Sample Rate | 1.38/sec |
+| Health Score | 86% |
 | Threads | 13 |
-| Allocations | 75 |
+| Allocations | 67 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 22-22 cores)</summary>
 
 ```
+1795430695 22
+1795430700 22
 1795430705 22
 1795430710 22
 1795430715 22
-1795430721 22
-1795430726 22
-1795430731 22
-1795430736 22
-1795430741 22
-1795430746 22
-1795430751 22
-1795430756 22
-1795430761 22
-1795430766 22
-1795430771 22
-1795430776 22
-1795430781 22
-1795430786 22
-1795430791 22
-1795430796 22
-1795430801 22
+1795430720 22
+1795430725 22
+1795430730 22
+1795430735 22
+1795430740 22
+1795430745 22
+1795430750 22
+1795430755 22
+1795430760 22
+1795430765 22
+1795430770 22
+1795430775 22
+1795430780 22
+1795430785 22
+1795430790 22
 ```
 </details>
 
