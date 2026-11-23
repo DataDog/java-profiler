@@ -172,7 +172,12 @@ struct FakeJvmCounters {
     // null or unreadable) instead of a malloc'd copy; Deallocate() never frees it.
     bool borrow_method_name = false;
     char* borrowed_method_name = nullptr;
+    // Same for the method signature GetMethodName() hands back.
+    bool borrow_method_sig = false;
+    char* borrowed_method_sig = nullptr;
     int deallocate_borrowed = 0;
+    // When non-empty, GetClassSignature() returns a malloc'd copy of it.
+    std::string class_signature;
 };
 
 class ScopedFakeJvmAndJni {
@@ -248,7 +253,8 @@ private:
         if (s_instance->counters.class_signature_error != JVMTI_ERROR_NONE) {
             return s_instance->counters.class_signature_error;
         }
-        *signature_ptr = dup("Lcom/example/Foo;");
+        const std::string& sig = s_instance->counters.class_signature;
+        *signature_ptr = dup(sig.empty() ? "Lcom/example/Foo;" : sig.c_str());
         if (generic_ptr != nullptr) {
             *generic_ptr = nullptr;
         }
@@ -265,7 +271,7 @@ private:
             return c.method_name_error;
         }
         *name_ptr = c.borrow_method_name ? c.borrowed_method_name : dup("sampleMethod");
-        *signature_ptr = dup("()V");
+        *signature_ptr = c.borrow_method_sig ? c.borrowed_method_sig : dup("()V");
         if (generic_ptr != nullptr) {
             *generic_ptr = nullptr;
         }
@@ -289,7 +295,9 @@ private:
     static jvmtiError JNICALL deallocate(jvmtiEnv*, unsigned char* mem) {
         FakeJvmCounters& c = s_instance->counters;
         c.deallocate++;
-        if (c.borrow_method_name && reinterpret_cast<char*>(mem) == c.borrowed_method_name) {
+        char* p = reinterpret_cast<char*>(mem);
+        if ((c.borrow_method_name && p == c.borrowed_method_name) ||
+            (c.borrow_method_sig && p == c.borrowed_method_sig)) {
             c.deallocate_borrowed++;
             return JVMTI_ERROR_NONE;
         }
@@ -658,6 +666,66 @@ TEST_F(LookupResolveMethodJavaFrameTest, UnreadableNamePointerIsSkippedAndNotDea
     expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
     EXPECT_EQ(0, fake.counters.deallocate_borrowed);
     EXPECT_EQ(2, fake.counters.deallocate);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, J9OrdinaryClassResolves) {
+    VMTestAccessor::setOpenJ9(true);
+    ScopedFakeJvmAndJni fake;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method = 0;
+    void* slot = &fake_method;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&slot));
+
+    ASSERT_NE(nullptr, mi);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
+}
+
+// Every string is probed even after one fails, so no unreadable pointer
+// reaches Deallocate().
+TEST_F(LookupResolveMethodJavaFrameTest, EveryUnreadableStringIsKeptFromDeallocate) {
+    GuardedPage region;
+    ASSERT_TRUE(region.ok());
+    ScopedFakeJvmAndJni fake;
+    fake.counters.borrow_method_name = true;
+    fake.counters.borrowed_method_name = region.guardStart();
+    fake.counters.borrow_method_sig = true;
+    fake.counters.borrowed_method_sig = region.guardStart() + 8;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
+    EXPECT_EQ(0, fake.counters.deallocate_borrowed);
+    EXPECT_EQ(1, fake.counters.deallocate);  // the class signature only
+}
+
+// The longest legal class signature: a 65535-byte name plus "L" and ";".
+TEST_F(LookupResolveMethodJavaFrameTest, LongestLegalClassSignatureResolves) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.class_signature = "L" + std::string(65535, 'a') + ";";
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    ASSERT_NE(nullptr, mi);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
 }
 
 // ---------------------------------------------------------------------------
