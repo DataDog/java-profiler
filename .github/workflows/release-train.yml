@@ -190,7 +190,12 @@ jobs:
           # failed conclusion, and the fallback view of an in-progress run
           # has no conclusion. Resume monitoring until a terminal status is
           # confirmed, or the train would report a live release as failed.
-          while true; do
+          # The cap must expire well inside the job timeout: a timeout-killed
+          # step never writes the conclusion output nor reaches the Slack
+          # step, leaving the release unreported.
+          ATTEMPTS=0
+          MAX_ATTEMPTS=300
+          while :; do
             if gh run watch "$RUN_ID" --exit-status --interval 60 >/dev/null 2>&1; then
               CONCLUSION=success
               break
@@ -198,6 +203,11 @@ jobs:
             CONCLUSION=$(gh run view "$RUN_ID" --json status,conclusion \
               --jq 'if .status == "completed" then (.conclusion // "") else "" end') || CONCLUSION=""
             [ -n "$CONCLUSION" ] && break
+            if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
+              echo "::error::Release run $RUN_ID produced no confirmed conclusion after $MAX_ATTEMPTS minutes of monitoring"
+              exit 1
+            fi
+            ATTEMPTS=$((ATTEMPTS + 1))
             echo "::warning::Release run $RUN_ID has no confirmed conclusion; retrying monitoring"
             sleep 60
           done
