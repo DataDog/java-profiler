@@ -1339,6 +1339,15 @@ TEST_F(ElfTest, pltRelSelectsEntryStride) {
     }
 }
 
+// A DT_PLTREL that is neither DT_REL nor DT_RELA declares an unknown entry type: the
+// PLT table is skipped, not walked at the DT_RELAENT/DT_RELENT stride.
+TEST_F(ElfTest, pltRelUnknownSkipsTable) {
+    auto dyn = pltDyn();
+    setTag(dyn, DT_PLTREL, 0x1234);
+    setTag(dyn, DT_RELAENT, sizeof(Elf64_Rela));
+    ASSERT_NO_FATAL_FAILURE(expectPltStride(dyn, sizeof(Elf64_Rela), false));
+}
+
 // Without DT_PLTREL the stride is a valid DT_RELAENT (>= sizeof(Elf64_Rela)), else
 // DT_RELENT. 32 differs from every struct size; an invalid DT_RELAENT is covered by
 // pltFallbackRejectsInvalidRelaent.

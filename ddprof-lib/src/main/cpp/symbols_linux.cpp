@@ -617,10 +617,12 @@ static size_t relaEntrySize(size_t relaent) {
 
 // Size of one DT_JMPREL entry, from DT_PLTREL (gABI): a library with only PLT
 // relocations has no DT_RELENT/DT_RELAENT. Without DT_PLTREL, fall back to a valid
-// DT_RELAENT, else DT_RELENT; 0 means unknown or invalid.
+// DT_RELAENT, else DT_RELENT. A DT_PLTREL other than REL/RELA declares an unknown
+// entry type, so the table is skipped. 0 means unknown or invalid.
 static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
     if (pltrel == DT_REL) return sizeof(Elf64_Rel);
     if (pltrel == DT_RELA) return sizeof(Elf64_Rela);
+    if (pltrel != 0) return 0;
     return relaent != 0 ? relaEntrySize(relaent) : relent;
 }
 
