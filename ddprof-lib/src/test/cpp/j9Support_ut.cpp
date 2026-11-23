@@ -140,6 +140,18 @@ TEST(J9ReportSamplerRisks, warnsAboutTheVersionGateOnly) {
   EXPECT_EQ(std::string::npos, err.find("can deadlock")) << err;
 }
 
+TEST(J9ReportSamplerRisks, reportsBothRisksTogether) {
+  J9VersionProps prone = {"21.0.12+8-openj9-0.60.0", "21.0.12+8"};
+  testing::internal::CaptureStderr();
+  J9SamplerRisk risk = J9Support::reportSamplerRisks(
+      J9SamplerChoice::ASGCT, J9SamplerChoice::JVMTI_GATED, prone);
+  std::string err = testing::internal::GetCapturedStderr();
+  EXPECT_TRUE(risk.deadlock_risk);
+  EXPECT_TRUE(risk.gated_fallback);
+  EXPECT_NE(std::string::npos, err.find("AsyncGetCallTrace can deadlock")) << err;
+  EXPECT_NE(std::string::npos, err.find("using the JVMTI sampler")) << err;
+}
+
 TEST(J9ReadVersionProps, nullEnvironmentsYieldEmptyValues) {
   J9VersionProps props = J9Support::readVersionProps(nullptr, nullptr);
   EXPECT_TRUE(props.vm_version.empty());

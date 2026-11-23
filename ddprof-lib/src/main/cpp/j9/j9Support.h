@@ -157,7 +157,7 @@ public:
 
   // java.runtime.version is read through JNI because OpenJ9's JVMTI only sees
   // VM-defined properties and Java code sets that one. jni must be the calling
-  // thread's env; a null env leaves its property empty.
+  // thread's env; a null jvmti or jni leaves the property it reads empty.
   static J9VersionProps readVersionProps(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static J9SamplerRisk assessSamplers(J9SamplerChoice cpu, J9SamplerChoice wall,
@@ -165,8 +165,8 @@ public:
 
   static const char *choiceName(J9SamplerChoice choice);
 
-  // Assesses the samplers start() selected, prints a stderr warning for each
-  // risk found and returns the assessment.
+  // Prints a stderr warning for each risk in the given sampler choices and
+  // returns the assessment.
   static J9SamplerRisk reportSamplerRisks(J9SamplerChoice cpu,
                                           J9SamplerChoice wall,
                                           const J9VersionProps &props);
