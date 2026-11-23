@@ -62,6 +62,10 @@ static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 // before it is trusted to compute a byte range.
 static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
 
+// Bytes, NUL included, that a JVMTI class signature or method name/signature
+// may take: a 65535-byte (u2-length) symbol plus "L" and ";" in a class signature.
+static const size_t MAX_JVMTI_NAME_BYTES = 65535 + 2 + 1;
+
 // Compute a non-negative event duration from TSC timestamps.  Unsigned u64
 // subtraction wraps to a near-2^64 value when end < start, which can happen if
 // the thread migrates cores between the two TSC reads and the per-core counters
@@ -274,43 +278,43 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
     bool readable = false;
-    const size_t probe_len = 256;
-    if (VMMethod::check_jmethodID(method) &&
-        jvmti->GetMethodDeclaringClass(method, &method_class) == JVMTI_ERROR_NONE &&
-        // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
-        // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
-        // null handles before calling GetClassSignature.
-        method_class != NULL &&
-        // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
-        // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
-        // pointing to corrupt data and the behaviour is undefined.
-        // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
-        // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
-        // The check below mitigates these crashes on J9.
-        (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
-        jvmti->GetClassSignature(method_class, (char**)&class_name, NULL) == JVMTI_ERROR_NONE &&
-        jvmti->GetMethodName(method, (char**)&method_name, (char**)&method_sig, NULL) == JVMTI_ERROR_NONE) {
-      // The JVMTI strings should be non-null and mapped per spec, but crash
-      // telemetry shows both `strncmp` and `jvmti_Deallocate` faulting on them.
-      // Probe each pointer over a range covering the longest prefix
-      // compared below (~50 bytes) plus headroom for strlen, and NULL any that
-      // fails so the unconditional Deallocate block at end of this function
-      // skips it (os::free faults on an unmapped pointer just like strncmp).
-      // Accept a small leak on the corruption path. Probes run independently
-      // so a single bad pointer does not leak its siblings. Best-effort only:
-      // a concurrent munmap between probe and use can still fault; the SIGSEGV
-      // handler is the second line of defence.
+    CounterId skip_reason = METHOD_RESOLVE_SKIPPED_JVMTI_ERROR;
+    if (!VMMethod::check_jmethodID(method)) {
+      skip_reason = METHOD_RESOLVE_SKIPPED_INVALID_ID;
+    } else if (jvmti->GetMethodDeclaringClass(method, &method_class) != JVMTI_ERROR_NONE ||
+               // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
+               // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
+               // null handles before calling GetClassSignature.
+               method_class == NULL) {
+      skip_reason = METHOD_RESOLVE_SKIPPED_JVMTI_ERROR;
+    } else if (VM::isOpenJ9() && method_class == reinterpret_cast<jclass>(-1)) {
+      // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
+      // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
+      // pointing to corrupt data and the behaviour is undefined.
+      // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
+      // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
+      // The check below mitigates these crashes on J9.
+      skip_reason = METHOD_RESOLVE_SKIPPED_INVALID_ID;
+    } else if (jvmti->GetClassSignature(method_class, (char**)&class_name, NULL) != JVMTI_ERROR_NONE ||
+               jvmti->GetMethodName(method, (char**)&method_name, (char**)&method_sig, NULL) != JVMTI_ERROR_NONE) {
+      skip_reason = METHOD_RESOLVE_SKIPPED_JVMTI_ERROR;
+    } else {
+      // Crash telemetry shows strncmp and jvmti_Deallocate faulting on these
+      // strings. NULL any that is not readable up to its NUL so the Deallocate
+      // block at the end of this function skips it, accepting a small leak.
       auto probe = [&](char* volatile & ptr) -> bool {
-        if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
+        if (!SafeAccess::isReadableCString(ptr, MAX_JVMTI_NAME_BYTES)) {
           ptr = nullptr;
           return false;
         }
         return true;
       };
+      // Non-short-circuit &: probe every pointer so that one bad pointer does not leak its siblings.
       readable = probe(class_name) & probe(method_name) & probe(method_sig);
+      skip_reason = METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME;
     }
     if (readable) {
-      const size_t class_name_len = strnlen(class_name, 65536);
+      const size_t class_name_len = strnlen(class_name, MAX_JVMTI_NAME_BYTES);
       const char* normalized_class_name =
           class_name_len >= 2 ? class_name + 1 : "";
       const size_t normalized_class_name_len =
@@ -385,6 +389,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                           method_name, method_sig);
     } else {
       Counters::increment(JMETHODID_SKIPPED);
+      Counters::increment(skip_reason);
       mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       mi->_name = _symbols.lookup("<unloaded>");
       mi->_sig = _symbols.lookupSignature("()L;");

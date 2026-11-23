@@ -77,6 +77,16 @@
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \
   X(THREAD_FILTER_BYTES, "thread_filter_bytes")                                \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
+  /* Why a method counted in jmethodid_skipped_count was written as          \
+   * "<unloaded>"; exactly one per skip. */                                    \
+  X(METHOD_RESOLVE_SKIPPED_INVALID_ID, "method_resolve_skipped_invalid_id")   \
+  X(METHOD_RESOLVE_SKIPPED_JVMTI_ERROR, "method_resolve_skipped_jvmti_error") \
+  X(METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME,                                    \
+    "method_resolve_skipped_unreadable_name")                                  \
+  /* Stack frames written as "<unloaded>" or as the shared "unknown" row,     \
+   * one per frame of each distinct trace a dump writes. */                    \
+  X(METHOD_RESOLVE_FRAMES_UNLOADED, "method_resolve_frames_unloaded")         \
+  X(METHOD_RESOLVE_FRAMES_UNKNOWN, "method_resolve_frames_unknown")           \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
   X(CODECACHE_NATIVE_COUNT, "native_codecache_count")                          \
   X(CODECACHE_RUNTIME_STUBS_SIZE_BYTES, "codecache_runtime_stubs_size_bytes")  \
