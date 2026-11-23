@@ -67,10 +67,9 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-          # IBM SDK 8 (OpenJ9 2.9) deadlocks inside JVMTI during the slow/e2e suite
-          # (class-unload + System.gc() + profiler.dump/stop); regular testDebug passes.
-          # Eclipse OpenJ9 8 (8-j9) and 17-j9 slow suites pass, so this is
-          # IBM-SDK-8-specific. Recurring nightly + release slow-test hangs since ~2026-08-19.
+          # IBM SDK 8.0.8.70 deadlocks inside JVMTI in the slow/e2e suite (class-unload +
+          # System.gc() + profiler.dump/stop); 8-j9 and 17-j9 pass. The pinned 8.0.8.75 has
+          # not run that suite yet: remove this skip once it passes there.
           if [[ "${{ matrix.java_version }}" == "8-ibm" && "${{ inputs.slow_tests }}" == "true" ]]; then
             echo "enabled=false" >> $GITHUB_OUTPUT
           fi
