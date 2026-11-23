@@ -8,6 +8,7 @@ package com.datadoghq.profiler.wallclock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -142,32 +143,39 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         NativeBuildConfig.isDebugInstrumented(), "native timestamp seam requires DEBUG");
     AtomicBoolean recorded = new AtomicBoolean(true);
     AtomicLong secondToken = new AtomicLong();
-    // The coordinator's Thread.join uses Object.wait; exclude that producer
-    // so the global duration counter covers only the paired-API worker.
-    profiler.addThread();
-    try {
-      runWorker(
-          () -> {
-            long token = profiler.beginTaskBlock();
-            assertTrue(token != 0);
-            Thread.sleep(schedulingPauseMillis);
-            recorded.set(
-                ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
-                    token, 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
-            secondToken.set(profiler.beginTaskBlock());
-            assertTrue(secondToken.get() != 0);
-            assertFalse(
-                ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
-                    secondToken.get(), 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
-          });
-    } finally {
-      profiler.removeThread();
-    }
+    AtomicLong tooShortDelta = new AtomicLong(-1L);
+    runWorker(
+        () -> {
+          long token = profiler.beginTaskBlock();
+          assertTrue(token != 0);
+          Thread.sleep(schedulingPauseMillis);
+          // The counter is JVM-wide: the worker's own exit can contend with the
+          // coordinator's synchronized Thread.join, so count only this window.
+          long before = tooShortCount();
+          recorded.set(
+              ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
+                  token, 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
+          secondToken.set(profiler.beginTaskBlock());
+          assertTrue(secondToken.get() != 0);
+          assertFalse(
+              ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
+                  secondToken.get(), 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
+          tooShortDelta.set(tooShortCount() - before);
+        });
 
     assertFalse(recorded.get());
     assertTrue(secondToken.get() != 0);
+    assertEquals(2L, tooShortDelta.get(), "each too-short paired end must count exactly once");
     stopProfiler();
-    assertEquals(2L, getRecordedCounterValue("task_block_skipped_too_short"));
+    assertTrue(
+        getRecordedCounterValue("task_block_skipped_too_short") >= 2L,
+        "the JFR counter must include both too-short paired ends");
+  }
+
+  private long tooShortCount() {
+    Long count = profiler.getDebugCounters().get("task_block_skipped_too_short");
+    assertNotNull(count, "DEBUG builds must expose task_block_skipped_too_short");
+    return count;
   }
 
   @Test
