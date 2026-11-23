@@ -296,13 +296,9 @@ bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
     return false;
   }
   const FrontierEntry &entry = _table[idx];
-  // An incomplete retry sequence widens the recognized-stamp window to every attempt of the
-  // sequence: alternating oversized groups would otherwise ping-pong (each retry restages the
-  // group whose stamp fell out of the one-attempt window, displacing the other from the durable
-  // index, and enumeration never reaches later roots). The window expires with the sequence:
-  // once an attempt completes, retrying_incomplete is false and only the current-attempt stamp
-  // suppresses. Static-sweep stamps carry the high attempt bit, so they never fall inside a
-  // root-enumeration sequence's range (and the sequence id is 0 on static paths).
+  // A retry sequence widens the recognized-stamp window to every attempt in it, else alternating
+  // oversized groups ping-pong (each retry restages the group the one-attempt window dropped).
+  // The window expires with the sequence; static-sweep stamps (high attempt bit) never fall in it.
   const bool retry_sequence_seen = retrying_incomplete && retry_base_id != 0 &&
       retry_base_id <= attempt_id &&
       entry.root_report_attempt >= retry_base_id &&

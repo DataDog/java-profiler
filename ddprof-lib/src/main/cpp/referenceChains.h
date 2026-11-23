@@ -579,7 +579,7 @@ private:
   // generation unserved until a full lap from class 0 completes. Latching at lap start (not
   // clearing at start or completion) is what makes a completion serve only the requests that
   // predate the lap. Eviction never restarts the cursor: a restart under sustained above-cap
-  // churn would reset a mid-lap cursor and starve later classes (PROF finding on PR #899).
+  // churn would reset a mid-lap cursor and starve later classes.
   u64 _durable_anchor_resweep_gen = 0;
   u64 _static_field_sweep_lap_request_gen = 0;
   u64 _static_field_sweep_served_gen = 0;

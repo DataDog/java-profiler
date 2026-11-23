@@ -99,12 +99,6 @@ com.datadoghq.profiler.cpu.TlsPrimingTest.* | PROF-16281 | 2026-10-20 | 2027-01-
 # after the T14 musl-aarch64 JDK11 container check passed. Scoped to *-slow so
 # a failure in the regular suite still gates.
 
-# PROF-16621 -- TSan timing flake in the line-number-table fault-recovery test:
-# failed attempt 1 in glibc-tsan-amd64 (GitLab job 2243650462, PR #918 pipeline,
-# head efb2a4e5e) and passed the full-suite retry with an identical binary.
-# Scoped to the gtest tsan cells so a failure in the regular suite, in asan, or
-# on another arch still gates.
-
 # PROF-16632 was handled in the test itself: elfparser_ut's
 # invalidElfSmallMappingAfterUnmap skips at runtime under TSan because the
 # intentional dlclose-vs-parseLibraries race aborts the whole binary

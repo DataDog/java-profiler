@@ -88,12 +88,9 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   // starve later roots.
   bool durable_observation_complete = false;
   bool stage_local = false;
-  // A locally indexed holder sighted by a durable root edge promotes to the durable share:
-  // replay must release its local slot, independent of the root-kind upgrade (which refuses
-  // reparented holders) and of the report-completed dedup (whose suppression would otherwise
-  // leave the holder consuming both a local slot and durable capacity forever). The local
-  // share only holds container or UNKNOWN_TRUNCATED shapes - noteLocalRootHolder() refuses
-  // classified non-containers - so the promotion never moves a non-container in.
+  // A locally indexed holder sighted by a durable root edge promotes to the durable share,
+  // escaping both the root-kind upgrade (which refuses reparented holders) and the report
+  // dedup - otherwise the holder keeps a local slot and durable capacity forever.
   bool stage_promotion = durable_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr) &&
                          !ctx->tracker->isLocalShareEmpty() &&
                          ctx->tracker->isLocalShareIndexed(*tag_ptr);

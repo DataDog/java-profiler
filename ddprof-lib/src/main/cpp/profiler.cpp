@@ -2282,8 +2282,8 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
-  // Close the reference-chain heap paths BEFORE joining the BFS thread: heap callbacks and
-  // onThreadStart()/onThreadEnd() gate on this flag, so flipping it first means nothing past the
+  // Close the reference-chain heap paths BEFORE joining the BFS thread: the flag gates the
+  // thread-object registry and dump() emission, so flipping it first means nothing past the
   // flip stages anchor observations or thread-object registrations for a consumer that is about
   // to stop existing. A callback that already read the flag is handled downstream
   // (releaseAllThreadObjects() closes the registry; SignalInflight::drain() covers signal-path
