@@ -21,6 +21,9 @@
 #include "refCountGuard.h"
 #include "threadLocalData.h"
 #include <memory>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
 
 // Test name for crash handler
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";
@@ -1025,7 +1028,247 @@ public:
   static void seedTable(CallTraceHashTable* table, u32 slot_base, u32 capacity) {
     table->seedTableForTesting(slot_base, capacity);
   }
+  static constexpr int maxWaitCycles() { return CallTraceHashTable::MAX_WAIT_CYCLES; }
+  static u64 hash(CallTraceHashTable* table, int num_frames, ASGCT_CallFrame* frames) {
+    return table->calcHash(num_frames, frames, false);
+  }
+  static void setWaitHook(CallTraceHashTable* table, void (*hook)(void*), void* arg) {
+    table->_wait_hook_for_test = hook;
+    table->_wait_hook_arg_for_test = arg;
+  }
+  static u32 firstSlot(CallTraceHashTable* table, u64 hash) { return table->firstSlotForTest(hash); }
+  static bool claim(CallTraceHashTable* table, u32 slot, u64 key) {
+    return table->claimSlotForTest(slot, key);
+  }
+  static bool markPreparing(CallTraceHashTable* table, u32 slot) {
+    return table->markPreparingForTest(slot);
+  }
+  static u64 publish(CallTraceHashTable* table, u32 slot, ASGCT_CallFrame* frame) {
+    return table->publishSlotForTest(slot, 1, frame, false);
+  }
+  static void abandon(CallTraceHashTable* table, u32 slot) { table->abandonSlotForTest(slot); }
 };
+
+namespace {
+
+// Runs an action from put()'s wait loop, on the waiting thread itself, to stand
+// in for a concurrent owner deterministically.
+class WaitHookScope {
+public:
+  WaitHookScope(CallTraceHashTable* table, std::function<void(int call)> on_call)
+      : _table(table), _on_call(std::move(on_call)) {
+    CallTraceHashTableTestAccessor::setWaitHook(table, &WaitHookScope::hook, this);
+  }
+  ~WaitHookScope() { CallTraceHashTableTestAccessor::setWaitHook(_table, nullptr, nullptr); }
+  WaitHookScope(const WaitHookScope&) = delete;
+  WaitHookScope& operator=(const WaitHookScope&) = delete;
+
+  int calls() const { return _calls; }
+
+private:
+  // Far above any wait a test expects: a put() that re-probes forever aborts
+  // the binary instead of hanging CI.
+  static constexpr int CALL_CAP = 100 * CallTraceHashTableTestAccessor::maxWaitCycles();
+
+  static void hook(void* arg) {
+    WaitHookScope* self = static_cast<WaitHookScope*>(arg);
+    if (++self->_calls > CALL_CAP) {
+      fprintf(stderr, "put() still waiting after %d spin iterations\n", CALL_CAP);
+      std::abort();
+    }
+    self->_on_call(self->_calls);
+  }
+
+  CallTraceHashTable* _table;
+  std::function<void(int call)> _on_call;
+  int _calls = 0;
+};
+
+// One stack, its hash and its first probe slot in a fresh table.
+struct TestStack {
+  explicit TestStack(CallTraceHashTable* t, int bci = 7) : table(t) {
+    frame.bci = bci;
+    frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x7000 + bci));
+    hash = CallTraceHashTableTestAccessor::hash(table, 1, &frame);
+    slot = CallTraceHashTableTestAccessor::firstSlot(table, hash);
+  }
+  // Leaves the slot as put() does right after its key CAS (trace still nullptr).
+  void claim() { ASSERT_TRUE(CallTraceHashTableTestAccessor::claim(table, slot, hash)); }
+  void claimPreparing() {
+    claim();
+    ASSERT_TRUE(CallTraceHashTableTestAccessor::markPreparing(table, slot));
+  }
+  u64 put() { return table->put(1, &frame, false, 1); }
+
+  CallTraceHashTable* table;
+  ASGCT_CallFrame frame = {};
+  u64 hash;
+  u32 slot;
+};
+
+std::unique_ptr<CallTraceHashTable> newHashTable() {
+  auto table = std::make_unique<CallTraceHashTable>();
+  table->setInstanceId(1);
+  return table;
+}
+
+constexpr u64 OVERFLOW_TRACE_ID = 0x7fffffffffffffffULL;  // callTraceHashTable.cpp
+
+bool isRealTraceId(u64 id) {
+  return id != CallTraceStorage::DROPPED_TRACE_ID && id != OVERFLOW_TRACE_ID;
+}
+
+// Plays the owner's publish from a wait hook. A failed step abandons the slot so
+// put() can return and the test reports the failure instead of hitting CALL_CAP.
+u64 publishAsOwner(CallTraceHashTable* table, u32 slot, ASGCT_CallFrame* frame, bool mark_preparing) {
+  if (mark_preparing && !CallTraceHashTableTestAccessor::markPreparing(table, slot)) {
+    ADD_FAILURE() << "markPreparing() failed on a claimed slot";
+    CallTraceHashTableTestAccessor::abandon(table, slot);
+    return CallTraceStorage::DROPPED_TRACE_ID;
+  }
+  u64 id = CallTraceHashTableTestAccessor::publish(table, slot, frame);
+  if (!isRealTraceId(id)) {
+    ADD_FAILURE() << "publish() could not store the trace";
+    CallTraceHashTableTestAccessor::abandon(table, slot);
+  }
+  return id;
+}
+
+}  // namespace
+
+// The owner publishes while put() waits on its slot, either right after the key
+// CAS (trace still nullptr) or after marking it PREPARING: put() must return the
+// published ID instead of dropping the trace.
+static void expectWaiterGetsPublishedTrace(bool preparing) {
+    auto table = newHashTable();
+    TestStack stack(table.get());
+    if (preparing) {
+        stack.claimPreparing();
+    } else {
+        stack.claim();
+    }
+    u64 published = CallTraceStorage::DROPPED_TRACE_ID;
+    WaitHookScope owner(table.get(), [&](int call) {
+        if (call == 1) {
+            published = publishAsOwner(table.get(), stack.slot, &stack.frame, !preparing);
+        }
+    });
+    const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
+
+    u64 id = stack.put();
+
+    EXPECT_EQ(owner.calls(), 1) << "put() did not stop waiting once the trace was published";
+    ASSERT_TRUE(isRealTraceId(published));
+    EXPECT_EQ(id, published);
+    EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
+}
+
+TEST(CallTraceHashTableWaitTest, PutWaitsForClaimedSlotInsteadOfDropping) {
+    expectWaiterGetsPublishedTrace(false);
+}
+
+TEST(CallTraceHashTableWaitTest, PutWaitsForPreparingSlot) {
+    expectWaiterGetsPublishedTrace(true);
+}
+
+// The owner abandons its claim (an abandon path clears the key): the waiter must
+// claim the slot itself and keep the stack, not drop it.
+static void expectWaiterTakesOverAbandonedSlot(bool preparing) {
+    auto table = newHashTable();
+    TestStack stack(table.get());
+    if (preparing) {
+        stack.claimPreparing();
+    } else {
+        stack.claim();
+    }
+    WaitHookScope owner(table.get(), [&](int call) {
+        if (call == 1) {
+            CallTraceHashTableTestAccessor::abandon(table.get(), stack.slot);
+        }
+    });
+    const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
+
+    u64 id = stack.put();
+
+    EXPECT_EQ(owner.calls(), 1) << "put() did not stop waiting once the key was cleared";
+    EXPECT_TRUE(isRealTraceId(id)) << "trace id " << id;
+    EXPECT_EQ(stack.put(), id) << "the waiter did not store the stack";
+    EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
+}
+
+TEST(CallTraceHashTableWaitTest, PutTakesOverSlotAbandonedWhileClaimed) {
+    expectWaiterTakesOverAbandonedSlot(false);
+}
+
+TEST(CallTraceHashTableWaitTest, PutTakesOverSlotAbandonedWhilePreparing) {
+    expectWaiterTakesOverAbandonedSlot(true);
+}
+
+// While the waiter spins, the slot is abandoned and reclaimed by another stack,
+// which publishes its trace there: the waiter must not return that trace's ID.
+TEST(CallTraceHashTableWaitTest, PutIgnoresTracePublishedByReclaimingStack) {
+    auto table = newHashTable();
+    TestStack stack(table.get());
+    TestStack other(table.get(), 8);
+    ASSERT_NE(other.hash, stack.hash);
+    stack.claimPreparing();
+    u64 foreign = CallTraceStorage::DROPPED_TRACE_ID;
+    WaitHookScope owner(table.get(), [&](int call) {
+        if (call == 1) {
+            CallTraceHashTableTestAccessor::abandon(table.get(), stack.slot);
+            // A failed claim leaves the slot empty, so put() still returns.
+            if (!CallTraceHashTableTestAccessor::claim(table.get(), stack.slot, other.hash)) {
+                ADD_FAILURE() << "could not reclaim the abandoned slot";
+                return;
+            }
+            foreign = publishAsOwner(table.get(), stack.slot, &other.frame, true);
+        }
+    });
+
+    u64 id = stack.put();
+
+    EXPECT_EQ(owner.calls(), 1) << "put() did not stop waiting once the slot was reclaimed";
+    ASSERT_TRUE(isRealTraceId(foreign));
+    EXPECT_NE(id, foreign) << "put() returned the reclaiming stack's trace";
+    EXPECT_TRUE(isRealTraceId(id)) << "trace id " << id;
+    EXPECT_EQ(stack.put(), id) << "the waiter did not store its own stack";
+}
+
+// The owner publishes only after the bounded spin ran out: put() re-probes the
+// slot and keeps waiting rather than giving up.
+TEST(CallTraceHashTableWaitTest, PutKeepsWaitingAfterSpinLimit) {
+    auto table = newHashTable();
+    TestStack stack(table.get());
+    stack.claim();
+    const int publish_call = CallTraceHashTableTestAccessor::maxWaitCycles() + 1;
+    u64 published = CallTraceStorage::DROPPED_TRACE_ID;
+    WaitHookScope owner(table.get(), [&](int call) {
+        if (call == publish_call) {
+            published = publishAsOwner(table.get(), stack.slot, &stack.frame, true);
+        }
+    });
+
+    u64 id = stack.put();
+
+    EXPECT_EQ(owner.calls(), publish_call);
+    ASSERT_TRUE(isRealTraceId(published));
+    EXPECT_EQ(id, published);
+}
+
+// A zero-frame stack hashes to 0, the empty-key value, so it would "match" every
+// empty slot: put() must drop it instead of waiting on an empty slot forever.
+TEST(CallTraceHashTableWaitTest, PutDropsZeroFrameStack) {
+    auto table = newHashTable();
+    ASGCT_CallFrame frame = {};
+    ASSERT_EQ(CallTraceHashTableTestAccessor::hash(table.get(), 0, &frame), 0u);
+    const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
+    WaitHookScope never_publishes(table.get(), [](int) {});
+
+    u64 id = table->put(0, &frame, false, 1);
+
+    EXPECT_EQ(id, CallTraceStorage::DROPPED_TRACE_ID);
+    EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 1);
+}
 
 TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
     static constexpr u32 CAPACITY = 1024;
