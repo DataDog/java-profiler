@@ -351,6 +351,60 @@ TEST_F(ReferenceChainsBfsTest, FreshQueueCapDropsNewestAnchors) {
     tracker->stop();
 }
 
+// A queued anchor whose class tag is refreshed while it waits keeps the resolved tag across
+// durable eviction: eviction preserves the pending first look but discards the index's class-tag
+// metadata, and the fresh lane's fallback to the enqueue-time tag would spend the preserved look
+// on a stale 0 - a reparented holder is selectable only through its class shape.
+TEST_F(ReferenceChainsBfsTest, EvictedFreshAnchorKeepsRefreshedClassTag) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong kContainer = -505;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+    const jlong target = 6101, parent = 6102;
+    // Reparented (parent != 0): the root-attached eligibility is gone, so the fresh lane's
+    // selectability check rides entirely on the holder's class tag.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, target, parent, 1, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    // Queued before its class was tagged: the entry carries the admission-time 0.
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        target, 0, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    // The resolved class tag arrives while the anchor waits: the index entry is upgraded.
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        target, kContainer, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_EQ(kContainer,
+              ReferenceChainsTestAccessor::indexedAnchorClassTagForTest(target));
+
+    // Cross the cap: `target` sits at the oldest position and is evicted with its fresh turn
+    // preserved - but the refreshed index metadata is gone with the eviction.
+    for (size_t i = 0; i <= cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            8000 + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            8);
+    EXPECT_TRUE(std::find(selected.begin(), selected.end(), target) !=
+                selected.end())
+        << "the preserved first look must walk the holder, not be spent on "
+           "the stale 0 class tag";
+
+    tracker->stop();
+}
+
 // Tier fairness: the other tier (everything not leak-tagged, not container-shaped) still
 // reaches full coverage across wraps - a 40-anchor tier at a 16 budget covers all 40 in exactly 3
 // calls with no duplicates within a call.

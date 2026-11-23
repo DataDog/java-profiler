@@ -1467,6 +1467,53 @@ TEST_F(ReferenceChainsBfsTest, ReenlistReplayPromotesLocallyIndexedHolder) {
     tracker->stop();
 }
 
+// The re-enlist replay's promotion must enforce the durable cap the way addToStaticAnchorIndex()
+// does: releasing the local slot grows the durable share while the dedup in
+// indexAnchorForRotation() returns early for the still-indexed tag, so a promotion at a full
+// durable share would exceed DURABLE_ANCHOR_INDEX_CAP until an unrelated admission evicts.
+TEST_F(ReferenceChainsBfsTest, ReenlistReplayPromotionAtCapTriggersEviction) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const size_t batch = ReferenceChainsTestAccessor::kDurableAnchorEvictBatch;
+    for (size_t i = 0; i < cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            4001 + (jlong)i, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_EQ(cap, AnchorAcc::durableAnchorCountForTest());
+
+    const jlong promoted = 22051;
+    const jlong container_class = -3208;
+    insertAnchorEntry(frontier, promoted, 555, JVMTI_HEAP_REFERENCE_STACK_LOCAL);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class, true);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(promoted,
+                                                            container_class);
+    ASSERT_EQ(1u, AnchorAcc::localAnchorCountForTest());
+    ASSERT_EQ(cap, AnchorAcc::durableAnchorCountForTest())
+        << "the local holder's index push shifts the share boundary, not the "
+           "durable share's size";
+
+    AnchorObservation record{};
+    record.tag = promoted;
+    record.own_class_tag = container_class;
+    record.actions = AnchorObservation::REENLIST_ELIGIBLE;
+    ReferenceChainsTestAccessor::replayAnchorObservationsForTest({record});
+
+    EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest())
+        << "the promotion must release the local slot";
+    EXPECT_EQ(cap - batch, AnchorAcc::durableAnchorCountForTest())
+        << "the promotion at a full durable share must evict, not exceed the cap";
+    EXPECT_TRUE(AnchorAcc::anchorIndexContainsForTest(promoted))
+        << "the just promoted tag is the newest entry, never among the evicted "
+           "oldest";
+
+    tracker->stop();
+}
+
 // A confirmed container arriving after the pending buffer filled with unclassified holders in
 // the same walk must still stage: every staged unknown is displaceable in replay, so the
 // container's record displaces the oldest unknown instead of being rejected while a local slot

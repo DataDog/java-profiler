@@ -98,8 +98,13 @@ void ReferenceChainTracker::replayAnchorObservations(
       // once reparenting has taken the root-attached eligibility away).
       // A durable sighting also promotes a locally indexed holder to the durable share:
       // release its local slot the way addToStaticAnchorIndex() does (no-op for durable-share
-      // and evicted tags; LOCAL records never share a record with a durable action).
+      // and evicted tags; LOCAL records never share a record with a durable action). The
+      // promotion grows the durable share without a new index push (the dedup in
+      // indexAnchorForRotation() returns early for the still-indexed tag), so the durable cap
+      // is checked here too, exactly as addToStaticAnchorIndex() does; the just promoted tag
+      // may itself be among the evicted oldest entries, and its next re-enlist re-indexes it.
       _local_anchor_tags.erase(r.tag);
+      evictOldestDurableAnchors();
       indexAnchorForRotation(r.tag, r.own_class_tag);
     }
     if (r.actions & AnchorObservation::AT_RISK) {
@@ -751,6 +756,15 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
       known->second.class_tag = own_class_tag;
       _static_anchor_own_class_tags[known->second.pos] = own_class_tag;
       _indexed_zero_class_tag_count--;
+      // Keep the tag's pending fresh turn in sync: durable eviction preserves the queued turn
+      // outside the capped index but discards the index's class-tag metadata, so a queue entry
+      // still carrying the stale 0 would spend the preserved first look on the unresolvable
+      // shape fallback (reparented holders are selectable only through their class shape).
+      for (FreshAnchor &anchor : _static_anchor_fresh_queue) {
+        if (anchor.tag == tag && anchor.own_class_tag == 0) {
+          anchor.own_class_tag = own_class_tag;
+        }
+      }
     }
     return;
   }
