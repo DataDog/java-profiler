@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-22 17:25:49 EST
+**Date:** 2026-11-22 20:29:48 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 184 |
-| Sample Rate | 3.07/sec |
-| Health Score | 192% |
-| Threads | 11 |
+| CPU Samples | 60 |
+| Sample Rate | 1.00/sec |
+| Health Score | 62% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 64 |
-| Sample Rate | 1.07/sec |
-| Health Score | 67% |
-| Threads | 11 |
+| CPU Samples | 69 |
+| Sample Rate | 1.15/sec |
+| Health Score | 72% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
 
 ```
-1795386108 10
-1795386113 10
-1795386118 10
-1795386123 10
-1795386128 10
-1795386133 10
-1795386138 10
-1795386143 10
-1795386148 10
-1795386153 10
-1795386158 10
-1795386163 10
-1795386168 10
-1795386173 10
-1795386178 10
-1795386183 10
-1795386188 10
-1795386193 10
-1795386198 10
-1795386203 10
+1795397167 10
+1795397172 10
+1795397177 10
+1795397182 10
+1795397187 10
+1795397192 10
+1795397197 10
+1795397202 10
+1795397207 10
+1795397212 10
+1795397217 10
+1795397222 10
+1795397227 10
+1795397232 10
+1795397237 10
+1795397242 10
+1795397247 10
+1795397252 10
+1795397257 10
+1795397262 10
 ```
 </details>
 

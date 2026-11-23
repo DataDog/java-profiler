@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-22 17:25:52 EST
+**Date:** 2026-11-22 20:29:51 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 332 |
-| Sample Rate | 5.53/sec |
-| Health Score | 346% |
+| CPU Samples | 369 |
+| Sample Rate | 6.15/sec |
+| Health Score | 384% |
 | Threads | 7 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 180 |
-| Sample Rate | 3.00/sec |
-| Health Score | 188% |
-| Threads | 7 |
+| CPU Samples | 380 |
+| Sample Rate | 6.33/sec |
+| Health Score | 396% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1795386106 81
-1795386111 81
-1795386116 81
-1795386121 81
-1795386126 81
-1795386131 81
-1795386136 81
-1795386141 81
-1795386146 81
-1795386151 81
-1795386156 81
-1795386161 81
-1795386166 81
-1795386171 81
-1795386176 81
-1795386181 81
-1795386186 81
-1795386191 81
-1795386196 81
-1795386201 81
+1795397131 81
+1795397136 81
+1795397141 81
+1795397146 81
+1795397151 81
+1795397156 81
+1795397161 81
+1795397166 81
+1795397171 81
+1795397176 81
+1795397181 81
+1795397186 81
+1795397191 81
+1795397196 81
+1795397201 81
+1795397206 81
+1795397211 81
+1795397216 81
+1795397221 81
+1795397226 81
 ```
 </details>
 
