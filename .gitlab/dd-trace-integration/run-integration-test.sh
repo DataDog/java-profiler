@@ -431,10 +431,8 @@ log_info "✓ Profiler-only test completed"
 # Collect mid-test system metrics
 collect_system_metrics "mid"
 
-# Find the JFR recording (profiler writes continuously). The debug dump_path
-# holds one snapshot per upload period, so pick the newest: it covers the whole
-# run window, while `find -print -quit` returns directory order and can hand
-# the validator a first-period snapshot holding only a fraction of the events.
+# Find the JFR recording (profiler writes continuously): the newest snapshot,
+# see newest_jfr.
 log_info "Locating JFR recording in ${SCENARIO1_JFR_DIR}..."
 
 SCENARIO1_JFR=$(newest_jfr "${SCENARIO1_JFR_DIR}")

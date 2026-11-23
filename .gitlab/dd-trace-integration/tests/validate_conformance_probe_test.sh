@@ -69,7 +69,7 @@ STUB
 # The HAS flag log is the last block that prints "<type>: <value>"; earlier
 # blocks print other flags under the same type names.
 flag_of() {
-  grep "${1}: " "${WORK}/stdout.log" | tail -1 | sed 's/.*: //'
+  { grep -F "${1}: " "${WORK}/stdout.log" || true; } | tail -1 | sed 's/.*: //'
 }
 
 run_validate() {
