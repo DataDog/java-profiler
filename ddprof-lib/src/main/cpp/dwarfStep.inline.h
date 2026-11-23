@@ -21,6 +21,12 @@
 // and the commit that added this reconciled the last of the differences so
 // that this could be a pure move rather than a merge of two behaviours.
 //
+// True when the frame's registers describe walk_pc: the sampled leaf, or a context
+// restored at a signal frame. Only then may LR-based recovery read frame.link().
+inline bool atInterruptedContext(StackFrame& frame, const WalkPc& walk_pc) {
+    return !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw());
+}
+
 // Advances sp/fp/walk_pc from the current frame to its caller. Returns false
 // where the walk must stop -- an unusable CFA rule, an implausible sp or fp,
 // or no forward progress -- and true when the caller may record another frame.
@@ -47,12 +53,6 @@
 // that path walkVM arrives one lower than walkDwarf does at the same logical
 // position. Passing it through is what keeps this a pure move; do not
 // "correct" it to a value derived here.
-// True when the frame's registers describe walk_pc: the sampled leaf, or a context
-// restored at a signal frame. Only then may LR-based recovery read frame.link().
-inline bool atInterruptedContext(StackFrame& frame, const WalkPc& walk_pc) {
-    return !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw());
-}
-
 __attribute__((always_inline))
 inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
                               uintptr_t bottom, int depth,
