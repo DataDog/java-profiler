@@ -176,8 +176,9 @@ entries are re-interned. Details:
 **Persistent hooks.** The `pthread_create` and `sigaction` GOT hooks are installed once
 (`LibraryPatcher::initialize_persistent()`) and never unpatched, so they run before the
 first `start()` and between recordings. They must stay transparent (the `pthread_create`
-wrapper passes the routine's return value to `pthread_exit()`), and code they reach must
-tolerate an idle profiler, including one that never started: go through the registration
+wrapper passes the routine's return value to `pthread_exit()`), they leave a slot
+holding another interposer's wrapper alone, and code they reach must tolerate an idle
+profiler, including one that never started: go through the registration
 gates and skip a `NULL` engine slot. Details:
 [ProfilingEngines.md](/doc/architecture/ProfilingEngines.md#thread-registration),
 [SigsegvPatching.md](/doc/architecture/SigsegvPatching.md#initialization-flow).

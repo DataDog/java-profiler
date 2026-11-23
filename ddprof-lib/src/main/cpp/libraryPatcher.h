@@ -121,8 +121,8 @@ private:
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
   // `next` when `global` lies in the main executable (a non-PIE executable that
-  // takes &pthread_create; PLT calls then bind to `next` unless an interposer is
-  // also preloaded, which is not supported), otherwise null.
+  // takes &pthread_create; PLT calls then bind to `next`), otherwise null. An
+  // executable that defines pthread_create itself looks the same: not supported.
   static void* plt_binding(void* global, void* next);
   static void patch_pthread_setspecific();
   static void patch_sigaction_in_library(CodeCache* lib);

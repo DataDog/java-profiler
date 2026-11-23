@@ -206,8 +206,9 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      `dlsym(RTLD_DEFAULT)` (a preloaded interposer included) or the library's
      own lazy-binding stub. Only when that address lies in the main executable (a
      non-PIE executable that takes `&pthread_create`) is `dlsym(RTLD_NEXT)`
-     accepted too, which PLT calls bind to then; that executable with a preloaded
-     interposer is not supported.
+     accepted too, which PLT calls bind to then. An executable that defines its own
+     `pthread_create` is not told apart, and is not supported: a library bound
+     past it (`RTLD_DEEPBIND`) would be hooked.
    - Any other value is left alone: another interposer's wrapper, whose threads
      are then not registered, an unresolved weak import, or a GOT the loader has
      not relocated yet.
