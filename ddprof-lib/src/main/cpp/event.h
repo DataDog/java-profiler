@@ -291,6 +291,13 @@ typedef struct QueueTimeEvent {
   u32 _queueLength;
 } QueueTimeEvent;
 
+// A virtual thread has no OS tid; its thread-pool entry is keyed by Java thread id.
+struct VirtualThreadIdentity {
+  u64 java_thread_id;
+  const char *name;
+  size_t name_length;
+};
+
 typedef struct TaskBlockEvent {
   u64 _start;
   u64 _end;
@@ -299,6 +306,8 @@ typedef struct TaskBlockEvent {
   Context _ctx;
   u64 _callTraceId;
   OSThreadState _observedBlockingState;
+  // Null for platform threads, whose eventThread is the recording tid.
+  const VirtualThreadIdentity *_virtualThread;
 } TaskBlockEvent;
 
 #endif // _EVENT_H

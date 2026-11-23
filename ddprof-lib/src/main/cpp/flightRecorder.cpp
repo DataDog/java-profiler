@@ -2018,13 +2018,19 @@ void Recording::writeThreads(Buffer *buf) {
     _thread_ids[i][old_index].clear();
   }
 
+  // A virtual thread recorded on several stripes is written once.
+  std::unordered_map<u64, const VirtualThreadName *> virtual_threads;
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
+    for (auto &entry : _virtual_threads[i]) virtual_threads.emplace(entry.first, &entry.second);
+  }
+
   Profiler *profiler = Profiler::instance();
   ThreadInfo *t_info = &profiler->_thread_info;
 
   char name_buf[32];
 
   buf->putVar64(T_THREAD);
-  buf->putVar64(threads.size());
+  buf->putVar64(threads.size() + virtual_threads.size());
   for (auto tid : threads) {
     const char *thread_name;
     jlong thread_id;
@@ -2054,6 +2060,18 @@ void Recording::writeThreads(Buffer *buf) {
     buf->putVar64(thread_id);
     flushIfNeeded(buf);
   }
+  for (auto &entry : virtual_threads) {
+    const VirtualThreadName &name = *entry.second;
+    flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - static_cast<int>(name.length()) - 4 * 10);
+    buf->putVar64(virtualThreadKey(entry.first));
+    buf->put8(0);  // osName: null, as for an unnamed platform thread's javaName
+    buf->putVar64(0);  // osThreadId
+    buf->putUtf8(name.c_str(), name.length());
+    buf->putVar64(entry.first);
+    flushIfNeeded(buf);
+  }
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) _virtual_threads[i].clear();
+  _virtual_thread_count.store(0, std::memory_order_relaxed);
 }
 
 void Recording::writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
@@ -2673,12 +2691,12 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
-void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
+void Recording::recordTaskBlock(Buffer *buf, u64 thread_key, TaskBlockEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_TASK_BLOCK);
   buf->putVar64(event->_start);
   buf->putVar64(event->_end - event->_start);
-  buf->putVar64(tid);
+  buf->putVar64(thread_key);
   buf->putVar64(event->_blocker);
   buf->putVar64(event->_unblockingSpanId);
   buf->putVar64(event->_callTraceId);
@@ -3016,6 +3034,26 @@ bool Recording::addThread(int lock_index, int tid) {
     return false;
 }
 
+bool Recording::addVirtualThread(int lock_index, const VirtualThreadIdentity &identity) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  u64 id = identity.java_thread_id;
+  if (id == 0 || id >= MAX_VIRTUAL_THREAD_ID) return false;
+  VirtualThreadMap &threads = _virtual_threads[lock_index];
+  if (threads.find(id) != threads.end()) return true;
+  // Relaxed: the counter only bounds memory; writeThreads() resets it under the exclusive lock.
+  if (_virtual_thread_count.load(std::memory_order_relaxed) >= VIRTUAL_THREAD_POOL_CAPACITY) {
+    Counters::increment(TASK_BLOCK_VIRTUAL_THREAD_POOL_FULL);
+    return false;
+  }
+  size_t max_length = static_cast<size_t>(MAX_STRING_LENGTH);
+  size_t length = identity.name_length < max_length ? identity.name_length : max_length;
+  threads.emplace(id, VirtualThreadName(identity.name != nullptr ? identity.name : "",
+                                        identity.name != nullptr ? length : 0));
+  // Counted only once the entry exists.
+  _virtual_thread_count.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+
 bool Recording::recoverThreadTableCapacity() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   u32 overflow = _thread_table_overflow.load(std::memory_order_acquire);
@@ -3204,13 +3242,21 @@ bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
   }
   if (!rec->outputGood()) return false;
   Buffer *buf = rec->buffer(lock_index);
+  const VirtualThreadIdentity *virtual_thread = event->_virtualThread;
   // Thread admission must precede bytes that reference this chunk's thread pool.
-  if (!rec->addThread(lock_index, tid)) {
+  bool admitted = virtual_thread != nullptr
+                      ? rec->addVirtualThread(lock_index, *virtual_thread)
+                      : rec->addThread(lock_index, tid);
+  if (!admitted) {
     TASK_BLOCK_REJECTION(REJECT_EVENT_THREAD_ADMISSION, diagnostic, tid, rejection);
     return false;
   }
   TASK_BLOCK_DIAGNOSTIC(BUFFER_SERIALIZATION_BEGIN, diagnostic, lock_index);
-  rec->recordTaskBlock(buf, tid, event);
+  rec->recordTaskBlock(buf,
+                       virtual_thread != nullptr
+                           ? Recording::virtualThreadKey(virtual_thread->java_thread_id)
+                           : static_cast<u64>(tid),
+                       event);
   TASK_BLOCK_DIAGNOSTIC(BUFFER_ACCEPTED, diagnostic, lock_index);
   return rec->outputGood();
 }

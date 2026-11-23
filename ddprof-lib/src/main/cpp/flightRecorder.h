@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <map>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -307,6 +308,15 @@ private:
   std::atomic<u32> _thread_table_overflow{0};
   // Stop archives full tables before reusing their slots; writeThreads unions the saved IDs.
   std::vector<int, CountingAllocator<int, NM_JFR_BUFFERS>> _archived_thread_ids;
+  using VirtualThreadName =
+      std::basic_string<char, std::char_traits<char>, CountingAllocator<char, NM_JFR_BUFFERS>>;
+  using VirtualThreadMap = std::unordered_map<
+      u64, VirtualThreadName, std::hash<u64>, std::equal_to<u64>,
+      CountingAllocator<std::pair<const u64, VirtualThreadName>, NM_JFR_BUFFERS>>;
+  // Java thread id -> name, per stripe like _thread_ids. Writers hold the stripe and a shared
+  // _rec_lock; writeThreads() drains under the exclusive _rec_lock, so no double buffer is needed.
+  VirtualThreadMap _virtual_threads[CONCURRENCY_LEVEL];
+  std::atomic<u32> _virtual_thread_count{0};
 
   int _fd;
   RecordingOutput _output;
@@ -533,7 +543,7 @@ public:
   }
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
-  void recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event);
+  void recordTaskBlock(Buffer *buf, u64 thread_key, TaskBlockEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
   void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
@@ -553,6 +563,19 @@ public:
                      float machine_total);
 
   bool addThread(int lock_index, int tid);
+  // Thread-pool key of a virtual thread. Valid ids are in [1, MAX_VIRTUAL_THREAD_ID), so a key
+  // never equals an int tid, positive or sign-extended negative.
+  static constexpr u64 VIRTUAL_THREAD_KEY_BASE = 1ULL << 32;
+  static constexpr u64 MAX_VIRTUAL_THREAD_ID = 1ULL << 62;
+  // Bounds the per-chunk virtual-thread entries; concurrent stripes can overshoot by one each,
+  // and a cross-stripe duplicate counts twice.
+  static constexpr u32 VIRTUAL_THREAD_POOL_CAPACITY = 16384;
+  static u64 virtualThreadKey(u64 java_thread_id) {
+    return VIRTUAL_THREAD_KEY_BASE + java_thread_id;
+  }
+  // Same locking contract as addThread(); not signal-safe (allocates the entry and its name).
+  // False for an invalid id, or for a new id once the chunk holds VIRTUAL_THREAD_POOL_CAPACITY.
+  bool addVirtualThread(int lock_index, const VirtualThreadIdentity &identity);
   // Normal thread, exclusive recording lock: preserve old event references before clearing capacity.
   bool recoverThreadTableCapacity();
 
