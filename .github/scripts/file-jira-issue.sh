@@ -68,12 +68,13 @@ API="$BASE/rest/api/3"
 # the callers (no quotes), but escape anyway. The /search endpoint is retired;
 # /search/jql takes a POST body and may return issues or issueKeys.
 JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\""; "\\\\\"")')
-# Phrase-match the whole summary: an unquoted JQL '~' is OR term matching,
-# so the shared fixed words would let one commit's failure dedupe onto
-# another commit's ticket (the SHA differs but the rest matches). The
-# quotes around the operand carry the phrase form; quotes inside the
-# summary arrive pre-escaped by JQL_SUMMARY and stay JQL escapes.
-JQL="project = $PROJECT AND summary ~ \"$JQL_SUMMARY\" AND resolution = Unresolved"
+# Exact-phrase match the whole summary: in JQL '~' the outer quotes only
+# delimit the operand — unescaped, the words match in any order (OR terms),
+# and the shared fixed words would let one commit's failure dedupe onto
+# another commit's ticket. The phrase form needs escaped quotes INSIDE the
+# operand; quotes in the summary arrive pre-escaped by JQL_SUMMARY and stay
+# JQL escapes.
+JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\"\\\" AND resolution = Unresolved"
 EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
   -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
   "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
