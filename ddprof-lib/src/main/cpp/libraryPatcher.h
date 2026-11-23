@@ -33,10 +33,13 @@ struct PthreadCreateEntry {
   // Its last visit left a slot unhooked: a GOT not relocated yet, an unresolved
   // weak import or another interposer's wrapper. Visited on every pass while set.
   bool pending;
+  // No visit has hooked a slot yet. Unlike pending it survives a full pass, so the
+  // MAX_UNHOOKED_ENTRIES count includes entries of unloaded libraries.
+  bool unhooked;
 };
 
-// Most entries that may be recorded without a hooked slot, so that libraries
-// left alone cannot crowd out libraries that are hooked.
+// Most entries that may be recorded for libraries never hooked, so that they
+// cannot crowd out libraries that are hooked.
 const int MAX_UNHOOKED_ENTRIES = MAX_NATIVE_LIBS / 4;
 
 // The pthread_create entries, guarded by LibraryPatcher::_lock. All-zero is the

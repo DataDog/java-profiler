@@ -400,6 +400,13 @@ TEST_F(LibraryPatcherPatching, UnhookedEntriesAreBoundedAndLeaveRoomForHookedOne
   EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(libs[limit].get()));
   EXPECT_EQ(foreign, slots[limit]);
 
+  // An entry that gets hooked no longer counts against the bound.
+  slots[0] = real_pthread_create();
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(libs[0].get());
+  ASSERT_NE(real_pthread_create(), slots[0]);
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(libs[limit].get());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(libs[limit].get()));
+
   void* hookable = real_pthread_create();
   CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
                 /* imports_patchable */ true);
@@ -407,7 +414,7 @@ TEST_F(LibraryPatcherPatching, UnhookedEntriesAreBoundedAndLeaveRoomForHookedOne
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
 
   EXPECT_NE(real_pthread_create(), hookable);
-  EXPECT_EQ(limit + 1, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(limit + 2, LibraryPatcherTestAccessor::patchedCount());
 }
 
 // A slot left alone marks the entry pending; the visit that hooks it again
