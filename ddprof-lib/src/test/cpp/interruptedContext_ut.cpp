@@ -41,6 +41,9 @@ TEST(AtInterruptedContextTest, RejectsAFrameWithoutContext) {
 }
 
 TEST(AtInterruptedContextTest, RestoredLinkIsExportedOnlyForSignalRestoredContexts) {
+#ifndef __aarch64__
+    GTEST_SKIP() << "x64 has no link register to export";
+#else
     ucontext_t context{};
 #ifdef __APPLE__
     _STRUCT_MCONTEXT64 machine_context{};
@@ -52,15 +55,17 @@ TEST(AtInterruptedContextTest, RestoredLinkIsExportedOnlyForSignalRestoredContex
     WalkPc walk_pc;
     walk_pc.setExactAddress(PC);
     EXPECT_EQ(0u, restoredLink(frame, walk_pc, 0)) << "the sampled context keeps its own LR";
-    EXPECT_EQ(frame.link(), restoredLink(frame, walk_pc, 2));
+    EXPECT_EQ(0x5a6000002000ULL, restoredLink(frame, walk_pc, 2));
     walk_pc.setReturnAddress(PC);
     EXPECT_EQ(0u, restoredLink(frame, walk_pc, 2));
+#endif
 }
 
-TEST(AtInterruptedContextTest, SetLinkWithoutContextIsANoOp) {
-    StackFrame frame(nullptr);
-    frame.setLink(0x5a6000002000ULL);
-    SUCCEED();
+// Malloc hooks snapshot a NULL ucontext; restoring it must not write the link register.
+// A missing guard crashes this test binary rather than failing an assertion.
+TEST(AtInterruptedContextTest, RegisterSnapshotOfNoContextRestoresNothing) {
+    { StackFrame::RegisterSnapshot snapshot(nullptr); }
+    EXPECT_EQ(0u, StackFrame::RegisterSnapshot(nullptr).pc());
 }
 
 TEST(AtInterruptedContextTest, RegisterSnapshotRestoresTheLinkRegister) {

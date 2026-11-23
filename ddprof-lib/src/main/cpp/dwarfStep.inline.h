@@ -22,7 +22,8 @@ inline bool atInterruptedContext(StackFrame& frame, const WalkPc& walk_pc) {
     return !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw());
 }
 
-// The LR a Java walk needs at walk_pc: a signal-restored context's own LR, else 0 (keep the sampled one).
+// The LR a Java walk needs at walk_pc: a signal-restored context's own LR, else 0
+// (keep the sampled one).
 inline uintptr_t restoredLink(StackFrame& frame, const WalkPc& walk_pc, int depth) {
     return depth > 0 && atInterruptedContext(frame, walk_pc) ? frame.link() : 0;
 }

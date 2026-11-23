@@ -40,13 +40,13 @@ class StackFrame {
         }
     }
 
-    // Captures pc/sp/fp and the link register for a later restore() -- the null-safe save/restore
-    // boilerplate needed around code that mutates the real ucontext in place
+    // Captures pc/sp/fp and the link register for a later restore() -- the null-safe
+    // save/restore boilerplate needed around code that mutates the real ucontext in place
     // (e.g. HotspotSupport::getJavaTraceAsync()'s PROBE_SP loop, or
     // unwindStub()/unwindCompiled() writing pc()/sp()/fp() by reference).
     // Capturing is a no-op when ucontext is null (pc()/sp()/fp() themselves
-    // are not null-safe); restore() delegates to StackFrame::restore() above,
-    // which already is.
+    // are not null-safe); restore() delegates to StackFrame::restore() above
+    // and setLink(), which already are.
     //
     // Must be restored via an explicit restore() call on recovery path.
     // Profiler::checkFault()'s siglongjmp bypasses destructors, so RAII alone
