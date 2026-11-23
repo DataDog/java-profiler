@@ -511,6 +511,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
         }
 #endif
+        // A remount samples enterSpecial before thaw while the callers are still frozen;
+        // only its exception exit runs after the continuation's frames are gone.
+        if (sampled_entry && !exception_entry && truncated != nullptr) *truncated = true;
         if (sampled_entry || exception_entry) {
             // Publication/removal of JavaThread::_cont_entry happens inside
             // enterSpecial. At these PCs it can describe the parent, and SP

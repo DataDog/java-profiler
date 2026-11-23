@@ -713,7 +713,7 @@ protected:
         }
         if (leaf_native_prefix) {
             assertCarrier(depth);
-            EXPECT_FALSE(truncated);
+            EXPECT_EQ(tracked_child, truncated); // the tracked child is sampled inside enterSpecial
             return;
         }
         ASSERT_EQ(1, depth);
@@ -732,12 +732,12 @@ protected:
         } else if (test_case == EntryCase::CompiledNonPointerFp) {
             EXPECT_EQ(FrameType::encode(FRAME_JIT_COMPILED, 0), frames[0].bci);
             EXPECT_EQ(JMETHODID_NOT_WALKABLE, frames[0].method_id);
-            EXPECT_FALSE(truncated);
+            EXPECT_TRUE(truncated);
         } else {
             ASSERT_EQ(BCI_NATIVE_FRAME, frames[0].bci)
                     << (frames[0].bci == BCI_ERROR ? (const char*)frames[0].method_id : "unexpected frame type");
             EXPECT_STREQ("continuation_carrier", (const char*)frames[0].method_id);
-            EXPECT_FALSE(truncated);
+            EXPECT_TRUE(truncated); // a sampled enterSpecial PC may precede thaw
         }
     }
 
