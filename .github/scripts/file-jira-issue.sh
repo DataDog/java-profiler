@@ -71,7 +71,7 @@ JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\
 # The inner escaped quotes make Jira phrase-match the whole summary; without
 # them the per-term OR match lets one commit's failure dedupe onto another
 # commit's ticket (the shared fixed words match even though the SHA differs).
-JQL="project = $PROJECT AND summary ~ \\\"$JQL_SUMMARY\\\" AND resolution = Unresolved"
+JQL="project = $PROJECT AND summary ~ \"$JQL_SUMMARY\" AND resolution = Unresolved"
 EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
   -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
   "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
