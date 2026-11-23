@@ -8,10 +8,10 @@
 // jbang executes a single self-contained .java file, so the event classes are
 // nested and take their recorded names from @Name. The fixture registers two
 // of the types probe-event-types.jfrs tracks - jdk.ExecutionSample (2 events)
-// and datadog.ExecutionSample (3 events) - via @Name overrides; the other
-// four tracked types are never defined, so the recording exercises both the
-// present and the absent branch of the probe. Exact counts pin the variable
-// interpolation in the HAS lines.
+// and datadog.ExecutionSample (3 events) - via @Name overrides. Of the other
+// four, the absent custom types (datadog.ObjectSample, datadog.Endpoint)
+// suppress their HAS line, while the absent JDK built-ins resolve through the
+// engine and emit HAS ... 0. Exact counts pin the variable interpolation.
 
 import jdk.jfr.*;
 

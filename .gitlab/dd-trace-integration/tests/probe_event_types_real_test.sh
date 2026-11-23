@@ -80,23 +80,30 @@ done
 pass "absent custom types produce no HAS line"
 
 # JDK built-in types resolve through the engine's schema even when the
-# recording has none of them, so their HAS line is emitted with count 0 --
-# observed on this fixture (observed on JDK 25 recordings; the line-present
-# signal then means resolvable, and the validation thresholds read the count).
+# recording has none of them (observed on JDK 25 recordings): their HAS line
+# is emitted with count 0, so line presence means resolvable and the
+# validation thresholds read the count.
 grep -qF "HAS jdk.ObjectAllocationSample 0" "${WORK}/probe-stdout.log" \
   || fail "expected HAS jdk.ObjectAllocationSample 0 for an absent JDK built-in type"
+grep -qF "HAS jdk.ThreadAllocationStatistics 0" "${WORK}/probe-stdout.log" \
+  || fail "expected HAS jdk.ThreadAllocationStatistics 0 for an absent JDK built-in type"
 pass "absent JDK built-in types report count 0"
 
-HAS_LINES=$(grep -cE '"HAS [^ ]+ [0-9]+"' "${WORK}/probe-stdout.log" || true)
+# The engine wraps each emitted line in double quotes; assertions are
+# quote-agnostic so a jfr-shell quoting change degrades to substring matches
+# instead of failing spuriously.
+HAS_LINES=$(grep -cE '"?HAS [^ ]+ [0-9]+"?' "${WORK}/probe-stdout.log" || true)
 [ "${HAS_LINES}" -eq 4 ] \
   || fail "expected 4 HAS lines with numeric counts, got ${HAS_LINES}"
 pass "every HAS line carries a numeric count"
 
 grep -qF "PROBE_COMPLETE" "${WORK}/probe-stdout.log" \
   || fail "PROBE_COMPLETE missing from the probe output"
-LAST_EMIT=$(grep '^"\?\(HAS \|PROBE_COMPLETE\)' "${WORK}/probe-stdout.log" | tail -1)
-[ "${LAST_EMIT}" = '"PROBE_COMPLETE"' ] \
-  || fail "expected PROBE_COMPLETE as the last script-emitted line, got: ${LAST_EMIT}"
+LAST_EMIT=$(grep -E '^"?(HAS |PROBE_COMPLETE)' "${WORK}/probe-stdout.log" | tail -1)
+case "${LAST_EMIT}" in
+  '"PROBE_COMPLETE"' | 'PROBE_COMPLETE') ;;
+  *) fail "expected PROBE_COMPLETE as the last script-emitted line, got: ${LAST_EMIT}" ;;
+esac
 pass "PROBE_COMPLETE is emitted last, after the failed queries"
 
 # Same grep as has_event_type in validate-jfr-conformance.sh: the flags it
