@@ -550,6 +550,7 @@ TEST_F(LookupResolveMethodJavaFrameTest, InvalidJmethodIdCountsInvalidId) {
 
 TEST_F(LookupResolveMethodJavaFrameTest, J9UnloadedLoaderClassCountsInvalidId) {
     VMTestAccessor::setOpenJ9(true);
+    VMTestAccessor::setHotspot(false);
     ScopedFakeJvmAndJni fake;
     fake.counters.override_declaring_class = true;
     fake.counters.declaring_class = reinterpret_cast<jclass>(-1);
@@ -670,6 +671,7 @@ TEST_F(LookupResolveMethodJavaFrameTest, UnreadableNamePointerIsSkippedAndNotDea
 
 TEST_F(LookupResolveMethodJavaFrameTest, J9OrdinaryClassResolves) {
     VMTestAccessor::setOpenJ9(true);
+    VMTestAccessor::setHotspot(false);
     ScopedFakeJvmAndJni fake;
     VMTestAccessor::setJvmti(fake.jvmti());
     MethodMap method_map;
@@ -686,8 +688,8 @@ TEST_F(LookupResolveMethodJavaFrameTest, J9OrdinaryClassResolves) {
     EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
 }
 
-// Every string is probed even after one fails, so no unreadable pointer
-// reaches Deallocate().
+// A failed probe does not skip the probes after it, so a later unreadable
+// pointer is also kept from Deallocate().
 TEST_F(LookupResolveMethodJavaFrameTest, EveryUnreadableStringIsKeptFromDeallocate) {
     GuardedPage region;
     ASSERT_TRUE(region.ok());
@@ -726,6 +728,22 @@ TEST_F(LookupResolveMethodJavaFrameTest, LongestLegalClassSignatureResolves) {
     ASSERT_NE(nullptr, mi);
     EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
     EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
+}
+
+// One byte past the longest legal class signature: no NUL within the bound.
+TEST_F(LookupResolveMethodJavaFrameTest, ClassSignaturePastTheBoundCountsUnreadableName) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.class_signature = "L" + std::string(65536, 'a') + ";";
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
 }
 
 // ---------------------------------------------------------------------------
