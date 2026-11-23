@@ -6,6 +6,7 @@
 package com.datadoghq.profiler.settings;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
@@ -137,9 +138,14 @@ public class J9AsgctDeadlockRiskTest extends AbstractProcessProfilerTest {
       assertEquals(gatedFallback, containsLine(stderr, GATED_WARNING), "gated-fallback warning");
     }
 
-    /** TEST_LOG emits the J9[choice] and J9[props] lines only in -DDEBUG builds on J9. */
+    /** TEST_LOG emits the J9[choice] and J9[props] lines in -DDEBUG builds, and only on J9. */
     void assertJ9Lines(String cpu, String wall) {
-      if (!Platform.isJ9() || !NativeBuildConfig.isDebugInstrumented()) {
+      if (!NativeBuildConfig.isDebugInstrumented()) {
+        return;
+      }
+      if (!Platform.isJ9()) {
+        assertFalse(containsLine(stdout, "J9[choice]"), "J9[choice] logged off J9: " + stdout);
+        assertFalse(containsLine(stdout, "J9[props]"), "J9[props] logged off J9: " + stdout);
         return;
       }
       assertTrue(

@@ -1711,26 +1711,11 @@ void Profiler::reportJ9SamplerRisks(J9SamplerChoice cpu, J9SamplerChoice wall) {
   }
   TEST_LOG("J9[choice] cpu=%s wall=%s", J9Support::choiceName(cpu),
            J9Support::choiceName(wall));
-  J9VersionProps props = J9Support::readVersionProps();
+  J9VersionProps props = J9Support::readVersionProps(VM::jvmti(), VM::jni());
   TEST_LOG("J9[props] vm=%s runtime=%s", props.vm_version.c_str(),
            props.runtime_version.c_str());
-  J9SamplerRisk risk = J9Support::assessSamplers(
-      cpu, wall,
-      J9Support::isAsgctDeadlockProneVersion(props.vm_version.c_str(),
-                                             props.runtime_version.c_str()));
-  if (risk.deadlock_risk) {
-    LOG_WARN("J9 AsyncGetCallTrace can deadlock the JVM on this build "
-             "(java.vm.version=%s, java.runtime.version=%s). Upgrade to OpenJ9 "
-             "0.61+ (IBM SDK 8.0.8.75+) or set -Ddd.profiling.ddprof.j9.sampler=jvmti",
-             props.vm_version.empty() ? "unknown" : props.vm_version.c_str(),
-             props.runtime_version.empty() ? "unknown"
-                                           : props.runtime_version.c_str());
-  }
-  if (risk.gated_fallback) {
-    LOG_WARN("AsyncGetCallTrace is enabled only on OpenJ9 8u451+, 11.0.27+, "
-             "17.0.15+ and 21.0.7+; using the JVMTI sampler");
-  }
-  _j9_asgct_deadlock_risk = risk.deadlock_risk;
+  _j9_asgct_deadlock_risk =
+      J9Support::reportSamplerRisks(cpu, wall, props).deadlock_risk;
 }
 
 Engine *Profiler::selectAllocEngine(Arguments &args) {

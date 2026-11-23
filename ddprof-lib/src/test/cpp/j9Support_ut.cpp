@@ -97,3 +97,51 @@ TEST(J9AssessSamplers, choiceNamesAreDistinct) {
                J9Support::choiceName(J9SamplerChoice::JVMTI_REQUESTED));
   EXPECT_STREQ("jvmti_gated", J9Support::choiceName(J9SamplerChoice::JVMTI_GATED));
 }
+
+TEST(J9ReportSamplerRisks, warnsAboutDeadlockOnlyWhenAsgctMeetsAProneBuild) {
+  J9VersionProps prone = {"17.0.20+8-openj9-0.60.0", "17.0.20+8"};
+  testing::internal::CaptureStderr();
+  J9SamplerRisk risk = J9Support::reportSamplerRisks(
+      J9SamplerChoice::ASGCT, J9SamplerChoice::JVMTI_REQUESTED, prone);
+  std::string err = testing::internal::GetCapturedStderr();
+  EXPECT_TRUE(risk.deadlock_risk);
+  EXPECT_NE(std::string::npos, err.find("AsyncGetCallTrace can deadlock")) << err;
+  EXPECT_NE(std::string::npos,
+            err.find("java.vm.version=17.0.20+8-openj9-0.60.0")) << err;
+  EXPECT_EQ(std::string::npos, err.find("using the JVMTI sampler")) << err;
+
+  testing::internal::CaptureStderr();
+  risk = J9Support::reportSamplerRisks(J9SamplerChoice::JVMTI_REQUESTED,
+                                       J9SamplerChoice::JVMTI_REQUESTED, prone);
+  err = testing::internal::GetCapturedStderr();
+  EXPECT_FALSE(risk.deadlock_risk);
+  EXPECT_TRUE(err.empty()) << err;
+}
+
+TEST(J9ReportSamplerRisks, namesUnreadPropertiesUnknown) {
+  J9VersionProps ibm = {"", "pxa6480sr8fp70-20260702_01 (SR8 FP70)"};
+  testing::internal::CaptureStderr();
+  EXPECT_TRUE(J9Support::reportSamplerRisks(J9SamplerChoice::ASGCT,
+                                            J9SamplerChoice::NONE, ibm)
+                  .deadlock_risk);
+  std::string err = testing::internal::GetCapturedStderr();
+  EXPECT_NE(std::string::npos, err.find("java.vm.version=unknown")) << err;
+}
+
+TEST(J9ReportSamplerRisks, warnsAboutTheVersionGateOnly) {
+  J9VersionProps fixed = {"17.0.21+1-openj9-0.63.0", "17.0.21+1"};
+  testing::internal::CaptureStderr();
+  J9SamplerRisk risk = J9Support::reportSamplerRisks(
+      J9SamplerChoice::JVMTI_GATED, J9SamplerChoice::ASGCT, fixed);
+  std::string err = testing::internal::GetCapturedStderr();
+  EXPECT_FALSE(risk.deadlock_risk);
+  EXPECT_TRUE(risk.gated_fallback);
+  EXPECT_NE(std::string::npos, err.find("using the JVMTI sampler")) << err;
+  EXPECT_EQ(std::string::npos, err.find("can deadlock")) << err;
+}
+
+TEST(J9ReadVersionProps, nullEnvironmentsYieldEmptyValues) {
+  J9VersionProps props = J9Support::readVersionProps(nullptr, nullptr);
+  EXPECT_TRUE(props.vm_version.empty());
+  EXPECT_TRUE(props.runtime_version.empty());
+}

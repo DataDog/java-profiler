@@ -156,13 +156,20 @@ public:
                                           const char *runtime_version);
 
   // java.runtime.version is read through JNI because OpenJ9's JVMTI only sees
-  // VM-defined properties and Java code sets that one. Needs an attached thread.
-  static J9VersionProps readVersionProps();
+  // VM-defined properties and Java code sets that one. jni must be the calling
+  // thread's env; a null env leaves its property empty.
+  static J9VersionProps readVersionProps(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static J9SamplerRisk assessSamplers(J9SamplerChoice cpu, J9SamplerChoice wall,
                                       bool deadlock_prone);
 
   static const char *choiceName(J9SamplerChoice choice);
+
+  // Assesses the samplers start() selected, prints a stderr warning for each
+  // risk found and returns the assessment.
+  static J9SamplerRisk reportSamplerRisks(J9SamplerChoice cpu,
+                                          J9SamplerChoice wall,
+                                          const J9VersionProps &props);
 
   static JNIEnv *GetJ9vmThread(jthread thread) {
     JNIEnv *result;

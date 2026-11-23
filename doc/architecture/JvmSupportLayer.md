@@ -257,8 +257,8 @@ Caveats:
   An explicit CPU event (`event=itimer`, `ctimer` or a perf event) skips these
   checks and uses ASGCT.
 - **J9 sampler warnings.** Each selection function reports why it chose, as a
-  `J9SamplerChoice`. `Profiler::start()` passes both choices to
-  `J9Support::assessSamplers()` before `_jfr.start()`, and prints a
+  `J9SamplerChoice`. Before `_jfr.start()`, `Profiler::start()` passes both
+  choices to `J9Support::reportSamplerRisks()`, which prints a
   `[ddprof] [WARN]` line to stderr in two cases:
   - ASGCT is in use and `J9Support::isAsgctDeadlockProneVersion()` is true. On
     OpenJ9 0.60 and IBM SDK 8 SR8 FP70 to FP74, ASGCT can take a JIT monitor
