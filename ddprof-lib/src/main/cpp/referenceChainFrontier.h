@@ -27,6 +27,17 @@ constexpr u8 EDGE = 2;
 constexpr u8 ABANDONED = 3; // tag released; entry kept only to avoid reuse
 } // namespace FrontierEntryState
 
+namespace FrontierAnchorRotation {
+constexpr u8 FIRST_LOOK_PENDING = 1;
+constexpr u8 FIRST_LOOK_SERVED = 2;
+} // namespace FrontierAnchorRotation
+
+namespace FrontierRootReport {
+constexpr u8 STATIC_FIELD_MASK = 1u << 0;
+constexpr u8 JNI_GLOBAL_MASK = 1u << 1;
+constexpr u32 STATIC_SWEEP_ATTEMPT_BIT = 1u << 31;
+} // namespace FrontierRootReport
+
 // Search outcome; per-pass truncation does not imply abandonment.
 namespace SearchState {
 constexpr u8 RUNNING = 0;   // at least one more pass may still make progress
@@ -61,8 +72,8 @@ typedef struct FrontierEntry {
   // LivenessTracker::leakTagIncarnation(leak_tag) captured when leak_tag was bound to this entry
   // (setLeakTag()): the ownership period of the tag this entry's object held. A leak tag is
   // recycled after its object dies, so (leak_tag, leak_tag_incarnation) - not leak_tag alone -
-  // identifies the object. 0 while leak_tag == 0. Sits in the padding after `state`, so
-  // sizeof(FrontierEntry) is unchanged (static_assert below).
+  // identifies the object. 0 while leak_tag == 0. It uses padding after `state`; report and
+  // rotation flags use padding after `root_kind` and `edge_kind`, preserving the 64-byte entry.
   u32 leak_tag_incarnation;
   // The leak tag assigned by LivenessTracker to this specific tracked object, copied from the JVMTI
   // tag at admission time.
@@ -73,6 +84,8 @@ typedef struct FrontierEntry {
   // reconstructChain()'s callers want to report (they want to label the chain's root, not every
   // hop).
   u8 root_kind;
+  // Last accepted root-report attempt and its kinds; attempt ids distinguish traversal sources.
+  u32 root_report_attempt;
   // Raw JVMTI class tag of THIS entry's own object, from the shared, process-wide allocator
   // (classTagAllocator.h) - NOT referrer_klass above (a classMap dictionary id, which can differ
   // for the same class at different times if that dictionary gets compacted/regenerated - see
@@ -90,15 +103,16 @@ typedef struct FrontierEntry {
   // jvmtiHeapReferenceKind of the admitting edge for an INTERIOR hop (an entry with parent_tag != 0
   // - "this object was reached from its parent via this kind of edge").
   u8 edge_kind;
+  u8 root_report_kind_mask; // STATIC_FIELD and JNI_GLOBAL reports accepted in the stamped attempt
+  u8 anchor_rotation_flags; // fresh-queue pending and first-look-served bits
 
-  // Referrer's class tag when the referrer is a CLASS OBJECT rather than a frontier entry (a
-  // root-attached static-field admission - the referrer is the declaring class, parent_tag == 0 so
-  // there is no parent entry to read a class from).
+  // Declaring-class tag for root-attached static fields; chain entries reuse it for static retries.
+  // reconstructChain reads this value only when parent_tag is zero.
   jlong referrer_class_tag;
 } FrontierEntry;
 
 static_assert(sizeof(FrontierEntry) == 64,
-              "FrontierEntry::leak_tag_incarnation must stay in the padding after `state`");
+              "frontier stamps must stay within existing FrontierEntry padding");
 
 // Per-hop retention-edge identity collected by reconstructChain() alongside the class chain:
 // everything needed at emission to label HOW chain[i] is retained (the field of chain[i+1] pointing
@@ -206,6 +220,23 @@ public:
 
   // Updates only the recorded root kind.
   void updateRootKind(jlong tag, u8 root_kind);
+
+  // Records an accepted durable-root report in a root or static-sweep attempt.
+  void markRootReportObserved(jlong tag, u8 root_kind, u32 attempt_id,
+                              bool static_sweep = false);
+  // Checks current/prior-incomplete attempt stamps or index membership for a durable-root report.
+  bool rootReportCompleted(jlong tag, u8 root_kind, bool anchor_indexed,
+                           u32 attempt_id, u32 previous_attempt_id,
+                           bool retrying_incomplete,
+                           bool *weaker_root_noop = nullptr,
+                           bool static_sweep = false,
+                           u32 retry_base_id = 0);
+
+  // Fresh-turn flags share FrontierEntry's existing padding.
+  // Pending turns survive index eviction; served turns do not regain fresh-lane priority.
+  bool tryMarkAnchorRotationPending(jlong tag);
+  void markAnchorRotationServed(const jlong *tags, size_t count);
+  void clearAnchorRotationPending(const jlong *tags, size_t count);
 
   // Set the leak tag on a frontier entry (the JVMTI tag assigned by LivenessTracker to this
   // specific tracked leaking object) together with that tag's ownership-period stamp

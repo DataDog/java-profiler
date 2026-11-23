@@ -238,6 +238,12 @@ void ReferenceChainTracker::autoTuneDefaults(Arguments &args) {
 }
 
 Error ReferenceChainTracker::start(Arguments &args) {
+  // An unjoined BFS thread may still hold an observation scope; resetting under it would replay
+  // observations against reused tags.
+  // Gated regardless of the requested option so no start path touches state a live worker owns.
+  if (!_thread_joined) {
+    return Error("previous reference chain BFS thread was not joined");
+  }
   storeRelease(_enabled, args._reference_chains);
 
   if (!args._reference_chains) {
@@ -264,6 +270,8 @@ Error ReferenceChainTracker::start(Arguments &args) {
     _thread_objects_open = true;
   }
   _urgency_budget_boosted = false;
+  // The BFS thread is joined (checked on entry) and startThread() runs later, so no scope is live.
+  _anchor_observations.reset();
 
   // Auto-tune defaults that the operator did not set explicitly, based on max heap size and
   // available processors.
@@ -379,6 +387,11 @@ void ReferenceChainTracker::stop() {
   if (!enabled()) {
     return;
   }
+  if (!_thread_joined) {
+    // Reset only after a confirmed join; a straggler could still hold a scope.
+    Log::warn("Reference chain BFS thread not joined; recording-boundary reset skipped");
+    return;
+  }
   Log::info("Reference chain tracking stopped");
 
   // Recording-boundary search teardown: stopThread() has already joined the BFS thread, so no
@@ -441,6 +454,8 @@ void ReferenceChainTracker::stop() {
     ExclusiveLockGuard guard(&_pending_abandoned_events_lock);
     _pending_abandoned_events.clear();
   }
+  // The BFS thread is joined (checked on entry), so no scope is live; the epoch bump keeps any stale token from replaying against the reused tags.
+  _anchor_observations.reset();
 
   // Do not disable GC notifications here - LivenessTracker follows the same rule: the JVMTI env
   // and its tracker singletons outlive start/stop recording cycles, even though LivenessTracker
@@ -449,6 +464,10 @@ void ReferenceChainTracker::stop() {
 
 void ReferenceChainTracker::startThread() {
   if (!enabled() || _running.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (!_thread_joined) {
+    Log::warn("Previous ReferenceChains BFS thread was not joined; not starting a new one");
     return;
   }
   // Reset from any previous stopThread() call - a dynamic-attach profiler can go through multiple
@@ -466,27 +485,35 @@ void ReferenceChainTracker::startThread() {
     return;
   }
   _thread = thread;
+  _thread_joined = false;
 }
 
-void ReferenceChainTracker::stopThread() {
-  if (!_running.load(std::memory_order_acquire)) {
-    return;
+bool ReferenceChainTracker::stopThread() {
+  if (_thread_joined) {
+    return true;
   }
+  // A retry after a failed join finds _running already false but the thread still unjoined.
+  bool was_running = _running.load(std::memory_order_acquire);
   _running.store(false, std::memory_order_release);
-  // Ask any in-flight JVMTI FollowReferences walk (heapReferenceCallback()) to abort at its next
-  // callback invocation - set before pthread_kill() below, since that signal alone cannot interrupt
-  // a call already inside the JVM/JVMTI implementation.
-  _abort_pass_requested.store(true, std::memory_order_relaxed);
-  // Same wake-then-join shape as BaseWallClock::stop() (wallClock.cpp:324-333):
-  // pthread_kill(WAKEUP_SIGNAL) interrupts threadLoop()'s OS::sleep() early (WAKEUP_SIGNAL/SIGIO is
-  // installed with a no-op handler unconditionally in vmEntry.cpp, so this signal never terminates
-  // the thread) so it re-checks _running and exits promptly rather than waiting out the rest of the
-  // current sleep interval.
-  pthread_kill(_thread, WAKEUP_SIGNAL);
-  int res = pthread_join(_thread, NULL);
+  if (was_running) {
+    // Set before pthread_kill(): the signal alone cannot interrupt a call already inside JVMTI.
+    _abort_pass_requested.store(true, std::memory_order_relaxed);
+    // WAKEUP_SIGNAL has a no-op handler (vmEntry.cpp); it cuts threadLoop()'s sleep short.
+    pthread_kill(_thread, WAKEUP_SIGNAL);
+  }
+  int res;
+#ifdef DEBUG
+  res = _join_thread_for_test != nullptr ? _join_thread_for_test(_thread, NULL)
+                                         : pthread_join(_thread, NULL);
+#else
+  res = pthread_join(_thread, NULL);
+#endif
   if (res != 0) {
     Log::warn("Unable to join ReferenceChains BFS thread on stop %d", res);
+    return false;
   }
+  _thread_joined = true;
+  return true;
 }
 
 // threadLoop()'s per-iteration OOM ramp: pause target, cadence and the urgency budget
@@ -1071,6 +1098,8 @@ void ReferenceChainTracker::restartSearch() {
     _frontier->resetForRestart();
   }
   clearPendingChainInvalidations();
+  // Runs under _engine_lock on the BFS thread between passes, so every pass scope has flushed.
+  _anchor_observations.reset();
   _next_tag = 1;
   // Hop-edge label cache: keyed by raw class tags, which survive a restart (the shared class-tag
   // allocator is deliberately not reset - see this method's own declaration comment) - but the
@@ -1091,7 +1120,18 @@ void ReferenceChainTracker::restartSearch() {
   _static_anchor_fifo_set.clear();
   _static_anchor_fifo_klass_counts.clear();
   _static_anchor_index.clear();
+  _static_anchor_own_class_tags.clear();
+  _static_anchor_index_tags.clear();
   _static_anchor_index_class_tags.clear();
+  _local_anchor_tags.clear();
+  _pending_local_anchors.clear();
+  _pending_local_anchor_tags.clear();
+  _local_compact_backoff = 0;
+  _pending_local_evict_cursor = 0;
+  _pending_local_evictable_count = 0;
+  _durable_anchor_resweep_gen = 0;
+  _static_field_sweep_lap_request_gen = 0;
+  _static_field_sweep_served_gen = 0;
   _anchor_container_cursor = 0;
   _anchor_other_cursor = 0;
   // Fresh lane: nothing admits before the search does, so nothing can have a pending first look
@@ -1110,6 +1150,11 @@ void ReferenceChainTracker::restartSearch() {
   _leak_tags_assigned = 0;
   _leak_tags_resolved = 0;
   _root_enum_incomplete = false;
+  _last_root_enum_attempt_id = 0;
+  _root_enum_retry_base_attempt_id = 0;
+  _root_report_attempt_sequence = 0;
+  _static_field_retry_chunk_start = -1;
+  _static_field_retry_attempt_id = 0;
   _consecutive_enum_errors = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
@@ -1131,7 +1176,9 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   // flight on that thread can observe this reset only partially, or overwrite it right back (e.g.
   // finish a pass that was already headed for SearchState::ABANDONED after this method has just
   // forced SearchState::RUNNING below), a race found in practice, not just in theory.
-  stopThread();
+  if (!stopThread()) {
+    return;  // a live BFS thread may still reach the state below
+  }
 
   // Clear every live tag this search still holds before resetting - the same ordering
   // restartSearch() itself requires (its own assert), so a stale tag from whatever search a
@@ -1163,6 +1210,8 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
     // resetForRestart() since it never needs to change the cap mid-JVM.
     _frontier->resetCapacityForTest(_configured_frontier_cap);
   }
+  // stopThread() above joined the BFS thread, so no scope holds the journal.
+  _anchor_observations.reset();
   _next_tag = 1;
 
   _search_started = false;
@@ -1176,7 +1225,18 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _static_anchor_fifo_set.clear();
   _static_anchor_fifo_klass_counts.clear();
   _static_anchor_index.clear();
+  _static_anchor_own_class_tags.clear();
+  _static_anchor_index_tags.clear();
   _static_anchor_index_class_tags.clear();
+  _local_anchor_tags.clear();
+  _pending_local_anchors.clear();
+  _pending_local_anchor_tags.clear();
+  _local_compact_backoff = 0;
+  _pending_local_evict_cursor = 0;
+  _pending_local_evictable_count = 0;
+  _durable_anchor_resweep_gen = 0;
+  _static_field_sweep_lap_request_gen = 0;
+  _static_field_sweep_served_gen = 0;
   _anchor_container_cursor = 0;
   _anchor_other_cursor = 0;
   _static_anchor_fresh_queue.clear();
@@ -1219,6 +1279,11 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _last_root_enum_ns = 0;
   _last_root_enum_safepoint_ms = 0;
   _root_enum_incomplete = false;
+  _last_root_enum_attempt_id = 0;
+  _root_enum_retry_base_attempt_id = 0;
+  _root_report_attempt_sequence = 0;
+  _static_field_retry_chunk_start = -1;
+  _static_field_retry_attempt_id = 0;
   _consecutive_enum_errors = 0;
   _static_field_sweep_cycle_truncated = false;
   _candidate_count = 0;
