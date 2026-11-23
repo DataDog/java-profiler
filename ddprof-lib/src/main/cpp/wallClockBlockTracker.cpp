@@ -337,6 +337,22 @@ size_t WallClockBlockTracker::copyUnownedWeightSegments(ThreadFilter::SlotID slo
     return count;
 }
 
+WallClockBlockTracker::PendingUnownedWeight WallClockBlockTracker::pendingUnownedWeightForTest(
+        const ThreadFilter& registry, int tid) const {
+    PendingUnownedWeight result;
+    ThreadFilter::SlotID slot_id = -1;
+    if (registry.lookupByTid(tid, registry.recordingEpoch(), &slot_id) == nullptr) return result;
+    auto* block = slotForId(slot_id);
+    if (block == nullptr) return result;
+    result.total = block->unowned_blocked_pending_weight.load(std::memory_order_acquire);
+    WeightSegment segments[kMaxWeightSegments];
+    size_t count = copyUnownedWeightSegments(slot_id, segments);
+    for (size_t i = 0; i < count; ++i) {
+        result.max_segment = std::max(result.max_segment, segments[i].weight);
+    }
+    return result;
+}
+
 bool WallClockBlockTracker::unownedWeightMatchesEpoch(ThreadFilter::SlotID slot_id,
                                                      u64 epoch_start) const {
     WeightSegment segments[kMaxWeightSegments];
