@@ -131,12 +131,13 @@ public:
 class MethodInfo {
 public:
   MethodInfo()
-      : _mark(false), _is_entry(false), _referenced(false), _age(0), _key(0), _class(0),
+      : _mark(false), _is_entry(false), _referenced(false), _unloaded(false), _age(0), _key(0), _class(0),
         _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr), _type() {}
 
   bool _mark;
   bool _is_entry;
   bool _referenced;  // Tracked during writeStackTraces() for cleanup
+  bool _unloaded;    // Last fill wrote the "<unloaded>" sentinel
   int _age;          // Consecutive chunks without reference (0 = recently used)
   u32 _key;
   u32 _class;
@@ -649,6 +650,10 @@ public:
         _symbols() {}
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
+  // Counts one written stack frame that resolved to mi, if it is the
+  // "<unloaded>" sentinel or the shared unknown row. Per frame, not weighted
+  // by samples; writeStackTraces() calls it once per frame of each trace.
+  void countUnresolvedFrame(const MethodInfo *mi) const;
   u32 getPackage(const char *class_name);
   u32 getSymbol(const char *name);
 };

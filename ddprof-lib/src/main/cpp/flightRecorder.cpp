@@ -393,6 +393,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       mi->_name = _symbols.lookup("<unloaded>");
       mi->_sig = _symbols.lookupSignature("()L;");
+      mi->_unloaded = true;
     }
 
     mi->_type = FRAME_INTERPRETED;
@@ -663,6 +664,14 @@ MethodInfo *Lookup::unknownMethod() {
   return &_unknown_method;
 }
 
+void Lookup::countUnresolvedFrame(const MethodInfo *mi) const {
+  if (mi == &_unknown_method) {
+    Counters::increment(METHOD_RESOLVE_FRAMES_UNKNOWN);
+  } else if (mi->_unloaded) {
+    Counters::increment(METHOD_RESOLVE_FRAMES_UNLOADED);
+  }
+}
+
 unsigned long Lookup::methodKey(const ASGCT_CallFrame &frame,
                                 jmethodID method_id, jint bci,
                                 u32 vtable_class_id) {
@@ -769,6 +778,7 @@ MethodInfo *Lookup::fillRawMethod(const ASGCT_CallFrame &frame) {
   // checked it again. The fill reads only `resolved`, never VM metadata, so
   // unlike fillMethod() it needs no landing pad.
   MethodInfo *mi = &(*_method_map)[MethodMap::makeRawKey(key.method, key.tag)];
+  mi->_unloaded = false;
   fillJavaMethodInfo(mi, resolved);
   if (mi->_key == 0) {
     mi->_key = _method_map->allocId();  // see fillMethod() on why not size()+1
@@ -833,6 +843,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   if (!mi->_mark) {
     bool first_time = mi->_key == 0;
     bool filled = true;
+    mi->_unloaded = false;
     if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method_id, nullptr, state);
     } else if (bci == BCI_NATIVE_FRAME) {
@@ -1972,6 +1983,7 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
       for (int i = 0; i < trace->num_frames; i++) {
         MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
         mi->_referenced = true;  // Mark method as referenced
+        lookup->countUnresolvedFrame(mi);
         buf->putVar64(mi->_key);
         jint bci = trace->frames[i].bci;
         if (mi->_type < FRAME_NATIVE) {

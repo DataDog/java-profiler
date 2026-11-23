@@ -657,4 +657,98 @@ TEST_F(LookupResolveMethodJavaFrameTest, UnreadableNamePointerIsSkippedAndNotDea
     EXPECT_EQ(2, fake.counters.deallocate);
 }
 
+// ---------------------------------------------------------------------------
+// countUnresolvedFrame(): one count per written frame of an "<unloaded>" row
+// or the shared unknown row, none for a resolved row.
+// ---------------------------------------------------------------------------
+
+struct FrameCounters {
+    long long unloaded = Counters::getCounter(METHOD_RESOLVE_FRAMES_UNLOADED);
+    long long unknown = Counters::getCounter(METHOD_RESOLVE_FRAMES_UNKNOWN);
+};
+
+TEST_F(LookupResolveMethodJavaFrameTest, UnloadedRowIsCountedOncePerFrame) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    jmethodID method = reinterpret_cast<jmethodID>(&fake_method_storage);
+    FrameCounters before;
+
+    // Two traces that share one unresolved method: one row, two frames.
+    MethodInfo* first = resolveJavaFrame(lookup, method);
+    lookup.countUnresolvedFrame(first);
+    MethodInfo* second = resolveJavaFrame(lookup, method);
+    lookup.countUnresolvedFrame(second);
+
+    ASSERT_EQ(first, second);
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded + 2, after.unloaded);
+    EXPECT_EQ(before.unknown, after.unknown);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, UnknownRowIsCountedAsUnknown) {
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    FrameCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, nullptr);
+    lookup.countUnresolvedFrame(mi);
+
+    ASSERT_EQ(&lookup._unknown_method, mi);
+    FrameCounters after;
+    EXPECT_EQ(before.unknown + 1, after.unknown);
+    EXPECT_EQ(before.unloaded, after.unloaded);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, ResolvedRowIsNotCounted) {
+    ScopedFakeJvmAndJni fake;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    FrameCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+    lookup.countUnresolvedFrame(mi);
+
+    ASSERT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded, after.unloaded);
+    EXPECT_EQ(before.unknown, after.unknown);
+}
+
+// A row is re-filled in each chunk; one that resolves in a later chunk must
+// no longer count as "<unloaded>".
+TEST_F(LookupResolveMethodJavaFrameTest, SuccessfulRefillClearsUnloaded) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    jmethodID method = reinterpret_cast<jmethodID>(&fake_method_storage);
+
+    MethodInfo* mi = resolveJavaFrame(lookup, method);
+    ASSERT_TRUE(mi->_unloaded);
+
+    // Next chunk: writeMethods() cleared _mark, and the method now resolves.
+    mi->_mark = false;
+    fake.counters.declaring_class_error = JVMTI_ERROR_NONE;
+    FrameCounters before;
+    MethodInfo* again = resolveJavaFrame(lookup, method);
+    lookup.countUnresolvedFrame(again);
+
+    ASSERT_EQ(mi, again);
+    EXPECT_FALSE(again->_unloaded);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), again->_name);
+    EXPECT_EQ(before.unloaded, Counters::getCounter(METHOD_RESOLVE_FRAMES_UNLOADED));
+}
+
 } // namespace
