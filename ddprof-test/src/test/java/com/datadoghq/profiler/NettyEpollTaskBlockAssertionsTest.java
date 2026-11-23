@@ -21,6 +21,8 @@ import org.junit.jupiter.api.Test;
 public class NettyEpollTaskBlockAssertionsTest {
   private static final String WORKER = "netty-timed-worker";
   private static final String TIMED_WORKER = "netty-timed-worker-timed";
+  private static final String SURVIVOR = "netty-timed-worker-survivor";
+  private static final String NEW_OWNER = "netty-timed-worker-new";
 
   /** Ordinary Native.epollWait frames remain valid only for the default-loop oracle. */
   @Test
@@ -185,6 +187,49 @@ public class NettyEpollTaskBlockAssertionsTest {
                 NettyEpollTaskBlockTest.assertBothEpollWorkers(
                     events, WORKER, TIMED_WORKER, "io.netty.", 1));
     assertTrue(failure.getMessage().contains("record_failed=1"), failure.getMessage());
+  }
+
+  /** A rejected new-owner TaskBlock is excused only by a record_failed increment. */
+  @Test
+  public void restartedNewOwnerShortfallNeedsRejectionCredit() {
+    List<JfrEvent> events = restartedWindow(0, 0);
+    assertRestarted(events, 0, 1);
+    AssertionError failure =
+        assertThrows(AssertionError.class, () -> assertRestarted(events, 0, 0));
+    assertTrue(failure.getMessage().contains(NEW_OWNER), failure.getMessage());
+    assertRestarted(restartedWindow(0, 1), 0, 0);
+  }
+
+  /** The survivor and new owner share the window's budget with the loop and timed workers. */
+  @Test
+  public void restartedWindowSharesOneRejectionBudget() {
+    List<JfrEvent> events = restartedWindow(0, 0);
+    events.remove(0);
+    assertRestarted(events, 1, 3);
+    assertThrows(AssertionError.class, () -> assertRestarted(events, 0, 1));
+    assertThrows(AssertionError.class, () -> assertRestarted(restartedWindow(0, 0), 1, 1));
+    assertRestarted(restartedWindow(1, 1), 1, 0);
+  }
+
+  /** Rejection credit never excuses an extra survivor or new-owner TaskBlock. */
+  @Test
+  public void restartedWindowRejectsExcessOwnerEvents() {
+    assertThrows(AssertionError.class, () -> assertRestarted(restartedWindow(1, 1), 0, 5));
+    assertThrows(AssertionError.class, () -> assertRestarted(restartedWindow(2, 1), 1, 5));
+    assertThrows(AssertionError.class, () -> assertRestarted(restartedWindow(0, 2), 0, 5));
+  }
+
+  private static void assertRestarted(List<JfrEvent> events, int survivorExpected, long failures) {
+    NettyEpollTaskBlockTest.assertRestartedEpollWorkers(
+        events, WORKER, TIMED_WORKER, SURVIVOR, survivorExpected, NEW_OWNER, "io.netty.", failures);
+  }
+
+  private static List<JfrEvent> restartedWindow(int survivorEvents, int newOwnerEvents) {
+    List<JfrEvent> events = waits("io.netty.", false, 5);
+    events.addAll(waits(TIMED_WORKER, "io.netty.", true, 5));
+    events.addAll(waits(SURVIVOR, "io.netty.", false, survivorEvents));
+    events.addAll(waits(NEW_OWNER, "io.netty.", false, newOwnerEvents));
+    return events;
   }
 
   /** A same-thread event that lost its epoll frames is named in the shortfall message. */

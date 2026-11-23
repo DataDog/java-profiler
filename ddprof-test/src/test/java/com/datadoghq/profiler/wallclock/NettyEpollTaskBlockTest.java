@@ -211,13 +211,16 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       JfrEvents newEvents = verifyEvents(second, "datadog.TaskBlock", false);
       assertBothEpollWorkers(
           oldEvents, name, name + "-timed-first", "io.netty.", firstRecordFailures);
-      assertBothEpollWorkers(
-          newEvents, name, name + "-timed-second", "io.netty.", secondRecordFailures);
-      assertEquals(0, TaskBlockAssertions.countEventsForThread(oldEvents, name + "-survivor"));
-      assertEquals(
+      assertRestartedEpollWorkers(
+          newEvents,
+          name,
+          name + "-timed-second",
+          name + "-survivor",
           interruptSurvivor ? 1 : 0,
-          TaskBlockAssertions.countEventsForThread(newEvents, name + "-survivor"));
-      assertEquals(1, TaskBlockAssertions.countEventsForThread(newEvents, name + "-new"));
+          name + "-new",
+          "io.netty.",
+          secondRecordFailures);
+      assertEquals(0, TaskBlockAssertions.countEventsForThread(oldEvents, name + "-survivor"));
       if (interruptSurvivor) {
         JfrEvents recordingInfo = verifyEvents(second, "jdk.ActiveRecording", false);
         assertEquals(1, recordingInfo.count());
@@ -390,6 +393,40 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
         recordFailures,
         epollIntervals(events, loopName, packagePrefix, false),
         epollIntervals(events, timedName, packagePrefix, true));
+  }
+
+  /**
+   * Checks the restarted window: the controlled survivor and new owner join the loop and timed
+   * workers on one rejection delta, since every TaskBlock in the window can fail to record.
+   */
+  public static void assertRestartedEpollWorkers(
+      Iterable<JfrEvent> events,
+      String loopName,
+      String timedName,
+      String survivorName,
+      int survivorExpected,
+      String newOwnerName,
+      String packagePrefix,
+      long recordFailures) {
+    int survivor = 0;
+    int newOwner = 0;
+    for (JfrEvent event : events) {
+      String thread = event.getThreadName("eventThread");
+      if (survivorName.equals(thread)) survivor++;
+      if (newOwnerName.equals(thread)) newOwner++;
+    }
+    assertTrue(survivor <= survivorExpected, "excess TaskBlocks on " + survivorName);
+    assertTrue(newOwner <= 1, "excess TaskBlocks on " + newOwnerName);
+    TaskBlockRecorderTestSupport.assertCompletedIntervals(
+        recordFailures,
+        epollIntervals(events, loopName, packagePrefix, false),
+        epollIntervals(events, timedName, packagePrefix, true),
+        TaskBlockRecorderTestSupport.worker(
+            "expected " + survivorExpected + " TaskBlock on " + survivorName,
+            survivor,
+            survivorExpected),
+        TaskBlockRecorderTestSupport.worker(
+            "expected one TaskBlock on " + newOwnerName, newOwner, 1));
   }
 
   private long recordFailures() {
