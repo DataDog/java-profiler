@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-hotspot-jdk21
 ---
 
-## musl-x64-hotspot-jdk21 - ❌ FAIL
+## musl-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-23 11:59:24 EST
+**Date:** 2026-11-23 12:00:54 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,50 @@ title: musl-x64-hotspot-jdk21
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | 0 |
-| Sample Rate | 0.00/sec |
-| Health Score | 0% |
-| Threads | 0 |
-| Allocations | 0 |
+| Status | PASS |
+| CPU Samples | 570 |
+| Sample Rate | 9.50/sec |
+| Health Score | 594% |
+| Threads | 9 |
+| Allocations | 360 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 830 |
-| Sample Rate | 13.83/sec |
-| Health Score | 864% |
+| CPU Samples | 739 |
+| Sample Rate | 12.32/sec |
+| Health Score | 770% |
 | Threads | 11 |
-| Allocations | 474 |
+| Allocations | 530 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 83-85 cores)</summary>
+<summary>CPU Timeline (1 unique values: 83-83 cores)</summary>
 
 ```
-1795452897 83
-1795452902 83
-1795452907 83
-1795452912 83
-1795452917 85
-1795452922 85
-1795452927 85
-1795452932 85
-1795452937 85
-1795452942 85
-1795452947 85
-1795452952 85
-1795452957 85
-1795452962 85
-1795452967 85
-1795452972 85
-1795452977 85
-1795452982 85
-1795452987 85
-1795452992 85
+1795452898 83
+1795452903 83
+1795452908 83
+1795452913 83
+1795452918 83
+1795452923 83
+1795452928 83
+1795452933 83
+1795452938 83
+1795452943 83
+1795452948 83
+1795452953 83
+1795452958 83
+1795452963 83
+1795452968 83
+1795452973 83
+1795452978 83
+1795452983 83
+1795452988 83
+1795452993 83
 ```
 </details>
 
