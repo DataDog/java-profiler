@@ -1214,21 +1214,27 @@ TEST_F(ElfTest, pltRelOverridesRelaent) {
     EXPECT_NE(fp.second, fp.first);
 }
 
+namespace {
+
+// The .rela.dyn and .rel.dyn tags; wrapping_count makes count * ent wrap size_t to 0.
+struct RelocTable {
+    const char* name;
+    int64_t tag, size_tag, ent_tag, count_tag;
+    uint64_t ent, wrapping_count;
+};
+const RelocTable RELOC_TABLES[] = {
+    {"rela", DT_RELA, DT_RELASZ, DT_RELAENT, DT_RELACOUNT, sizeof(Elf64_Rela), uint64_t(1) << 61},
+    {"rel", DT_REL, DT_RELSZ, DT_RELENT, DT_RELCOUNT, sizeof(Elf64_Rel), uint64_t(1) << 60},
+};
+
+}  // namespace
+
 // A relative-relocation count whose byte count wraps size_t (2^61 * 24 and
 // 2^60 * 16 are 0 mod 2^64) must skip the whole .rela.dyn / .rel.dyn, not a
 // wrapped-to-zero prefix, in the parse and the fingerprint.
 TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
     if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
-    struct Table {
-        const char* name;
-        int64_t tag, size_tag, ent_tag, count_tag;
-        uint64_t ent, wrapping_count;
-    };
-    const Table tables[] = {
-        {"rela", DT_RELA, DT_RELASZ, DT_RELAENT, DT_RELACOUNT, sizeof(Elf64_Rela), uint64_t(1) << 61},
-        {"rel", DT_REL, DT_RELSZ, DT_RELENT, DT_RELCOUNT, sizeof(Elf64_Rel), uint64_t(1) << 60},
-    };
-    for (const Table& t : tables) {
+    for (const RelocTable& t : RELOC_TABLES) {
         SCOPED_TRACE(t.name);
         // No relative prefix: the entry is an import.
         auto control = buildGotImage(t.tag, t.size_tag, t.ent, t.ent_tag, t.ent, t.count_tag, 0);
@@ -1254,16 +1260,7 @@ TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
 // so only the count excludes it).
 TEST_F(ElfTest, relativeCountSkipsOnlyLeadingEntries) {
     if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
-    struct Table {
-        const char* name;
-        int64_t tag, size_tag, ent_tag, count_tag;
-        uint64_t ent;
-    };
-    const Table tables[] = {
-        {"rela", DT_RELA, DT_RELASZ, DT_RELAENT, DT_RELACOUNT, sizeof(Elf64_Rela)},
-        {"rel", DT_REL, DT_RELSZ, DT_RELENT, DT_RELCOUNT, sizeof(Elf64_Rel)},
-    };
-    for (const Table& t : tables) {
+    for (const RelocTable& t : RELOC_TABLES) {
         SCOPED_TRACE(t.name);
         auto mem = buildGotImage(t.tag, t.size_tag, 2 * t.ent, t.ent_tag, t.ent, t.count_tag, 1);
         ASSERT_THAT(mem.get(), ::testing::NotNull());
@@ -1277,6 +1274,7 @@ TEST_F(ElfTest, relativeCountSkipsOnlyLeadingEntries) {
         };
         setOffset(0, PLT_SLOT + 2 * sizeof(void*));
         setOffset(1, PLT_SLOT);
+        // CodeCache keeps the first import of a name, so this fails if entry 0 is not skipped.
         EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
 
         const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
