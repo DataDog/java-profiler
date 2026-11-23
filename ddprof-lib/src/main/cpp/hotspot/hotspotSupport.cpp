@@ -505,6 +505,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // A remount samples enterSpecial before thaw while its callers are still frozen,
         // so no PC sampled inside it proves the stack complete, its exception exit included.
         if (sampled_entry && truncated != nullptr) *truncated = true;
+        // An in-progress thaw returns to the entry return PC through the freeze/thaw
+        // runtime frames this walk crossed, while older callers are still frozen.
+        if (cont_runtime_seen && truncated != nullptr) *truncated = true;
         continuation_depth++;
         if (depth >= actual_max_depth) return false;
         if (!features.carrier_frames) {

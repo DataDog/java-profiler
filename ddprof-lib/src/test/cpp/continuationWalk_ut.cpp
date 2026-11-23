@@ -1135,6 +1135,19 @@ TEST_F(ContinuationWalkTest, VerifiedThawedCrossingRetainsCarrierWithoutTruncati
     EXPECT_FALSE(truncated);
 }
 
+TEST_F(ContinuationWalkTest, ThawedCrossingThroughFreezeThawRuntimeIsTruncated) {
+    _cont_entry_return_pc = BOUNDARY_PC;
+    CodeCache* library = Libraries::instance()->findLibraryByAddress(LEAF_PC);
+    ASSERT_NE(nullptr, library);
+    auto isLeaf = [](const char* name) { return strcmp(name, "continuation_sampled_leaf") == 0; };
+    ASSERT_EQ(1, library->mark(isLeaf, MARK_CONT_RUNTIME));
+    bool truncated = false;
+    int depth = walk(true, &truncated);
+    library->mark(isLeaf, 0);
+    assertCarrier(depth);
+    EXPECT_TRUE(truncated); // the sampled leaf stands in for an in-progress thaw
+}
+
 TEST_F(ContinuationWalkTest, VerifiedFrozenCrossingRetainsCarrierAndTruncates) {
     _cont_return_barrier = BOUNDARY_PC;
     // This fixture decodes no Java frames, so it cannot supply stack arguments
