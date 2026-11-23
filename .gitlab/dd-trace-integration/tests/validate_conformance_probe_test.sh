@@ -8,7 +8,8 @@
 #
 # jfr-shell is stubbed through a fake `jbang` on PATH: the probe script's
 # canned output drives the HAS_* flags, and the validation script's stubbed
-# output drives the pass/fail verdict. No real recording or JFR parsing runs.
+# output drives the pass/fail verdict. No real recording or JFR parsing runs;
+# the real probe execution is covered by probe_event_types_real_test.sh.
 
 set -eo pipefail
 

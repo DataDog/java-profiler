@@ -231,6 +231,7 @@ prepare-patched-agent:
       ${JAVA_HOME}/bin/java -version
 
       .gitlab/dd-trace-integration/install-prerequisites.sh
+      .gitlab/dd-trace-integration/tests/probe_event_types_real_test.sh
       .gitlab/dd-trace-integration/run-integration-test.sh
 
       echo ""

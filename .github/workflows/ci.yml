@@ -76,7 +76,8 @@ jobs:
             .gitlab/dd-trace-integration/quarantine-lib.sh \
             .gitlab/dd-trace-integration/validate-quarantine.sh \
             .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh \
-            .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh
+            .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh \
+            .gitlab/dd-trace-integration/tests/probe_event_types_real_test.sh
           bash .gitlab/scripts/tests/check_abi_floor_test.sh
           bash .gitlab/scripts/tests/includes_test.sh
           bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
