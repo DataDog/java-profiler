@@ -67,12 +67,6 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-          # IBM SDK 8.0.8.70 deadlocks inside JVMTI in the slow/e2e suite (class-unload +
-          # System.gc() + profiler.dump/stop); 8-j9 and 17-j9 pass. The pinned 8.0.8.75 has
-          # not run that suite yet: remove this skip once it passes there.
-          if [[ "${{ matrix.java_version }}" == "8-ibm" && "${{ inputs.slow_tests }}" == "true" ]]; then
-            echo "enabled=false" >> $GITHUB_OUTPUT
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.set_enabled.outputs.enabled == 'true'
         with:
@@ -136,7 +130,7 @@ jobs:
           fi
 
           # GDB watchdog for debug config: dumps all native threads if the JVM hangs
-          # inside JVMTI (e.g. the IBM SDK 8 slow-suite deadlock) before the 180-min
+          # inside JVMTI before the 180-min
           # job timeout fires, so a thread dump lands in the test-reports artifact.
           # prepare_reports.sh copies build/logs/gdb-watchdog.log, and the test
           # reports are uploaded on failure or, if the dump exists, on timeout.
