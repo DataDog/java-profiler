@@ -16,17 +16,17 @@
 #include "stackFrame.h"
 #include "stackWalker.inline.h"
 
-// One step of the DWARF unwind, shared by StackWalker::walkDwarf and
-// HotspotSupport::walkVM. The two had drifted into separate copies; 61959b06f
-// and the commit that added this reconciled the last of the differences so
-// that this could be a pure move rather than a merge of two behaviours.
-//
 // True when the frame's registers describe walk_pc: the sampled leaf, or a context
 // restored at a signal frame. Only then may LR-based recovery read frame.link().
 inline bool atInterruptedContext(StackFrame& frame, const WalkPc& walk_pc) {
     return !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw());
 }
 
+// One step of the DWARF unwind, shared by StackWalker::walkDwarf and
+// HotspotSupport::walkVM. The two had drifted into separate copies; 61959b06f
+// and the commit that added this reconciled the last of the differences so
+// that this could be a pure move rather than a merge of two behaviours.
+//
 // Advances sp/fp/walk_pc from the current frame to its caller. Returns false
 // where the walk must stop -- an unusable CFA rule, an implausible sp or fp,
 // or no forward progress -- and true when the caller may record another frame.
