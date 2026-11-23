@@ -13,40 +13,11 @@
 
 #include "safeAccess.h"
 #include "os.h"
-#include "../../main/cpp/gtest_crash_handler.h"
-
-// Test name for crash handler
-static constexpr char SAFEFETCH_TEST_NAME[] = "SafeFetchTest";
-
-
-static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
-static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
-
-
-static void signal_handle_wrapper(int signo, siginfo_t* siginfo, void* context) {
-  if (!SafeAccess::handle_safefetch(signo, context)) {
-    if (signo == SIGBUS && orig_busHandler != nullptr) {
-       orig_busHandler(signo, siginfo, context);
-    } else if (signo == SIGSEGV && orig_segvHandler != nullptr) {
-       orig_segvHandler(signo, siginfo, context);
-    } else {
-       // If no original handler, use crash handler for debugging
-       gtestCrashHandler(signo, siginfo, context, SAFEFETCH_TEST_NAME);
-    }
-  }
-}
+#include "safeAccessTestSupport.h"
 
 class SafeFetchTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-       orig_segvHandler = OS::replaceSigsegvHandler(signal_handle_wrapper);
-       orig_busHandler = OS::replaceSigbusHandler(signal_handle_wrapper);
-    }
-
-    void TearDown() override {
-       OS::replaceSigsegvHandler(orig_segvHandler);
-       OS::replaceSigbusHandler(orig_busHandler);
-    }
+    ScopedSafeAccessHandler _handler{"SafeFetchTest"};
 };
 
 
@@ -270,40 +241,6 @@ TEST_F(SafeFetchTest, mprotectedMemory64) {
 //   - copy real data faithfully regardless of its byte values
 // ---------------------------------------------------------------------------
 
-namespace {
-// Owns a readable page followed by a PROT_NONE guard page, unmapped on scope
-// exit. The guard stays mapped, unlike a munmap()ed page that a concurrent
-// mmap may reuse, so a read past the readable page always faults.
-class GuardedPage {
-public:
-  GuardedPage()
-      : _region(mmap(NULL, 2 * OS::page_size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) {
-    if (_region != MAP_FAILED &&
-        mprotect(guardStart(), OS::page_size, PROT_NONE) != 0) {
-      munmap(_region, 2 * OS::page_size);
-      _region = MAP_FAILED;
-    }
-  }
-  ~GuardedPage() {
-    if (_region != MAP_FAILED) {
-      munmap(_region, 2 * OS::page_size);
-    }
-  }
-  GuardedPage(const GuardedPage&) = delete;
-  GuardedPage& operator=(const GuardedPage&) = delete;
-
-  // Mapped and the guard verifiably faults; needs the fixture's handlers.
-  bool ok() const {
-    return _region != MAP_FAILED && !SafeAccess::isReadable(guardStart());
-  }
-  // One past the last readable byte: the first byte of the guard page.
-  char* guardStart() const { return static_cast<char*>(_region) + OS::page_size; }
-
-private:
-  void* _region;
-};
-} // namespace
 
 TEST_F(SafeFetchTest, safeCopy_happyPath) {
   const char src[] = "java/lang/Object";
@@ -435,4 +372,56 @@ TEST_F(SafeFetchTest, safeCopy_sentinelLikeData_stillSucceeds) {
   char dst[4];
   ASSERT_TRUE(SafeAccess::safeCopy(dst, &real_data, 4));
   EXPECT_EQ(0, memcmp(dst, &real_data, 4));
+}
+
+// ---------------------------------------------------------------------------
+// isReadableCString: readable up to a NUL found within max_len bytes.
+// ---------------------------------------------------------------------------
+
+TEST_F(SafeFetchTest, isReadableCString_acceptsNulOnLastReadableByte) {
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
+  const char* s = region.placeAtEnd("join");
+  // The fixed 256-byte probe this replaces rejected exactly this string.
+  ASSERT_FALSE(SafeAccess::isReadableRange(s, 256));
+  EXPECT_TRUE(SafeAccess::isReadableCString(s, 65538));
+}
+
+TEST_F(SafeFetchTest, isReadableCString_acceptsStringSpanningTwoReadablePages) {
+  GuardedPage region(2);
+  ASSERT_TRUE(region.ok());
+  char* second_page = region.guardStart() - OS::page_size;
+  char* s = second_page - 3;
+  memcpy(s, "abcdef", 7);  // crosses into the second page, NUL there
+  EXPECT_TRUE(SafeAccess::isReadableCString(s, 65538));
+}
+
+TEST_F(SafeFetchTest, isReadableCString_acceptsNulAtMaxLenMinusOne) {
+  EXPECT_TRUE(SafeAccess::isReadableCString("abc", 4));
+}
+
+TEST_F(SafeFetchTest, isReadableCString_rejectsNulAtMaxLen) {
+  EXPECT_FALSE(SafeAccess::isReadableCString("abc", 3));
+}
+
+TEST_F(SafeFetchTest, isReadableCString_rejectsZeroMaxLen) {
+  EXPECT_FALSE(SafeAccess::isReadableCString("", 0));
+}
+
+TEST_F(SafeFetchTest, isReadableCString_rejectsNull) {
+  EXPECT_FALSE(SafeAccess::isReadableCString(nullptr, 65538));
+}
+
+TEST_F(SafeFetchTest, isReadableCString_rejectsUnreadableFirstPage) {
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
+  EXPECT_FALSE(SafeAccess::isReadableCString(region.guardStart(), 65538));
+}
+
+TEST_F(SafeFetchTest, isReadableCString_rejectsStringRunningIntoGuardPage) {
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
+  char* s = region.guardStart() - 8;
+  memset(s, 'x', 8);  // no NUL before the guard page
+  EXPECT_FALSE(SafeAccess::isReadableCString(s, 65538));
 }

@@ -144,6 +144,43 @@ public:
     return isReadable(end_page);
   }
 
+  /**
+   * Returns true when s is readable up to a NUL found within its first max_len
+   * bytes, NUL included. Each page is probed with isReadable() before it is
+   * scanned, so a valid string just before an unreadable page is accepted.
+   *
+   * <p>Not race-free: a concurrent munmap can still fault the scan, which runs
+   * in this library so that a caller's sigsetjmp window can recover it. Needs
+   * the SafeAccess fault handler installed, like isReadable().
+   */
+  static bool isReadableCString(const char* s, size_t max_len) {
+    if (s == nullptr) {
+      return false;
+    }
+    uintptr_t addr = reinterpret_cast<uintptr_t>(s);
+    size_t remaining = max_len;
+    while (remaining > 0) {
+      // isReadable() loads 4 bytes, so probe the page start, never addr.
+      uintptr_t page = align_down(addr, OS::page_size);
+      if (!isReadable(reinterpret_cast<const void*>(page))) {
+        return false;
+      }
+      size_t in_page = page + OS::page_size - addr;
+      size_t scan = remaining < in_page ? remaining : in_page;
+      // volatile keeps the compiler from turning the loop into a libc
+      // strlen/memchr call, where a fault would not be recoverable.
+      const volatile char* p = reinterpret_cast<const volatile char*>(addr);
+      for (size_t i = 0; i < scan; i++) {
+        if (p[i] == '\0') {
+          return true;
+        }
+      }
+      remaining -= scan;
+      addr += scan;
+    }
+    return false;
+  }
+
 #ifdef DEBUG
 private:
   // Debug diagnostic: bump a counter when a SafeAccess read/write/copy is issued
