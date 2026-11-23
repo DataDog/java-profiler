@@ -33,6 +33,7 @@ static thread_local PoissonSampler _recv_sampler;
 
 #ifdef UNIT_TEST
 void (*NativeSocketSampler::_record_observer_for_test)(int, u64, u64, ssize_t, u8) = nullptr;
+void (*NativeSocketSampler::_record_sample_for_test)(ProfiledThread*) = nullptr;
 #endif
 
 // Marks the hook wrapper's own symbol as MARK_JAVA_PROFILER so native call-stack
@@ -281,11 +282,25 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
     if (current == nullptr) {
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
     } else {
-        Profiler::instance()->recordSample(NULL, (u64)bytes, current->tid(),
-                                        BCI_NATIVE_SOCKET, 0, &event);
+        recordProfilerSample(current, (u64)bytes, &event);
     }
 
     _rate_limiter.recordFire();
+}
+
+void NativeSocketSampler::recordProfilerSample(ProfiledThread* current, u64 bytes,
+                                               NativeSocketEvent* event) {
+    CriticalSection cs(current);
+    if (!cs.entered()) {
+        return;
+    }
+#ifdef UNIT_TEST
+    if (_record_sample_for_test != nullptr) {
+        _record_sample_for_test(current);
+        return;
+    }
+#endif
+    Profiler::instance()->recordSample(NULL, bytes, current->tid(), BCI_NATIVE_SOCKET, 0, event);
 }
 
 ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int flags) {

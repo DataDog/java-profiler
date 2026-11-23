@@ -58,6 +58,8 @@ class LibraryPatcher;
 //                         risk because hook bodies do NOT acquire the profiler
 //                         signal lock.
 
+class ProfiledThread;
+
 class NativeSocketSampler : public Engine {
 public:
     // Typedefs for libc send/recv/write/read signatures.
@@ -106,6 +108,8 @@ private:
     // Observe the real hook timestamps before recordEvent's running-profiler guard.
     // Only gtest binaries contain this seam; normal builds have no extra hook work.
     static void (*_record_observer_for_test)(int, u64, u64, ssize_t, u8);
+    // Replaces the Profiler::recordSample() call inside recordProfilerSample().
+    static void (*_record_sample_for_test)(ProfiledThread*);
 #endif
 
     static NativeSocketSampler* const _instance;
@@ -224,6 +228,11 @@ private:
 
     // Common recording logic shared by all four hooks.
     void recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op);
+
+    // Records the sample under this thread's CriticalSection, or drops it if the
+    // thread is already inside one: a profiling signal landing while put() holds a
+    // claimed call-trace slot would otherwise spin forever on its own thread's claim.
+    static void recordProfilerSample(ProfiledThread* current, u64 bytes, NativeSocketEvent* event);
 
     // Records the event if ret > 0; returns ret unchanged.  Shared tail for all four hooks.
     static inline ssize_t record_if_positive(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {

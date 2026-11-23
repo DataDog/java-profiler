@@ -33,6 +33,7 @@
 #include <sstream>
 #include <fstream>
 #include "gtest_crash_handler.h"
+#include "counters.h"
 
 // Test name for crash handler
 static constexpr const char STRESS_TEST_NAME[] = "StressCallTraceStorage";
@@ -2463,4 +2464,61 @@ TEST_F(StressTestSuite, ConcurrentExpansionAndCollectStressTest) {
     concurrent_putter.join();
 
     EXPECT_FALSE(phase2_failed.load()) << "collect() missed traces from Phase 1 on first cycle";
+}
+
+// Threads first-insert the same unseen stack at once, as in a start-up burst:
+// every thread must get the same real ID for each stack, and none may be dropped.
+TEST_F(StressTestSuite, ConcurrentFirstInsertOfSameStackSharesOneId) {
+    constexpr int THREADS = 8;
+    constexpr int STACKS = 2000;
+    constexpr int BUSY_SPINS = 10000;
+    constexpr u64 OVERFLOW_TRACE_ID = 0x7fffffffffffffffULL;  // callTraceHashTable.cpp
+    auto table = std::make_unique<CallTraceHashTable>();
+    table->setInstanceId(1);
+    std::vector<std::vector<u64>> ids(THREADS, std::vector<u64>(STACKS, 0));
+    std::atomic<int> arrived{0};
+    const long long dropped_before = Counters::getCounter(CALLTRACE_STORAGE_DROPPED);
+
+    std::vector<std::thread> workers;
+    for (int t = 0; t < THREADS; t++) {
+        workers.emplace_back([&, t]() {
+            for (int s = 0; s < STACKS; s++) {
+                // Per-stack barrier: all threads put stack s at the same moment.
+                arrived.fetch_add(1);
+                // Busy-spin keeps the put() calls close enough to land in the
+                // few-instruction claim window; yield later so fewer cores than
+                // THREADS still make progress.
+                for (int spins = 0; arrived.load() < (s + 1) * THREADS; spins++) {
+                    if (spins < BUSY_SPINS) {
+                        spinPause();
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+                ASGCT_CallFrame frame = {};
+                frame.bci = s;
+                frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x9000 + s));
+                ids[t][s] = table->put(1, &frame, false, 1);
+            }
+        });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    int unusable = 0;
+    int mismatched = 0;
+    for (int s = 0; s < STACKS; s++) {
+        if (ids[0][s] == CallTraceStorage::DROPPED_TRACE_ID || ids[0][s] == OVERFLOW_TRACE_ID) {
+            unusable++;
+        }
+        for (int t = 1; t < THREADS; t++) {
+            if (ids[t][s] != ids[0][s]) {
+                mismatched++;
+            }
+        }
+    }
+    EXPECT_EQ(unusable, 0) << "stacks whose first thread got a dropped or overflow ID";
+    EXPECT_EQ(mismatched, 0) << "threads that got a different ID than the first thread";
+    EXPECT_EQ(Counters::getCounter(CALLTRACE_STORAGE_DROPPED) - dropped_before, 0);
 }
