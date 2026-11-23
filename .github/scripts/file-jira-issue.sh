@@ -68,9 +68,11 @@ API="$BASE/rest/api/3"
 # the callers (no quotes), but escape anyway. The /search endpoint is retired;
 # /search/jql takes a POST body and may return issues or issueKeys.
 JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\""; "\\\\\"")')
-# The inner escaped quotes make Jira phrase-match the whole summary; without
-# them the per-term OR match lets one commit's failure dedupe onto another
-# commit's ticket (the shared fixed words match even though the SHA differs).
+# Phrase-match the whole summary: an unquoted JQL '~' is OR term matching,
+# so the shared fixed words would let one commit's failure dedupe onto
+# another commit's ticket (the SHA differs but the rest matches). The
+# quotes around the operand carry the phrase form; quotes inside the
+# summary arrive pre-escaped by JQL_SUMMARY and stay JQL escapes.
 JQL="project = $PROJECT AND summary ~ \"$JQL_SUMMARY\" AND resolution = Unresolved"
 EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
   -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
