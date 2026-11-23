@@ -472,6 +472,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (!contBoundaryProvesComplete(kind) && truncated != nullptr) {
             *truncated = true;
         }
+        bool in_entry_nm = continuation_entry_nm != nullptr
+                && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
+        bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && in_entry_nm;
+        // A remount samples enterSpecial before thaw while its callers are still frozen,
+        // so no PC sampled inside it proves the stack complete.
+        if (sampled_entry && truncated != nullptr) *truncated = true;
         if (depth >= actual_max_depth) return false;
         if (!features.carrier_frames) {
             fillFrame(frames[depth++], BCI_NATIVE_FRAME, CONT_ROOT_FRAME);
@@ -481,9 +487,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         uintptr_t carrier_fp, carrier_sp;
         const void* carrier_pc;
         bool valid_carrier_sp;
-        bool in_entry_nm = continuation_entry_nm != nullptr
-                && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
-        bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && in_entry_nm;
         int words = sampled_entry ? frame.continuationEntryFrameWords(continuation_entry_nm, walk_pc.raw()) : -1;
         bool saved_fp = words >= 2;
         bool exception_entry = false;
@@ -511,9 +514,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
         }
 #endif
-        // A remount samples enterSpecial before thaw while the callers are still frozen;
-        // only its exception exit runs after the continuation's frames are gone.
-        if (sampled_entry && !exception_entry && truncated != nullptr) *truncated = true;
         if (sampled_entry || exception_entry) {
             // Publication/removal of JavaThread::_cont_entry happens inside
             // enterSpecial. At these PCs it can describe the parent, and SP

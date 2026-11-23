@@ -231,7 +231,7 @@ protected:
         X64ExceptionInvalidCarrierPc, X64ExceptionFarCall, X64ExceptionFarCallNativePrefix,
         X64ExceptionBadBranch, X64ExceptionTruncatedCode, X64ExceptionInteriorPc, X64ExceptionInteriorReturnPc,
         X64ExceptionByteTest, X64ExceptionByteTestNativePrefix, ReturnPcUndecodableFrameExported, ReturnPcLazyEntryNMethod,
-        ReturnInsideEntryPublishedAtSp, ReturnInsideEntryUnlinked
+        ReturnInsideEntryPublishedAtSp, ReturnInsideEntryUnlinked, SampledEntryWithoutCarrierFrames
     };
 
     // Generated prologue/setup and normal cleanup excerpts, captured from
@@ -657,11 +657,19 @@ protected:
             frame.fp() = (uintptr_t)&stack[8];
         }
         StackWalkFeatures features{};
-        features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot;
+        features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot &&
+                test_case != EntryCase::SampledEntryWithoutCarrierFrames;
         bool truncated = false;
         int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
         // A wrapper generated after initialization is published for later walks.
         if (lazy_entry_nm) EXPECT_EQ(reinterpret_cast<VMNMethod*>(&blob.nm), _enter_special_nm);
+        if (test_case == EntryCase::SampledEntryWithoutCarrierFrames) {
+            ASSERT_EQ(1, depth);
+            EXPECT_EQ(BCI_NATIVE_FRAME, frames[0].bci);
+            EXPECT_STREQ("JVM Continuation", (const char*)frames[0].method_id);
+            EXPECT_TRUE(truncated); // cstack=vm stops at the root, but the callers may still be frozen
+            return;
+        }
         if (barrier_interior) {
             if (test_case == EntryCase::BarrierInteriorNativePrefix) assertCarrier(depth);
             else {
@@ -688,7 +696,7 @@ protected:
                             << (frames[0].bci == BCI_ERROR ? (const char*)frames[0].method_id : "unexpected frame type");
                     EXPECT_STREQ("continuation_carrier", (const char*)frames[0].method_id);
                 }
-                EXPECT_FALSE(truncated);
+                EXPECT_EQ(!x64_exception_prefix, truncated); // only resolver returns reach it as a caller
             }
             return;
         }
@@ -1358,6 +1366,12 @@ TEST_F(ContinuationWalkTest, VerifiedReturnPcDoesNotRequireSampledFp) {
 
 TEST_F(ContinuationWalkTest, LateEntryWrapperLookupIsPublished) {
     assertCarrierFromEntry(EntryPhase::Complete, EntryCase::ReturnPcLazyEntryNMethod);
+}
+
+TEST_F(ContinuationWalkTest, SampledEntryRootIsTruncatedWithoutCarrierFrames) {
+    for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::Complete, EntryPhase::AfterRestore}) {
+        assertCarrierFromEntry(phase, EntryCase::SampledEntryWithoutCarrierFrames);
+    }
 }
 
 TEST_F(ContinuationWalkTest, CompiledCarrierAcceptsNonPointerSavedFp) {
