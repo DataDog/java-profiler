@@ -2365,9 +2365,8 @@ TEST_F(ReferenceChainsBfsTest, AnchorReplayedLocalsClassifiedLaterOrRejectedAsNo
 
 // Dead entries inside the fresh-queue window (the ABANDONED shape the production death path
 // leaves): the selection must skip them, spend their first look, and drain the queue in
-// admission order. This branch prunes dead index entries at walk-resolution time
-// (walkStaticFieldAnchors() -> removeMissingAnchors()), never at selection, so the index keeps
-// all six admissions here.
+// admission order. The selection also reclaims the dead entries it skipped - the walk's
+// missing-anchor path can never see them again - so the index sheds them in the same pass.
 TEST_F(ReferenceChainsBfsTest, InWindowPruneKeepsFreshQueueSelections) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
@@ -2396,14 +2395,14 @@ TEST_F(ReferenceChainsBfsTest, InWindowPruneKeepsFreshQueueSelections) {
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(16);
     EXPECT_EQ((std::vector<jlong>{900, 902, 904, 905}), selected);
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest());
-    EXPECT_EQ((std::vector<jlong>{900, 901, 902, 903, 904, 905}),
+    EXPECT_EQ((std::vector<jlong>{900, 902, 904, 905}),
               ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest());
 }
 
-// Cursors are clamped before the selection lap: dead entries keep their index positions (this
-// branch prunes at walk-resolution time, not at selection), so survivors left of the cursor wait
-// one lap - then the wrap serves them, none lost.
-TEST_F(ReferenceChainsBfsTest, FairCursorAfterPruneDelaysSkippedSurvivorsOneLap) {
+// Cursors are clamped before the selection lap, and the dead entries the scan reclaims compact
+// the index after the pass consumed its positions: the stale cursor clamps to 0 on the next lap,
+// so survivors the dead entries shadowed are served immediately - none lost.
+TEST_F(ReferenceChainsBfsTest, FairCursorAfterPruneServesSkippedSurvivorsNextLap) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -2423,16 +2422,154 @@ TEST_F(ReferenceChainsBfsTest, FairCursorAfterPruneDelaysSkippedSurvivorsOneLap)
               ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4));
     frontier->clear(950);
     frontier->clear(951);
-    // The cursor sat at position 4; without a selection-time compaction the survivors 952/953
-    // stay below it. The lap finishes at 958/959 first, then the wrap serves the skipped
-    // survivors - delayed one lap, none lost.
+    // The cursor sat at position 4, so this lap continues at 954-957; the dead 950/951 are
+    // reclaimed when the pass ends, compacting the survivors and resetting the stale cursor.
     EXPECT_EQ((std::vector<jlong>{954, 955, 956, 957}),
               ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4));
-    EXPECT_EQ((std::vector<jlong>{958, 959}),
-              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4));
     EXPECT_EQ((std::vector<jlong>{952, 953, 954, 955}),
+              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4));
+    EXPECT_EQ((std::vector<jlong>{956, 957, 958, 959}),
               ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4))
-        << "the lap wrapped: the skipped survivors are served next, none lost";
+        << "the lap wrapped: every survivor keeps its fair turn, none lost";
+}
+
+// Dead durable entries the selection cannot pick (missing frontier lookup or the ABANDONED state
+// the release machinery leaves) are reclaimed by the selection scan itself: below the durable cap
+// nothing else reclaims them - the walk's missing-anchor path only sees tags the scan picked.
+TEST_F(ReferenceChainsBfsTest, RotationScanReclaimsDeadEntriesBelowCap) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+    int holderA = addNode();
+    int holderC = addNode();
+    node_tags[holderA] = tracker->nextTag();
+    // Beyond any slot the inserted holders can grow the table to: the released-tag shape.
+    const jlong missing_tag = 5000;
+    node_tags[holderC] = tracker->nextTag();
+    const jlong unknown_class_tag = -106;
+    // Durable admissions index every tag directly (root-attached JNI_GLOBAL holders stay
+    // selectable without a classified shape); holderA and holderC get real frontier slots.
+    for (jlong tag :
+         {node_tags[holderA], missing_tag, node_tags[holderC]}) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, unknown_class_tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    }
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[holderA], 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[holderC], 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    // holderC's object died: its frontier record moves to ABANDONED (the entry itself is kept
+    // to block tag reuse).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, node_tags[holderC], 0, 0, FrontierEntryState::ABANDONED,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ASSERT_EQ(3u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+
+    const u64 resweep_before =
+        ReferenceChainsTestAccessor::durableAnchorResweepGenForTest();
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    EXPECT_EQ((std::vector<jlong>{node_tags[holderA]}), selected)
+        << "only the live holder is picked; dead entries are skipped, not selected";
+    EXPECT_EQ((std::vector<jlong>{node_tags[holderA]}),
+              ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest())
+        << "the scan reclaims both dead shapes below the durable cap";
+    EXPECT_EQ(resweep_before,
+              ReferenceChainsTestAccessor::durableAnchorResweepGenForTest())
+        << "a dead-entry reclaim displaces nothing live, so no resweep is requested";
+    // The compaction must leave the scan usable: the live holder is picked again.
+    EXPECT_EQ((std::vector<jlong>{node_tags[holderA]}),
+              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4));
+}
+
+// A dead entry's queued fresh turn is dropped with its index entry: the tag can never be picked
+// again, so retaining the turn would only spend a later pass on it. The no-budget drain pops
+// still-indexed turns (spent via the served mark), so the turn must sit beyond the fresh-room
+// cutoff when the reclaim runs to exercise the reclaim's own queue drop.
+TEST_F(ReferenceChainsBfsTest, RotationScanPruneDropsDeadQueuedTurn) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // One leak-tagged anchor: it takes the whole 2-budget's leak half, leaving fresh_room 1.
+    const jlong leak_anchor = 870;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, leak_anchor, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    frontier->setLeakTag(leak_anchor, 777, /*leak_tag_incarnation=*/0);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        leak_anchor, 599999, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(599999, false);
+    // Three regular anchors, admitted in order - their fresh turns queue FIFO.
+    for (jlong tag : {880, 881, 882}) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, 610000 + (tag - 880), JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        ReferenceChainsTestAccessor::primeClassShapeForTest(
+            610000 + (tag - 880), true);
+    }
+    ASSERT_EQ(4u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest());
+    // 881 dies while its turn is still queued: the frontier record goes away (the missing-lookup
+    // dead shape), but the index and the queued turn keep it for now.
+    frontier->clear(881);
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(2);
+    EXPECT_EQ((std::vector<jlong>{leak_anchor, 880}), selected)
+        << "the leak tier leads; 880's queued turn becomes the one fresh pick";
+    // fresh_room 1 popped 880's turn (fresh-kept); 881 (dead) and 882 sit beyond the cutoff -
+    // the reclaim drops 881's queued turn with its index entry, keeping 882's.
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest());
+    EXPECT_EQ((std::vector<jlong>{leak_anchor, 880, 882}),
+              ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest());
+    // The live queued turn is still spendable: the next pass pops it as a fresh pick.
+    selected = ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(2);
+    EXPECT_EQ((std::vector<jlong>{leak_anchor, 882}), selected);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFreshQueueSizeForTest());
+}
+
+// Alive-but-ineligible entries (a reparented holder with a classified non-container shape) are
+// skipped by the selection without being reclaimed: the class-tag refresh or shape
+// reconciliation can make them selectable again, so only provably dead entries leave the index.
+TEST_F(ReferenceChainsBfsTest, RotationScanPruneKeepsLiveIneligibleEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+
+    for (jlong tag : {890, 891}) {
+        // parent_tag != 0: not root-attached, so eligibility falls to the classified shape -
+        // NON_CONTAINER here, which isSelectableAnchor() refuses.
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 999, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, 620000 + (tag - 890), JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        ReferenceChainsTestAccessor::primeClassShapeForTest(
+            620000 + (tag - 890), false);
+    }
+    ASSERT_EQ(2u, ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest().size());
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    EXPECT_TRUE(selected.empty());
+    EXPECT_EQ((std::vector<jlong>{890, 891}),
+              ReferenceChainsTestAccessor::staticAnchorIndexTagsForTest())
+        << "live-but-ineligible entries stay indexed; only dead entries are reclaimed";
+    EXPECT_FALSE(
+        ReferenceChainsTestAccessor::durableAnchorResweepUnservedForTest());
 }
 
 TEST_F(ReferenceChainsBfsTest, ClassShapeWalkMarksBudgetExhaustionUnknown) {
@@ -2774,8 +2911,9 @@ TEST_F(ReferenceChainsBfsTest, GlobalRootsIndexNewAndPreviouslyDiscoveredCollect
 // Indexed holders whose objects die stop resolving in GetObjectsWithTags(); the anchor walk
 // drops them from the rotation index (removeMissingAnchors()) instead of accumulating them for
 // the tracker's lifetime (released tags get re-minted, so the same holder would otherwise
-// re-index under its fresh tag every pass). Adapted from the merged #889 test: this branch
-// prunes at walk-resolution time, never at selection.
+// re-index under its fresh tag every pass). Adapted from the merged #889 test: the walk-path
+// prune covers tags the scan picked; the selection scan reclaims the tags it must skip
+// (RotationScanReclaimsDeadEntriesBelowCap).
 TEST_F(ReferenceChainsBfsTest, DeadAnchorIndexEntriesArePruned) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));

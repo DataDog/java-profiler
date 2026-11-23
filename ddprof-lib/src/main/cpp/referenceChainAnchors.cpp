@@ -202,6 +202,7 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
   fresh_kept_tags.reserve(std::min(fresh_queue_len, max_picks));
   fresh_spent_tags.reserve(fresh_queue_len + max_picks);
   std::unordered_set<jlong> leak_spent_tags;
+  std::vector<jlong> dead_tags;
   bool container_before_cursor = false;
   bool other_before_cursor = false;
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
@@ -212,7 +213,13 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
                                : 0;
       FrontierEntry entry{};
       if (!frontier->lookupLocked(tag, &entry) ||
-          !isSelectableAnchor(entry, own_class_tag) ||
+          entry.state == FrontierEntryState::ABANDONED) {
+        // Dead holder: the scan is the only reclaim below the durable cap - the selection
+        // skip means the walk's missing-anchor path can never see the tag again.
+        dead_tags.push_back(tag);
+        continue;
+      }
+      if (!isSelectableAnchor(entry, own_class_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(tag)) {
@@ -390,6 +397,11 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
   // caller after the scope flush.
   _frontier->markAnchorRotationServed(fresh_spent_tags.data(),
                                       fresh_spent_tags.size());
+  if (!dead_tags.empty()) {
+    // Reclaim after every position this pass recorded was consumed: the erase compacts the
+    // index, so surviving cursors set above may wait one lap before their tier sees them again.
+    removeMissingAnchors(dead_tags);
+  }
   return selected;
 }
 
