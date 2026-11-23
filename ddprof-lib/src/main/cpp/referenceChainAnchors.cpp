@@ -202,7 +202,10 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
   fresh_kept_tags.reserve(std::min(fresh_queue_len, max_picks));
   fresh_spent_tags.reserve(fresh_queue_len + max_picks);
   std::unordered_set<jlong> leak_spent_tags;
+  // Reserve before the lock like the other scratch vectors: the common pass reclaims nothing,
+  // and an unreserved push_back would pay its first growth inside the shared-lock lambda.
   std::vector<jlong> dead_tags;
+  dead_tags.reserve(16);
   bool container_before_cursor = false;
   bool other_before_cursor = false;
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
