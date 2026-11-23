@@ -2784,6 +2784,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
+    // After _jfr.start() selected the clock: intervals measured before this tick are rejected.
+    _task_block_start_ticks.store(TSC::ticks(), std::memory_order_release);
     setTaskBlockEnabled(
         (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
     if (taskBlockEnabled()) {

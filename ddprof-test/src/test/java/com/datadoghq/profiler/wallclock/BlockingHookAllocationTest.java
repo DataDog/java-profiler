@@ -107,6 +107,7 @@ public class BlockingHookAllocationTest {
                 if (!name.equals("isVirtualThread")
                     && !name.equals("parkEnter")
                     && !name.equals("parkExit")
+                    && !name.equals("virtualParkExit")
                     && !name.equals("blockEnter")
                     && !name.equals("blockExit")) return null;
                 return new MethodVisitor(Opcodes.ASM9) {
@@ -152,7 +153,7 @@ public class BlockingHookAllocationTest {
             },
             0);
     assertEquals(
-        4, hookGates[0], "Each park/block entry and exit must use the virtual-thread gate");
+        5, hookGates[0], "Each park/block entry and exit must use the virtual-thread gate");
     assertEquals(1, exactCalls[0], "The shared gate must invoke the cached handle exactly");
   }
 }

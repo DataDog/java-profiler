@@ -644,6 +644,35 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
                         static_cast<u64>(unblockingSpanId));
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_virtualParkExit0(
+    JNIEnv *env, jclass unused, jthread thread, jlong javaThreadId, jstring name,
+    jlong elapsedNanos, jlong blocker, jlong unblockingSpanId) {
+  // The caller verified that thread is the current, virtual thread.
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr || !Profiler::instance()->taskBlockEnabled()) {
+    return JNI_FALSE;
+  }
+  // GetStringUTFRegion copies into this frame without allocating; a modified-UTF-8 char
+  // takes at most 3 bytes, so longer names are truncated to VIRTUAL_THREAD_NAME_CHARS.
+  constexpr jsize VIRTUAL_THREAD_NAME_CHARS = 128;
+  char name_buf[3 * VIRTUAL_THREAD_NAME_CHARS + 1] = {0};
+  if (name != nullptr) {
+    jsize chars = env->GetStringLength(name);
+    env->GetStringUTFRegion(name, 0, chars < VIRTUAL_THREAD_NAME_CHARS ? chars : VIRTUAL_THREAD_NAME_CHARS,
+                            name_buf);
+    // A pending exception forbids the JVMTI stack capture.
+    if (env->ExceptionCheck()) return JNI_FALSE;
+  }
+  VirtualThreadIdentity identity{static_cast<u64>(javaThreadId), name_buf, strlen(name_buf)};
+  return recordVirtualParkExit(current->tid(), thread, identity,
+                               elapsedNanos > 0 ? static_cast<u64>(elapsedNanos) : 0,
+                               static_cast<u64>(blocker),
+                               static_cast<u64>(unblockingSpanId))
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
 static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
   if (state == static_cast<jint>(OSThreadState::SLEEPING)) {
     decoded = OSThreadState::SLEEPING;

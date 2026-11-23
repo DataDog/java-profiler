@@ -7,10 +7,12 @@
 
 #include "context_api.h"
 #include "jvmSupport.h"
+#include "signalSafety.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 
 #include <atomic>
+#include <cstdint>
 
 static const u64 kMinTaskBlockNanos = 1000000;
 static std::atomic<u64> g_min_task_block_ticks{0};
@@ -240,7 +242,40 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   TASK_BLOCK_DIAGNOSTIC(EXIT_ELIGIBLE, diagnostic_ptr, 0);
   return recordTaskBlockIfEligible(
       current->tid(), thread, start_depth, start_ticks, end_ticks, context,
-      blocker, unblocking_span_id, snapshot.active_state, true TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
+      blocker, unblocking_span_id, snapshot.active_state, true, nullptr
+      TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
+}
+
+// The caller measured elapsed_nanos with System.nanoTime(); only the duration crosses clocks.
+// Saturates: a frequency above 1 GHz can push the product past 64 bits.
+static u64 nanosToTicks(u64 nanos) {
+  unsigned __int128 ticks =
+      static_cast<unsigned __int128>(nanos) * taskBlockTscFrequency() / NANOTIME_FREQ;
+  return ticks > UINT64_MAX ? UINT64_MAX : static_cast<u64>(ticks);
+}
+
+bool recordVirtualParkExit(int tid, jthread thread, const VirtualThreadIdentity& identity,
+                           u64 elapsed_nanos, u64 blocker, u64 unblocking_span_id,
+                           u64 end_ticks) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  Profiler* profiler = Profiler::instance();
+  // Held through the record, so stop() cannot finish and a later start() cannot move the
+  // start tick between the check below and the write.
+  TaskBlockActivity activity;
+  if (!activity.active() || !profiler->taskBlockEnabled()) return false;
+  if (end_ticks == 0) end_ticks = TSC::ticks();
+  u64 recording_start = profiler->taskBlockStartTicks();
+  u64 elapsed_ticks = nanosToTicks(elapsed_nanos);
+  if (end_ticks < recording_start || end_ticks - recording_start < elapsed_ticks) {
+    Counters::increment(TASK_BLOCK_VIRTUAL_SKIPPED_BEFORE_RECORDING);
+    return false;
+  }
+  // The carrier's TLS context belongs to this virtual thread while it is mounted.
+  Context context = ContextApi::snapshot();
+  // start_depth 1 skips the native hook frame, as the platform park exit does.
+  return recordTaskBlockIfEligible(tid, thread, 1, end_ticks - elapsed_ticks, end_ticks, context,
+                                   blocker, unblocking_span_id, OSThreadState::CONDVAR_WAIT,
+                                   true, &identity);
 }
 
 #ifdef UNIT_TEST

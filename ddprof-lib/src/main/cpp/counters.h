@@ -117,6 +117,8 @@
   X(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED, "task_block_virtual_thread_detection_failed") \
   X(TASK_BLOCK_RECOVERED_ABANDONED, "task_block_recovered_abandoned")         \
   X(TASK_BLOCK_VIRTUAL_THREAD_POOL_FULL, "task_block_virtual_thread_pool_full") \
+  X(TASK_BLOCK_VIRTUAL_EMITTED, "task_block_virtual_emitted")                 \
+  X(TASK_BLOCK_VIRTUAL_SKIPPED_BEFORE_RECORDING, "task_block_virtual_skipped_before_recording") \
   X(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT, "block_enter_skipped_trace_context")   \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \

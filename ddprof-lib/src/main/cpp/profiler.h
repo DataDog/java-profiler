@@ -251,6 +251,8 @@ private:
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
   std::atomic<bool> _task_block_enabled{false};
+  // TSC::ticks() when start() enabled TaskBlocks, published before _task_block_enabled.
+  std::atomic<u64> _task_block_start_ticks{0};
   std::atomic<bool> _task_block_monitor_events_enabled{false};
   static constexpr u64 TASK_BLOCK_CLOSED = 1ULL << 63;
   std::atomic<u64> _task_block_activity_state{0};
@@ -859,6 +861,9 @@ public:
 #ifdef UNIT_TEST
   using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
+  void setTaskBlockStartTicksForTest(u64 ticks) {
+    _task_block_start_ticks.store(ticks, std::memory_order_release);
+  }
   bool setTaskBlockEnabledForTest(bool enabled) {
     return _task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
   }
@@ -877,6 +882,10 @@ public:
 
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
+  }
+  // Read after an acquire taskBlockEnabled() that returned true, under TaskBlockActivity.
+  u64 taskBlockStartTicks() const {
+    return _task_block_start_ticks.load(std::memory_order_acquire);
   }
   bool nativeMonitorTaskBlockEnabled() const {
     return _task_block_monitor_events_enabled.load(std::memory_order_acquire);

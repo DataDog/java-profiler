@@ -17,6 +17,11 @@ public final class ProfilerOwnedBlockHooks {
     profiler.parkExit(blocker, unblockingSpanId);
   }
 
+  public static boolean virtualParkExit(
+      JavaProfiler profiler, long elapsedNanos, long blocker, long unblockingSpanId) {
+    return profiler.virtualParkExit(elapsedNanos, blocker, unblockingSpanId);
+  }
+
   public static long blockEnter(JavaProfiler profiler, int state) {
     return profiler.blockEnter(state);
   }

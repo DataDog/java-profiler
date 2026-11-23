@@ -515,6 +515,27 @@ public final class JavaProfiler {
   }
 
   /**
+   * Internal hook called on a virtual thread after {@code LockSupport.park} returned. The caller
+   * times the park with {@link System#nanoTime()}, because the thread may have unmounted and moved
+   * to another carrier. The event is attributed to the virtual thread, not to its carrier. Returns
+   * {@code false} without a native call on a platform thread or a JDK without virtual threads. The
+   * recorded thread name keeps at most its first 128 UTF-16 units.
+   *
+   * @param elapsedNanos park duration measured by the caller
+   * @param blocker stable identifier describing the blocking resource, or {@code 0}
+   * @param unblockingSpanId span responsible for unblocking the interval, or {@code 0}
+   * @return {@code true} when a {@code TaskBlock} event was recorded
+   */
+  boolean virtualParkExit(long elapsedNanos, long blocker, long unblockingSpanId) {
+    Thread thread = Thread.currentThread();
+    if (!isVirtualThread(thread)) {
+      return false;
+    }
+    return virtualParkExit0(
+        thread, thread.getId(), thread.getName(), elapsedNanos, blocker, unblockingSpanId);
+  }
+
+  /**
    * Internal hook marking the current platform thread as entering an explicitly instrumented
    * blocked interval. The public paired API is {@link #beginTaskBlock()}.
    *
@@ -714,6 +735,14 @@ public final class JavaProfiler {
 
   private static native void parkExit0(
       Thread thread, boolean isVirtual, long blocker, long unblockingSpanId);
+
+  private static native boolean virtualParkExit0(
+      Thread thread,
+      long javaThreadId,
+      String name,
+      long elapsedNanos,
+      long blocker,
+      long unblockingSpanId);
 
   private static native long blockEnter0(boolean isVirtual, int state);
 
