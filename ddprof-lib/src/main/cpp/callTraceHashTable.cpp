@@ -316,6 +316,53 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
   return nullptr;
 }
 
+// Upper 32 bits = instance_id, lower 32 bits = slot_base + local slot (slot_base
+// keeps the low bits unique across all LongHashTable generations of one tenure).
+u64 CallTraceHashTable::traceIdForSlot(LongHashTable *table, u32 slot) {
+  // ACQUIRE pairs with the RELEASE store in setInstanceId() (aarch64, POWER).
+  u64 instance_id = _instance_id.load(std::memory_order_acquire);
+  return (instance_id << 32) | (table->slotBase() + slot);
+}
+
+// Gives up a slot claimed by put(). The trace is reset before the key is cleared:
+// a prober that still sees the key never finds a stale trace, and the next
+// claimer's markPreparing() CAS from nullptr succeeds.
+static void abandonClaim(LongHashTable *table, u32 slot) {
+  table->values()[slot].setTrace(nullptr);
+  __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  __atomic_store_n(&table->keys()[slot], 0, __ATOMIC_RELEASE);
+}
+
+#ifdef UNIT_TEST
+u32 CallTraceHashTable::firstSlotForTest(u64 hash) {
+  return HashProbe(hash, _table->capacity()).slot();
+}
+
+bool CallTraceHashTable::claimSlotForTest(u32 slot, u64 key) {
+  u64 expected = 0;
+  return __atomic_compare_exchange_n(&_table->keys()[slot], &expected, key, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+}
+
+bool CallTraceHashTable::markPreparingForTest(u32 slot) {
+  return _table->values()[slot].markPreparing();
+}
+
+u64 CallTraceHashTable::publishSlotForTest(u32 slot, int num_frames, ASGCT_CallFrame *frames,
+                                           bool truncated) {
+  CallTrace *trace = storeCallTrace(num_frames, frames, truncated, traceIdForSlot(_table, slot));
+  if (trace == nullptr) {
+    return CallTraceStorage::DROPPED_TRACE_ID;
+  }
+  _table->values()[slot].setTrace(trace);
+  return trace->trace_id;
+}
+
+void CallTraceHashTable::abandonSlotForTest(u32 slot) {
+  abandonClaim(_table, slot);
+}
+#endif
+
 void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table, u32 size) {
   u32 capacity = table->capacity();
 
@@ -362,6 +409,12 @@ void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table, u32 size) {
 u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
                           bool truncated, u64 weight) {
   u64 hash = calcHash(num_frames, frames, truncated);
+  if (hash == 0) {
+    // 0 marks an empty key (a zero-frame stack hashes to it), so such a stack
+    // would match every empty slot and wait on it forever.
+    Counters::increment(CALLTRACE_STORAGE_DROPPED);
+    return CallTraceStorage::DROPPED_TRACE_ID;
+  }
 
   // ACQUIRE pairs with the ACQ_REL CAS in the expansion path below, ensuring
   // that if another thread published a new (expanded) table we see its fully
@@ -379,53 +432,38 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
   u32 slot = probe.slot();
   while (true) {
     u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
-    if (key_value == hash) { 
-      // Hash matches - wait for the preparing thread to complete
-      CallTrace* current_trace = table->values()[slot].acquireTrace();
-      
-      // If another thread is preparing this slot, wait for completion
-      if (current_trace == CallTraceSample::PREPARING) {
-        // Wait for the preparing thread to complete, with timeout
-        int wait_cycles = 0;
-        const int MAX_WAIT_CYCLES = 1000; // ~1000 cycles should be enough for allocation
-        
-        do {
-          // Brief spin-wait to allow preparing thread to complete
-          for (volatile int i = 0; i < 10; i++) {
-            spinPause(); // Architecture-specific pause instruction
-          }
-          
-          current_trace = table->values()[slot].acquireTrace();
-          wait_cycles++;
-          
-          // Check if key was cleared (preparation failed)
-          if (__atomic_load_n(&keys[slot], __ATOMIC_RELAXED) != hash) {
-            break; // Key cleared, restart search
-          }
-          
-        } while (current_trace == CallTraceSample::PREPARING && wait_cycles < MAX_WAIT_CYCLES);
-        
-        // If still preparing after timeout, something is wrong - continue search
-        if (current_trace == CallTraceSample::PREPARING) {
-          continue;
+    if (key_value == hash) {
+      // A nullptr or PREPARING trace means the key-CAS winner has not published
+      // yet. Every abandon path clears the key, so wait for a publish or a key change.
+      CallTrace *current_trace = table->values()[slot].acquireTrace();
+      for (int wait_cycles = 0;
+           (current_trace == nullptr || current_trace == CallTraceSample::PREPARING) &&
+           wait_cycles < MAX_WAIT_CYCLES;
+           wait_cycles++) {
+#ifdef UNIT_TEST
+        if (_wait_hook_for_test != nullptr) {
+          _wait_hook_for_test(_wait_hook_arg_for_test);
+        }
+#endif
+        for (volatile int i = 0; i < 10; i++) {
+          spinPause();
+        }
+        current_trace = table->values()[slot].acquireTrace();
+        // Relaxed: this only ends the spin early; the re-check below decides.
+        if (__atomic_load_n(&keys[slot], __ATOMIC_RELAXED) != hash) {
+          break;
         }
       }
-      
-      // Check final state after waiting
-      if (current_trace != nullptr && current_trace != CallTraceSample::PREPARING) {
-        // Trace is ready, use it
+      // The slot may have been abandoned and reclaimed by another stack. The
+      // ACQUIRE trace load orders this re-check after that stack's key CAS.
+      if (current_trace != nullptr && current_trace != CallTraceSample::PREPARING &&
+          __atomic_load_n(&keys[slot], __ATOMIC_ACQUIRE) == hash) {
         return current_trace->trace_id;
-      } else {
-        // Trace is nullptr but hash exists - preparation failed
-        u64 recheck_key = __atomic_load_n(&keys[slot], __ATOMIC_ACQUIRE);
-        if (recheck_key != hash) {
-          continue; // Key was cleared, retry
-        }
-        Counters::increment(CALLTRACE_STORAGE_DROPPED);
-        return CallTraceStorage::DROPPED_TRACE_ID;
       }
+      // The key changed, or the owner is still filling the slot: probe it again.
+      continue;
     }
-    
+
     if (key_value == 0) {
       u64 expected = 0;
       if (!__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
@@ -454,19 +492,9 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       }
       
       if (trace == nullptr) {
-        // Generate unique trace ID: upper 32 bits = instance_id, lower 32 bits =
-        // slot_base + local slot (slot_base makes the low bits unique across
-        // all LongHashTable generations of one active tenure)
-        // ACQUIRE ordering synchronizes with RELEASE store in setInstanceId() to ensure
-        // visibility of new instance_id on weakly-ordered architectures (aarch64, POWER)
-        u64 instance_id = _instance_id.load(std::memory_order_acquire);
-        u64 trace_id = (instance_id << 32) | (table->slotBase() + slot);
-        trace = storeCallTrace(num_frames, frames, truncated, trace_id);
+        trace = storeCallTrace(num_frames, frames, truncated, traceIdForSlot(table, slot));
         if (trace == nullptr) {
-          // Allocation failure - reset trace first, then clear key
-          table->values()[slot].setTrace(nullptr);
-          __atomic_thread_fence(__ATOMIC_SEQ_CST);
-          __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
+          abandonClaim(table, slot);
           Counters::increment(CALLTRACE_STORAGE_DROPPED);
           return CallTraceStorage::DROPPED_TRACE_ID;
         }
