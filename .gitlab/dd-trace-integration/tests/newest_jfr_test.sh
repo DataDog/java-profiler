@@ -5,11 +5,9 @@
 # Hermetic tests for newest_jfr() in .gitlab/dd-trace-integration/run-integration-test.sh.
 # Run with: bash .gitlab/dd-trace-integration/tests/newest_jfr_test.sh
 #
-# The function is sourced out of the script (the script body runs on execution,
-# so only the definition above the first top-level statement is reusable);
-# these tests re-declare it verbatim from the script and pin the ordering
-# contract: the newest snapshot wins, ties fall back to directory order, and
-# an empty directory yields an empty result.
+# newest_jfr is extracted with sed and eval'd: the script body runs on execution.
+# Pinned: newest snapshot wins (subdirectories included); an empty or missing
+# directory yields an empty result without failing a set -e caller.
 
 set -euo pipefail
 
@@ -56,9 +54,25 @@ mkdir -p "$E"
 [ -z "$(newest_jfr "$E")" ] || fail "newest_jfr should return empty for a directory with no .jfr files"
 pass "a directory without .jfr files yields an empty result"
 
-# A missing directory must not error the caller out via set -e.
+# A missing directory must not error the caller out via set -e + pipefail.
 [ -z "$(newest_jfr "${WORK}/does-not-exist")" ] || fail "newest_jfr should return empty for a missing directory"
-pass "a missing directory yields an empty result"
+# A fresh bash process: errexit is ignored inside a substitution on the left
+# of ||, so the check must run where set -e is in force.
+REACHED=$(bash -c 'set -euo pipefail; eval "$1"; x=$(newest_jfr "$2"); echo reached' \
+          _ "${NEWEST_JFR_DEF}" "${WORK}/does-not-exist" 2>/dev/null || true)
+[ "${REACHED}" = "reached" ] || fail "newest_jfr must not abort a set -e caller on a missing directory"
+pass "a missing directory yields an empty result and does not abort a set -e caller"
+
+# Snapshots in a subdirectory are found, and the newest across levels wins.
+N="${WORK}/nested"
+mkdir -p "${N}/sub"
+echo old > "${N}/top.jfr"
+echo new > "${N}/sub/deep.jfr"
+touch -t 202601010000 "${N}/top.jfr"
+touch -t 202601010100 "${N}/sub/deep.jfr"
+[ "$(newest_jfr "$N")" = "${N}/sub/deep.jfr" ] \
+  || fail "newest_jfr should search subdirectories, got: $(newest_jfr "$N")"
+pass "a snapshot in a subdirectory is found"
 
 [ "${FAILED}" -eq 0 ] || exit 1
 echo "All newest_jfr tests passed."

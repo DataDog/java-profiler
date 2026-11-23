@@ -49,15 +49,13 @@ function log_info() {
   echo -e "${GREEN}[INFO]${NC} $*"
 }
 
-# newest_jfr <dir> — path of the most recently modified .jfr in <dir>, empty
-# when none exists. The debug dump_path holds one snapshot per upload period,
-# so the newest covers the whole run window; directory order (the previous
-# find -print -quit) can hand the validator a first-period snapshot holding
-# only a fraction of the events.
+# newest_jfr <dir> — path of the most recently modified .jfr under <dir>, empty
+# when none exists. The debug dump_path holds one snapshot per upload period;
+# the newest covers the whole run window, directory order may not.
 newest_jfr() {
-  # || true: with an unexpanded glob ls exits 2 and pipefail would abort the
+  # || true: a missing <dir> makes find exit 1 and pipefail would abort the
   # caller's assignment under set -e; empty output drives the not-found branch.
-  ls -t "${1}"/*.jfr 2>/dev/null | head -1 || true
+  find "${1}" -name '*.jfr' -type f -exec ls -t {} + 2>/dev/null | head -1 || true
 }
 
 function log_warn() {

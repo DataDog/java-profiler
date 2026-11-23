@@ -66,6 +66,12 @@ STUB
   echo "dummy recording" > "${WORK}/recording.jfr"
 }
 
+# The HAS flag log is the last block that prints "<type>: <value>"; earlier
+# blocks print other flags under the same type names.
+flag_of() {
+  grep "${1}: " "${WORK}/stdout.log" | tail -1 | sed 's/.*: //'
+}
+
 run_validate() {
   ( export PATH="${WORK}/bin:${PATH}"
     bash "${SCRIPT}" "${WORK}/recording.jfr" \
@@ -84,7 +90,7 @@ if run_validate; then
 else
   fail "a complete probe with datadog.ExecutionSample present should validate (exit $?)"
 fi
-grep -q "datadog.ExecutionSample: true" "${WORK}/stdout.log" \
+[ "$(flag_of datadog.ExecutionSample)" = "true" ] \
   || fail "the flag log should report datadog.ExecutionSample as true when the probe lists it"
 pass "a probed type is flagged true in the flag log"
 
@@ -98,7 +104,7 @@ if run_validate; then
 else
   pass "an absent required type fails the validation"
 fi
-grep -q "datadog.ExecutionSample: false" "${WORK}/stdout.log" \
+[ "$(flag_of datadog.ExecutionSample)" = "false" ] \
   || fail "the flag log should report datadog.ExecutionSample as false when the probe omits it"
 pass "an absent type is flagged false in the flag log"
 
@@ -114,9 +120,46 @@ fi
 
 # 4. The absent type must be flagged true again by the fallback, even though
 #    the probe output carried no line for it.
-grep -q "datadog.ExecutionSample: true" "${WORK}/stdout.log" \
+[ "$(flag_of datadog.ExecutionSample)" = "true" ] \
   || fail "the fallback should flag datadog.ExecutionSample as present"
 pass "the fallback flags all types present"
+
+# 5. A type that is only a prefix of a probed name must not count as present:
+#    has_event_type matches "HAS <type> " including the trailing space.
+install_stub_jbang 'HAS datadog.ExecutionSampleExtra 5\nPROBE_COMPLETE'
+run_validate || true
+[ "$(flag_of datadog.ExecutionSample)" = "false" ] \
+  || fail "a probe listing only datadog.ExecutionSampleExtra must not flag datadog.ExecutionSample"
+pass "a type name that is a prefix of a probed type is not matched"
+
+# 6. Without the probe script next to it, the conformance script falls back to
+#    all-present rather than gating the queries off.
+NOPROBE="${WORK}/noprobe"
+mkdir -p "${NOPROBE}"
+cp "${SCRIPT}" "${HERE}/../../../test-validation/validate-jfr.jfrs" "${NOPROBE}/"
+install_stub_jbang 'HAS jdk.ExecutionSample 0\nPROBE_COMPLETE'
+( export PATH="${WORK}/bin:${PATH}"
+  bash "${NOPROBE}/validate-jfr-conformance.sh" "${WORK}/recording.jfr" \
+    --ddprof-enabled=true --tracer-enabled=false --test-duration=60 \
+    --arch=x64 --libc=musl --jvm-type=hotspot \
+    --output="${WORK}/validation-out.log" ) > "${WORK}/stdout.log" 2>&1 \
+  || fail "a missing probe script should fall back to all-present and validate"
+grep -q "Probe script not found" "${WORK}/stdout.log" \
+  || fail "a missing probe script should log a warning"
+[ "$(flag_of datadog.ExecutionSample)" = "true" ] \
+  || fail "a missing probe script should flag all types present"
+pass "a missing probe script falls back to all-present"
+
+# 7. The probe script queries and reports every type the conformance script
+#    asks about: one events/<type> query and one HAS line per has_event_type.
+PROBE="${HERE}/../../../test-validation/probe-event-types.jfrs"
+TYPES=$(grep -o 'has_event_type "[^"]*"' "${SCRIPT}" | sed 's/has_event_type "//; s/"$//')
+[ -n "${TYPES}" ] || fail "no has_event_type calls found in the conformance script"
+for t in ${TYPES}; do
+  grep -qF "events/${t} |" "${PROBE}" || fail "probe script has no events/${t} query"
+  grep -qF "echo \"HAS ${t} " "${PROBE}" || fail "probe script has no HAS line for ${t}"
+done
+pass "the probe script covers every type the conformance script checks"
 
 [ "${FAILED}" -eq 0 ] || exit 1
 echo "All validate-jfr-conformance probe tests passed."
