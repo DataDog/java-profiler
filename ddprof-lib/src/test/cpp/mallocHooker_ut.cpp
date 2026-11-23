@@ -17,7 +17,7 @@
 #include <mach-o/loader.h>
 #endif
 
-class MallocHookerTestAccessor {
+class MallocHookerSlotTestAccessor {
 public:
   static void patchSlot(CodeCache* cc, void** location, void* hook, void* orig) {
     MallocHooker::patchSlot(cc, location, hook, orig);
@@ -79,12 +79,12 @@ protected:
   int saved_patched_libs = 0;
 
   void SetUp() override {
-    MallocHookerTestAccessor::clearEntries();
-    saved_patched_libs = MallocHookerTestAccessor::patchedLibs();
+    MallocHookerSlotTestAccessor::clearEntries();
+    saved_patched_libs = MallocHookerSlotTestAccessor::patchedLibs();
   }
   void TearDown() override {
-    MallocHookerTestAccessor::clearEntries();
-    MallocHookerTestAccessor::setPatchedLibs(saved_patched_libs);
+    MallocHookerSlotTestAccessor::clearEntries();
+    MallocHookerSlotTestAccessor::setPatchedLibs(saved_patched_libs);
   }
 };
 
@@ -93,11 +93,11 @@ protected:
 TEST_F(MallocHookerSlots, PatchRecordsSlotContentAndWritesHook) {
   void* slot = pltStub();
 
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
   EXPECT_EQ(hook(), slot);
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  const MallocPatchEntry& e = MallocHookerTestAccessor::entry(0);
+  ASSERT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
+  const MallocPatchEntry& e = MallocHookerSlotTestAccessor::entry(0);
   EXPECT_EQ(&lib, e._lib);
   EXPECT_EQ(&slot, e._location);
   EXPECT_EQ(hook(), e._hook);
@@ -109,11 +109,11 @@ TEST_F(MallocHookerSlots, PatchRecordsSlotContentAndWritesHook) {
 TEST_F(MallocHookerSlots, PatchRecordsHookedSlotWithoutEntryAgainstKnownOriginal) {
   void* slot = hook();
 
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  EXPECT_EQ(original(), MallocHookerTestAccessor::entry(0)._orig);
-  MallocHookerTestAccessor::restoreSlot(0);
+  ASSERT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
+  EXPECT_EQ(original(), MallocHookerSlotTestAccessor::entry(0)._orig);
+  MallocHookerSlotTestAccessor::restoreSlot(0);
   EXPECT_EQ(original(), slot);
 }
 
@@ -122,17 +122,17 @@ TEST_F(MallocHookerSlots, PatchRecordsHookedSlotWithoutEntryAgainstKnownOriginal
 // on stop(), and the stale original could win.
 TEST_F(MallocHookerSlots, PatchReplacesKeptEntryOfSlotThatNoLongerHoldsHook) {
   void* slot = hook();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  MallocHookerTestAccessor::setOrig(0, foreign());  // the original the kept entry saved
-  MallocHookerTestAccessor::keepUnrestoredEntries();
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  ASSERT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
+  MallocHookerSlotTestAccessor::setOrig(0, foreign());  // the original the kept entry saved
+  MallocHookerSlotTestAccessor::keepUnrestoredEntries();
   slot = pltStub();                                 // the reloaded library's fresh slot
 
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  EXPECT_EQ(pltStub(), MallocHookerTestAccessor::entry(0)._orig);
-  MallocHookerTestAccessor::restoreSlot(0);
+  ASSERT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
+  EXPECT_EQ(pltStub(), MallocHookerSlotTestAccessor::entry(0)._orig);
+  MallocHookerSlotTestAccessor::restoreSlot(0);
   EXPECT_EQ(pltStub(), slot);
 }
 
@@ -142,39 +142,39 @@ TEST_F(MallocHookerSlots, PatchReplacesKeptEntryOfSlotThatNoLongerHoldsHook) {
 TEST_F(MallocHookerSlots, SecondCacheOfSameImageDoesNotReplaceSavedOriginal) {
   CodeCache other{kUnloadedPath, -1, kForeignMin, kForeignMax};
   void* slot = pltStub();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
-  MallocHookerTestAccessor::patchSlot(&other, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&other, &slot, hook(), original());
 
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  EXPECT_EQ(pltStub(), MallocHookerTestAccessor::entry(0)._orig);
-  MallocHookerTestAccessor::restoreSlot(0);
+  ASSERT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
+  EXPECT_EQ(pltStub(), MallocHookerSlotTestAccessor::entry(0)._orig);
+  MallocHookerSlotTestAccessor::restoreSlot(0);
   EXPECT_EQ(pltStub(), slot);
 }
 
 // Over the orphan cap, the entries dropped are those whose original patchSlot()
 // rebuilds anyway; another interposer's wrapper survives wherever it sits.
 TEST_F(MallocHookerSlots, KeepUnrestoredEntriesDropsRebuildableOnesFirst) {
-  const int cap = MallocHookerTestAccessor::maxOrphanEntries();
+  const int cap = MallocHookerSlotTestAccessor::maxOrphanEntries();
   const int foreign_count = 10;
   const int total = cap + foreign_count + 5;
   for (int i = 0; i < total - foreign_count; i++) {
-    MallocHookerTestAccessor::setEntry(i, &lib, original(), true);
+    MallocHookerSlotTestAccessor::setEntry(i, &lib, original(), true);
   }
   // Last, where a prefix cut would drop them.
   for (int i = total - foreign_count; i < total; i++) {
-    MallocHookerTestAccessor::setEntry(i, &lib, foreign(), false);
+    MallocHookerSlotTestAccessor::setEntry(i, &lib, foreign(), false);
   }
-  MallocHookerTestAccessor::setEntry(0, nullptr, original(), true);  // restored
-  MallocHookerTestAccessor::setEntryCount(total);
+  MallocHookerSlotTestAccessor::setEntry(0, nullptr, original(), true);  // restored
+  MallocHookerSlotTestAccessor::setEntryCount(total);
 
-  MallocHookerTestAccessor::keepUnrestoredEntries();
+  MallocHookerSlotTestAccessor::keepUnrestoredEntries();
 
-  ASSERT_EQ(cap, MallocHookerTestAccessor::entryCount());
+  ASSERT_EQ(cap, MallocHookerSlotTestAccessor::entryCount());
   int foreign_kept = 0;
   for (int i = 0; i < cap; i++) {
-    EXPECT_NE(nullptr, MallocHookerTestAccessor::entry(i)._lib) << "restored entry kept at " << i;
-    foreign_kept += MallocHookerTestAccessor::entry(i)._orig == foreign();
+    EXPECT_NE(nullptr, MallocHookerSlotTestAccessor::entry(i)._lib) << "restored entry kept at " << i;
+    foreign_kept += MallocHookerSlotTestAccessor::entry(i)._orig == foreign();
   }
   EXPECT_EQ(foreign_count, foreign_kept);
 }
@@ -184,57 +184,57 @@ TEST_F(MallocHookerSlots, PatchNotesWhetherOriginalIsResolved) {
   void* resolved_slot = original();
   void* foreign_slot = foreign();
 
-  MallocHookerTestAccessor::patchSlot(&lib, &resolved_slot, hook(), original());
-  MallocHookerTestAccessor::patchSlot(&lib, &foreign_slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &resolved_slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &foreign_slot, hook(), original());
 
-  ASSERT_EQ(2, MallocHookerTestAccessor::entryCount());
-  EXPECT_TRUE(MallocHookerTestAccessor::entry(0)._orig_resolved);
-  EXPECT_FALSE(MallocHookerTestAccessor::entry(1)._orig_resolved);
-  MallocHookerTestAccessor::restoreSlot(0);
-  MallocHookerTestAccessor::restoreSlot(1);
+  ASSERT_EQ(2, MallocHookerSlotTestAccessor::entryCount());
+  EXPECT_TRUE(MallocHookerSlotTestAccessor::entry(0)._orig_resolved);
+  EXPECT_FALSE(MallocHookerSlotTestAccessor::entry(1)._orig_resolved);
+  MallocHookerSlotTestAccessor::restoreSlot(0);
+  MallocHookerSlotTestAccessor::restoreSlot(1);
 }
 
 // Every hook must be restorable, so a slot that cannot be recorded stays unhooked.
 TEST_F(MallocHookerSlots, PatchLeavesSlotAloneWhenTableIsFull) {
   void* slot = original();
-  int full = MallocHookerTestAccessor::maxEntries();
-  MallocHookerTestAccessor::setEntryCount(full);
+  int full = MallocHookerSlotTestAccessor::maxEntries();
+  MallocHookerSlotTestAccessor::setEntryCount(full);
 
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
   EXPECT_EQ(original(), slot);
-  EXPECT_EQ(full, MallocHookerTestAccessor::entryCount());
+  EXPECT_EQ(full, MallocHookerSlotTestAccessor::entryCount());
 }
 
 // A stale hook that cannot be recorded would never be restored by stop(), so it
 // is unhooked at once.
 TEST_F(MallocHookerSlots, PatchUnhooksStaleHookWhenTableIsFull) {
   void* slot = hook();
-  int full = MallocHookerTestAccessor::maxEntries();
-  MallocHookerTestAccessor::setEntryCount(full);
+  int full = MallocHookerSlotTestAccessor::maxEntries();
+  MallocHookerSlotTestAccessor::setEntryCount(full);
 
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
   EXPECT_EQ(original(), slot);
-  EXPECT_EQ(full, MallocHookerTestAccessor::entryCount());
+  EXPECT_EQ(full, MallocHookerSlotTestAccessor::entryCount());
 }
 
 // Nothing to patch without a slot, or nothing to forward to without an original.
 TEST_F(MallocHookerSlots, PatchIgnoresMissingSlotOrOriginal) {
   void* slot = original();
 
-  MallocHookerTestAccessor::patchSlot(&lib, nullptr, hook(), original());
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), nullptr);
+  MallocHookerSlotTestAccessor::patchSlot(&lib, nullptr, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), nullptr);
 
   EXPECT_EQ(original(), slot);
-  EXPECT_EQ(0, MallocHookerTestAccessor::entryCount());
+  EXPECT_EQ(0, MallocHookerSlotTestAccessor::entryCount());
 }
 
 TEST_F(MallocHookerSlots, RestorePutsRecordedContentBack) {
   void* slot = pltStub();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
-  MallocHookerTestAccessor::restoreSlot(0);
+  MallocHookerSlotTestAccessor::restoreSlot(0);
 
   EXPECT_EQ(pltStub(), slot);
 }
@@ -243,10 +243,10 @@ TEST_F(MallocHookerSlots, RestorePutsRecordedContentBack) {
 // after us keeps its interception.
 TEST_F(MallocHookerSlots, RestoreLeavesSlotRepatchedBySomeoneElse) {
   void* slot = original();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
   slot = foreign();
 
-  MallocHookerTestAccessor::restoreSlot(0);
+  MallocHookerSlotTestAccessor::restoreSlot(0);
 
   EXPECT_EQ(foreign(), slot);
 }
@@ -259,13 +259,13 @@ TEST_F(MallocHookerSlots, RestoreLeavesSlotRepatchedBySomeoneElse) {
 // any libc.
 TEST_F(MallocHookerSlots, UnpatchKeepsEntriesOfLibraryItCannotVerify) {
   void* slot = original();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
-  MallocHookerTestAccessor::setPatchedLibs(3);
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::setPatchedLibs(3);
 
-  MallocHookerTestAccessor::unpatchLibraries();
+  MallocHookerSlotTestAccessor::unpatchLibraries();
 
-  EXPECT_EQ(1, MallocHookerTestAccessor::entryCount());
-  EXPECT_EQ(0, MallocHookerTestAccessor::patchedLibs());
+  EXPECT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
+  EXPECT_EQ(0, MallocHookerSlotTestAccessor::patchedLibs());
   EXPECT_EQ(hook(), slot);
 }
 
@@ -273,16 +273,16 @@ TEST_F(MallocHookerSlots, UnpatchKeepsEntriesOfLibraryItCannotVerify) {
 // original: its true original (here a PLT stub) is what a later restore needs.
 TEST_F(MallocHookerSlots, RehookOfKeptEntryKeepsTrueOriginal) {
   void* slot = pltStub();
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
-  MallocHookerTestAccessor::setPatchedLibs(3);
-  MallocHookerTestAccessor::unpatchLibraries();
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::setPatchedLibs(3);
+  MallocHookerSlotTestAccessor::unpatchLibraries();
+  ASSERT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
 
-  MallocHookerTestAccessor::patchSlot(&lib, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::patchSlot(&lib, &slot, hook(), original());
 
-  ASSERT_EQ(1, MallocHookerTestAccessor::entryCount());
-  EXPECT_EQ(pltStub(), MallocHookerTestAccessor::entry(0)._orig);
-  MallocHookerTestAccessor::restoreSlot(0);
+  ASSERT_EQ(1, MallocHookerSlotTestAccessor::entryCount());
+  EXPECT_EQ(pltStub(), MallocHookerSlotTestAccessor::entry(0)._orig);
+  MallocHookerSlotTestAccessor::restoreSlot(0);
   EXPECT_EQ(pltStub(), slot);
 }
 #endif // __linux__
@@ -356,12 +356,12 @@ TEST(MachOImageFingerprint, UnknownWithoutUuidOrForeignHeader) {
 static bool restoredBySlotWithFingerprint(LoadedImage& image, u64 fingerprint) {
   image.cc->setImageFingerprint(fingerprint);
   void* slot = original();
-  MallocHookerTestAccessor::patchSlot(image.cc, &slot, hook(), original());
-  MallocHookerTestAccessor::unpatchLibraries();
+  MallocHookerSlotTestAccessor::patchSlot(image.cc, &slot, hook(), original());
+  MallocHookerSlotTestAccessor::unpatchLibraries();
   const bool restored = slot == original();
   // A rejected image keeps its entry, which points at this slot and cache: both are
   // gone when the caller returns.
-  MallocHookerTestAccessor::clearEntries();
+  MallocHookerSlotTestAccessor::clearEntries();
   return restored;
 }
 

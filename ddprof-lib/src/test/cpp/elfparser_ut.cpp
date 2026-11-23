@@ -783,6 +783,9 @@ TEST_F(ElfTest, dynamicSectionMisalignedEntries) {
     ph[0].p_type = PT_LOAD;
     ph[0].p_filesz = IMAGE_SIZE;
     ph[0].p_memsz = IMAGE_SIZE;
+    // A loaded image's PT_LOAD is always readable (the loader maps it R+X);
+    // Symbols::imageFingerprint() only hashes readable segments.
+    ph[0].p_flags = PF_R | PF_X;
     ph[1].p_type = PT_DYNAMIC;
     ph[1].p_vaddr = dyn_off;
     ph[1].p_offset = dyn_off;
@@ -906,6 +909,9 @@ TEST_F(ElfTest, dynamicSectionInvalidRelocationEntrySize) {
     ph[0].p_type = PT_LOAD;
     ph[0].p_filesz = IMAGE_SIZE;
     ph[0].p_memsz = IMAGE_SIZE;
+    // A loaded image's PT_LOAD is always readable (the loader maps it R+X);
+    // Symbols::imageFingerprint() only hashes readable segments.
+    ph[0].p_flags = PF_R | PF_X;
     ph[1].p_type = PT_DYNAMIC;
     ph[1].p_vaddr = dyn_off;
     ph[1].p_offset = dyn_off;
@@ -1092,6 +1098,7 @@ std::unique_ptr<void, decltype(&free)> buildPltImage(const std::vector<Elf64_Dyn
     ph[0].p_type = PT_LOAD;
     ph[0].p_filesz = DYN_IMAGE_SIZE;
     ph[0].p_memsz = DYN_IMAGE_SIZE;
+    ph[0].p_flags = PF_R;  // Symbols::imageFingerprint() only hashes readable segments
     ph[1].p_type = PT_DYNAMIC;
     ph[1].p_vaddr = DYN_OFF;
     ph[1].p_offset = DYN_OFF;

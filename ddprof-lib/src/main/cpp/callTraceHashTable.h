@@ -101,6 +101,22 @@ private:
   static u64 nextGenerationCapacity(u32 capacity);
   static bool wouldExceedSlotIdRange(u64 slot_base, u32 capacity);
 
+  // Spin iterations put() waits on an unpublished slot before re-probing it.
+  static constexpr int MAX_WAIT_CYCLES = 1000;
+
+#ifdef UNIT_TEST
+  // Reached via CallTraceHashTableTestAccessor: put() calls the hook once per
+  // spin iteration, and the slot operations reproduce a concurrent owner's
+  // states on the current table.
+  void (*_wait_hook_for_test)(void *arg) = nullptr;
+  void *_wait_hook_arg_for_test = nullptr;
+  u32 firstSlotForTest(u64 hash);
+  bool claimSlotForTest(u32 slot, u64 key);
+  bool markPreparingForTest(u32 slot);
+  u64 publishSlotForTest(u32 slot, int num_frames, ASGCT_CallFrame *frames, bool truncated);
+  void abandonSlotForTest(u32 slot);
+#endif
+
   std::atomic<u64> _instance_id;  // 64-bit instance ID for this hash table - atomic for thread-safe access
   CallTraceStorage* _parent_storage;  // Parent storage for RefCountGuard access
 
@@ -120,6 +136,7 @@ private:
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
                             bool truncated, u64 trace_id);
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
+  u64 traceIdForSlot(LongHashTable *table, u32 slot);
   void decrementCounters();
   
   void expandTableIfNeeded(LongHashTable* table, u32 size);
