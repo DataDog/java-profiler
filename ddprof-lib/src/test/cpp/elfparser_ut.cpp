@@ -1249,6 +1249,49 @@ TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
     }
 }
 
+// DT_RELACOUNT/DT_RELCOUNT = 1 skips only the leading relative relocation: the second
+// entry is still imported and fingerprinted, the first is neither (both GLOB_DAT-typed,
+// so only the count excludes it).
+TEST_F(ElfTest, relativeCountSkipsOnlyLeadingEntries) {
+    if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
+    struct Table {
+        const char* name;
+        int64_t tag, size_tag, ent_tag, count_tag;
+        uint64_t ent;
+    };
+    const Table tables[] = {
+        {"rela", DT_RELA, DT_RELASZ, DT_RELAENT, DT_RELACOUNT, sizeof(Elf64_Rela)},
+        {"rel", DT_REL, DT_RELSZ, DT_RELENT, DT_RELCOUNT, sizeof(Elf64_Rel)},
+    };
+    for (const Table& t : tables) {
+        SCOPED_TRACE(t.name);
+        auto mem = buildGotImage(t.tag, t.size_tag, 2 * t.ent, t.ent_tag, t.ent, t.count_tag, 1);
+        ASSERT_THAT(mem.get(), ::testing::NotNull());
+        char* image = static_cast<char*>(mem.get());
+        auto setOffset = [&](int entry, uint64_t r_offset) {
+            Elf64_Rela e;
+            memset(&e, 0, sizeof(e));
+            e.r_offset = r_offset;
+            e.r_info = ELF64_R_INFO(1, GLOB_DAT_TYPE);
+            memcpy(image + DYN_JMPREL_OFF + entry * t.ent, &e, t.ent);
+        };
+        setOffset(0, PLT_SLOT + 2 * sizeof(void*));
+        setOffset(1, PLT_SLOT);
+        EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
+
+        const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+        auto fingerprint = [&] {
+            return Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+        };
+        const u64 base = fingerprint();
+        EXPECT_NE(base, 0u);
+        setOffset(0, PLT_SLOT + 4 * sizeof(void*));
+        EXPECT_EQ(fingerprint(), base);  // the skipped relative entry is not hashed
+        setOffset(1, PLT_SLOT + 6 * sizeof(void*));
+        EXPECT_NE(fingerprint(), base);  // the entry after the prefix is
+    }
+}
+
 // A DT_RELAENT smaller than an Elf64_Rela on a DT_RELA table is invalid: the table
 // is skipped in the parse and the fingerprint instead of walked at the wrong stride.
 // sizeof(Elf64_Rela) itself is accepted (relativeCountOverflowSkipsWholeTable).
