@@ -88,7 +88,8 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch, jint tid,
 
 void LivenessTracker::promoteThreadGenCandidates(
     KlassCountScratch &scratch, KlassCountScratch::ThreadGens *displaced,
-    int *displaced_count) {
+    int *displaced_count, KlassCountScratch::ThreadGens *unpromoted,
+    int *unpromoted_count) {
   for (int i = 0; i < scratch.challenger_count; i++) {
     const auto &candidate = scratch.challengers[i];
     if (scratch.thread_count < KlassCountScratch::MAX_THREADS_PER_KLASS) {
@@ -114,6 +115,10 @@ void LivenessTracker::promoteThreadGenCandidates(
         displaced[(*displaced_count)++] = weakest;
       }
       scratch.threads[victim] = candidate;
+    } else if (unpromoted != nullptr && unpromoted_count != nullptr &&
+               *unpromoted_count <
+                   KlassCountScratch::MAX_THREAD_CHALLENGERS_PER_KLASS) {
+      unpromoted[(*unpromoted_count)++] = candidate;
     }
   }
   scratch.challenger_count = 0;
@@ -127,7 +132,11 @@ void LivenessTracker::recordTidTrendSamplesLocked(
   KlassCountScratch::ThreadGens displaced
       [KlassCountScratch::MAX_THREAD_CHALLENGERS_PER_KLASS];
   int displaced_count = 0;
-  promoteThreadGenCandidates(scratch, displaced, &displaced_count);
+  KlassCountScratch::ThreadGens unpromoted
+      [KlassCountScratch::MAX_THREAD_CHALLENGERS_PER_KLASS];
+  int unpromoted_count = 0;
+  promoteThreadGenCandidates(scratch, displaced, &displaced_count, unpromoted,
+                             &unpromoted_count);
   KlassPopulationEntry &entry = _klass_population[slot];
   auto push_trend_sample =
       [&](KlassPopulationEntry::TidTrend *trend,
@@ -230,7 +239,9 @@ void LivenessTracker::recordTidTrendSamplesLocked(
   // A promotion that replaced an incumbent discarded the victim's current-epoch sample: the
   // absent-tid pass below would write the still-live thread a zero epoch and reset its
   // qualification. A displaced incumbent with a tracked (non-synthetic) trend records its live
-  // sample instead; one without a trend slot has no qualification to lose.
+  // sample instead; one without a trend slot has no qualification to lose. An unpromoted
+  // challenger with a tracked trend gets the same treatment: it met the fold with a live
+  // sample, and promotion's failure must not read as absence and reset its streak.
   for (int d = 0; d < displaced_count; d++) {
     KlassPopulationEntry::TidTrend *trend = nullptr;
     for (int i = 0; i < entry.tid_trend_count; i++) {
@@ -243,6 +254,19 @@ void LivenessTracker::recordTidTrendSamplesLocked(
       continue;
     }
     push_trend_sample(trend, displaced[d]);
+  }
+  for (int u = 0; u < unpromoted_count; u++) {
+    KlassPopulationEntry::TidTrend *trend = nullptr;
+    for (int i = 0; i < entry.tid_trend_count; i++) {
+      if (entry.tid_trends[i].tid == unpromoted[u].tid) {
+        trend = &entry.tid_trends[i];
+        break;
+      }
+    }
+    if (trend == nullptr || trend->synthetic) {
+      continue;
+    }
+    push_trend_sample(trend, unpromoted[u]);
   }
   // Absent tids receive a zero epoch so stale trends cannot remain qualified.
   for (int i = 0; i < entry.tid_trend_count; i++) {
@@ -259,6 +283,9 @@ void LivenessTracker::recordTidTrendSamplesLocked(
     }
     for (int d = 0; !present && d < displaced_count; d++) {
       present = displaced[d].tid == trend.tid;
+    }
+    for (int u = 0; !present && u < unpromoted_count; u++) {
+      present = unpromoted[u].tid == trend.tid;
     }
     if (present) {
       continue;

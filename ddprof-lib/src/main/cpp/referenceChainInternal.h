@@ -42,37 +42,63 @@ public:
     return _buffer->containsAction(_lease, tag, action);
   }
 
-  // Unknown shapes can use only pending slots; confirmed containers can use the local share.
-  // Spend one scope slot so callbacks cannot overbook replay capacity before the flush.
+  // Unknown shapes can use only pending slots; confirmed containers can use the local share,
+  // then a pending slot, then displace a staged unknown. The master budget bounds the scope's
+  // buffer FOOTPRINT: only growing admissions spend it, so a confirmed container whose record
+  // displaces a pending unknown stays admissible after the unknowns exhausted the buffer.
   bool reserveLocalStaging(jlong tag, jlong class_tag) {
-    if (_local_staging_budget == 0 ||
-        !_tracker->localHolderNeedsObservation(tag, class_tag)) {
-      return false;
-    }
+    // Branch on the shape first: an exhausted budget must fail without paying
+    // localHolderNeedsObservation()'s up-to-three hash lookups (this runs per local-root edge
+    // inside the JVMTI enumeration callback, and the exhausted case is the saturated norm).
     auto shape = _tracker->_class_shape_cache.find(class_tag);
-    if (shape == _tracker->_class_shape_cache.end()) {
-      if (_local_pending_budget == 0) {
+    const bool unclassified = shape == _tracker->_class_shape_cache.end();
+    const bool confirmed_container =
+        !unclassified &&
+        (shape->second == (u8)ReferenceChainTracker::AnchorClassShape::CONTAINER ||
+         shape->second ==
+             (u8)ReferenceChainTracker::AnchorClassShape::UNKNOWN_TRUNCATED);
+    if (unclassified) {
+      if (_local_staging_budget == 0 || _local_pending_budget == 0 ||
+          !_tracker->localHolderNeedsObservation(tag, class_tag)) {
         return false;
       }
       _local_pending_budget--;
-    } else if (shape->second ==
-                   (u8)ReferenceChainTracker::AnchorClassShape::CONTAINER ||
-               shape->second == (u8)ReferenceChainTracker::AnchorClassShape::
-                                    UNKNOWN_TRUNCATED) {
-      if (_local_index_budget > 0) {
-        _local_index_budget--;
-      } else if (_local_pending_budget > 0) {
-        _local_pending_budget--;
-      } else if (_local_evictable_budget > 0) {
-        _local_evictable_budget--;
-      } else {
-        return false;
-      }
-    } else {
+      _local_staging_budget--;
+      // The unknown this record parks in the pending buffer is itself displaceable: replay's
+      // eviction replaces the oldest unknown slot with a later confirmed container, so the
+      // container's own staging can spend this budget instead of being rejected.
+      _local_evictable_budget++;
+      return true;
+    }
+    if (!confirmed_container) {
       return false;
     }
-    _local_staging_budget--;
-    return true;
+    if (_local_index_budget > 0) {
+      if (!_tracker->localHolderNeedsObservation(tag, class_tag)) {
+        return false;
+      }
+      _local_index_budget--;
+      _local_staging_budget--;
+      return true;
+    }
+    if (_local_pending_budget > 0) {
+      if (!_tracker->localHolderNeedsObservation(tag, class_tag)) {
+        return false;
+      }
+      _local_pending_budget--;
+      _local_staging_budget--;
+      return true;
+    }
+    if (_local_evictable_budget > 0) {
+      if (!_tracker->localHolderNeedsObservation(tag, class_tag)) {
+        return false;
+      }
+      // Displacement: replay's eviction replaces a pending unknown with this holder, so the
+      // buffer footprint is unchanged and replay can always absorb the record.
+      _local_evictable_budget--;
+      return true;
+    }
+    return false;
   }
 
   bool reserveAtRiskStaging(jlong tag, u32 klass_id) {

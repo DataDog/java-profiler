@@ -1366,3 +1366,179 @@ TEST_F(ReferenceChainsBfsTest, ReplayedDurableWaveKeepsEvictedTurnsPending) {
 
     tracker->stop();
 }
+
+// The root-enumeration stamp dedup suppresses a repeated durable report on an indexed holder
+// (rootReportCompleted()'s anchor_indexed disjunct). When the index still stores the
+// admission-time class tag 0 and this report carries the resolved tag, the callback must journal
+// the re-enlist so replay's 0-to-resolved upgrade runs - otherwise selection cannot recognize
+// the reparented holder's collection shape and persistent revisits stop.
+TEST_F(ReferenceChainsBfsTest, SuppressedDurableReportStillRefreshesStoredClassTag) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong tag = 21001;
+    const jlong resolved_class = -3107;
+    insertAnchorEntry(frontier, tag, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        tag, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    ASSERT_EQ(0, AnchorAcc::indexedAnchorClassTagForTest(tag));
+
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        reportRediscovery(pass, tag, resolved_class);
+        pass.scope.flush();
+    }
+    EXPECT_EQ(resolved_class, AnchorAcc::indexedAnchorClassTagForTest(tag))
+        << "the suppressed report must still journal the 0-to-resolved refresh";
+
+    // A further report on the resolved holder is a plain dedup no-op: the stored tag is already
+    // resolved, so no refresh is journaled and the index state does not change.
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        reportRediscovery(pass, tag, resolved_class);
+        pass.scope.flush();
+    }
+    EXPECT_EQ(resolved_class, AnchorAcc::indexedAnchorClassTagForTest(tag));
+    EXPECT_EQ(1u, AnchorAcc::anchorIndexSizeForTest());
+
+    tracker->stop();
+}
+
+// A locally indexed container sighted by a durable root edge promotes to the durable share: the
+// callback journals the durable add even though the report itself is dedup-suppressed, and
+// replay releases the local slot. Without it, a reparented holder consumes a local slot forever
+// - 4,096 such holders block new local collections despite free durable capacity.
+TEST_F(ReferenceChainsBfsTest, DurableSightingPromotesLocallyIndexedHolder) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong tag = 22001;
+    const jlong container_class = -3207;
+    insertAnchorEntry(frontier, tag, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class, true);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(tag, container_class);
+    ASSERT_EQ(1u, AnchorAcc::localAnchorCountForTest());
+    ASSERT_EQ(1u, AnchorAcc::anchorIndexSizeForTest());
+
+    {
+        AnchorScopedPass pass(tracker, frontier);
+        reportRediscovery(pass, tag, container_class);
+        pass.scope.flush();
+    }
+    EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest())
+        << "the durable sighting must release the local slot";
+    EXPECT_EQ(1u, AnchorAcc::anchorIndexSizeForTest())
+        << "the holder stays indexed, now in the durable share";
+    EXPECT_EQ(container_class, AnchorAcc::indexedAnchorClassTagForTest(tag));
+
+    tracker->stop();
+}
+
+// The re-enlist replay promotes a locally indexed holder the same way addToStaticAnchorIndex()
+// does: the descent's durable-edge reports journal REENLIST_ELIGIBLE for indexed selectable
+// holders, and that replay must release the local slot too.
+TEST_F(ReferenceChainsBfsTest, ReenlistReplayPromotesLocallyIndexedHolder) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong tag = 22051;
+    const jlong container_class = -3208;
+    insertAnchorEntry(frontier, tag, 555, JVMTI_HEAP_REFERENCE_STACK_LOCAL);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class, true);
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(tag, container_class);
+    ASSERT_EQ(1u, AnchorAcc::localAnchorCountForTest());
+
+    AnchorObservation record{};
+    record.tag = tag;
+    record.own_class_tag = container_class;
+    record.actions = AnchorObservation::REENLIST_ELIGIBLE;
+    ReferenceChainsTestAccessor::replayAnchorObservationsForTest({record});
+
+    EXPECT_EQ(0u, AnchorAcc::localAnchorCountForTest())
+        << "the re-enlist replay must release the local slot";
+    EXPECT_EQ(1u, AnchorAcc::anchorIndexSizeForTest());
+
+    tracker->stop();
+}
+
+// A confirmed container arriving after the pending buffer filled with unclassified holders in
+// the same walk must still stage: every staged unknown is displaceable in replay, so the
+// container's record displaces the oldest unknown instead of being rejected while a local slot
+// would have been available through that displacement.
+TEST_F(ReferenceChainsBfsTest, ConfirmedContainerDisplacesPendingUnknownInSameScope) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong container_class = -3307;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class, true);
+    // Fill the local share to its cap with confirmed containers.
+    for (jlong t = 30001; t < 30001 + (jlong)ReferenceChainsTestAccessor::kLocalAnchorIndexCap;
+         t++) {
+        ReferenceChainsTestAccessor::noteLocalRootHolderForTest(t, container_class);
+    }
+    ASSERT_EQ((size_t)ReferenceChainsTestAccessor::kLocalAnchorIndexCap,
+              AnchorAcc::localAnchorCountForTest());
+
+    {
+        ReferenceChainAnchorObservationScope scope(tracker);
+        auto stage_local_record = [&](jlong tag, jlong class_tag) -> bool {
+            if (!scope.reserveLocalStaging(tag, class_tag)) {
+                return false;
+            }
+            AnchorObservationReservationGuard reservation;
+            if (!reservation.acquire(scope)) {
+                return false;
+            }
+            AnchorObservation record{};
+            record.tag = tag;
+            record.own_class_tag = class_tag;
+            record.actions = AnchorObservation::LOCAL;
+            reservation.commit(record);
+            return true;
+        };
+        // Unclassified holders fill the pending buffer: each spends one pending slot and, per
+        // the displacement contract, makes itself evictable by a later confirmed container.
+        for (int i = 0; i < (int)ReferenceChainsTestAccessor::kPendingLocalAnchorCap; i++) {
+            ASSERT_TRUE(stage_local_record(40000 + i, -3999 - i));
+        }
+        ASSERT_TRUE(stage_local_record(50001, container_class))
+            << "the confirmed container must stage by displacing a staged unknown";
+        scope.flush();
+    }
+    EXPECT_TRUE(AnchorAcc::pendingLocalAnchorContainsForTest(50001));
+    EXPECT_EQ((size_t)ReferenceChainsTestAccessor::kLocalAnchorIndexCap,
+              AnchorAcc::localAnchorCountForTest())
+        << "the container stays parked in the pending buffer; the local share is unchanged";
+    EXPECT_EQ((size_t)ReferenceChainsTestAccessor::kPendingLocalAnchorCap,
+              AnchorAcc::pendingLocalAnchorCountForTest());
+
+    // The displacement budget is finite: once every pending unknown is displaced, further
+    // confirmed containers are rejected. A mutation of the budget check from `> 0` to `>= 0`
+    // would admit a container with no unknown left to displace.
+    {
+        ReferenceChainAnchorObservationScope scope(tracker);
+        int admitted = 0;
+        bool rejected = false;
+        for (jlong t = 60000; t < 60000 + 1100 && !rejected; t++) {
+            if (scope.reserveLocalStaging(t, container_class)) {
+                admitted++;
+            } else {
+                rejected = true;
+            }
+        }
+        EXPECT_TRUE(rejected) << "the displacement budget must be finite";
+        EXPECT_EQ((size_t)ReferenceChainsTestAccessor::kPendingLocalAnchorCap - 1,
+                  (size_t)admitted)
+            << "exactly the remaining displaced unknowns may be staged";
+    }
+
+    tracker->stop();
+}

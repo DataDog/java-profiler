@@ -745,6 +745,21 @@ public:
     static size_t anchorOwnClassTagsSizeForTest() {
         return ReferenceChainTracker::instance()->_static_anchor_own_class_tags.size();
     }
+    // The durable index's stored class tag for `tag` (0 when unindexed or un-upgraded).
+    static jlong indexedAnchorClassTagForTest(jlong tag) {
+        const auto &tags =
+            ReferenceChainTracker::instance()->_static_anchor_index_class_tags;
+        auto it = tags.find(tag);
+        return it == tags.end() ? 0 : it->second.class_tag;
+    }
+    static void indexAnchorForRotationForTest(jlong tag, jlong class_tag) {
+        ReferenceChainTracker::instance()->indexAnchorForRotation(tag, class_tag);
+    }
+    static void replayAnchorObservationsForTest(
+        const std::vector<AnchorObservation> &records) {
+        ReferenceChainTracker::instance()->replayAnchorObservations(
+            records.data(), (u32)records.size(), false);
+    }
     static size_t pendingLocalAnchorCountForTest() {
         return ReferenceChainTracker::instance()->_pending_local_anchors.size();
     }

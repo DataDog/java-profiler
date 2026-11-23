@@ -88,6 +88,21 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   // starve later roots.
   bool durable_observation_complete = false;
   bool stage_local = false;
+  // A locally indexed holder sighted by a durable root edge promotes to the durable share:
+  // replay must release its local slot, independent of the root-kind upgrade (which refuses
+  // reparented holders) and of the report-completed dedup (whose suppression would otherwise
+  // leave the holder consuming both a local slot and durable capacity forever). The local
+  // share only holds container or UNKNOWN_TRUNCATED shapes - noteLocalRootHolder() refuses
+  // classified non-containers - so the promotion never moves a non-container in.
+  bool stage_promotion = durable_root && *tag_ptr > 0 && !isLeakTag(*tag_ptr) &&
+                         !ctx->tracker->isLocalShareEmpty() &&
+                         ctx->tracker->isLocalShareIndexed(*tag_ptr);
+  // Same suppression escape for the 0-to-resolved class-tag refresh: the dedup only stands in
+  // for restaging, not for the tag upgrade replay's dedup path exists to perform.
+  bool stage_refresh =
+      durable_root && !stage_promotion && *tag_ptr > 0 && !isLeakTag(*tag_ptr) &&
+      completed_durable_report &&
+      ctx->tracker->indexedAnchorNeedsClassTagRefresh(*tag_ptr, class_tag);
   if (local_root && (*tag_ptr >= 0 || isLeakTag(*tag_ptr)) &&
       !ctx->anchor_scope.containsAction(*tag_ptr, AnchorObservation::LOCAL)) {
     jlong observation_tag = isLeakTag(*tag_ptr) ? 0 : *tag_ptr;
@@ -95,7 +110,8 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
         ctx->anchor_scope.reserveLocalStaging(observation_tag, class_tag);
   }
   AnchorObservationReservationGuard reservation;
-  if (((durable_root && !completed_durable_report) || stage_local) &&
+  if (((durable_root && !completed_durable_report) || stage_local ||
+       stage_promotion || stage_refresh) &&
       !reservation.acquire(ctx->anchor_scope)) {
     ctx->abortForObservationOverflow(/*static_attachment=*/false);
     return JVMTI_ITERATION_ABORT;
@@ -199,6 +215,17 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   }
   default:
     break;
+  }
+  if (stage_promotion) {
+    actions |= AnchorObservation::DURABLE_ADD;
+    durable_kind = translated_root_kind;
+    durable_observation_complete = true;
+    if (record_class_tag == 0) {
+      record_class_tag = class_tag;
+    }
+  } else if (stage_refresh) {
+    actions |= AnchorObservation::REENLIST_ELIGIBLE;
+    durable_observation_complete = true;
   }
   // Remember eligible local holders before expansion reparents them into deeper chains.
   // Stage only reports accepted by the pre-admission gate and this scope's replay budget.

@@ -2860,3 +2860,85 @@ TEST_F(ReferenceChainsBfsTest, TruncatedLocalShapeStaysSelectable) {
     EXPECT_NE(std::find(selected.begin(), selected.end(), tag), selected.end())
         << "a truncated classification must not cache a permanent non-match";
 }
+
+// A failed GetObjectsWithTags() walks nothing, so every selected anchor must come back unwalked:
+// the caller requeues them instead of marking their first looks served without a walk. Without
+// this, an evicted holder whose only queued visit was the failed selection loses it for good.
+TEST_F(ReferenceChainsBfsTest, GetObjectsWithTagsFailureKeepsSelectedAnchorsUnwalked) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    void *holderCls = (void *)0x4101;
+    addClass(holderCls, "Lcom/rc/walkfail/Holder;");
+    int nodeA = addNode();
+    int nodeB = addNode();
+    node_tags[nodeA] = 4101;
+    node_tags[nodeB] = 4102;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4101, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4102, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        4101, 9101, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        4102, 9102, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    std::vector<jlong> selected = {4101, 4102};
+
+    fail_get_objects_with_tags = true;
+    std::vector<jlong> unwalked;
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticAnchorFifoForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges, &unwalked);
+    fail_get_objects_with_tags = false;
+    EXPECT_EQ(0, edges) << "no anchor was descended";
+    EXPECT_EQ(selected, unwalked)
+        << "every selected anchor must be reported unwalked on resolution failure";
+
+    tracker->stop();
+}
+
+// A failed FollowReferences() descent was not walked: this anchor and everything after it stay
+// unwalked, keeping their first-look turns for the retry pass. The resolved local ref pins the
+// object, so a failure here is transient rather than a missing object.
+TEST_F(ReferenceChainsBfsTest, FollowReferencesFailureKeepsAnchorsUnwalked) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    void *holderCls = (void *)0x4201;
+    addClass(holderCls, "Lcom/rc/walkfail/FollowFail;");
+    int nodeA = addNode();
+    int nodeB = addNode();
+    node_tags[nodeA] = 4201;
+    node_tags[nodeB] = 4202;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4201, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4202, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        4201, 9201, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        4202, 9202, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    std::vector<jlong> selected = {4201, 4202};
+
+    follow_references_error = JVMTI_ERROR_OUT_OF_MEMORY;
+    std::vector<jlong> unwalked;
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticAnchorFifoForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges, &unwalked);
+    follow_references_error = JVMTI_ERROR_NONE;
+    EXPECT_EQ(0, edges) << "no anchor was descended";
+    EXPECT_EQ(selected, unwalked)
+        << "the failed descent and its successors must stay unwalked";
+
+    tracker->stop();
+}

@@ -96,6 +96,10 @@ void ReferenceChainTracker::replayAnchorObservations(
       // dedup no-op - except that a repeated sighting carrying a resolved class tag upgrades a
       // stored 0 own-class tag (the sweep's class object is the only carrier of the resolved tag
       // once reparenting has taken the root-attached eligibility away).
+      // A durable sighting also promotes a locally indexed holder to the durable share:
+      // release its local slot the way addToStaticAnchorIndex() does (no-op for durable-share
+      // and evicted tags; LOCAL records never share a record with a durable action).
+      _local_anchor_tags.erase(r.tag);
       indexAnchorForRotation(r.tag, r.own_class_tag);
     }
     if (r.actions & AnchorObservation::AT_RISK) {
@@ -107,7 +111,7 @@ void ReferenceChainTracker::replayAnchorObservations(
   }
 }
 
-void ReferenceChainTracker::descendFromAnchor(
+jvmtiError ReferenceChainTracker::descendFromAnchor(
     jvmtiEnv *jvmti, JNIEnv *jni, ReferenceChainAnchorObservationScope &scope,
     jobject anchor, jlong anchor_tag, u32 anchor_depth,
     jlong anchor_descend_class_tag, int budget, int *edges_admitted,
@@ -139,7 +143,8 @@ void ReferenceChainTracker::descendFromAnchor(
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.heap_reference_callback = heapReferenceCallback;
   u64 follow_start_ns = OS::nanotime();
-  jvmti->FollowReferences(0, nullptr, anchor, &callbacks, &ctx);
+  jvmtiError follow_err =
+      jvmti->FollowReferences(0, nullptr, anchor, &callbacks, &ctx);
   *safepoint_ns += OS::nanotime() - follow_start_ns;
   *edges_admitted += ctx.edges_admitted;
   *truncated = *truncated || ctx.truncated;
@@ -147,6 +152,7 @@ void ReferenceChainTracker::descendFromAnchor(
   // observeReturn() takes the buffer lock, ordering the callbacks' writes before this read.
   *anchor_observation_overflow =
       scope.observeReturn() || ctx.anchor_observation_overflow;
+  return follow_err;
 }
 
 std::vector<jlong>
@@ -268,9 +274,16 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
     while (!_static_anchor_fresh_queue.empty() && fresh_room > 0) {
       FreshAnchor anchor = _static_anchor_fresh_queue.front();
       _static_anchor_fresh_queue.pop_front();
+      // A queued entry carries the enqueue-time class tag; the index's stored tag is the
+      // authority - a 0-to-resolved upgrade between enqueue and pop must not make the fresh
+      // lane reject an eligible container and spend its only queued turn.
+      auto known = _static_anchor_index_class_tags.find(anchor.tag);
+      jlong shape_tag = known != _static_anchor_index_class_tags.end()
+                            ? known->second.class_tag
+                            : anchor.own_class_tag;
       FrontierEntry entry{};
       if (!frontier->lookupLocked(anchor.tag, &entry) ||
-          !isSelectableAnchor(entry, anchor.own_class_tag) ||
+          !isSelectableAnchor(entry, shape_tag) ||
           (entry.state != FrontierEntryState::FRONTIER &&
            entry.state != FrontierEntryState::EXPANDED) ||
           isQueuedForRotation(anchor.tag) || entry.leak_tag != 0) {
@@ -279,7 +292,7 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
         fresh_spent_tags.push_back(anchor.tag);
         continue;
       }
-      auto shape_it = _class_shape_cache.find(anchor.own_class_tag);
+      auto shape_it = _class_shape_cache.find(shape_tag);
       bool keep = shape_it == _class_shape_cache.end() ||
                   shape_it->second == (u8)AnchorClassShape::CONTAINER ||
                   shape_it->second == (u8)AnchorClassShape::UNKNOWN_TRUNCATED;
@@ -507,8 +520,12 @@ void ReferenceChainTracker::noteLocalRootHolder(jlong tag,
     }
     PendingLocalAnchor &victim = _pending_local_anchors[_pending_local_evict_cursor++];
     _pending_local_anchor_tags.erase(victim.tag);
+    // The count is maintained by the same replay that parks the entries, so it must be positive
+    // here; the clamp keeps a drifted count from wrapping the size_t in release builds while the
+    // assert keeps the drift visible in debug.
     assert(_pending_local_evictable_count > 0);
-    _pending_local_evictable_count--;
+    _pending_local_evictable_count =
+        _pending_local_evictable_count > 0 ? _pending_local_evictable_count - 1 : 0;
     victim = PendingLocalAnchor{tag, own_class_tag};
     _pending_local_anchor_tags.insert(tag);
     return;
@@ -669,6 +686,11 @@ void ReferenceChainTracker::eraseAnchorEntries(
   }
   for (jlong tag : removed) {
     _static_anchor_index_tags.erase(tag);
+    auto known = _static_anchor_index_class_tags.find(tag);
+    if (known != _static_anchor_index_class_tags.end() &&
+        known->second.class_tag == 0) {
+      _indexed_zero_class_tag_count--;
+    }
     _static_anchor_index_class_tags.erase(tag);
     _local_anchor_tags.erase(tag);
   }
@@ -728,6 +750,7 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
     if (own_class_tag != 0 && known->second.class_tag == 0) {
       known->second.class_tag = own_class_tag;
       _static_anchor_own_class_tags[known->second.pos] = own_class_tag;
+      _indexed_zero_class_tag_count--;
     }
     return;
   }
@@ -741,6 +764,9 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
   evictOldestDurableAnchors();
   _static_anchor_index_class_tags.emplace(
       tag, StaticAnchorIndexEntry{own_class_tag, _static_anchor_index.size()});
+  if (own_class_tag == 0) {
+    _indexed_zero_class_tag_count++;
+  }
   _static_anchor_index.push_back(tag);
   _static_anchor_own_class_tags.push_back(own_class_tag);
   if (_frontier != nullptr &&
@@ -1047,8 +1073,14 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
   jobject *objects = nullptr;
   jlong *resolved_tags = nullptr;
   if (jvmti->GetObjectsWithTags((jint)anchor_tags.size(), anchor_tags.data(),
-                              &resolved_count, &objects,
-                              &resolved_tags) != JVMTI_ERROR_NONE) {
+                                &resolved_count, &objects,
+                                &resolved_tags) != JVMTI_ERROR_NONE) {
+    // No anchor was walked, so none may be reported as walked: the caller marks first looks
+    // served only for tags outside `unwalked`. Permanently dead tags fail to resolve on the
+    // retry pass and are reclaimed by the missing-anchor path there.
+    if (unwalked != nullptr) {
+      unwalked->insert(unwalked->end(), anchor_tags.begin(), anchor_tags.end());
+    }
     return;
   }
   if ((jint)anchor_tags.size() > resolved_count) {
@@ -1094,15 +1126,25 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
     }
     int edges_before = *edges_admitted;
     bool overflow = false;
-    descendFromAnchor(jvmti, jni, scope, objects[i], resolved_tags[i],
-                      entry.depth, /*anchor_descend_class_tag=*/0, remaining,
-                      edges_admitted, truncated, frontier_cap_hit, safepoint_ns,
-                      &overflow);
+    jvmtiError follow_err =
+        descendFromAnchor(jvmti, jni, scope, objects[i], resolved_tags[i],
+                          entry.depth, /*anchor_descend_class_tag=*/0, remaining,
+                          edges_admitted, truncated, frontier_cap_hit, safepoint_ns,
+                          &overflow);
     TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors anchor walk "
              "outcome tag=%lld edges=%d truncated=%d cap_hit=%d",
              (long long)resolved_tags[i], *edges_admitted - edges_before,
              (int)*truncated, (int)*frontier_cap_hit);
     jni->DeleteLocalRef(objects[i]);
+    if (follow_err != JVMTI_ERROR_NONE) {
+      // A failed descent was not walked; this anchor and everything after it keep their
+      // rotation turn via the unwalked path. The local ref was already deleted above, so the
+      // object may be collected before the retry pass - the retry's resolution then misses it
+      // and the missing-anchor path reclaims the slot instead of retrying a dead tag.
+      first_unwalked = i;
+      first_undeleted = i + 1;
+      break;
+    }
     if (overflow) {
       // The partially walked anchor stays unwalked (its rejected edge was not applied) so the
       // caller restores it with the remaining resolved tags. Edge-accounting contract:
@@ -1233,22 +1275,38 @@ void ReferenceChainTracker::walkCandidateThreadLocals(
         int remaining = budget - *edges_admitted;
         if (remaining > 0) {
           bool overflow = false;
+          jvmtiError follow_err = JVMTI_ERROR_NONE;
           {
             ReferenceChainAnchorObservationScope scope(this);
-            descendFromAnchor(jvmti, jni, scope, thread_obj, anchor_tag,
-                              anchor_depth, descend_class_tag, remaining,
-                              edges_admitted, truncated, frontier_cap_hit,
-                              safepoint_ns, &overflow);
+            follow_err = descendFromAnchor(
+                jvmti, jni, scope, thread_obj, anchor_tag, anchor_depth,
+                descend_class_tag, remaining, edges_admitted, truncated,
+                frontier_cap_hit, safepoint_ns, &overflow);
             // Flush this descent before the loop advances or retains its cursor.
             // Later traversal decisions must see its accepted observations.
             scope.flush();
           }
-          if (overflow) {
+          if (overflow || follow_err != JVMTI_ERROR_NONE) {
             // The partially walked anchor stays unwalked (its rejected edge was not applied),
             // matching walkStaticFieldAnchors(): the descent is not misreported as consumed, so
-            // the retained cursor re-walks it in full without the walked count charging it.
+            // the retained cursor re-walks it in full without the walked count charging it. A
+            // failed FollowReferences is transient, not a missing object - the walked thread is
+            // a registered JNI global ref and stays reachable for the retry. A persistent
+            // FollowReferences failure must not re-anchor the
+            // cursor on the same anchor every pass: after THREAD_WALK_FAILURE_SKIP consecutive
+            // failures the cursor advances past it and the wrap retries it on a later cycle.
+            // A journal overflow keeps the plain retain: it clears with the next pass's flush.
+            if (follow_err != JVMTI_ERROR_NONE) {
+              _thread_walk_consecutive_failures++;
+              if (_thread_walk_consecutive_failures >= THREAD_WALK_FAILURE_SKIP) {
+                _thread_walk_consecutive_failures = 0;
+                i = (i + 1) % total;
+                _thread_walk_anchor_cursor = i;
+              }
+            }
             break; // retain the cursor on this thread: its walk was cut short
           }
+          _thread_walk_consecutive_failures = 0;
           walked++;
         }
       }

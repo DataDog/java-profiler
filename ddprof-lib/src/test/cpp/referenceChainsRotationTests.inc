@@ -1743,3 +1743,40 @@ TEST_F(ReferenceChainsBfsTest, UnwalkedFreshPicksKeepTheirQueuedTurn) {
 
     tracker->stop();
 }
+
+// A queued first look carries the enqueue-time class tag; the index's stored tag is the
+// authority at pop time. A holder indexed before its class resolved (stored 0, later upgraded)
+// must not be rejected by the stale carried tag: after reparenting, isSelectableAnchor() judged
+// on the stale tag spends the holder's only queued turn on an otherwise eligible container.
+TEST_F(ReferenceChainsBfsTest, FreshLanePopUsesIndexClassTagForQueuedEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong tag = 43501;
+    const jlong resolved_class = -3310;
+    // Reparented holder: parent_tag != 0, so isSelectableAnchor() needs the class shape.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, tag, 999, 1, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::primeClassShapeForTest(resolved_class, true);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        tag, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    ReferenceChainsTestAccessor::indexAnchorForRotationForTest(tag, resolved_class);
+    ASSERT_EQ(resolved_class, ReferenceChainsTestAccessor::indexedAnchorClassTagForTest(tag));
+    // The first index admission queued the holder with the admission-time tag 0; the stored
+    // index tag has since been upgraded to the resolved class.
+
+    std::vector<ReferenceChainsTestAccessor::FreshAnchor> fresh_picked;
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            1, &fresh_picked);
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(tag, selected[0]);
+    ASSERT_EQ(1u, fresh_picked.size());
+    EXPECT_EQ(tag, fresh_picked[0].tag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshQueueTagsForTest().empty());
+
+    tracker->stop();
+}

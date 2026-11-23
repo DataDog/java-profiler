@@ -1123,6 +1123,7 @@ void ReferenceChainTracker::restartSearch() {
   _static_anchor_own_class_tags.clear();
   _static_anchor_index_tags.clear();
   _static_anchor_index_class_tags.clear();
+  _indexed_zero_class_tag_count = 0;
   _local_anchor_tags.clear();
   _pending_local_anchors.clear();
   _pending_local_anchor_tags.clear();
@@ -1228,6 +1229,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _static_anchor_own_class_tags.clear();
   _static_anchor_index_tags.clear();
   _static_anchor_index_class_tags.clear();
+  _indexed_zero_class_tag_count = 0;
   _local_anchor_tags.clear();
   _pending_local_anchors.clear();
   _pending_local_anchor_tags.clear();

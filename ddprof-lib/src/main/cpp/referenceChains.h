@@ -543,6 +543,10 @@ private:
     size_t pos;
   };
   std::unordered_map<jlong, StaticAnchorIndexEntry> _static_anchor_index_class_tags;
+  // How many indexed entries still carry the admission-time class tag 0. The callback's
+  // 0-to-resolved refresh gate consults this count first, so a fully resolved index costs the
+  // per-report gate nothing (the enumeration callback is safepoint-bound).
+  size_t _indexed_zero_class_tag_count = 0;
 
   // Dedup companion for _static_anchor_index (O(1) membership).
   std::unordered_set<jlong> _static_anchor_index_tags;
@@ -704,6 +708,12 @@ private:
   // walkCandidateThreadLocals()'s THREAD_WALK_MAX_ANCHORS-per-pass cap rotates fairly instead of
   // always walking the same first candidates' tids.
   int _thread_walk_anchor_cursor;
+  // Consecutive FollowReferences failures at the retained cursor. A persistent JVMTI failure
+  // (wrong phase, sustained OOM) must not re-anchor the cursor on the same anchor every pass:
+  // after THREAD_WALK_FAILURE_SKIP consecutive failures the cursor advances past it and the
+  // wrap retries it on a later cycle.
+  int _thread_walk_consecutive_failures;
+  static constexpr int THREAD_WALK_FAILURE_SKIP = 3;
 
   // Per-pass cap on how many EXPANDED entries collectLeakAccumulationCandidatesForRotation()
   // re-queues - see that method's own comment.
@@ -954,6 +964,7 @@ private:
         _root_kind_rotation_cursor(1),
         _stale_expanded_rotation_cursor(1),
         _thread_walk_anchor_cursor(0),
+        _thread_walk_consecutive_failures(0),
         _safepoint_pain_budget(0.0), _search_pain_ms(0), _cpu_pain_budget(0.0),
         _thread(), _running(false), _abort_pass_requested(false) {
     _pending_chain_invalidations.reserve(MAX_PENDING_CHAIN_INVALIDATIONS);
@@ -1190,14 +1201,15 @@ private:
 
   // CANDIDATE-SCOPED REACH: bounded descend walk from an anchor object.
   // Borrows `scope` (owned and flushed by the caller); `*anchor_observation_overflow` reports a
-  // full journal.
-  void descendFromAnchor(jvmtiEnv *jvmti, JNIEnv *jni,
-                         ReferenceChainAnchorObservationScope &scope,
-                         jobject anchor, jlong anchor_tag, u32 anchor_depth,
-                         jlong anchor_descend_class_tag, int budget,
-                         int *edges_admitted, bool *truncated,
-                         bool *frontier_cap_hit, u64 *safepoint_ns,
-                         bool *anchor_observation_overflow);
+  // full journal. Returns the FollowReferences() error code: a failed descent must not be
+  // reported as walked, or the caller marks a first look served without any walk.
+  jvmtiError descendFromAnchor(jvmtiEnv *jvmti, JNIEnv *jni,
+                               ReferenceChainAnchorObservationScope &scope,
+                               jobject anchor, jlong anchor_tag, u32 anchor_depth,
+                               jlong anchor_descend_class_tag, int budget,
+                               int *edges_admitted, bool *truncated,
+                               bool *frontier_cap_hit, u64 *safepoint_ns,
+                               bool *anchor_observation_overflow);
 
   // Candidate-scoped reach for thread-retained leaks (ThreadLocal-held caches and thread-owned
   // collections): per pass, walk up to THREAD_WALK_MAX_ANCHORS of the current
@@ -1219,6 +1231,25 @@ private:
   bool isAnchorIndexed(jlong tag) const {
     return _static_anchor_index_tags.count(tag) > 0;
   }
+  // True when an indexed anchor still carries the admission-time class tag 0 and this report
+  // carries its resolved tag: the stamp dedup suppresses the repeated sighting, so the caller
+  // must journal the re-enlist for replay's 0-to-resolved upgrade to run. The zero-tag count
+  // gate makes this a no-op for a fully resolved index.
+  bool indexedAnchorNeedsClassTagRefresh(jlong tag, jlong class_tag) const {
+    if (class_tag == 0 || _indexed_zero_class_tag_count == 0) {
+      return false;
+    }
+    auto known = _static_anchor_index_class_tags.find(tag);
+    return known != _static_anchor_index_class_tags.end() &&
+           known->second.class_tag == 0;
+  }
+  // True when the tag sits in the capped local share (a subset of the durable index).
+  bool isLocalShareIndexed(jlong tag) const {
+    return _local_anchor_tags.count(tag) > 0;
+  }
+  // Fast path for the callback's promotion gate: most recordings never index a local holder,
+  // and the gate runs per durable root edge inside the JVMTI enumeration callback.
+  bool isLocalShareEmpty() const { return _local_anchor_tags.empty(); }
   // Advances past pending entries already confirmed as containers; both callers share this scan.
   void advancePendingLocalAnchorEvictionCursor();
   // Normalize the pending eviction cursor once before root callbacks so their gate stays O(1).

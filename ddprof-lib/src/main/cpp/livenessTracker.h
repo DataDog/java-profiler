@@ -772,10 +772,14 @@ private:
                            u32 age, jint tid);
   void insertThreadGen(KlassCountScratch &scratch, jint tid, u32 age);
   // `displaced` (optional, capacity MAX_THREAD_CHALLENGERS_PER_KLASS) receives the incumbents
-  // promotion replaced, with their pre-replacement epoch sample.
-  void promoteThreadGenCandidates(KlassCountScratch &scratch,
-                                  KlassCountScratch::ThreadGens *displaced = nullptr,
-                                  int *displaced_count = nullptr);
+  // promotion replaced, with their pre-replacement epoch sample. `unpromoted` (same capacity)
+  // receives the challengers promotion could not place: the fold keeps their live sample for a
+  // tracked trend, like the displaced incumbents', instead of writing them a zero epoch.
+  void promoteThreadGenCandidates(
+      KlassCountScratch &scratch, KlassCountScratch::ThreadGens *displaced = nullptr,
+      int *displaced_count = nullptr,
+      KlassCountScratch::ThreadGens *unpromoted = nullptr,
+      int *unpromoted_count = nullptr);
 
   // Pushes `count` into klass_id's ring buffer, creating the entry (evicting
   // the least-recently-updated entry first if the table is already at

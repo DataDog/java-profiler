@@ -495,3 +495,56 @@ TEST(LivenessThreadTrendTest, OutOfRangeFoldSlotIsANoOp) {
               LivenessThreadTrendTestAccessor::trendFor(tracker, klass_id, 7))
         << "out-of-range folds must not create or corrupt trends";
 }
+
+// An unpromoted challenger with a tracked trend must not read as absent: it met the fold with a
+// live sample (it merely failed to outrank the weakest incumbent), and the absent-tid pass
+// writing it a zero epoch would reset its qualification streak.
+TEST(LivenessThreadTrendTest, UnpromotedChallengerKeepsTrendSample) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    const u32 klass_id = 775;
+    // Epochs 1-2: tids 1-8 (count 9) hold the 8 trend slots, all qualified.
+    for (int epoch = 1; epoch <= 2; epoch++) {
+        ScratchGuard epoch_scratch{LivenessThreadTrendTestAccessor::newScratch()};
+        for (jint tid = 1; tid <= 16; tid++) {
+            u32 count = tid <= 8 ? 9 : 12;
+            for (u32 i = 0; i < count; i++) {
+                LivenessThreadTrendTestAccessor::add(tracker, epoch_scratch,
+                                                     tid, 1);
+            }
+        }
+        LivenessThreadTrendTestAccessor::fold(tracker, epoch_scratch, klass_id,
+                                              epoch);
+    }
+    ASSERT_EQ(2, LivenessThreadTrendTestAccessor::consecutivePositive(
+                     tracker, klass_id, 5))
+        << "setup: tid 5's trend must be qualified before the fold";
+
+    // Epoch 3: sixteen other threads fill the scratch table (all stronger than tid 5's
+    // challenger), then tid 5 - an existing trend holder - contributes 9 retained objects as a
+    // challenger. Promotion fails (9 < 12), so without the live-sample preservation the
+    // absent-tid pass writes tid 5 a zero epoch and resets its streak.
+    ScratchGuard epoch3{LivenessThreadTrendTestAccessor::newScratch()};
+    jint filler = 1;
+    for (int i = 0; i < 16; i++) {
+        while (filler == 5) {
+            filler++;
+        }
+        for (u32 j = 0; j < 12; j++) {
+            LivenessThreadTrendTestAccessor::add(tracker, epoch3, filler, 1);
+        }
+        filler++;
+    }
+    for (u32 i = 0; i < 9; i++) {
+        LivenessThreadTrendTestAccessor::add(tracker, epoch3, 5, 1);
+    }
+    // Three more low-count challengers so the pool is full around tid 5.
+    for (jint tid = 101; tid < 104; tid++) {
+        for (u32 i = 0; i < 2; i++) {
+            LivenessThreadTrendTestAccessor::add(tracker, epoch3, tid, 1);
+        }
+    }
+    LivenessThreadTrendTestAccessor::fold(tracker, epoch3, klass_id, 3);
+    EXPECT_EQ(3, LivenessThreadTrendTestAccessor::consecutivePositive(
+                     tracker, klass_id, 5))
+        << "the unpromoted challenger's live sample must keep its streak alive";
+}
