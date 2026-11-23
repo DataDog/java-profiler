@@ -214,6 +214,7 @@ typedef struct KlassCandidate {
 class alignas(alignof(SpinLock)) LivenessTracker {
   friend Recording;
   friend class LivenessTrackerTestAccessor;
+  friend class LivenessThreadTrendTestAccessor;
 
 private:
   // pre-c++17 we should mark these inline(or out of class)
@@ -572,6 +573,7 @@ private:
     // generations. Thread ID is stable and naturally separates leak
     // threads from noise threads.
     static constexpr int MAX_THREADS_PER_KLASS = 16;
+    static constexpr int MAX_THREAD_CHALLENGERS_PER_KLASS = 4;
     static constexpr int MAX_AGES_PER_THREAD = 32;
     struct ThreadGens {
       jint tid;
@@ -584,7 +586,15 @@ private:
     };
     ThreadGens threads[MAX_THREADS_PER_KLASS];
     int thread_count;
+    // New tids accrue evidence separately when every incumbent meets the retained-count bar.
+    // At fold, only a challenger that outranks the weakest incumbent replaces a primary slot.
+    ThreadGens challengers[MAX_THREAD_CHALLENGERS_PER_KLASS];
+    int challenger_count;
   } KlassCountScratch;
+  static_assert(sizeof(KlassCountScratch::ThreadGens) *
+                    KlassCountScratch::MAX_THREAD_CHALLENGERS_PER_KLASS *
+                    MAX_KLASS_POPULATION_ENTRIES == 143360,
+                "four-thread challenger scratch must stay within its approved budget");
   KlassCountScratch _klass_count_scratch[MAX_KLASS_POPULATION_ENTRIES];
   int _klass_count_scratch_size;
 
@@ -761,6 +771,7 @@ private:
   void insertOldestSample(KlassCountScratch &scratch, jweak sample_source,
                            u32 age, jint tid);
   void insertThreadGen(KlassCountScratch &scratch, jint tid, u32 age);
+  void promoteThreadGenCandidates(KlassCountScratch &scratch);
 
   // Pushes `count` into klass_id's ring buffer, creating the entry (evicting
   // the least-recently-updated entry first if the table is already at
@@ -867,7 +878,7 @@ private:
   // tracked tid from the scratch and push it a spurious 0 - the same
   // fixed-capacity best-effort the scratch itself already accepts.
   // _table_lock held exclusively by the caller (foldKlassCountsLocked()).
-  void recordTidTrendSamplesLocked(int slot, const KlassCountScratch &scratch);
+  void recordTidTrendSamplesLocked(int slot, KlassCountScratch &scratch);
 
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
