@@ -90,6 +90,10 @@ if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
         JAR_URL="https://central.sonatype.com/repository/maven-snapshots/com/datadoghq/ddprof/${LIB_VERSION}/ddprof-${SNAPSHOT_VER}-debug.jar"
         if curl -fsSL "${CURL_TIMEOUT_OPTS[@]}" -o /dev/null "${JAR_URL}"; then
           echo "Snapshot artifact resolvable: ${JAR_URL}"
+          # For the speedlab memory gate trigger (.gitlab/memory-gate/), as a dotenv report.
+          # The publish already succeeded: a failed write must not fail the job.
+          write_memory_gate_candidate "${SNAPSHOT_VER}" memory-gate.env \
+            || echo "WARNING: could not record the memory gate candidate"
           RESOLVED=1
           break
         fi
