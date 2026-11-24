@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk17
 
 ## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-24 12:19:20 EST
+**Date:** 2026-11-24 12:21:56 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 91 |
-| Sample Rate | 1.52/sec |
-| Health Score | 95% |
-| Threads | 8 |
-| Allocations | 63 |
+| CPU Samples | 78 |
+| Sample Rate | 1.30/sec |
+| Health Score | 81% |
+| Threads | 10 |
+| Allocations | 75 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 16 |
-| Sample Rate | 0.27/sec |
-| Health Score | 17% |
-| Threads | 9 |
-| Allocations | 11 |
+| CPU Samples | 324 |
+| Sample Rate | 5.40/sec |
+| Health Score | 338% |
+| Threads | 11 |
+| Allocations | 138 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 33-64 cores)</summary>
 
 ```
-1795540485 33
-1795540490 33
-1795540495 33
-1795540500 33
-1795540505 33
-1795540510 33
-1795540515 33
-1795540520 33
-1795540525 33
-1795540530 33
-1795540535 33
-1795540540 33
-1795540545 33
-1795540550 33
-1795540555 33
-1795540560 33
-1795540565 33
-1795540570 64
-1795540575 64
-1795540580 64
+1795540623 33
+1795540628 33
+1795540633 33
+1795540638 33
+1795540643 33
+1795540648 33
+1795540653 33
+1795540658 33
+1795540663 33
+1795540668 33
+1795540673 33
+1795540678 33
+1795540683 33
+1795540688 33
+1795540693 33
+1795540698 33
+1795540703 33
+1795540708 33
+1795540713 33
+1795540718 64
 ```
 </details>
 
