@@ -36,6 +36,8 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
   private static final long BLOCKER = 0x16858L;
   private static final long UNBLOCKING_SPAN_ID = 0x16859L;
   private static final long ONE_MS_NANOS = 1_000_000L;
+  // NativeBlockKind::STREAM_SOCKET_READ, the high half of a native block's blocker.
+  private static final long STREAM_SOCKET_READ_KIND = 8L;
 
   @Test
   public void sleepSpanningTwoDumpsYieldsThreeContiguousSegments() throws Exception {
@@ -236,8 +238,8 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
       }
       stopProfiler();
       List<JfrEvent> segments = new ArrayList<>();
-      segments.addAll(eventsFor(first, name, 1));
-      segments.addAll(eventsIn(verifyEvents("datadog.TaskBlock", false), name, 1));
+      segments.addAll(socketReads(JfrEvents.load(first, "datadog.TaskBlock"), name));
+      segments.addAll(socketReads(verifyEvents("datadog.TaskBlock", false), name));
       assertEquals("IO_WAIT", segments.get(0).getEnumName("observedBlockingState"));
       assertTrue(segments.get(0).getBoolean("continued"));
       assertFalse(segments.get(1).getBoolean("continued"));
@@ -269,13 +271,38 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
   }
 
   private static List<JfrEvent> eventsIn(JfrEvents events, String thread, int expected) {
+    return eventsIn(events, thread, expected, false);
+  }
+
+  /**
+   * The worker also connects its socket through the native connect hook, which records its own
+   * TaskBlock whenever the call takes 1 ms; only the stream read is under test.
+   */
+  private static List<JfrEvent> socketReads(JfrEvents events, String thread) {
+    return eventsIn(events, thread, 1, true);
+  }
+
+  private static List<JfrEvent> eventsIn(
+      JfrEvents events, String thread, int expected, boolean socketReadsOnly) {
     List<JfrEvent> result = new ArrayList<>();
+    StringBuilder seen = new StringBuilder();
     for (JfrEvent event : events) {
       assertNotNull(event.getBoolean("continued"), "TaskBlock must carry the continued field");
-      if (thread.equals(event.getThreadName("eventThread"))) result.add(event);
+      if (!thread.equals(event.getThreadName("eventThread"))) continue;
+      seen.append(" [blocker=0x")
+          .append(Long.toHexString(event.getLong("blocker")))
+          .append(" duration=")
+          .append(event.getLong("duration"))
+          .append(" continued=")
+          .append(event.getBoolean("continued"))
+          .append(']');
+      if (socketReadsOnly && (event.getLong("blocker") >>> 32) != STREAM_SOCKET_READ_KIND) {
+        continue;
+      }
+      result.add(event);
     }
     if (expected >= 0) {
-      assertEquals(expected, result.size(), "TaskBlocks of " + thread);
+      assertEquals(expected, result.size(), "TaskBlocks of " + thread + ":" + seen);
     }
     result.sort(Comparator.comparingLong(e -> e.getLong("startTime")));
     return result;
