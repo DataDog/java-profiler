@@ -2,12 +2,12 @@
 
 ## Overview
 
-The native memory profiler tracks heap allocations made through the C standard
-library (`malloc`, `calloc`, `realloc`, `posix_memalign`, `aligned_alloc`). It
-instruments these functions at the GOT (Global Offset Table) level so that every
-intercepted call is accounted for without modifying application source code or
-requiring a custom allocator. `free` is **not** hooked: there is no `free_hook`, and
-free events are not recorded.
+The native memory profiler tracks allocations made through the C allocation
+functions (`malloc`, `calloc`, `realloc`, `posix_memalign`, `aligned_alloc`). While
+native-memory sampling is active, it patches importing libraries' GOT (Global
+Offset Table) entries and records sampled allocations without modifying application
+source code or requiring a custom allocator. `free` is **not** hooked: there is no
+`free_hook`, and free events are not recorded.
 
 Sampled allocation events carry a full Java + native stack trace and are emitted as
 `datadog.NativeMemoryAllocation` JFR events.
@@ -49,8 +49,10 @@ one event per 512 KiB allocated). Passing `nativemem=0` records every allocation
 ## GOT Patching
 
 The profiler redirects allocator calls by writing hook function addresses directly
-into the importing library's GOT. This is cheaper than `LD_PRELOAD` (no process
-restart) and works for libraries loaded at any time.
+into the importing library's GOT. This avoids requiring `LD_PRELOAD` or a process
+restart. It patches libraries already loaded when a native-memory session starts
+and libraries discovered by `Libraries::refresh()` while sampling is active. A later
+admitted start also patches libraries loaded while sampling was stopped.
 
 ### Import IDs
 
@@ -85,50 +87,84 @@ that the thread is exiting.
 ## Initialization Sequence
 
 The GOT-patching state lives in `MallocHooker` (`_patched_libs`, `_initialized`, and
-the `_entries` table of patched slots, guarded by `LibraryPatcher::_lock` on Linux and
-by `_patch_lock` on macOS); the sampling state lives in `MallocTracer`. The two
-platform implementations of `patchLibraries()` / `unpatchLibraries()` live in
-`mallocTracer_linux.cpp` and `mallocTracer_macos.cpp`. `MallocTracer::start()`
-(called on every profiler start that requests `nativemem`) runs:
+`_entries`), guarded by `LibraryPatcher::_lock` during Linux walks and by `_patch_lock`
+on macOS. The platform implementations of `patchLibraries()` and `unpatchLibraries()`
+are in `mallocTracer_linux.cpp` and `mallocTracer_macos.cpp`; the sampling state lives
+in `MallocTracer`. For every profiler start that requests `nativemem`,
+`MallocTracer::start()` resets the per-session interval, Poisson counter, sample count,
+PID controller and timestamp, then calls `MallocHooker::initialize()` before publishing
+`_running` or patching other libraries.
 
-1. Resets per-session sampling state: `_configured_interval` / `_interval` (from
-   `nativemem`), `_bytes_until_sample` (a fresh Poisson draw, or 0 when the interval
-   is ≤ 1), `_sample_count`, the PID controller (`_pid.reset()`), and
-   `_last_config_update_ts`.
+On the fresh path (`_initialized == false`), initialization:
 
-2. Calls **`MallocHooker::initialize()`**, which does its work only on the first call
-   (later calls return the cached result). If it fails to resolve the symbols,
-   `start()` returns an error and native memory profiling is unavailable. On the first
-   call it:
+1. Locates the profiler's own `CodeCache`. If it cannot find it, it caches the same
+   resolution-failure state as a required-symbol failure and returns the existing
+   malloc-symbol resolution error.
+2. Calls `resolveMallocSymbols()` so the profiler's own allocator imports are resolved.
+   Resolution can call allocation functions; startup is not allocation-free.
+3. Reads the first two slots (PRIMARY, SECONDARY) of the profiler's five allocation
+   imports with the read-only `CodeCache::peekImport(id, index)` accessor. Missing slots
+   and NULL values remain absent; an import with more slots rejects as `INDETERMINATE`. The candidate forwarding values are the PRIMARY slot values.
+4. If the required malloc candidate is NULL, caches `_initialized = true` and returns
+   the existing resolution error. This path returns before saving pointers, probing
+   nested allocators, marking hooks, seeding the PRNG, or running admission.
+5. Runs admission over the current slot values and candidate forwarding values before
+   changing `_orig_*`. It compares stripped addresses but never modifies stored
+   callable pointers, deduplicates a fixed set of at most 15 targets, and combines
+   per-target results as `DDPROF` > `INDETERMINATE` > `NOT_RECOGNIZED`.
+6. On `DDPROF` or `INDETERMINATE`, returns the corresponding startup error without
+   committing `_orig_*`, probing, marking hooks, seeding the PRNG, setting `_running`,
+   or calling `MallocHooker::patchLibraries()`. A fresh rejection leaves
+   `_initialized` false; the next request rechecks the current slots and candidates.
+7. On admission, commits `_orig_*` from the captured candidate values, then runs
+   `detectNestedMalloc()`, marks the five hook functions with `MARK_JAVA_PROFILER`,
+   seeds the shared xoroshiro128+ PRNG from `TSC::ticks()`, and sets `_initialized`.
 
-   a. **`resolveMallocSymbols()`** — calls each intercepted function at least once so
-      the profiler library's own PLT stubs are resolved by the dynamic linker. This
-      ensures that subsequent `SAVE_IMPORT` reads get the real libc function pointers
-      rather than the PLT resolver.
+`detectNestedMalloc()` probes the saved `calloc` target only when both it and the saved
+`malloc` target are non-NULL and its owner library has a valid `UnloadProtection` handle.
+It probes the saved `posix_memalign` target only when both it and the saved `aligned_alloc`
+target are non-NULL and that owner handle is valid. Each probe temporarily patches the
+owner image's relevant import, makes one call, and restores the slot. If nesting is
+observed, `patchLibraries()` skips patching that operation in every library; it patches
+the inner `malloc` or `aligned_alloc` import instead, so the nested allocator call is
+recorded once.
 
-   b. **`SAVE_IMPORT(func)`** — reads the resolved GOT entry for each symbol from the
-      profiler library's own import table and stores it in the corresponding
-      `_orig_<func>` static pointer.
+On the cached path, a NULL `_orig_malloc` retains the existing resolution error. Otherwise,
+initialization locates its own `CodeCache`; if it is unavailable, it returns
+`INDETERMINATE` with `NO_OWN_LIBRARY`. It then reads the current PRIMARY and SECONDARY
+slots again and re-evaluates them together with the saved `_orig_*` forwarding pointers.
+It does not cache an admission verdict or rewrite saved pointers. A rejection returns
+before `_running` is published; an admitted request continues to `patchLibraries()`.
 
-   c. **`detectNestedMalloc()`** — probes whether the platform's `calloc`
-      implementation calls `malloc` internally (as musl does), and whether
-      `posix_memalign` calls `aligned_alloc` internally. It temporarily patches libc's
-      own `malloc` / `aligned_alloc` import with a probe hook, makes one call, and
-      restores the original entry. When nesting is detected, `patchLibraries()` later
-      leaves that library's `calloc` / `posix_memalign` GOT entry untouched, so the
-      allocation is recorded once, by the inner `malloc` / `aligned_alloc` hook.
+Linux admission identifies the live owner of each target inside one
+`dl_iterate_phdr()` callback. It checks the loader-reported `PT_LOAD` ranges, then reads
+that image's in-memory dynamic symbol/hash tables only from file-backed, `PF_R`
+segments. An image is `DDPROF` only when it defines each marker exactly once as a
+`STT_FUNC` with `STB_GLOBAL` or `STB_WEAK` binding and `STV_DEFAULT` or `STV_PROTECTED`
+visibility. Undefined, local, hidden or internal same-name entries are ignored. If
+neither marker has a qualifying or owned wrong-kind definition, the image is
+`NOT_RECOGNIZED`; a partial pair, an owned exported wrong-kind definition, a duplicate
+qualifying definition, or unreadable/malformed metadata yields `INDETERMINATE`. A target with no owning object
+is `INDETERMINATE` (`NO_OWNER`). All read ranges and derived addresses are checked
+before dereference.
 
-   d. **`lib->mark(...)`** — marks the five hook functions with `MARK_JAVA_PROFILER`
-      in the profiler's code cache, so the stack walker can find the hook boundary and
-      drop the profiler-internal frames above it.
+The owner walk holds no loader handle: the lifetime basis was source-checked for glibc
+2.39, which holds its loader write lock through the iteration and unmaps on `dlclose()`
+under that lock, and musl 1.2.5, whose `dlclose()` does not unmap. The callback and
+classifier use profiler-local code, inline accessors and compiler builtins; they make
+no PLT/GOT calls, allocate, explicitly lock, log, touch TLS, call an inspected target,
+marker function or IFUNC resolver. The loader lifetime source check covers the named
+versions; it is not a source review of every supported libc release.
 
-   e. Seeds the shared xoroshiro128+ PRNG state via splitmix64 from `TSC::ticks()`.
+On non-Linux platforms, the shared target derivation and own-hook consistency checks
+still run, but the platform owner classifier returns `NOT_RECOGNIZED` for every target;
+only inconsistent own-hook state can therefore cause a new indeterminate rejection.
 
-3. Sets `_running = true` **before** patching, so a `dlopen()` that races with
-   `patchLibraries()` already sees `running() == true` and patches the new library
-   itself.
+After admission, `MallocTracer::start()` sets `_running = true` **before** patching, so a
+`dlopen()` that races with `patchLibraries()` already sees `running() == true` and patches
+the new library itself.
 
-4. **`MallocHooker::patchLibraries()`** — writes the hook addresses into the GOT of
+**`MallocHooker::patchLibraries()`** — writes the hook addresses into the GOT of
    every native library from index `_patched_libs` on, covering every relocation slot
    a symbol has (`findImport(id, index)` for each of `importCount(id)`), and records each written
    slot (library, slot address, hook, original pointer) in `_entries` so `stop()` can
@@ -146,6 +182,11 @@ platform implementations of `patchLibraries()` / `unpatchLibraries()` live in
    lock; dyld's image indexes shift under concurrent unloads. Either way the walk re-checks
    `MallocTracer::running()` under its lock, so a refresh that raced `stop()` does not
    re-hook after the restore.
+
+The admission check is a startup snapshot; it does not prevent ddprof from activating later
+or concurrently. If a mixed request can start another engine, rejection of native-memory
+profiling does not prevent that request from starting. A native-memory-only request returns
+the native-memory error.
 
 `stop()` restores every recorded slot and resets `_patched_libs` to 0, so the next
 `start()` patches every library again (see "Stopping" below).
@@ -176,6 +217,7 @@ because the refresher re-installs malloc hooks (`Libraries::refresh()` →
 `installHooks()`). A thread that loaded a hook address before the restore still runs
 the hook, which only calls the saved `_orig_*` pointer and sees `running() == false`.
 
+
 ---
 
 ## Dynamic Library Handling
@@ -202,8 +244,8 @@ void Libraries::refresh() {
 synchronously after a successful `dlopen` when it is not running inside one of the
 profiler's own signal handlers. Inside a signal handler it only calls
 `Libraries::markDirty()`, and the libraries refresher thread picks the change up within
-`REFRESH_INTERVAL_NS` (500 ms). Either way, newly loaded libraries are hooked without a
-profiler restart.
+`REFRESH_INTERVAL_NS` (500 ms). While native-memory sampling is active, either path
+hooks newly loaded libraries without restarting the profiler.
 
 ---
 
@@ -433,6 +475,9 @@ writeCurrentContext(buf);
 | Reentrant allocations from the profiler | `CriticalSection` in `maybeRecord` — nested calls do not record |
 | Recording / JFR buffer writes | Per-lock-index try-lock with 3 attempts in `Profiler::recordSample`; samples dropped on contention |
 | Hook enable / disable | `_running`, stored with release and read with acquire (`running()`) before every recording call |
+| Admission import capture | Reads both current import slots and saved forwarding pointers at each start; admission results are not cached |
+| Linux owner-image lifetime | Classifies within one `dl_iterate_phdr()` callback; no loader handle is acquired (source-checked glibc 2.39 and musl 1.2.5 only) |
+| Late or concurrent ddprof activation | Not prevented or arbitrated; the check is a startup snapshot |
 | `MallocHooker::_initialized` write ordering | Not atomic; relies on `start()` calls being serialized by the profiler's state lock (caller responsibility) |
 
 ---

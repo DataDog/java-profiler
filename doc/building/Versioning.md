@@ -58,5 +58,9 @@ The tag push triggers the GitLab build/publish pipeline. The next build from
 `main` (or the release branch) automatically sees the new tag and computes
 the next snapshot version.
 
+Minor releases also run automatically: the release train tags the newest
+certified commit every Friday (see [ReleaseTrain](ReleaseTrain.md)). The
+train dispatches the same release flow pinned to a certified commit.
+
 See [`utils/README.md`](../../utils/README.md) for the release workflow
 and [`utils/release.sh`](../../utils/release.sh) for the operator entry point.

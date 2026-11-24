@@ -552,9 +552,9 @@ bool CodeCache::prepareImportsForPatch() {
   return makeImportsPatchable();
 }
 
-void **CodeCache::peekImport(ImportId id) {
-  if (importCount(id) == 0) return nullptr;
-  return _imports[_import_offsets[id]]._location;
+void **CodeCache::peekImport(ImportId id, size_t index) {
+  if (index >= importCount(id)) return nullptr;
+  return _imports[_import_offsets[id] + index]._location;
 }
 
 void **CodeCache::findImport(ImportId id, size_t index) {
