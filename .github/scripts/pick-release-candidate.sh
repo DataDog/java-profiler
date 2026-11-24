@@ -48,20 +48,24 @@ fi
 # Newest certified commit by history position on main, not by committer
 # date: rebases and cherry-picks make dates unreliable, and same-second
 # commits make date ties arbitrary. The first certified commit in
-# rev-list --topo-order of origin/main is the tip-most one. Certified
-# commits unreachable from origin/main cannot be candidates.
+# rev-list --first-parent --topo-order of origin/main is the tip-most
+# MAINLINE one: without --first-parent a certified commit sitting on a
+# merged side branch would sort ahead of the mainline tip that actually
+# carries it. Certified commits unreachable from origin/main cannot be
+# candidates.
 CERT_LIST=$(mktemp)
 printf '%s\n' "$CERTIFIED" > "$CERT_LIST"
 if ! git rev-parse --verify --quiet origin/main >/dev/null; then
   echo "ERROR: origin/main is not available" >&2
   exit 1
 fi
-# First certified commit in rev-list --topo-order of origin/main. rev-list
+# First certified commit on main's first-parent line (--first-parent:
+# side branches of merge commits are not mainline history). rev-list
 # writes to a file so its failure aborts under set -e instead of silently
 # feeding awk an empty stream; awk exits 0 on both match and no-match, so
 # the empty case falls through to the guard below.
 MAIN_ORDER=$(mktemp)
-git rev-list origin/main --topo-order > "$MAIN_ORDER"
+git rev-list origin/main --first-parent --topo-order > "$MAIN_ORDER"
 NEWEST_CERTIFIED=$(awk 'NR==FNR { want[$1] = 1; next } $1 in want { print; exit }' \
   "$CERT_LIST" "$MAIN_ORDER")
 rm -f "$CERT_LIST" "$MAIN_ORDER"

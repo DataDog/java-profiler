@@ -40,7 +40,10 @@ on:
 # (patch/retag) dispatches run on the release branch and keep a per-branch
 # group so a mainline release does not gate them.
 concurrency:
-  group: ${{ (inputs.release_type == 'patch' || inputs.release_type == 'retag') && format('release-maintenance-{0}', github.ref) || 'release-mainline' }}
+  # Dry runs share nothing with real releases: GitHub keeps one queued run
+  # per group even with cancel-in-progress:false, so without the suffix a
+  # queued dry run would cancel a queued train release.
+  group: ${{ (inputs.release_type == 'patch' || inputs.release_type == 'retag') && format('release-maintenance-{0}', github.ref) || (inputs.dry_run && 'release-mainline-dry-run' || 'release-mainline') }}
   cancel-in-progress: false
 
 permissions:
@@ -71,9 +74,10 @@ jobs:
           BRANCH="${GITHUB_REF_NAME}"
           TYPE="${{ inputs.release_type }}"
           # The release commit: the pinned SHA when dispatched with one (the
-          # release train dispatches with ref=main and the certified SHA as
-          # source_sha — the workflow_dispatch API takes a branch/tag ref, so
-          # pinning goes through the input), else the dispatch ref's HEAD.
+          # release train dispatches --ref main and pins the certified SHA
+          # through source_sha — the workflow_dispatch API takes a branch/tag
+          # ref, so pinning goes through the input), else the dispatch ref's
+          # HEAD.
           # The input reaches the script through env: interpolating it into
           # the shell program would execute dispatcher-controlled text.
           TARGET_SHA="${SOURCE_SHA_INPUT:-$GITHUB_SHA}"
@@ -119,6 +123,10 @@ jobs:
               exit 1
             fi
           else
+            if [ "$GITHUB_REF_NAME" != "main" ]; then
+              echo "::error::Major or minor releases must be dispatched on the 'main' ref (got '$GITHUB_REF_NAME')"
+              exit 1
+            fi
             RC=0
             git merge-base --is-ancestor "$TARGET_SHA" origin/main || RC=$?
             if [ "$RC" -gt 1 ]; then
@@ -127,6 +135,14 @@ jobs:
             fi
             if [ "$RC" -ne 0 ]; then
               echo "::error::Major or minor releases can only be performed from 'main' branch or a commit on main"
+              exit 1
+            fi
+            # The certified candidate is a mainline commit; a side-branch
+            # commit pinned here would release code the nightly never
+            # certified. merge-base --is-ancestor accepts side branches too,
+            # so membership on the first-parent line is checked separately.
+            if ! git rev-list --first-parent origin/main | grep -qx "$TARGET_SHA"; then
+              echo "::error::Major or minor releases must pin a commit on main's first-parent line, not a merged side branch"
               exit 1
             fi
             if [ "$TARGET_SHA" != "$GITHUB_SHA" ]; then
@@ -222,7 +238,8 @@ jobs:
 
           # Base branch to check out and report in tag messages: the ref name
           # for patch/retag, 'main' for major/minor (including pinned
-          # certified-commit dispatches, which carry a SHA as the ref name).
+          # certified-commit dispatches, which dispatch --ref main and pin
+          # the SHA via source_sha).
           if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
             BASE_BRANCH="$BRANCH"
           else

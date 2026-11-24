@@ -13,8 +13,8 @@ set -euo pipefail
 # TYPE: MINOR | MAJOR | PATCH | RETAG
 #
 # Branch rules:
-#   MINOR/MAJOR: must be run from 'main' (or a pinned main commit — the
-#                release train dispatches with a certified SHA as the ref)
+#   MINOR/MAJOR: must be run from 'main' (pinned certified-commit
+#                dispatches run --ref main and pin the SHA via source_sha)
 #   PATCH/RETAG: must be run from 'release/X.Y._'
 
 TYPE=$1
