@@ -34,6 +34,7 @@ Profiler
  └─ FlightRecorder _jfr           _rec_lock (SpinLock), _filename, _args
      └─ Recording* _rec           one open file descriptor (_fd)
          ├─ RecordingBuffer _buf[CONCURRENCY_LEVEL]     event buffers, one per lock stripe
+         ├─ RecordingBuffer _cold_failure_buf    _buf[0] bytes held after a failed cold flush
          ├─ ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2]  threads seen, per stripe
          ├─ Buffer _cpu_monitor_buf
          └─ MethodMap _method_map  method constant pool, kept across chunks
