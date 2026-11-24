@@ -275,6 +275,7 @@ public final class StaticFieldGrowingCollectionScenario {
     // however many rounds a wipe costs, the trend simply resumes accumulating from the next
     // round's seed call.
     ReferenceChainAssertions.ChainMatch match = null;
+    int manualPassAttempts = 0;
     for (int round = 1; round <= TOTAL_ROUNDS && match == null; round++) {
       // Mirrors the real leak's continuous growth; lateChunk stays the watched target.
       LEAK_BUFFER.add(new byte[CHUNK_BYTES]);
@@ -303,6 +304,14 @@ public final class StaticFieldGrowingCollectionScenario {
         ReferenceChainTestHooks.setKlassPopulationRepresentativeForTest0(
             LEAK_BUFFER_TEST_KLASS_ID, LEAK_BUFFER.get(LATE_CHUNK_INDEX));
         ReferenceChainTestHooks.pollReferenceChainTargets0();
+        // Bound debug-only seam attempts; this assertion tests re-expansion, not pass cadence.
+        if (manualPassAttempts < 8) {
+          if (!ReferenceChainTestHooks.runReferenceChainPass0()) {
+            throw new IllegalStateException("reference-chain pass seam did not run");
+          }
+          manualPassAttempts++;
+          ReferenceChainTestHooks.pollReferenceChainTargets0();
+        }
 
         // Only TRUST a match once passesRun() has genuinely changed since the snapshot taken right
         // before lateChunk was created - either advanced (the same, never-restarted search ran a

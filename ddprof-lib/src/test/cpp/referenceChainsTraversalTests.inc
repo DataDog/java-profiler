@@ -52,7 +52,7 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
     bool truncated = true;
     jlong listTag = 0;
     for (int i = 0; i < 200 && listTag == 0; i++) {
-        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_EQ((u8)SearchState::RUNNING, tracker->searchState());
         ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
         listTag = tags_ever_assigned[listNode];
     }
@@ -60,7 +60,7 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
 
     // Phase 2: run passes until listNode is expanded (rolling resume pops it).
     for (int i = 0; i < 200; i++) {
-        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_EQ((u8)SearchState::RUNNING, tracker->searchState());
         ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
         FrontierEntry entry{};
         if (frontier->lookup(listTag, &entry) &&
@@ -83,7 +83,7 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
 
     // Phase 3: run more passes until all chain children are admitted.
     for (int i = 0; i < 500 && admittedChildren < kChainLen; i++) {
-        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_EQ((u8)SearchState::RUNNING, tracker->searchState());
         ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
         admittedChildren = 0;
         for (int j = 0; j < kChainLen; j++) {
@@ -798,6 +798,21 @@ public:
     static void setCpuEngine(Profiler *p, Engine *e) { p->_cpu_engine = e; }
     static void setWallEngine(Profiler *p, Engine *e) { p->_wall_engine = e; }
     static void setReferenceChainsActive(Profiler *p, bool v) { p->_reference_chains_active = v; }
+    static Engine *cpuEngine(Profiler *p) { return p->_cpu_engine; }
+    static Engine *wallEngine(Profiler *p) { return p->_wall_engine; }
+    static void setEngines(Profiler *p, Engine *cpu, Engine *wall) {
+        p->_cpu_engine = cpu;
+        p->_wall_engine = wall;
+    }
+    static State state(Profiler *p) { return p->_state.load(std::memory_order_acquire); }
+    static void setState(Profiler *p, State s) { p->_state.store(s, std::memory_order_release); }
+    static int eventMask(Profiler *p) { return p->_event_mask; }
+    static void setEventMask(Profiler *p, int mask) { p->_event_mask = mask; }
+    static bool referenceChainsActive(Profiler *p) {
+        return p->_reference_chains_active.load(std::memory_order_acquire);
+    }
+    static jvmtiEventMode threadEventsState(Profiler *p) { return p->_thread_events_state; }
+    static void setThreadEventsState(Profiler *p, jvmtiEventMode m) { p->_thread_events_state = m; }
     static void onThreadStart(Profiler *p, jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
         p->onThreadStart(jvmti, jni, thread);
     }
@@ -877,3 +892,1090 @@ TEST_F(ReferenceChainsBfsTest, ProfilerThreadLifecycleRegistersLateThreadObject)
 // with a wrapping cursor, and the walk reaches a leak held 3-4 hops inside a static collection in
 // one bounded call - the shape the one-hop Tier-2 rotation demonstrably cannot reach from an
 // un-expanded FRONTIER holder on a rising heap (pod rounds 5-6).
+
+// ---------------------------------------------------------------------------------------------
+// Production-caller-path tests for the anchor-observation journal. Each drives a real traversal
+// caller (runPass(), expandFrontier(), walkCandidateThreadLocals()); the scope those callers own
+// applies the callbacks' records at the return boundary, and a full journal aborts the report
+// before its destructive transition so the same object is reported again by a later traversal.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+using T8Acc = ReferenceChainsTestAccessor;
+
+// Fills the live caller scope at a JVMTI return boundary so the next real callback reaches overflow.
+struct T8JournalFill {
+    static inline bool fill_on_ior = false;
+    static inline int fill_on_follow_call = -1; // 0-based FollowReferences call to fill before
+    static inline int follow_calls = 0;
+    static inline jlong holder_tag = 0;
+    static inline jlong holder_class_tag = -9101;
+    static inline u32 count_after_fill = 0;
+
+    // The fill saturates the journal by staging LOCAL reports production would bound to what
+    // replay can absorb; the unbounded override is active from seedHolder() until reset().
+    static void reset(ReferenceChainTracker *tracker = nullptr) {
+        fill_on_ior = false;
+        fill_on_follow_call = -1;
+        follow_calls = 0;
+        holder_tag = 0;
+        count_after_fill = 0;
+        if (tracker != nullptr) {
+            T8Acc::setLocalStagingBudgetOverrideForTest(0);
+        }
+    }
+
+    // Keeps one fixture frontier entry for tests that assert the count after a rejected report.
+    static void seedHolder(ReferenceChainTracker *tracker) {
+        T8Acc::setLocalStagingBudgetOverrideForTest(0xFFFFFFFFu);
+        holder_tag = tracker->nextTag();
+        T8Acc::primeClassShapeForTest(holder_class_tag, false);
+        ASSERT_TRUE(T8Acc::insertFrontierEntry(
+            tracker->frontierTable(), holder_tag, /*parent_tag=*/1, /*depth=*/1,
+            FrontierEntryState::FRONTIER, JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0,
+            holder_class_tag));
+    }
+
+    static void fill(const void *user_data) {
+        auto *ctx = const_cast<ReferenceChainPassContext *>(
+            static_cast<const ReferenceChainPassContext *>(user_data));
+        count_after_fill = static_cast<u32>(T8Acc::fillAnchorJournalForTest(
+            *ctx, AnchorObservationBuffer::CAPACITY));
+    }
+};
+
+jvmtiError JNICALL t8FillingIterate(jvmtiEnv *env, jvmtiHeapRootCallback root_cb,
+                                    jvmtiStackReferenceCallback stack_cb,
+                                    jvmtiObjectReferenceCallback object_cb,
+                                    const void *user_data) {
+    if (T8JournalFill::fill_on_ior) {
+        T8JournalFill::fill(user_data);
+    }
+    return ReferenceChainsMockHeap::mock_IterateOverReachableObjects(
+        env, root_cb, stack_cb, object_cb, user_data);
+}
+
+jvmtiError JNICALL t8FillingFollow(jvmtiEnv *env, jint heap_filter, jclass klass,
+                                   jobject initial_object,
+                                   const jvmtiHeapCallbacks *callbacks, const void *user_data) {
+    if (T8JournalFill::follow_calls++ == T8JournalFill::fill_on_follow_call) {
+        T8JournalFill::fill(user_data);
+    }
+    return ReferenceChainsMockHeap::mock_FollowReferences(
+        env, heap_filter, klass, initial_object, callbacks, user_data);
+}
+
+// A scripted-root pass must enumerate roots, whatever an earlier pass of the singleton left.
+void t8AllowRootEnumeration() {
+    T8Acc::setRootEnumRawStateForTest(0, 0);
+}
+
+} // namespace
+
+// Root enumeration: the prefix accepted before a JVMTI error is applied before the error handling
+// returns, and the enumeration the error cut short is retried by the next pass.
+TEST_F(ReferenceChainsBfsTest, RootEnumerationAppliesAcceptedPrefixBeforeJvmtiError) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const jlong leak_base = T8Acc::leakTagBase();
+    int n[3] = {addNode(), addNode(), addNode()};
+    for (int i = 0; i < 3; i++) {
+        node_tags[n[i]] = leak_base + i;
+        script.push_back({JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, n[i], -1});
+    }
+    active_fixture->ior_error_after_prefix = JVMTI_ERROR_OUT_OF_MEMORY;
+    active_fixture->ior_prefix_count = 2;
+    t8AllowRootEnumeration();
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    // Two reports crossed the callback; the error then cut the walk before the third.
+    EXPECT_EQ((int)JVMTI_ITERATION_CONTINUE, active_fixture->last_ior_control);
+    jlong f0 = tags_ever_assigned[n[0]];
+    jlong f1 = tags_ever_assigned[n[1]];
+    ASSERT_NE(leak_base + 0, f0);
+    ASSERT_GT(f0, 0);
+    ASSERT_GT(f1, 0);
+    EXPECT_EQ(0, tags_ever_assigned[n[2]]) << "the third root was never reported";
+    EXPECT_EQ(leak_base + 2, node_tags[n[2]]);
+    // The accepted prefix was flushed before the error return: both durable roots are indexed and
+    // nothing is left in the journal.
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(f0));
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(f1));
+    EXPECT_EQ(2u, T8Acc::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, T8Acc::journalCountForTest());
+
+    // Retry: the third root is reported and indexed by the next enumeration.
+    active_fixture->ior_error_after_prefix = JVMTI_ERROR_NONE;
+    t8AllowRootEnumeration();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    jlong f2 = tags_ever_assigned[n[2]];
+    ASSERT_GT(f2, 0);
+    EXPECT_NE(leak_base + 2, f2);
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(f2));
+    EXPECT_EQ(3u, T8Acc::anchorIndexSizeForTest());
+
+    tracker->stop();
+}
+
+// Root enumeration with a full journal: the rejected leak conversion is not performed (the object
+// keeps its leak tag, no frontier entry appears), the accepted prefix is still applied, and the
+// retry converts it.
+TEST_F(ReferenceChainsBfsTest, RootEnumerationOverflowLeavesLeakTagForRetry) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int leak_node = addNode();
+    const jlong leak_tag = T8Acc::leakTagBase() + 7;
+    node_tags[leak_node] = leak_tag;
+    script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, leak_node, -1}};
+
+    T8JournalFill::reset(tracker);
+    T8JournalFill::seedHolder(tracker);
+    T8JournalFill::fill_on_ior = true;
+    jvmti_tbl.IterateOverReachableObjects = &t8FillingIterate;
+    t8AllowRootEnumeration();
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill)
+        << "the journal must be full when the rejected report arrives";
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ((int)JVMTI_ITERATION_ABORT, active_fixture->last_ior_control);
+    EXPECT_EQ(leak_tag, node_tags[leak_node]) << "overflow must leave the leak tag installed";
+    EXPECT_EQ(1u, tracker->frontierTable()->size())
+        << "no frontier entry may exist for the rejected conversion (only the fill holder)";
+    EXPECT_EQ(0u, T8Acc::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, T8Acc::journalCountForTest()) << "the full prefix is replayed and cleared";
+
+    jvmti_tbl.IterateOverReachableObjects = &mock_IterateOverReachableObjects;
+    T8JournalFill::reset(tracker);
+    t8AllowRootEnumeration();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    jlong converted = tags_ever_assigned[leak_node];
+    ASSERT_GT(converted, 0) << "the retry never converted the leak-tagged root";
+    EXPECT_NE(leak_tag, converted);
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(converted));
+
+    tracker->stop();
+}
+
+// Root upgrade of an already-admitted transient root to a durable one is a destructive transition:
+// with a full journal the entry stays as it was and the next enumeration upgrades it.
+TEST_F(ReferenceChainsBfsTest, RootEnumerationOverflowLeavesRootKindUnchangedForRetry) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int node = addNode();
+    jlong tag = tracker->nextTag();
+    node_tags[node] = tag;
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    script = {{JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, node, -1}};
+
+    T8JournalFill::reset(tracker);
+    T8JournalFill::seedHolder(tracker);
+    T8JournalFill::fill_on_ior = true;
+    jvmti_tbl.IterateOverReachableObjects = &t8FillingIterate;
+    t8AllowRootEnumeration();
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill);
+    EXPECT_TRUE(truncated);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(tag, &entry));
+    EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_STACK_LOCAL, entry.root_kind)
+        << "the rejected upgrade must not be performed";
+    EXPECT_EQ(0, entry.parent_tag);
+    EXPECT_EQ(tag, node_tags[node]);
+    EXPECT_FALSE(T8Acc::anchorIndexContainsForTest(tag));
+
+    jvmti_tbl.IterateOverReachableObjects = &mock_IterateOverReachableObjects;
+    T8JournalFill::reset(tracker);
+    t8AllowRootEnumeration();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_TRUE(frontier->lookup(tag, &entry));
+    EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL, entry.root_kind);
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(tag));
+
+    tracker->stop();
+}
+
+namespace {
+
+// Seeds the demotion shape: `parent` is a queued, root-attached stack-local entry whose expansion
+// delivers an edge onto `holder`, a root-attached STATIC_FIELD entry (deeper path => demotion).
+struct T8DemotionSeed {
+    static constexpr jlong kParentTag = 104;
+    static constexpr jlong kHolderTag = 105;
+};
+
+} // namespace
+
+// Expansion with a full journal: the demotion that would drop a durable root is not performed
+// (entry stays root-attached, no at-risk push), the batch stays queued, and the retry demotes it.
+TEST_F(ReferenceChainsBfsTest, ExpansionOverflowKeepsDemotionAndBatchForRetry) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int parent = addNode();
+    int holder = addNode();
+    script = {{JVMTI_HEAP_REFERENCE_FIELD, parent, holder, -1}};
+    node_tags[parent] = T8DemotionSeed::kParentTag;
+    node_tags[holder] = T8DemotionSeed::kHolderTag;
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, T8DemotionSeed::kHolderTag, 0, 0,
+                                           FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, T8DemotionSeed::kParentTag, 0, 0,
+                                           FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    T8Acc::pushPendingExpandForTest(T8DemotionSeed::kParentTag);
+
+    T8JournalFill::reset(tracker);
+    T8JournalFill::seedHolder(tracker);
+    T8JournalFill::fill_on_follow_call = 0;
+    jvmti_tbl.FollowReferences = &t8FillingFollow;
+
+    int edges = 0;
+    bool truncated = false;
+    // The test-only journal fill has no FIFO effect; the rejected demotion must not push one.
+    const size_t fifo_before = T8Acc::staticAnchorFifoSizeForTest();
+    T8Acc::expandFrontierWithBudgetForTest(&mock_jvmti, &mock_jni, 1000, &edges, &truncated);
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill);
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ((int)JVMTI_VISIT_ABORT, active_fixture->last_follow_control);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(T8DemotionSeed::kHolderTag, &entry));
+    EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
+    EXPECT_EQ(0u, entry.depth);
+    EXPECT_EQ(fifo_before, T8Acc::staticAnchorFifoSizeForTest());
+    EXPECT_EQ(0u, T8Acc::journalCountForTest());
+    // Incomplete batch: the source obligation stays queued and un-expanded.
+    EXPECT_EQ(std::vector<jlong>{T8DemotionSeed::kParentTag}, T8Acc::pendingExpandContents());
+    FrontierEntry parent_entry{};
+    ASSERT_TRUE(frontier->lookup(T8DemotionSeed::kParentTag, &parent_entry));
+    EXPECT_EQ(FrontierEntryState::FRONTIER, parent_entry.state);
+
+    jvmti_tbl.FollowReferences = &mock_FollowReferences;
+    T8JournalFill::reset(tracker);
+    edges = 0;
+    T8Acc::expandFrontierWithBudgetForTest(&mock_jvmti, &mock_jni, 1000, &edges, &truncated);
+    EXPECT_FALSE(truncated);
+    ASSERT_TRUE(frontier->lookup(T8DemotionSeed::kHolderTag, &entry));
+    EXPECT_EQ(T8DemotionSeed::kParentTag, entry.parent_tag);
+    EXPECT_EQ(1u, entry.depth);
+    EXPECT_TRUE(T8Acc::staticAnchorFifoContainsForTest(T8DemotionSeed::kHolderTag));
+    EXPECT_EQ(0u, T8Acc::pendingExpandSize());
+    ASSERT_TRUE(frontier->lookup(T8DemotionSeed::kParentTag, &parent_entry));
+    EXPECT_EQ(FrontierEntryState::EXPANDED, parent_entry.state);
+
+    tracker->stop();
+}
+
+// Expansion: records accepted before a JVMTI error are flushed before the error handling, and the
+// batch (no entry known complete) stays queued.
+TEST_F(ReferenceChainsBfsTest, ExpansionAppliesAcceptedPrefixBeforeJvmtiError) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int first = addNode();
+    int second = addNode();
+    int holder = addNode();
+    int child = addNode();
+    node_tags[first] = 104;
+    node_tags[second] = 106;
+    node_tags[holder] = 105;
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, first, holder, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, second, child, -1},
+    };
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 105, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    for (jlong tag : {104, 106}) {
+        ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+                                               JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+        T8Acc::pushPendingExpandForTest(tag);
+    }
+    // Two holder->element reports, then the first->holder demotion edge, then the error.
+    active_fixture->follow_error_after_prefix = JVMTI_ERROR_OUT_OF_MEMORY;
+    active_fixture->follow_prefix_count = 3;
+
+    int edges = 0;
+    bool truncated = false;
+    T8Acc::expandFrontierWithBudgetForTest(&mock_jvmti, &mock_jni, 1000, &edges, &truncated);
+    EXPECT_TRUE(truncated);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(105, &entry));
+    EXPECT_EQ(104, entry.parent_tag) << "the demotion delivered before the error was kept";
+    EXPECT_TRUE(T8Acc::staticAnchorFifoContainsForTest(105))
+        << "its at-risk record was flushed before the error return";
+    EXPECT_EQ(0u, T8Acc::journalCountForTest());
+    EXPECT_EQ(0, tags_ever_assigned[child]) << "the error cut the walk before the second edge";
+    EXPECT_EQ((std::vector<jlong>{104, 106}), T8Acc::pendingExpandContents());
+
+    tracker->stop();
+}
+
+// Expansion: budget exhaustion keeps the accepted prefix, which includes the demotion delivered
+// before the budget ran out.
+TEST_F(ReferenceChainsBfsTest, ExpansionBudgetExhaustionKeepsAcceptedPrefix) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int parent = addNode();
+    int holder = addNode();
+    int admitted = addNode();
+    int refused = addNode();
+    node_tags[parent] = 104;
+    node_tags[holder] = 105;
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, parent, holder, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, parent, admitted, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, parent, refused, -1},
+    };
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 105, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    T8Acc::pushPendingExpandForTest(104);
+
+    int edges = 0;
+    bool truncated = false;
+    T8Acc::expandFrontierWithBudgetForTest(&mock_jvmti, &mock_jni, 1, &edges, &truncated);
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(1, edges);
+    EXPECT_GT(tags_ever_assigned[admitted], 0);
+    EXPECT_EQ(0, tags_ever_assigned[refused]);
+    EXPECT_EQ((int)JVMTI_VISIT_ABORT, active_fixture->last_follow_control);
+    EXPECT_TRUE(T8Acc::staticAnchorFifoContainsForTest(105))
+        << "the demotion recorded before the budget abort must be applied";
+    EXPECT_EQ(0u, T8Acc::journalCountForTest());
+
+    tracker->stop();
+}
+
+// Root enumeration cut short by a full frontier: the rediscovery accepted before the cap-hitting
+// root is flushed (indexed) on the abandoning exit, with nothing left in the journal.
+TEST_F(ReferenceChainsBfsTest, RootEnumerationFrontierCapExitFlushesAcceptedAnchor) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int known = addNode();
+    int fresh = addNode();
+    const jlong known_tag = tracker->nextTag();
+    node_tags[known] = known_tag;
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, known_tag, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ASSERT_EQ(1u, frontier->size());
+    ASSERT_FALSE(T8Acc::anchorIndexContainsForTest(known_tag));
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, known, -1},
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, fresh, -1},
+    };
+    t8AllowRootEnumeration();
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ((int)JVMTI_ITERATION_ABORT, active_fixture->last_ior_control);
+    EXPECT_EQ(0, tags_ever_assigned[fresh]) << "the second root must not be admitted";
+    EXPECT_EQ(1u, frontier->size()) << "the cap must have been what refused the second root";
+    EXPECT_EQ(SearchState::ABANDONED, tracker->searchState());
+    EXPECT_EQ((u8)SearchAbandonReason::FRONTIER_CAP, T8Acc::searchAbandonReasonForTest());
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(known_tag))
+        << "the rediscovery accepted before the cap exit must be flushed";
+    EXPECT_EQ(1u, T8Acc::anchorIndexSizeForTest());
+    EXPECT_EQ(0u, T8Acc::journalCountForTest());
+
+    tracker->stop();
+}
+
+// Static sweep with a full journal: the rejected static attachment is not admitted, the lap is not
+// reported complete (the next pass sweeps again), exactly one resweep retry is requested, and the
+// retry admits and indexes the holder.
+TEST_F(ReferenceChainsBfsTest, StaticSweepOverflowRetriesChunkWithoutServing) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int class_node = addNode();
+    int holder = addNode();
+    addClass((void *)&node_tags[class_node], "Lcom/rc/statics/OverflowHolder;");
+    script = {{JVMTI_HEAP_REFERENCE_STATIC_FIELD, class_node, holder, -1}};
+
+    T8JournalFill::reset(tracker);
+    T8JournalFill::seedHolder(tracker);
+    T8JournalFill::fill_on_follow_call = 0; // no candidates: the sweep is the first Follow call
+    jvmti_tbl.FollowReferences = &t8FillingFollow;
+    t8AllowRootEnumeration();
+    const u64 gen_before = T8Acc::durableAnchorResweepGenForTest();
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill)
+        << "the sweep's walk must be the one that met the full journal";
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(0, tags_ever_assigned[holder]) << "the rejected admission must not be performed";
+    EXPECT_EQ(0, node_tags[holder]);
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_EQ(gen_before + 1, T8Acc::durableAnchorResweepGenForTest())
+        << "a rejected static attachment requests exactly one resweep";
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+    EXPECT_EQ(0u, T8Acc::journalCountForTest());
+
+    jvmti_tbl.FollowReferences = &mock_FollowReferences;
+    T8JournalFill::reset(tracker);
+    t8AllowRootEnumeration();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    jlong admitted_tag = tags_ever_assigned[holder];
+    ASSERT_GT(admitted_tag, 0) << "overflow was reported as a served chunk: no second sweep ran";
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(admitted_tag));
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest());
+
+    tracker->stop();
+}
+
+namespace {
+
+// kLapClasses loaded mock classes (> one 512-class sweep chunk), each a class object with one
+// static field holding its own distinct holder. All nodes are created before any class captures a
+// node address (addNode() may reallocate node_tags).
+constexpr int kLapClasses = 600;
+// Mirrors ReferenceChainTracker::STATIC_FIELD_SWEEP_CHUNK_CLASSES (private; the cursor assertions
+// fail if the production value differs).
+constexpr int kLapChunk = 512;
+
+struct T8LapWorld {
+    std::vector<int> class_nodes;
+    std::vector<int> holders;
+    std::vector<int> chunk0; // class indices in the first sweep chunk (ascending class tag)
+    std::vector<int> chunk1;
+};
+
+void t8BuildLapWorld(ReferenceChainsMockHeap &heap, T8LapWorld *w) {
+    static char sigs[kLapClasses][40];
+    for (int i = 0; i < kLapClasses; i++) {
+        w->class_nodes.push_back(heap.addNode());
+        w->holders.push_back(heap.addNode());
+    }
+    for (int i = 0; i < kLapClasses; i++) {
+        snprintf(sigs[i], sizeof(sigs[i]), "Lcom/rc/lap/C%d;", i);
+        heap.addClass((void *)&heap.node_tags[w->class_nodes[i]], sigs[i]);
+        heap.script.push_back(
+            {JVMTI_HEAP_REFERENCE_STATIC_FIELD, w->class_nodes[i], w->holders[i], -1});
+    }
+}
+
+// The sweep orders classes by their (negative) class tag, minted by resolveLoadedClasses() in the
+// first pass; reads that order back so assertions name the real chunk membership.
+void t8PartitionChunks(const ReferenceChainsMockHeap &heap, T8LapWorld *w) {
+    std::vector<int> order(kLapClasses);
+    for (int i = 0; i < kLapClasses; i++) {
+        order[i] = i;
+    }
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return heap.node_tags[w->class_nodes[a]] < heap.node_tags[w->class_nodes[b]];
+    });
+    w->chunk0.assign(order.begin(), order.begin() + kLapChunk);
+    w->chunk1.assign(order.begin() + kLapChunk, order.end());
+}
+
+size_t t8AdmittedHolders(const ReferenceChainsMockHeap &heap, const T8LapWorld &w,
+                         const std::vector<int> &classes) {
+    size_t n = 0;
+    for (int c : classes) {
+        n += heap.tags_ever_assigned[w.holders[c]] != 0;
+    }
+    return n;
+}
+
+// Fills the durable share to exactly the cap (distinct indexed anchors with EXPANDED frontier
+// entries, so no pass re-expands them), without crossing it. Tags stay below the frontier cap.
+void t8FillDurableShareToCap(ReferenceChainTracker *tracker, jlong first_tag) {
+    const size_t cap = T8Acc::kDurableAnchorIndexCap;
+    for (jlong tag = first_tag; T8Acc::durableAnchorCountForTest() < cap; tag++) {
+        ASSERT_TRUE(T8Acc::insertFrontierEntry(tracker->frontierTable(), tag, 0, 0,
+                                               FrontierEntryState::EXPANDED,
+                                               JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        T8Acc::addToStaticAnchorIndexForTest(tag, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_EQ(cap, T8Acc::durableAnchorCountForTest());
+}
+
+// Crosses the cap exactly once: one more distinct anchor evicts, requesting one resweep.
+void t8CrossDurableCapOnce(ReferenceChainTracker *tracker, jlong tag) {
+    const u64 gen = T8Acc::durableAnchorResweepGenForTest();
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(tracker->frontierTable(), tag, 0, 0,
+                                           FrontierEntryState::EXPANDED,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    T8Acc::addToStaticAnchorIndexForTest(tag, -900, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ASSERT_EQ(gen + 1, T8Acc::durableAnchorResweepGenForTest())
+        << "the cap crossing must request exactly one resweep";
+    ASSERT_GT(T8Acc::durableAnchorCountForTest(), 0u);
+}
+
+// Keeps the search RUNNING across passes that discover nothing new (a watched klass defers the
+// natural-completion branch, which would release every tag and ignore later passes).
+void t8KeepSearchRunning() {
+    T8Acc::setWatchedLeakKlassIdsForTest({1});
+}
+
+} // namespace
+
+// Real multi-chunk static sweep over > 512 loaded classes: chunk 0 completes and leaves the cursor
+// at the chunk size; a cap crossing between passes requests a resweep WITHOUT resetting the
+// cursor; the second chunk completes the lap latched at class 0 (old generation) and leaves the
+// new generation unserved; the next full lap from class 0 serves it only after its final chunk.
+TEST_F(ReferenceChainsBfsTest, StaticSweepMultiChunkLapServesOnlyItsStartLatchedGeneration) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=5000:firstpassbudget=5000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    t8KeepSearchRunning();
+
+    T8LapWorld w;
+    t8BuildLapWorld(*this, &w);
+    ASSERT_EQ(kLapClasses, (int)classes.size());
+    ASSERT_GT(kLapClasses, kLapChunk);
+
+    // Lap 1, chunk 0 (class-zero start latches the current, already-served generation).
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    ASSERT_EQ((u8)SearchState::RUNNING, tracker->searchState());
+    t8PartitionChunks(*this, &w);
+    EXPECT_EQ(kLapChunk, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_EQ((size_t)kLapChunk, t8AdmittedHolders(*this, w, w.chunk0));
+    EXPECT_EQ(0u, t8AdmittedHolders(*this, w, w.chunk1)) << "chunk 1 must not be swept yet";
+    EXPECT_FALSE(T8Acc::durableAnchorResweepUnservedForTest());
+
+    // Cross the durable cap once while the lap is in flight.
+    t8FillDurableShareToCap(tracker, 10000);
+    t8CrossDurableCapOnce(tracker, 40000);
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+    EXPECT_EQ(kLapChunk, T8Acc::staticFieldSweepCursorForTest())
+        << "the resweep request must not reset the in-flight cursor";
+
+    // Chunk 1 completes the OLD lap: the cursor wraps, but the new generation stays unserved.
+    truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ((size_t)kLapClasses - kLapChunk, t8AdmittedHolders(*this, w, w.chunk1));
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest()) << "the lap must have completed";
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest())
+        << "the lap latched before the eviction must not serve the later request";
+
+    // The next lap starts at class 0, latches the new generation, and serves it only at its end.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(kLapChunk, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest())
+        << "a lap's first chunk must not serve its generation";
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_FALSE(T8Acc::durableAnchorResweepUnservedForTest())
+        << "the lap's final chunk must serve the generation it latched at class 0";
+
+    tracker->stop();
+}
+
+// A truncated (journal-overflow) second chunk is not served: the cursor retries the chunk start,
+// the lap is not reported complete, and the retry later completes the lap without serving the
+// resweep the overflow requested.
+TEST_F(ReferenceChainsBfsTest, StaticSweepMultiChunkTruncatedChunkRetriesWithoutServingLap) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=5000:firstpassbudget=5000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    t8KeepSearchRunning();
+
+    T8LapWorld w;
+    t8BuildLapWorld(*this, &w);
+
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_FALSE(truncated);
+    ASSERT_EQ(kLapChunk, T8Acc::staticFieldSweepCursorForTest());
+    t8PartitionChunks(*this, &w);
+    ASSERT_EQ((size_t)kLapChunk, t8AdmittedHolders(*this, w, w.chunk0));
+    const int saved_cursor = T8Acc::staticFieldSweepCursorForTest();
+
+    // Chunk 1 with a full journal: its new static attachments are rejected.
+    T8JournalFill::reset(tracker);
+    T8JournalFill::seedHolder(tracker);
+    T8JournalFill::fill_on_follow_call = 0; // the sweep is the first Follow call of the pass
+    jvmti_tbl.FollowReferences = &t8FillingFollow;
+    const u64 gen_before = T8Acc::durableAnchorResweepGenForTest();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill)
+        << "the chunk-1 sweep must be the walk that met the full journal";
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(saved_cursor, T8Acc::staticFieldSweepCursorForTest())
+        << "a truncated chunk must retry its own start, not advance or wrap";
+    EXPECT_EQ(0u, t8AdmittedHolders(*this, w, w.chunk1)) << "rejected attachments must not be admitted";
+    EXPECT_EQ(gen_before + 1, T8Acc::durableAnchorResweepGenForTest());
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+
+    // Retry: the chunk completes the lap; the overflow-requested generation stays unserved.
+    jvmti_tbl.FollowReferences = &mock_FollowReferences;
+    T8JournalFill::reset(tracker);
+    truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ((size_t)kLapClasses - kLapChunk, t8AdmittedHolders(*this, w, w.chunk1));
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest())
+        << "a lap whose chunk was truncated must not serve the request that truncation raised";
+
+    // A full fresh lap from class 0 then serves it.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(T8Acc::durableAnchorResweepUnservedForTest());
+
+    tracker->stop();
+}
+
+// A FollowReferences error after a prefix of the FIRST chunk keeps the lap's original latch across
+// the chunk retry: a resweep request raised between the latch and the retry (stood in for here by
+// an at-cap eviction after the failed attempt) stays unserved until a fresh lap from class 0
+// completes. The retry stamps suppress re-reports of holders the failed attempt already accepted,
+// so a retry that re-latched the newer generation would publish it as served while the evicted
+// holder's class sits behind the retry stamps - leaving the holder out of the index with no
+// pending request. The fresh lap's unsuppressed re-report must be what re-indexes it.
+TEST_F(ReferenceChainsBfsTest, StaticSweepFirstChunkErrorRetryKeepsOriginalLatch) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=5000:firstpassbudget=5000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    t8KeepSearchRunning();
+
+    T8LapWorld w;
+    t8BuildLapWorld(*this, &w);
+    ASSERT_EQ(kLapClasses, (int)classes.size());
+    ASSERT_GT(kLapClasses, kLapChunk);
+    t8PartitionChunks(*this, &w);
+
+    // Lap 1, chunk 0: a four-edge prefix of the chunk's static fields is accepted (stamped by
+    // the failed attempt), then FollowReferences errors. The latch fired at the chunk-0 start;
+    // the retry flags are set and the cursor stays at the chunk start. The mock delivers all 512
+    // class seeds before the script's static-field edges, so the prefix budget covers both.
+    active_fixture->follow_error_after_prefix = JVMTI_ERROR_OUT_OF_MEMORY;
+    active_fixture->follow_prefix_count = kLapChunk + 4;
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    active_fixture->follow_error_after_prefix = JVMTI_ERROR_NONE;
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest())
+        << "the errored first chunk must retry its own start";
+    std::vector<jlong> stamped_tags;
+    for (int c : w.chunk0) {
+        if (tags_ever_assigned[w.holders[c]] != 0) {
+            stamped_tags.push_back(tags_ever_assigned[w.holders[c]]);
+        }
+    }
+    ASSERT_EQ(4u, stamped_tags.size())
+        << "only the static-field edges delivered before the error may be admitted";
+    const jlong stamped_tag = stamped_tags[0];
+    EXPECT_FALSE(T8Acc::durableAnchorResweepUnservedForTest());
+
+    // One at-cap eviction raises a resweep request while the retry is pending.
+    t8FillDurableShareToCap(tracker, 10000);
+    t8CrossDurableCapOnce(tracker, 40000);
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+
+    // The retry re-sweeps chunk 0: the stamped prefix is suppressed, the rest is admitted.
+    truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ((size_t)kLapChunk, T8Acc::staticFieldSweepCursorForTest());
+
+    // Chunk 1 completes the lap: it publishes the ORIGINAL latch, so the eviction's request
+    // stays unserved - a re-latch at the retry's chunk-0 start would serve it here.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(0, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest())
+        << "the retry lap must not serve the request raised after its lap latched";
+
+    // The fresh lap from class 0 re-reports the suppressed prefix without retry stamps,
+    // re-indexing the evicted holder, and its completion serves the request.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ((size_t)kLapChunk, T8Acc::staticFieldSweepCursorForTest());
+    EXPECT_TRUE(T8Acc::durableAnchorResweepUnservedForTest());
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_FALSE(T8Acc::durableAnchorResweepUnservedForTest());
+    EXPECT_TRUE(T8Acc::anchorIndexContainsForTest(stamped_tag))
+        << "the fresh lap's unsuppressed re-report must re-index the evicted holder";
+
+    tracker->stop();
+}
+
+// Selected-anchor walk with a full journal: the rejected demotion below the anchor's walk is not
+// performed, the anchor returns to the front of the at-risk FIFO, and the next pass walks it again.
+TEST_F(ReferenceChainsBfsTest, SelectedAnchorWalkOverflowRequeuesAnchorForRetry) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int root = addNode();
+    int anchor = addNode();
+    int holder = addNode();
+    node_tags[root] = 104;
+    node_tags[anchor] = 105;
+    node_tags[holder] = 107;
+    script = {{JVMTI_HEAP_REFERENCE_FIELD, anchor, holder, -1}};
+    // The anchor is chain-attached (the at-risk shape); the holder below it is a durable root that
+    // the walk's edge would demote.
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 107, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    T8Acc::pushStaticAnchorFifoForTest(105, 28366);
+
+    T8JournalFill::reset(tracker);
+    T8JournalFill::seedHolder(tracker);
+    T8JournalFill::fill_on_follow_call = 0; // the anchor walk is the pass's only Follow call
+    jvmti_tbl.FollowReferences = &t8FillingFollow;
+    t8AllowRootEnumeration();
+
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill);
+    EXPECT_TRUE(truncated);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
+    EXPECT_FALSE(T8Acc::staticAnchorFifoContainsForTest(107));
+    EXPECT_TRUE(T8Acc::staticAnchorFifoContainsForTest(105))
+        << "the partially walked anchor must be restored to the FIFO";
+    EXPECT_EQ(0u, T8Acc::journalCountForTest());
+
+    jvmti_tbl.FollowReferences = &mock_FollowReferences;
+    T8JournalFill::reset(tracker);
+    t8AllowRootEnumeration();
+    truncated = false;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(105, entry.parent_tag);
+    EXPECT_TRUE(T8Acc::staticAnchorFifoContainsForTest(107))
+        << "the retried walk's demotion is applied before the pass returns";
+    EXPECT_FALSE(T8Acc::staticAnchorFifoContainsForTest(105));
+
+    tracker->stop();
+}
+
+// Journal overflow mid-descent: the partially walked anchor stays unwalked and is re-walked
+// later, but its partial descent's edges STAY counted - ctx.edges_admitted counts NEW frontier
+// admissions, the accepted prefix stays applied (the scope flush replays it), and the re-walk
+// re-charges only still-unadmitted edges (dedup by positive tag), so the segment is charged
+// exactly once. Rolling the partial edges back out of the budget would let applied-to-frontier
+// work escape the budget (fails-before: the pushed rollback under-counted by the partial edges).
+TEST_F(ReferenceChainsBfsTest, AnchorWalkOverflowKeepsPartialEdgesCounted) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    int anchor = addNode();
+    int child = addNode();
+    int holder = addNode();
+    node_tags[anchor] = 105;
+    node_tags[holder] = 107;
+    // The journal is filled to capacity before the walk: the plain child edge is admitted first
+    // (edge admissions need no journal slot); the holder edge (a durable demotion, which needs
+    // journal room) is where the descent overflows.
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, anchor, child, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, anchor, holder, -1},
+    };
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 107, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    T8Acc::pushStaticAnchorFifoForTest(105, 28366);
+
+    std::vector<ReferenceChainsTestAccessor::AtRiskAnchor> drained;
+    ASSERT_EQ(1, T8Acc::drainStaticAnchorFifoForTest(16, drained));
+    std::vector<jlong> drained_tags;
+    for (const auto &at_risk : drained) {
+        drained_tags.push_back(at_risk.tag);
+    }
+
+    int edges = 0;
+    std::vector<jlong> unwalked;
+    bool overflow = false;
+    T8Acc::walkStaticFieldAnchorsWithPrefillForTest(
+        &mock_jvmti, &mock_jni, AnchorObservationBuffer::CAPACITY,
+        drained_tags, 1000, &edges, &unwalked, &overflow);
+    EXPECT_TRUE(overflow);
+    ASSERT_EQ(1u, unwalked.size());
+    EXPECT_EQ(105, unwalked[0]);
+    EXPECT_GT(tags_ever_assigned[child], 0)
+        << "the plain child edge never ran - the overflow came too early to exercise the contract";
+    EXPECT_EQ(1, edges)
+        << "the partial descent's admitted edge must stay counted: it is applied to the frontier "
+           "and the re-walk will not re-charge it";
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
+
+    // A retry on an empty journal walks the anchor fully: the demotion lands and the child is
+    // re-admitted against a fresh budget.
+    jvmti_tbl.FollowReferences = &mock_FollowReferences;
+    edges = 0;
+    unwalked.clear();
+    overflow = false;
+    T8Acc::walkStaticFieldAnchorsWithPrefillForTest(
+        &mock_jvmti, &mock_jni, 0, drained_tags, 1000, &edges, &unwalked,
+        &overflow);
+    EXPECT_FALSE(overflow);
+    EXPECT_TRUE(unwalked.empty());
+    // The retry legitimately charges no NEW edges: the partial walk's child admission survived
+    // (frontier dedup) and was already counted above, so only the rejected demotion is left to
+    // apply - total charge for the anchor's segment stays exact.
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(105, entry.parent_tag) << "the retried descent demotes the holder";
+
+    tracker->stop();
+}
+
+// Candidate-thread descent with a full journal: the first thread's rejected demotion stops the
+// group before the second thread is walked; the accepted prefix is flushed on the way out, and the
+// retry walks both threads.
+TEST_F(ReferenceChainsBfsTest, CandidateThreadWalkOverflowStopsGroupAndFlushesPrefix) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    void *threadCls = (void *)0x3101, *tlmapCls = (void *)0x3102, *loaderCls = (void *)0x3103;
+    int tlmapIdx = registerClassForFindClass(
+        tlmapCls, "java/lang/ThreadLocal$ThreadLocalMap", "Ljava/lang/ThreadLocal$ThreadLocalMap;");
+    registerClassForFindClass(loaderCls, "java/lang/ClassLoader", "Ljava/lang/ClassLoader;");
+    registerClassForFindClass(threadCls, "java/lang/Thread", "Ljava/lang/Thread;");
+    thread_class = threadCls;
+    T8Acc::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+
+    int thread1 = addNode();
+    int thread2 = addNode();
+    int tlmap = addNode();
+    int holder = addNode();
+    node_tags[holder] = 107;
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, thread1, tlmap, tlmapIdx},
+        {JVMTI_HEAP_REFERENCE_FIELD, tlmap, holder, -1},
+    };
+    // The first thread is already admitted root-attached (reuse path); the second is minted on
+    // its first walk. The durable holder under the ThreadLocalMap is what the walk demotes.
+    jlong anchor_tag = tracker->tagObject(
+        &mock_jvmti, reinterpret_cast<jobject>(&node_tags[thread1]));
+    ASSERT_GT(anchor_tag, 0);
+    node_tags[thread1] = anchor_tag;
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, anchor_tag, 0, 0, FrontierEntryState::FRONTIER,
+                                           (u8)JVMTI_HEAP_REFERENCE_THREAD));
+    ASSERT_TRUE(T8Acc::insertFrontierEntry(frontier, 107, 0, 0, FrontierEntryState::FRONTIER,
+                                           JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    jint tids0[] = {777};
+    jint tids1[] = {778};
+    T8Acc::seedCandidateSlotForTest(0, 6, tids0, 1);
+    T8Acc::seedCandidateSlotForTest(1, 6, tids1, 1);
+    tracker->registerThreadObject(&mock_jni, 777, reinterpret_cast<jthread>(&node_tags[thread1]));
+    tracker->registerThreadObject(&mock_jni, 778, reinterpret_cast<jthread>(&node_tags[thread2]));
+
+    T8JournalFill::reset(tracker);
+    T8JournalFill::seedHolder(tracker);
+    T8JournalFill::fill_on_follow_call = 0;
+    jvmti_tbl.FollowReferences = &t8FillingFollow;
+
+    int edges = 0;
+    T8Acc::walkCandidateThreadLocalsForTest(&mock_jvmti, &mock_jni, 1000, &edges);
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T8JournalFill::count_after_fill);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
+    EXPECT_EQ(0, T8Acc::getTagForTest(&mock_jvmti, reinterpret_cast<jobject>(&node_tags[thread2])))
+        << "an overflowed descent must end the group before the next thread";
+    EXPECT_EQ(0u, T8Acc::journalCountForTest()) << "the group's scope flushed on exit";
+
+    jvmti_tbl.FollowReferences = &mock_FollowReferences;
+    T8JournalFill::reset(tracker);
+    edges = 0;
+    T8Acc::walkCandidateThreadLocalsForTest(&mock_jvmti, &mock_jni, 1000, &edges);
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(tags_ever_assigned[tlmap], entry.parent_tag)
+        << "the retried descent demotes the holder under the ThreadLocalMap";
+    EXPECT_GT(T8Acc::getTagForTest(&mock_jvmti, reinterpret_cast<jobject>(&node_tags[thread2])), 0)
+        << "the retry continues to the second thread";
+
+    tracker->stop();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Profiler::stop() and the BFS worker join (ProfilerTestAccessor, defined above).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+// Counts the teardown calls stop() makes on an engine.
+class T8CountingEngine : public Engine {
+public:
+    int stops = 0;
+    int enable_calls = 0;
+    void stop() override { stops++; }
+    void enableEvents(bool) override { enable_calls++; }
+};
+
+// Puts the Profiler singleton back exactly as found, whatever the test asserted or returned from.
+class T8ProfilerStateGuard {
+public:
+    T8ProfilerStateGuard()
+        : _profiler(Profiler::instance()),
+          _state(ProfilerTestAccessor::state(_profiler)),
+          _cpu(ProfilerTestAccessor::cpuEngine(_profiler)),
+          _wall(ProfilerTestAccessor::wallEngine(_profiler)),
+          _mask(ProfilerTestAccessor::eventMask(_profiler)),
+          _active(ProfilerTestAccessor::referenceChainsActive(_profiler)),
+          _thread_events(ProfilerTestAccessor::threadEventsState(_profiler)),
+          _vm(VMTestAccessor::getVm()) {}
+    ~T8ProfilerStateGuard() {
+        ProfilerTestAccessor::setState(_profiler, _state);
+        ProfilerTestAccessor::setEngines(_profiler, _cpu, _wall);
+        ProfilerTestAccessor::setEventMask(_profiler, _mask);
+        ProfilerTestAccessor::setReferenceChainsActive(_profiler, _active);
+        ProfilerTestAccessor::setThreadEventsState(_profiler, _thread_events);
+        VMTestAccessor::setVm(_vm);
+    }
+
+private:
+    Profiler *_profiler;
+    State _state;
+    Engine *_cpu;
+    Engine *_wall;
+    int _mask;
+    bool _active;
+    jvmtiEventMode _thread_events;
+    JavaVM *_vm;
+};
+
+jint JNICALL t8MockGetEnv(JavaVM *, void **penv, jint) {
+    *penv = &ReferenceChainsMockHeap::active_fixture->mock_jni;
+    return JNI_OK;
+}
+
+jvmtiError JNICALL t8MockGetAllThreads(jvmtiEnv *, jint *count, jthread **threads) {
+    *count = 0;
+    *threads = nullptr;
+    return JVMTI_ERROR_NONE;
+}
+
+} // namespace
+
+#ifdef DEBUG
+// A failed BFS-worker join must stop Profiler::stop() before any teardown the worker can still
+// reach: the call returns an Error, the state stays RUNNING with the tracker active, no engine is
+// stopped and the tracker's journal epoch is unchanged. Once the join succeeds, a retried stop()
+// runs the whole teardown.
+TEST_F(ReferenceChainsBfsTest, ProfilerStopFailedJoinSkipsTeardownAndRetrySucceeds) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    T8ProfilerStateGuard restore;
+    Profiler *profiler = Profiler::instance();
+    T8CountingEngine cpu_engine;
+    T8CountingEngine wall_engine;
+    JNIInvokeInterface_ invoke_tbl{};
+    invoke_tbl.GetEnv = &t8MockGetEnv;
+    JavaVM_ mock_vm{};
+    mock_vm.functions = &invoke_tbl;
+    // stop()'s teardown tail talks to the JVM through these.
+    jvmti_tbl.GetAllThreads = &t8MockGetAllThreads;
+    VMTestAccessor::setVm(&mock_vm);
+    ProfilerTestAccessor::setEngines(profiler, &cpu_engine, &wall_engine);
+    ProfilerTestAccessor::setEventMask(profiler, EM_CPU | EM_WALL);
+    ProfilerTestAccessor::setThreadEventsState(profiler, JVMTI_DISABLE);
+    ProfilerTestAccessor::setReferenceChainsActive(profiler, true);
+    ProfilerTestAccessor::setState(profiler, RUNNING);
+
+    // A started-but-unjoined worker whose join the stub refuses. The stub records the
+    // reference-chain gate state AT JOIN TIME: stop() must close the gate (heap callbacks and
+    // thread-object registrations) before it joins, so nothing past the flip can enqueue for the
+    // dying consumer.
+    T8Acc::setThreadUnjoinedForTest();
+    static int s_join_calls_observed = 0;
+    static bool s_join_gate_open = false;
+    s_join_calls_observed = 0;
+    s_join_gate_open = false;
+    T8Acc::setJoinHookForTest([](pthread_t, void **) {
+        s_join_calls_observed++;
+        s_join_gate_open = ProfilerTestAccessor::referenceChainsActive(
+            Profiler::instance());
+        return EBUSY;
+    });
+    const u64 epoch_before = T8Acc::journalEpochForTest();
+
+    Error failed = profiler->stop();
+    EXPECT_TRUE(failed) << "a failed join must make stop() report an error";
+    EXPECT_EQ(1, s_join_calls_observed);
+    EXPECT_FALSE(s_join_gate_open)
+        << "the registration gate must be closed before the BFS join";
+    EXPECT_FALSE(T8Acc::threadJoinedForTest());
+    EXPECT_EQ(RUNNING, ProfilerTestAccessor::state(profiler));
+    EXPECT_TRUE(ProfilerTestAccessor::referenceChainsActive(profiler))
+        << "the failed join must reopen the gate: teardown was skipped";
+    EXPECT_EQ(0, cpu_engine.stops);
+    EXPECT_EQ(0, wall_engine.stops);
+    EXPECT_EQ(epoch_before, T8Acc::journalEpochForTest()) << "tracker teardown must not have run";
+    EXPECT_TRUE(tracker->enabled());
+
+    // Retry with a successful join: the join is attempted again and the teardown completes.
+    T8Acc::clearJoinResultForTest();
+    T8Acc::setJoinResultForTest(0);
+    Error retried = profiler->stop();
+    EXPECT_FALSE(retried) << (retried.message() != nullptr ? retried.message() : "");
+    EXPECT_EQ(1, T8Acc::joinCallCountForTest());
+    EXPECT_TRUE(T8Acc::threadJoinedForTest());
+    EXPECT_EQ(IDLE, ProfilerTestAccessor::state(profiler));
+    EXPECT_FALSE(ProfilerTestAccessor::referenceChainsActive(profiler));
+    EXPECT_EQ(1, cpu_engine.stops);
+    EXPECT_EQ(1, wall_engine.stops);
+    EXPECT_GT(T8Acc::journalEpochForTest(), epoch_before)
+        << "the tracker's recording-boundary reset ran after the join";
+
+    T8Acc::clearJoinResultForTest();
+}
+#endif
