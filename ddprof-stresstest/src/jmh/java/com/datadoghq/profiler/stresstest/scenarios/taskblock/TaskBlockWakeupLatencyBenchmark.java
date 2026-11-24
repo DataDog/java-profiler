@@ -209,7 +209,7 @@ public class TaskBlockWakeupLatencyBenchmark {
       return;
     }
     if ("park".equals(source)) {
-      // parkEnter can decline an op (e.g. a stop/start race), so allow 10% unowned.
+      // parkEnter0 can decline (no ProfiledThread, JVM-internal thread), so allow 10% unowned.
       check(owned * 10 >= calls * 9 && owned <= calls, "owned " + owned + " of " + calls);
     }
     checkBetween("emitted", emitted, calls / 2, calls + SLACK);

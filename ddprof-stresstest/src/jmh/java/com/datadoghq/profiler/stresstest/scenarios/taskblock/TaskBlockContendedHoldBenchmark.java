@@ -12,9 +12,11 @@ import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBen
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.Recording;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -38,13 +40,13 @@ import org.openjdk.jmh.runner.IterationType;
 
 /**
  * Measures how TaskBlock recording on a contended monitor delays the critical section. The JMH
- * thread, excluded by a trace context, holds the monitor for {@code holdMicros} per op, so the
- * score is time per hold. {@code waiters} ordinary threads contend; a blocked waiter's capture runs
- * after it acquires the lock, inside the critical section.
+ * thread, excluded by a trace context, holds the monitor for {@code holdMicros}, releases it, waits
+ * until a waiter has taken it, then re-enters. A blocked waiter's capture runs after it acquires
+ * the lock, so it delays that re-entry.
  *
- * <p>The teardown prints {@code handoffUs}, the mean from release to the next acquirer's first user
- * instruction, over waiters that observed the lock held before entering (so they blocked), and
- * {@code holderAcquireUs}, the holder's mean wait to retake the lock.
+ * <p>The teardown prints {@code handoffUs} (release to the waiter's first user instruction) and
+ * {@code holderWaitUs} p50/mean (release to the holder's re-entry), over holds taken by a waiter
+ * that had waited at least {@code BLOCKED_NANOS} to enter, so it really blocked.
  *
  * <p>The teardown fails unless {@code taskblock} emitted at least half as many TaskBlocks as holds
  * and {@code wall} none.
@@ -70,10 +72,14 @@ public class TaskBlockContendedHoldBenchmark {
   /** Allowance for the in-flight hold and for JMH or JVM threads that block once or twice. */
   private static final long SLACK = 16;
 
-  /** Pauses that let a waiter take a turn, then block again on the next hold. */
-  private static final long HOLDER_PAUSE_NANOS = 50_000;
-
+  /** Pause that lets the next hold start before a waiter re-enters. */
   private static final long WAITER_PAUSE_NANOS = 100_000;
+
+  /** Minimum wait that proves a waiter blocked: a fraction of the hold, far above a lock spin. */
+  private static final long BLOCKED_NANOS = 500_000;
+
+  private static final long TAKE_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(1);
+  private static final int MAX_SAMPLES = 1 << 16;
 
   private final AtomicReference<Throwable> failure = new AtomicReference<>();
   private final Object lock = new Object();
@@ -85,15 +91,15 @@ public class TaskBlockContendedHoldBenchmark {
   private volatile boolean running;
   private volatile boolean measuring;
 
-  /** True while the holder is inside; a waiter reading it before entering will block. */
-  private volatile boolean holding;
-
-  /** Set by the holder just before release, cleared by the first waiter inside. */
+  /** Set by the holder just before release; the first waiter inside clears it. */
   private volatile long releaseStamp;
 
-  private long holderAcquireNanos;
-  private long holds;
-  private long measuredHolds;
+  /** Whether the waiter that took the lock after the last release had blocked to enter. */
+  private volatile boolean takenBlocked;
+
+  private final AtomicLong holds = new AtomicLong();
+  private final long[] holderWaits = new long[MAX_SAMPLES];
+  private final AtomicInteger stored = new AtomicInteger();
 
   @Setup(Level.Trial)
   public void setup() throws Exception {
@@ -119,16 +125,18 @@ public class TaskBlockContendedHoldBenchmark {
   private void contend() {
     try {
       while (running) {
-        boolean blocks = holding;
+        long tried = System.nanoTime();
         synchronized (lock) {
           long now = System.nanoTime();
           long released = releaseStamp;
           if (released != 0) {
-            releaseStamp = 0;
-            if (blocks && measuring) {
+            boolean blocked = now - tried >= BLOCKED_NANOS;
+            if (blocked && measuring) {
               handoffNanos.addAndGet(now - released);
               handoffs.incrementAndGet();
             }
+            takenBlocked = blocked;
+            releaseStamp = 0;
           }
         }
         LockSupport.parkNanos(WAITER_PAUSE_NANOS);
@@ -140,23 +148,33 @@ public class TaskBlockContendedHoldBenchmark {
 
   @Benchmark
   public void hold() {
-    long start = System.nanoTime();
+    long released;
     synchronized (lock) {
-      holding = true;
-      if (measuring) {
-        holderAcquireNanos += System.nanoTime() - start;
-        measuredHolds++;
-      }
       // Busy wait: the holder must stay runnable and never enter a park hook while it holds.
       long deadline = System.nanoTime() + TimeUnit.MICROSECONDS.toNanos(holdMicros);
       while (System.nanoTime() < deadline) {
         // spin
       }
-      holds++;
-      holding = false;
-      releaseStamp = System.nanoTime();
+      holds.incrementAndGet();
+      takenBlocked = false;
+      released = System.nanoTime();
+      releaseStamp = released;
     }
-    LockSupport.parkNanos(HOLDER_PAUSE_NANOS);
+    // Re-entering at once would let the holder barge; wait until a waiter has the lock.
+    long giveUp = released + TAKE_TIMEOUT_NANOS;
+    while (releaseStamp != 0 && System.nanoTime() < giveUp) {
+      // spin
+    }
+    synchronized (lock) {
+      long now = System.nanoTime();
+      if (measuring && releaseStamp == 0 && takenBlocked) {
+        int index = stored.get();
+        if (index < MAX_SAMPLES) {
+          holderWaits[index] = now - released;
+          stored.set(index + 1);
+        }
+      }
+    }
   }
 
   /** Reports the means and checks emission as {@code config} implies. */
@@ -173,19 +191,23 @@ public class TaskBlockContendedHoldBenchmark {
     String benchmark = TaskBlockBenchmarkSupport.benchmarkName(params);
     Map<String, Long> deltas = recording.stop(benchmark);
     long count = handoffs.get();
+    long[] samples = Arrays.copyOf(holderWaits, stored.get());
+    Arrays.sort(samples);
     System.out.printf(
         Locale.ROOT,
         "[taskblock-bench] contended benchmark=%s config=%s waiters=%d holds=%d handoffs=%d"
-            + " handoffUs=%.1f holderAcquireUs=%.1f%n",
+            + " handoffUs=%.1f holderWaitSamples=%d holderWaitP50Us=%.1f holderWaitMeanUs=%.1f%n",
         benchmark,
         config,
         waiters,
-        holds,
+        holds.get(),
         count,
         count == 0 ? Double.NaN : handoffNanos.get() / 1e3 / count,
-        measuredHolds == 0 ? Double.NaN : holderAcquireNanos / 1e3 / measuredHolds);
+        samples.length,
+        samples.length == 0 ? Double.NaN : samples[(samples.length - 1) / 2] / 1e3,
+        samples.length == 0 ? Double.NaN : Arrays.stream(samples).average().getAsDouble() / 1e3);
     check(failure.get() == null, "Contender failed: " + failure.get());
-    check(holds > 0, benchmark + " made no holds");
+    check(holds.get() > 0, benchmark + " made no holds");
     if (TaskBlockBenchmarkSupport.NONE.equals(config)) {
       return;
     }
@@ -195,6 +217,6 @@ public class TaskBlockContendedHoldBenchmark {
       return;
     }
     // A blocked waiter emits one event per hold at most; with several waiters each may emit.
-    checkBetween("emitted", emitted, holds / 2, holds * waiters + SLACK);
+    checkBetween("emitted", emitted, holds.get() / 2, holds.get() * waiters + SLACK);
   }
 }
