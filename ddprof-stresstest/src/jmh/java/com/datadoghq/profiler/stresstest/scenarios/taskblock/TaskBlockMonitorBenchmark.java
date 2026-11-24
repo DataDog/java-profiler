@@ -9,8 +9,10 @@ import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBen
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.NONE;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.TOO_SHORT;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.check;
+import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.checkBetween;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.delta;
 
+import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.Recording;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -72,17 +74,21 @@ public class TaskBlockMonitorBenchmark {
   @Param({"2"})
   public long blockMillis;
 
+  /** Allowance for JMH or JVM threads that block once or twice during the trial. */
+  private static final long SLACK = 16;
+
   private final Object lock = new Object();
+  private final AtomicLong holds = new AtomicLong();
   private final AtomicLong threadLocalCalls = new AtomicLong();
+  private JavaProfiler profiler;
   private Recording recording;
   private boolean pingTurn = true;
   private long lockedCalls;
 
   @Setup(Level.Trial)
   public void setup() throws Exception {
-    recording =
-        Recording.start(
-            NONE.equals(config) ? null : TaskBlockBenchmarkSupport.loadProfiler(), config);
+    profiler = NONE.equals(config) ? null : TaskBlockBenchmarkSupport.loadProfiler();
+    recording = Recording.start(profiler, config);
   }
 
   /** Checks that the monitor producers ran, or stayed silent, as {@code config} implies. */
@@ -105,12 +111,17 @@ public class TaskBlockMonitorBenchmark {
       check(emitted == 0 && tooShort == 0, benchmark + " reached TaskBlock with TaskBlock off");
       return;
     }
-    if ("contended".equals(benchmark) || "pingPong".equals(benchmark)) {
+    if ("contended".equals(benchmark)) {
       check(tooShort > 0, benchmark + " never reached the duration check");
+    } else if ("pingPong".equals(benchmark)) {
+      // Each operation waits at most once and may also contend once; both are short.
+      checkBetween("pingPong events", tooShort + emitted, ops / 4, 2 * ops + SLACK);
     } else if ("timedWait".equals(benchmark)) {
       check(emitted * 2 >= ops, benchmark + " emitted " + emitted + " of " + ops);
     } else if ("contendedLong".equals(benchmark)) {
-      check(emitted > 0, benchmark + " emitted no contended-enter event");
+      // Holds are the only long blocks: the holder is excluded, so the waiter emits at most one
+      // event per hold.
+      checkBetween("emitted", emitted, holds.get() / 2, holds.get() + SLACK);
     }
   }
 
@@ -127,6 +138,19 @@ public class TaskBlockMonitorBenchmark {
     public void publish(TaskBlockMonitorBenchmark benchmark) {
       benchmark.threadLocalCalls.addAndGet(calls);
       calls = 0;
+    }
+  }
+
+  /** Marks the holder's JMH worker thread ineligible once, so its own blocking cannot count. */
+  @State(Scope.Thread)
+  public static class HolderThread {
+    private boolean excluded;
+
+    void exclude(TaskBlockMonitorBenchmark benchmark) {
+      if (!excluded && benchmark.recording.taskBlockActive()) {
+        TaskBlockBenchmarkSupport.excludeFromTaskBlock(benchmark.profiler);
+      }
+      excluded = true;
     }
   }
 
@@ -190,7 +214,9 @@ public class TaskBlockMonitorBenchmark {
   @Benchmark
   @Group("contendedLong")
   @GroupThreads(1)
-  public void holder() {
+  public void holder(HolderThread thread) {
+    thread.exclude(this);
+    holds.incrementAndGet();
     synchronized (lock) {
       long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(blockMillis);
       while (System.nanoTime() < deadline) {

@@ -31,6 +31,7 @@ final class TaskBlockBenchmarkSupport {
   static final String NONE = "none";
   static final String EMITTED = "task_block_emitted";
   static final String TOO_SHORT = "task_block_skipped_too_short";
+  static final String SKIPPED_TRACE_CONTEXT = "task_block_skipped_trace_context";
   static final String NATIVE_IO_HOOKS_PATCHED = "native_io_standard_hooks_patched";
 
   private static final String DEBUG_ONLY_COUNTER = "safefetch_while_protected";
@@ -69,29 +70,73 @@ final class TaskBlockBenchmarkSupport {
   }
 
   /**
-   * Returns whether {@code command} requests TaskBlock recording, mirroring the condition in {@code
-   * Profiler::start}: a wall interval, {@code wallprecheck} enabled and an empty thread filter.
+   * Returns whether {@code command} requests TaskBlock recording, mirroring {@code
+   * Arguments::parse} and {@code Profiler::start}: keys match case-insensitively and exactly, the
+   * last occurrence wins, a bare {@code wall} enables wall-clock, a bare {@code filter} is empty
+   * and a bare {@code wallprecheck} is true.
    */
   static boolean requestsTaskBlock(String command) {
     boolean wall = false;
     boolean precheck = false;
     boolean unfiltered = false;
     for (String option : command.split(",")) {
-      if (option.startsWith("wall=")) {
+      int eq = option.indexOf('=');
+      String key = eq < 0 ? option : option.substring(0, eq);
+      String value = eq < 0 ? null : option.substring(eq + 1);
+      if (key.equalsIgnoreCase("wall")) {
         wall = true;
-      } else if (option.startsWith("wallprecheck")) {
-        precheck = !option.equals("wallprecheck=false");
-      } else if (option.startsWith("filter")) {
-        unfiltered = option.equals("filter=");
+      } else if (key.equalsIgnoreCase("wallprecheck")) {
+        precheck = parseBool(value);
+      } else if (key.equalsIgnoreCase("filter")) {
+        unfiltered = value == null || value.isEmpty();
       }
     }
     return wall && precheck && unfiltered;
+  }
+
+  /** Mirrors {@code parseBoolOption}: no value is true; an unrecognised value is an error. */
+  private static boolean parseBool(String value) {
+    if (value == null) {
+      return true;
+    }
+    switch (value) {
+      case "y":
+      case "yes":
+      case "t":
+      case "true":
+      case "1":
+        return true;
+      case "n":
+      case "no":
+      case "f":
+      case "false":
+      case "0":
+        return false;
+      default:
+        throw new IllegalArgumentException("Invalid wallprecheck value: " + value);
+    }
   }
 
   /** Returns the benchmark method or group name of the running trial. */
   static String benchmarkName(BenchmarkParams params) {
     String benchmark = params.getBenchmark();
     return benchmark.substring(benchmark.lastIndexOf('.') + 1);
+  }
+
+  /**
+   * Gives the calling helper thread a trace context, so its blocks are ineligible and counted in
+   * {@link #SKIPPED_TRACE_CONTEXT} instead of {@link #EMITTED}. A no-op without a profiler.
+   */
+  static void excludeFromTaskBlock(JavaProfiler profiler) {
+    if (profiler != null) {
+      profiler.setTraceContext(1, 1, 0, 0, -1, null, -1, null);
+    }
+  }
+
+  /** Fails unless {@code low <= value <= high}; the bounds are what attribute counts to workers. */
+  static void checkBetween(String what, long value, long low, long high) {
+    check(
+        value >= low && value <= high, what + "=" + value + " outside [" + low + ", " + high + "]");
   }
 
   static void check(boolean condition, String message) {

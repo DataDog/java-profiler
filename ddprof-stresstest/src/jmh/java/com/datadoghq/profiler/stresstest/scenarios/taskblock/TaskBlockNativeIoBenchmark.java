@@ -8,7 +8,10 @@ package com.datadoghq.profiler.stresstest.scenarios.taskblock;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.EMITTED;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.NATIVE_IO_HOOKS_PATCHED;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.NONE;
+import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.SKIPPED_TRACE_CONTEXT;
+import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.TOO_SHORT;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.check;
+import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.checkBetween;
 import static com.datadoghq.profiler.stresstest.scenarios.taskblock.TaskBlockBenchmarkSupport.delta;
 
 import com.datadoghq.profiler.JavaProfiler;
@@ -70,6 +73,9 @@ public class TaskBlockNativeIoBenchmark {
   @Param({"1200"})
   public long replyDelayMicros;
 
+  /** Allowance for the in-flight call and for JMH or JVM threads that block once or twice. */
+  private static final long SLACK = 16;
+
   private final AtomicReference<Throwable> responderFailure = new AtomicReference<>();
   private JavaProfiler profiler;
   private Recording recording;
@@ -101,8 +107,12 @@ public class TaskBlockNativeIoBenchmark {
     responder.start();
   }
 
-  /** Echoes every request byte after {@code replyDelayMicros}. */
+  /**
+   * Echoes every request byte after {@code replyDelayMicros}. It carries a trace context so its own
+   * blocking read is ineligible and cannot satisfy the client's emission checks.
+   */
   private void respond() {
+    TaskBlockBenchmarkSupport.excludeFromTaskBlock(recording.taskBlockActive() ? profiler : null);
     ByteBuffer buffer = ByteBuffer.allocateDirect(1);
     try {
       while (running) {
@@ -141,7 +151,9 @@ public class TaskBlockNativeIoBenchmark {
     }
     long emitted = delta(deltas, EMITTED);
     if (!recording.taskBlockActive()) {
-      check(emitted == 0, benchmark + " emitted TaskBlock events with TaskBlock off");
+      check(
+          emitted == 0 && delta(deltas, TOO_SHORT) == 0,
+          benchmark + " reached TaskBlock with TaskBlock off");
       return;
     }
     if (!TaskBlockBenchmarkSupport.isLinux()) {
@@ -152,8 +164,15 @@ public class TaskBlockNativeIoBenchmark {
     check(
         delta(profiler.getDebugCounters(), NATIVE_IO_HOOKS_PATCHED) > 0,
         "Native I/O hooks were not patched");
-    if ("blockingReadEmitting".equals(benchmark)) {
-      check(emitted * 2 >= calls, benchmark + " emitted " + emitted + " of " + calls);
+    if ("nonBlockingReadEmpty".equals(benchmark)) {
+      // Every hooked EAGAIN read is counted too short; no other thread reads here.
+      checkBetween("tooShort", delta(deltas, TOO_SHORT), calls / 2, calls + SLACK);
+    } else if ("blockingReadEmitting".equals(benchmark)) {
+      // Only the client's blocking read emits: the responder is excluded by its trace context.
+      checkBetween("emitted", emitted, calls / 2, calls + SLACK);
+      check(
+          delta(deltas, SKIPPED_TRACE_CONTEXT) > 0,
+          "The responder's blocking reads never reached the hooks");
     }
   }
 
