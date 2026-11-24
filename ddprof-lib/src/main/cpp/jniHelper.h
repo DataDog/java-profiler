@@ -7,6 +7,8 @@
 #define JAVA_PROFILER_JNIHELPER_H
 
 #include <jni.h>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 
 // JNI fixes IsVirtualThread at slot 234 from JDK 21 onward. Read its ABI slot
@@ -33,6 +35,46 @@ inline bool jniExceptionCheck(JNIEnv *jni, bool describe = false) {
     return true;
   }
   return false;
+}
+
+// Encodes UTF-16 as standard UTF-8 into out, which holds at least 3 * n bytes, and returns the
+// byte length. Unlike JNI's modified UTF-8, supplementary chars take 4 bytes and U+0000 one zero
+// byte; unpaired surrogates become U+FFFD. The output is not NUL-terminated.
+inline size_t utf16ToUtf8(const jchar *in, jsize n, char *out) {
+  size_t length = 0;
+  for (jsize i = 0; i < n; i++) {
+    uint32_t c = in[i];
+    if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n && in[i + 1] >= 0xDC00 && in[i + 1] <= 0xDFFF) {
+      c = 0x10000 + ((c - 0xD800) << 10) + (in[++i] - 0xDC00);
+    } else if (c >= 0xD800 && c <= 0xDFFF) {
+      c = 0xFFFD;
+    }
+    if (c < 0x80) {
+      out[length++] = static_cast<char>(c);
+    } else if (c < 0x800) {
+      out[length++] = static_cast<char>(0xC0 | (c >> 6));
+      out[length++] = static_cast<char>(0x80 | (c & 0x3F));
+    } else if (c < 0x10000) {
+      out[length++] = static_cast<char>(0xE0 | (c >> 12));
+      out[length++] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+      out[length++] = static_cast<char>(0x80 | (c & 0x3F));
+    } else {
+      out[length++] = static_cast<char>(0xF0 | (c >> 18));
+      out[length++] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+      out[length++] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+      out[length++] = static_cast<char>(0x80 | (c & 0x3F));
+    }
+  }
+  return length;
+}
+
+// Returns how many of the first `read` UTF-16 units of a `total`-unit string to keep: a trailing
+// high surrogate whose low half lies past the truncation point is dropped, not split.
+inline jsize utf16TruncatedLength(const jchar *units, jsize read, jsize total) {
+  if (read > 0 && read < total && units[read - 1] >= 0xD800 && units[read - 1] <= 0xDBFF) {
+    return read - 1;
+  }
+  return read;
 }
 
 #endif

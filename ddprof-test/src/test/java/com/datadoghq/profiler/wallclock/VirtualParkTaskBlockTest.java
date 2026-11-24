@@ -102,6 +102,39 @@ public class VirtualParkTaskBlockTest extends AbstractProfilerTest {
   }
 
   @Test
+  public void supplementaryAndNulCharsInTheNameReadBackExactly() throws Exception {
+    String name = "vt-\uD83D\uDE00-\u00e9\u4e2d-a\u0000b";
+    assertEquals(name, recordedVirtualThreadName(name));
+  }
+
+  @Test
+  public void surrogatePairIsNotSplitAtTheTruncationBoundary() throws Exception {
+    StringBuilder name = new StringBuilder();
+    while (name.length() < 127) name.append('x');
+    String prefix = name.toString();
+    // The pair occupies units 127 and 128, so the high half is dropped rather than split.
+    assertEquals(prefix, recordedVirtualThreadName(prefix + "\uD83D\uDE00tail"));
+  }
+
+  @Test
+  public void unpairedSurrogateInTheNameIsReplaced() throws Exception {
+    assertEquals("a\uFFFDb", recordedVirtualThreadName("a\uD83Db"));
+  }
+
+  private String recordedVirtualThreadName(String name) throws Exception {
+    VirtualRun run =
+        onVirtualThread(
+            () -> {
+              Thread.currentThread().setName(name);
+              return parkAndReport(BLOCKER, 5);
+            });
+    assertTrue(run.recorded);
+    stopProfiler();
+    JfrEvent event = exactlyOne(verifyEvents("datadog.TaskBlock"), BLOCKER);
+    return (String) eventThread(event).get("javaName");
+  }
+
+  @Test
   public void migratedParkYieldsExactlyOneEvent() throws Exception {
     Assumptions.assumeTrue(
         Runtime.getRuntime().availableProcessors() >= 2, "migration needs two carriers");

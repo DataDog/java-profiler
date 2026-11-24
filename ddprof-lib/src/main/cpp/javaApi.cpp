@@ -17,6 +17,7 @@
 
 #include <assert.h>
 
+#include "jniHelper.h"
 #include "arch.h"
 #include "context.h"
 #include "context_api.h"
@@ -653,18 +654,21 @@ Java_com_datadoghq_profiler_JavaProfiler_virtualParkExit0(
   if (current == nullptr || !Profiler::instance()->taskBlockEnabled()) {
     return JNI_FALSE;
   }
-  // GetStringUTFRegion copies into this frame without allocating; a modified-UTF-8 char
-  // takes at most 3 bytes, so longer names are truncated to VIRTUAL_THREAD_NAME_CHARS.
+  // GetStringRegion copies into this frame without allocating. JFR strings are standard UTF-8,
+  // unlike GetStringUTFRegion's modified UTF-8, so the name is encoded here (at most 3 bytes/unit).
   constexpr jsize VIRTUAL_THREAD_NAME_CHARS = 128;
-  char name_buf[3 * VIRTUAL_THREAD_NAME_CHARS + 1] = {0};
+  jchar units[VIRTUAL_THREAD_NAME_CHARS];
+  char name_buf[3 * VIRTUAL_THREAD_NAME_CHARS];
+  size_t name_length = 0;
   if (name != nullptr) {
-    jsize chars = env->GetStringLength(name);
-    env->GetStringUTFRegion(name, 0, chars < VIRTUAL_THREAD_NAME_CHARS ? chars : VIRTUAL_THREAD_NAME_CHARS,
-                            name_buf);
+    jsize total = env->GetStringLength(name);
+    jsize chars = total < VIRTUAL_THREAD_NAME_CHARS ? total : VIRTUAL_THREAD_NAME_CHARS;
+    env->GetStringRegion(name, 0, chars, units);
     // A pending exception forbids the JVMTI stack capture.
     if (env->ExceptionCheck()) return JNI_FALSE;
+    name_length = utf16ToUtf8(units, utf16TruncatedLength(units, chars, total), name_buf);
   }
-  VirtualThreadIdentity identity{static_cast<u64>(javaThreadId), name_buf, strlen(name_buf)};
+  VirtualThreadIdentity identity{static_cast<u64>(javaThreadId), name_buf, name_length};
   return recordVirtualParkExit(current->tid(), thread, identity,
                                elapsedNanos > 0 ? static_cast<u64>(elapsedNanos) : 0,
                                static_cast<u64>(blocker),
