@@ -114,6 +114,7 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
       _table[idx].root_kind = root_kind;
       _table[idx].root_report_attempt = 0;
       _table[idx].root_report_kind_mask = 0;
+      _table[idx].root_report_sweep_attempt = 0;
       _table[idx].anchor_rotation_flags = 0;
       _table[idx].class_tag = class_tag;
       _table[idx].leak_tag = 0;
@@ -236,7 +237,9 @@ void FrontierTable::markRootReportObserved(jlong tag, u8 root_kind,
   }
   int idx = (int)(tag - 1);
   if (static_sweep) {
-    const u16 sweep_seq = (u16)(attempt_id & 0xFFFF);
+    // +1 with 0 reserved for never-stamped; two ids 65,535 apart share a bucket (bounded,
+    // one missed staging), but a fresh entry never false-matches an unstamped slot.
+    const u16 sweep_seq = (u16)((attempt_id & 0xFFFF) % 65535U + 1U);
     {
       SharedLockGuard guard(&_table_lock);
       if (idx >= _table_size) {
@@ -357,8 +360,8 @@ bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
               stamped == previous_attempt_id);
     }
     u16 stamped = entry.root_report_sweep_attempt;
-    u16 now_seq = (u16)(attempt_id & 0xFFFF);
-    u16 prev_seq = (u16)(previous_attempt_id & 0xFFFF);
+    u16 now_seq = (u16)((attempt_id & 0xFFFF) % 65535U + 1U);
+    u16 prev_seq = (u16)((previous_attempt_id & 0xFFFF) % 65535U + 1U);
     return anchor_indexed ||
            (attempt_id != 0 && stamped == now_seq) ||
            (retrying_incomplete && previous_attempt_id != 0 &&

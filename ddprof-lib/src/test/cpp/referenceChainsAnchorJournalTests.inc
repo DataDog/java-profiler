@@ -629,6 +629,28 @@ TEST_F(ReferenceChainsBfsTest, SweepStampDoesNotDisplaceEnumerationStamp) {
     EXPECT_TRUE(frontier->rootReportCompleted(
         tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 7, true));
 
+    // A re-inserted slot starts fresh: insert() clears the sweep stamp with its siblings, or a
+    // restarted search reusing the slot would inherit the previous search's stamp and
+    // false-suppress its first sweep.
+    const jlong reuse_tag = 21023;
+    insertAnchorEntry(frontier, reuse_tag, 0, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    frontier->markRootReportObserved(
+        reuse_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD,
+        FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 61U,
+        /*static_sweep=*/true);
+    {
+        FrontierEntry stamped{};
+        ASSERT_TRUE(frontier->lookup(reuse_tag, &stamped));
+        EXPECT_NE(0u, stamped.root_report_sweep_attempt);
+    }
+    insertAnchorEntry(frontier, reuse_tag, 0, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    {
+        FrontierEntry recycled{};
+        ASSERT_TRUE(frontier->lookup(reuse_tag, &recycled));
+        EXPECT_EQ(0u, recycled.root_report_sweep_attempt)
+            << "insert() must clear the sweep stamp like every other stamp";
+    }
+
     // A root-attached entry with no enumeration stamp keeps its sweep suppression through
     // the parallel sweep field (chain-attached entries use referrer_class_tag instead).
     const jlong free_tag = 21022;
