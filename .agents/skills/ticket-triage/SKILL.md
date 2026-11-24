@@ -42,8 +42,9 @@ report about behavior as an unverified claim.
      the reason. From workspace creation onward, every exit path — failed sync, failed
      verification, failed run — deletes the workspace with `workspaces delete <name>
      --yes` before falling back or ending; a failed run is never a reason to leave the
-     machine allocated. A failed sync or apply falls back to the local worktree run
-     under the same architecture rule, with the failure stated. Verify with
+     machine allocated. A failed sync or apply releases the machine; retry the block
+     (a fresh workspace under the same naming rule) or fall back to the local worktree
+     run under the same architecture rule, with the failure stated. Verify with
      `ssh workspace-<name> 'uname -sm'` that its architecture actually matches the bug
      (aarch64 vs x86_64; for a libc-specific report also match the libc via
      `ldd --version`, glibc vs musl). If it does not match, do not run the reproducer
@@ -62,22 +63,30 @@ report about behavior as an unverified claim.
      patch before applying it at the cloned checkout's root:
 
      ```sh
-     patch_file=$(mktemp) || exit 1
      ws_name=<name>   # the unique workspace name chosen above
-     release_ws() { rm -f "$patch_file"; workspaces delete "$ws_name" --yes; }  # any failure after creation releases the machine
-     trap release_ws EXIT
+     patch_file=
+     release_ws() { [ -z "${patch_file:-}" ] || rm -f "$patch_file"; workspaces delete "$ws_name" --yes; }  # any failure after creation releases the machine
+     trap release_ws EXIT   # registered before any step that can fail
+     patch_file=$(mktemp) || exit 1
+     head_sha=$(git rev-parse HEAD)
      git fetch origin main   # a resolvable main ref is required for the merge base
      merge_base=$(git merge-base HEAD origin/main) || exit 1
      git add -N -- path/to/reproducer   # intent-to-add: untracked reproducer files must appear in git diff
      git diff "$merge_base" -- path/to/reproducer > "$patch_file" || exit 1
      test -s "$patch_file" || { echo "No reproducer changes to apply" >&2; exit 1; }
+     git push --quiet "ssh://workspace-$ws_name/<workspace-clone>" HEAD:refs/heads/triage-base || exit 1
+     ssh workspace-$ws_name "git -C <workspace-clone> checkout -q $head_sha" || exit 1
      ssh workspace-$ws_name "git -C <workspace-clone> apply --3way" < "$patch_file" || exit 1
      rm -f "$patch_file"
      ```
 
      Replace `path/to/reproducer` with the path(s) containing the reproducer changes
      and `<workspace-clone>` with the clone's path on the workspace; the patch file is
-     local, so the apply runs over ssh. The non-empty check is required: if there is
+     local, so the apply runs over ssh. Pin the clone to the triaged revision: the
+     auto-cloned main is not the code steps 1–3 read when the triage runs from a
+     branch, so push the worktree's HEAD sha to the clone and check it out before
+     applying the patch; when pinning fails, state the revision mismatch in the
+     evidence. The non-empty check is required: if there is
      no patch, stop and investigate instead of running `git apply`. `--3way` tolerates
      a clone that already contains part of the change (its main tip moved past the
      worktree's base); when it cannot find its base blobs (a shallow or pruned clone),
@@ -88,7 +97,7 @@ report about behavior as an unverified claim.
      verification or
      a failed run releases the machine on exit, and the normal exit performs the
      post-run deletion — unless the user asked to keep the workspace, in which case
-     disarm the teardown first (`trap - EXIT; rm -f "$patch_file"`). The intent-to-add
+     disarm the teardown first (`trap - EXIT; rm -f "${patch_file:-}"`). The intent-to-add
      entry stays in the worktree's index, on the failure paths as well as when the
      user keeps the worktree; reset it with `git reset -- path/to/reproducer` when a
      clean index matters.
