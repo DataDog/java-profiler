@@ -207,6 +207,8 @@ public:
     }
 
     ~ScopedFakeJvmAndJni() {
+        // The profiler never Deallocate()s an unreadable class signature; free it here.
+        free(_class_signature_alloc);
         VMTestAccessor::setVm(_saved_vm);
         s_instance = nullptr;
     }
@@ -255,6 +257,7 @@ private:
         }
         const std::string& sig = s_instance->counters.class_signature;
         *signature_ptr = dup(sig.empty() ? "Lcom/example/Foo;" : sig.c_str());
+        s_instance->_class_signature_alloc = *signature_ptr;
         if (generic_ptr != nullptr) {
             *generic_ptr = nullptr;
         }
@@ -301,11 +304,15 @@ private:
             c.deallocate_borrowed++;
             return JVMTI_ERROR_NONE;
         }
+        if (p == s_instance->_class_signature_alloc) {
+            s_instance->_class_signature_alloc = nullptr;
+        }
         free(mem); // matches the real JVMTI contract; a double-free here aborts the test
         return JVMTI_ERROR_NONE;
     }
 
     static ScopedFakeJvmAndJni* s_instance;
+    char* _class_signature_alloc = nullptr;
 
     JavaVM* _saved_vm;
     JNINativeInterface_ _jni_tbl{};
