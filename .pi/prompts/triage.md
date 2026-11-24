@@ -8,9 +8,10 @@ If the arguments name a ticket (`${1:-}`), triage only that ticket and stop afte
 completion statement. Otherwise run the loop:
 
 1. **Find the next untriaged ticket.** Search Jira PROF (component `library-java`) for
-   tickets whose status is `Committed` and whose comments carry no triage evidence
-   table from this workflow. Skip every ticket that already has one. When no such
-   ticket remains, report that the loop is exhausted and stop.
+   tickets whose status is `Committed` and whose comments do not contain the exact
+   heading `## Triage evidence` defined by the `ticket-triage` skill. Skip every ticket
+   with a comment containing that marker. When no such ticket remains, report that the
+   loop is exhausted and stop.
 2. **Triage it.** Run the `ticket-triage` skill on that ticket through completion,
    including its step-7 Done statement. The loop never overrides the skill's gates:
    ask-first on every edit/build/run, the ILW wizard, and no priority-field writes.

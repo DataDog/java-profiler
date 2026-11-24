@@ -36,12 +36,34 @@ report about behavior as an unverified claim.
      characters>` such as `triage-PROF-1234-x7k2`, so the machine is traceable to its
      ticket and cannot collide with another run. Verify with
      `ssh workspace-<name> 'uname -sm'` that its architecture actually matches the bug
-     (aarch64 vs x86_64), and delete it with `workspaces delete <name> --yes`
-     afterwards. The workspace is only a runner: it auto-clones main, so sync
-     the worktree's reproducer change to it first: generate a patch with `git diff
-     <merge-base>` in the worktree and apply it with `git -C <workspace-clone> apply`
-     at the repository root of the cloned checkout.
-   - If it is not, run the reproducer in the worktree on this machine.
+     (aarch64 vs x86_64). If it does not match, do not run the reproducer there: delete
+     the workspace with `workspaces delete <name> --yes`. Create a compatible
+     replacement if available, verify its architecture again, and use it only if it
+     matches. If no compatible workspace is available, run locally only if this
+     machine matches the target architecture; if neither environment matches, leave
+     the reproducer blocked and state why. Delete a correctly matched workspace with
+     `workspaces delete <name> --yes` after the run.
+
+     The workspace is only a runner: it auto-clones main, so sync the worktree's
+     reproducer change to it first. From the worktree root, compute the merge base
+     against the local `main` ref, then create and validate a temporary patch before
+     applying it at the cloned checkout's root:
+
+     ```sh
+     merge_base=$(git merge-base HEAD main) || { echo "Cannot find merge base with main" >&2; exit 1; }
+     patch_file=$(mktemp) || { echo "Cannot create temporary patch" >&2; exit 1; }
+     git diff "$merge_base" -- path/to/reproducer > "$patch_file" || { rm -f "$patch_file"; exit 1; }
+     test -s "$patch_file" || { echo "No reproducer changes to apply" >&2; rm -f "$patch_file"; exit 1; }
+     git -C <workspace-clone> apply "$patch_file" || { rm -f "$patch_file"; exit 1; }
+     rm -f "$patch_file"
+     ```
+
+     Replace `path/to/reproducer` with the path(s) containing the reproducer changes.
+     The non-empty check is required: if there is no patch, stop and investigate
+     instead of running `git apply`.
+   - If it is not, verify that this machine's architecture matches the bug and run
+     the reproducer in the worktree only when it does; otherwise leave it blocked and
+     state why.
 
    Record the exact commands and results. Remove the worktree and delete the workspace
    afterwards, unless the user wants to keep them. When the result is later posted on
@@ -94,4 +116,7 @@ report about behavior as an unverified claim.
 
 Post the result on the ticket only when the user asks. The comment follows the
 `ticket-writing` skill. Its evidence table holds the reproducer with its commands and
-results, or as `blocked` if it did not run.
+results, or as `blocked` if it did not run. Put that table immediately below the exact
+heading `## Triage evidence` in every triage result comment; this fixed heading is the
+machine-detectable marker for results produced by this workflow. Do not rename or
+localize it.
