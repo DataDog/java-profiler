@@ -169,6 +169,30 @@ private:
     size_t _order;
   };
 
+  // Owns the recorded import slots. Grows with realloc so that an OOM while
+  // parsing a library fails append() and marks the import incomplete.
+  class ImportTable {
+  public:
+    ImportTable() : _data(nullptr), _size(0), _capacity(0) {}
+    ~ImportTable() { free(_data); }
+    ImportTable(const ImportTable &) = delete;
+    ImportTable &operator=(const ImportTable &) = delete;
+
+    bool append(const ImportLocation &entry);
+    void truncate(size_t size) { _size = size; }
+    ImportLocation *begin() { return _data; }
+    ImportLocation *end() { return _data + _size; }
+    ImportLocation &operator[](size_t index) { return _data[index]; }
+#ifdef UNIT_TEST
+    bool _fail_growth_for_test = false;
+#endif
+
+  private:
+    ImportLocation *_data;
+    size_t _size;
+    size_t _capacity;
+  };
+
   char *_name;
   short _lib_index;
   const void *_min_address;
@@ -186,7 +210,7 @@ private:
   u64 _file_id;              // Backing file identity, see makeFileId(); 0 if unknown
   u64 _image_fingerprint;    // Symbols::imageFingerprint() of the mapped image; 0 if unknown
 
-  std::vector<ImportLocation> _imports;
+  ImportTable _imports;
   size_t _import_offsets[NUM_IMPORTS + 1];
   size_t _import_sequence;
   u64 _incomplete_imports;
@@ -384,6 +408,7 @@ public:
   bool importsComplete(ImportId id) const;
 #ifdef UNIT_TEST
   void markImportIncompleteForTest(ImportId id) { _incomplete_imports |= 1ULL << id; }
+  void failImportGrowthForTest(bool fail) { _imports._fail_growth_for_test = fail; }
 #endif
   bool prepareImportsForPatch();
   // Index 0 is the JUMP_SLOT when the library has one (see finalizeImports()).

@@ -310,13 +310,28 @@ private:
 
   int _fd;
   RecordingOutput _output;
-  struct OutputFailure {};
+  // Cold sequences (constructor, chunk finish, chunk restart) write only to
+  // _buf[0]. After their first failed flush, _buf[0] serves as scratch and its
+  // bytes at the failure wait in _cold_failure_bytes until ColdIoScope ends.
   bool _cold_io = true;
+  bool _cold_failed = false;
+  std::vector<char, CountingAllocator<char, NM_JFR_BUFFERS>> _cold_failure_bytes;
+  class ColdIoScope {
+    Recording& _rec;
+  public:
+    explicit ColdIoScope(Recording& rec) : _rec(rec) { _rec._cold_io = true; }
+    ~ColdIoScope() { _rec.endColdIo(); }
+    ColdIoScope(const ColdIoScope&) = delete;
+    ColdIoScope& operator=(const ColdIoScope&) = delete;
+  };
+  void holdColdFailure();
+  void endColdIo();
   bool _chunk_open = true;
   u64 _chunk_sequence = 1;
   u64 _first_retained_chunk = 1;
+  // Returns -1 on output failure, before the next step that changes shared state.
   off_t finishChunkContents(bool end_recording, bool do_cleanup);
-  void patch(Buffer* buf, size_t size, off_t offset);
+  bool patch(Buffer* buf, size_t size, off_t offset);
   RecordingOutput::Delivery closeOutput();
   off_t _chunk_start;
   MethodMap _method_map;
@@ -417,7 +432,7 @@ public:
 
   bool parseAgentProperties();
 
-  void flush(Buffer *buf);
+  bool flush(Buffer *buf);
   bool flushIfNeeded(Buffer *buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
   void writeHeader(Buffer *buf);
 
