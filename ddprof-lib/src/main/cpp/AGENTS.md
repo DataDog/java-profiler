@@ -20,7 +20,7 @@ before working on a subsystem.
 | Native memory profiling (malloc interception installed per recording and restored on stop, raw-identity exit admission, sampling) | [doc/architecture/NativeMemoryProfiling.md](/doc/architecture/NativeMemoryProfiling.md) |
 | glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](/doc/architecture/MallocArenaWarning.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](/doc/architecture/SanityChecks.md) |
-| SIGSEGV-safe library patching; crash-handler bootstrap (raw-identity exit registry, Linux-only fault/profiling-mask fence) | [doc/architecture/SigsegvPatching.md](/doc/architecture/SigsegvPatching.md) |
+| SIGSEGV-safe library patching; crash-handler bootstrap (fault-PC prefilter, raw-identity exit registry, Linux-only fault/profiling-mask fence) | [doc/architecture/SigsegvPatching.md](/doc/architecture/SigsegvPatching.md) |
 | Event type system | [doc/reference/EventTypeSystem.md](/doc/reference/EventTypeSystem.md) |
 | Memory requirements & budgets | [doc/reference/ProfilerMemoryRequirements.md](/doc/reference/ProfilerMemoryRequirements.md) |
 | Remote symbolication (+frame types) | [doc/reference/RemoteSymbolication.md](/doc/reference/RemoteSymbolication.md), [doc/reference/RemoteSymbolicationFrameTypes.md](/doc/reference/RemoteSymbolicationFrameTypes.md) |

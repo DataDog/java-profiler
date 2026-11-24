@@ -94,7 +94,13 @@ SIGSEGV occurs
 
 ## Crash-handler bootstrap
 
-`segvHandler`/`busHandler` consult `ThreadExitRegistry` before TLS access.
+`segvHandler`/`busHandler` first filter by fault PC with
+`Profiler::isProfilerOwnedFault()`: a PC inside this library (SafeAccess stubs,
+`checkFault` walks), a WX trap page, or the JDK-8313796 interpreter range. While
+the library range is unknown every fault counts as owned. Other faults belong
+to the JVM and chain before any syscall, TLS read, registry lookup or fence.
+
+Owned faults then consult `ThreadExitRegistry` before TLS access.
 Marked threads bypass `SignalHandlerScope` and `crashHandlerInternal` and
 chain to the preceding handler, or the default action when none exists.
 
@@ -128,10 +134,10 @@ The fence is explicitly disarmed before safefetch, `checkFault` or chaining.
 Crash-depth admission is cached under the fence; safefetch precedes rejection
 and undoes successful admission. `checkFault` resets depth before `siglongjmp`.
 
-Each crash-handler entry makes one raw identity syscall for the exit-registry
-lookup. On Linux the fence adds two mask syscalls, so an unmarked entry costs at
-least three; recovery and chaining add their own. This is per crash-handler
-entry, not per profiling signal. The empty `SIGIO` wakeup handler only interrupts sleep and does not
+Each owned crash-handler entry makes one raw identity syscall for the
+exit-registry lookup. On Linux the fence adds two mask syscalls, so an unmarked
+owned entry costs at least three; recovery and chaining add their own. Faults
+the PC filter rejects pay none of these. The empty `SIGIO` wakeup handler only interrupts sleep and does not
 look up TLS or change signal depth.
 
 These handlers use the interrupted stack, not `sigaltstack`. An unusable
