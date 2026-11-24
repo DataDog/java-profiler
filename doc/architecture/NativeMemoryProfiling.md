@@ -69,7 +69,8 @@ located via `CodeCache::findImport()`.
 Each hook calls the saved original function first, then hands the result to
 `MallocTracer::maybeRecord(ret, size)`. `maybeRecord` is the common gate: it does nothing
 unless running and given a non-null, nonempty allocation that `shouldSample()` selects.
-A selected allocation is dropped if the raw thread identity is exit-marked.
+A selected allocation is dropped if `ThreadExitRegistry::isCurrentExiting()` reports
+that the thread is exiting.
 
 | Hook | Calls | Passes to `maybeRecord` |
 |------|-------|---------|
@@ -255,7 +256,7 @@ void MallocTracer::maybeRecord(void* ret, size_t size) {
     if (!running() || ret == nullptr || size == 0 || !shouldSample(size)) {
         return;
     }
-    if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    if (ThreadExitRegistry::isCurrentExiting()) {
         Counters::increment(MALLOC_SAMPLES_DROPPED);
         return;
     }
@@ -275,6 +276,12 @@ void MallocTracer::maybeRecord(void* ret, size_t size) {
 
 `shouldSample()` runs first because it reads no TLS. An unsampled allocation therefore
 skips the exit-registry lookup, which costs a raw `gettid` syscall, and skips TLS.
+
+The raw identity outlives its thread, so an exit mark can match a new thread
+that reuses the tid. A marked thread counts as exiting only if it holds a
+`ProfiledThread` (acquiring TLS clears stale marks) or has SIGPROF and SIGVTALRM
+blocked (every mark site blocks them first). Otherwise the identity was reused:
+the mark is cleared and the allocation is sampled.
 Only a sampled allocation claims a thread-local slot with `acquireCurrent()` (the
 allocation-adjacent-hook variant, which may claim a slot from the priming pool and never
 mallocs).
