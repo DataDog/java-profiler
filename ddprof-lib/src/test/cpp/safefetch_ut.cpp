@@ -415,7 +415,9 @@ TEST_F(SafeFetchTest, isReadableCString_rejectsZeroMaxLen) {
 }
 
 TEST_F(SafeFetchTest, isReadableCString_rejectsNull) {
+  long long faults = Counters::getCounter(SAFECSTRING_FAILED);
   EXPECT_FALSE(SafeAccess::isReadableCString(nullptr, kMaxLen));
+  EXPECT_EQ(faults, Counters::getCounter(SAFECSTRING_FAILED)) << "null is rejected before any read";
 }
 
 TEST_F(SafeFetchTest, isReadableCString_rejectsUnreadableFirstPage) {
