@@ -126,6 +126,11 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
   extraction and stripping happen unconditionally inside `linkRelease`.
+- Releases are automated: nightly certification marks a commit as
+  release-ready (git notes), the Friday release train cuts a minor from the
+  newest unreleased certified commit, and a dd-trace-java bump PR opens when
+  the Maven Central artifacts are live — see
+  [doc/building/ReleaseTrain.md](doc/building/ReleaseTrain.md).
 - Code quality: `spotlessApply` before committing (CI fails on `spotlessCheck`),
   `qualityChecks` (source invariants, copyright headers, `CLAUDE.md` and the native-code
   stubs), `scanBuild` (Linux only), `:ddprof-stresstest:runStressTests`,
@@ -210,7 +215,19 @@ C++ engine `ddprof-lib/src/main/cpp/` (implementation-specific code under `hotsp
 - Treat caller contract violations (null arguments, mismatched array lengths, an operation
   that must never fail in a test) as bugs: throw instead of returning false or
   incrementing a failure counter, and do not add validation that duplicates what the loop
-  already checks.
+  already checks. This is the Java API convention; native code does not throw — see the
+  C++ exceptions rule below.
+- **C++ exceptions.** Never write `throw`, `try` or `catch` in
+  `ddprof-lib/src/main/cpp`: an uncaught exception escaping through a JVMTI callback
+  terminates the JVM — like `abort`, but opaque — and a try/catch frame on a path that a
+  pthread cancel or exit forced unwind crosses aborts under `-static-libgcc`
+  (`libraryPatcher_linux.cpp`); glibc's forced unwind cannot be caught in libc++ builds at
+  all (`j9WallClock.cpp`). Programming bugs are `assert` + `abort()`; expected failures
+  (OOM, missing data) are error codes or a `false` return, with `new (std::nothrow)`/mmap
+  allocation where the failure must be survivable. Plain `new` and std containers still
+  terminate the process on OOM — never rely on catching that. Enforced in CI: the
+  `qualityChecks` task fails on any `throw`/`try`/`catch` (or listed throwing std helper)
+  in native sources outside the checker's exception list.
 - Explain in a comment why a non-obvious call, init-order assumption, sentinel return value
   (e.g. 0 meaning miss/full), omitted lock, unsynchronized access or read of a specific
   buffer (e.g. standby) is safe, and why a workaround or test exclusion exists.

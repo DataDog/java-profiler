@@ -21,9 +21,9 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces; recording-scoped (release/acquire)
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools
-- [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current implementation, including root-anchor indexing and rotation
+- [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation, including root-anchor indexing and rotation, and deferred updates after JVMTI traversal
 - [MallocArenaWarning](architecture/MallocArenaWarning.md) - glibc malloc arena detector: arena walk, rule, and JFR events
-- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception (hooks installed per recording, restored on stop), reuse-aware exit admission and allocation sampling
+- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, startup admission, per-recording restoration, reuse-aware exit admission and allocation sampling
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; filtered wall reservoir and epoch accounting; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
@@ -39,6 +39,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
+- [ReleaseTrain](building/ReleaseTrain.md) - Automated release train: nightly certification, Friday minor release, dd-trace-java bump
 - [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, integration runtime applicability and JVM identity checks, and local workflows
 - [Versioning](building/Versioning.md) - Version computation from git tags
 
@@ -54,6 +55,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 
 - [BitsReviewMergeGateDesign](BitsReviewMergeGateDesign.md) - Bits PASS merge gate: policy, implementation, trusted status publisher, and enforcement proposal pending separate approval
 - [BitsReviewRedReviewRunbook](BitsReviewRedReviewRunbook.md) - Developer procedure for a red Bits review: what clears FAIL, what does not, and how to get a fresh review
+- [NativeMemoryProfilerExclusionDesign](NativeMemoryProfilerExclusionDesign.md) - Admission check design for conflicting native-memory profilers: decision, rationale and lifecycle limits
 - [ReferenceChainsCollectionSummary](ReferenceChainsCollectionSummary.md) - Short reference-chain overview and limits
 - [ReferenceChainsDesign](ReferenceChainsDesign.md) - Reference-chain design decision and trade-offs
 - [WorkTracking](WorkTracking.md) - Work-tracking phases: Intent, Design, Build and Test, Deploy

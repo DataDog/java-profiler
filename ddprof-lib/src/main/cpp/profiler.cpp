@@ -1659,13 +1659,24 @@ void Profiler::updateNativeThreadNames(bool defer_initializing) {
   delete thread_list;
 }
 
-Engine *Profiler::selectCpuEngine(Arguments &args) {
+static void recordSamplerChoice(SamplerChoice *choice, SamplerChoice value) {
+  if (choice != nullptr) {
+    *choice = value;
+  }
+}
+
+Engine *Profiler::selectCpuEngine(Arguments &args, SamplerChoice *choice) {
+  recordSamplerChoice(choice, SamplerChoice::NONE);
   if (args._cpu < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_NOOP) == 0)) {
     return &noop_engine;
   } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
     if (VM::isOpenJ9()) {
-      if (!J9Support::shouldUseAsgct() || !J9Support::can_use_ASGCT()) {
+      bool jvmti_requested = !J9Support::shouldUseAsgct();
+      if (jvmti_requested || !J9Support::can_use_ASGCT()) {
+        recordSamplerChoice(choice, jvmti_requested
+                                        ? SamplerChoice::JVMTI_REQUESTED
+                                        : SamplerChoice::JVMTI_GATED);
         if (!J9Support::is_jvmti_jmethodid_safe()) {
           LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                     "CPU profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1675,6 +1686,7 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
         return &j9_engine;
       }
       TEST_LOG("J9[cpu]=asgct");
+      recordSamplerChoice(choice, SamplerChoice::ASGCT);
     }
     // Prefer the JVMTI JFR-delegated engine when the HotSpot extension is
     // available and the user opted into jvmtistacks.  On Linux, CTimerJvmti
@@ -1697,7 +1709,12 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
                                            : (Engine *)&itimer);
   } else if (strcmp(args._event, EVENT_WALL) == 0) {
     return &noop_engine;
-  } else if (strcmp(args._event, EVENT_ITIMER) == 0) {
+  }
+  // Explicit CPU events skip the J9 sampler gate above and always use ASGCT.
+  if (VM::isOpenJ9()) {
+    recordSamplerChoice(choice, SamplerChoice::ASGCT);
+  }
+  if (strcmp(args._event, EVENT_ITIMER) == 0) {
     return &itimer;
   } else if (strcmp(args._event, EVENT_CTIMER) == 0) {
     return &ctimer;
@@ -1706,13 +1723,18 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
-Engine *Profiler::selectWallEngine(Arguments &args) {
+Engine *Profiler::selectWallEngine(Arguments &args, SamplerChoice *choice) {
+  recordSamplerChoice(choice, SamplerChoice::NONE);
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
     return &noop_engine;
   }
   if (VM::isOpenJ9()) {
-    if (args._wallclock_sampler == JVMTI || !J9Support::shouldUseAsgct() || !J9Support::can_use_ASGCT()) {
+    bool jvmti_requested = args._wallclock_sampler == JVMTI || !J9Support::shouldUseAsgct();
+    if (jvmti_requested || !J9Support::can_use_ASGCT()) {
+      recordSamplerChoice(choice, jvmti_requested
+                                      ? SamplerChoice::JVMTI_REQUESTED
+                                      : SamplerChoice::JVMTI_GATED);
       if (!J9Support::is_jvmti_jmethodid_safe()) {
         LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1723,6 +1745,7 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
       return (Engine *)&j9_engine;
     } else {
       TEST_LOG("J9[wall]=asgct");
+      recordSamplerChoice(choice, SamplerChoice::ASGCT);
       return (Engine *)&wall_asgct_engine;
     }
   }
@@ -1739,6 +1762,20 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
         default:
             return (Engine*)&wall_asgct_engine;
     }
+}
+
+void Profiler::reportJ9SamplerRisks(SamplerChoice cpu, SamplerChoice wall) {
+  _j9_asgct_deadlock_risk = false;
+  if (!VM::isOpenJ9()) {
+    return;
+  }
+  TEST_LOG("J9[choice] cpu=%s wall=%s", samplerChoiceName(cpu),
+           samplerChoiceName(wall));
+  J9VersionProps props = J9Support::readVersionProps(VM::jvmti(), VM::jni());
+  TEST_LOG("J9[props] vm=%s runtime=%s", props.vm_version.c_str(),
+           props.runtime_version.c_str());
+  _j9_asgct_deadlock_risk =
+      J9Support::reportSamplerRisks(cpu, wall, props).deadlock_risk;
 }
 
 Engine *Profiler::selectAllocEngine(Arguments &args) {
@@ -2032,12 +2069,16 @@ Error Profiler::start(Arguments &args, bool reset) {
   _engines_ready.store(false, std::memory_order_seq_cst);
   // Records left by an earlier recording's freezes must not be replayed now.
   clearSkippedUnregistrations();
-  if (!replaceCpuEngine(selectCpuEngine(args))) {
+  SamplerChoice cpu_choice;
+  SamplerChoice wall_choice;
+  if (!replaceCpuEngine(selectCpuEngine(args, &cpu_choice))) {
     // Nothing replaced or released yet. Retryable, like the earlier error
     // returns in this function.
     return Error("thread hook calls did not drain; retry start()");
   }
-  __atomic_store_n(&_wall_engine, selectWallEngine(args), __ATOMIC_RELEASE);
+  __atomic_store_n(&_wall_engine, selectWallEngine(args, &wall_choice), __ATOMIC_RELEASE);
+  // Before _jfr.start(): Recording::writeSettings() records the result.
+  reportJ9SamplerRisks(cpu_choice, wall_choice);
 
   const char *filter = args._filter != nullptr ? args._filter : "0";
   const bool track_unfiltered_wall =
@@ -2321,6 +2362,32 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
+  // Close the reference-chain heap paths BEFORE joining the BFS thread: the flag gates the
+  // thread-object registry and dump() emission, so flipping it first means nothing past the
+  // flip stages anchor observations or thread-object registrations for a consumer that is about
+  // to stop existing. A callback that already read the flag is handled downstream
+  // (releaseAllThreadObjects() closes the registry; SignalInflight::drain() covers signal-path
+  // writers). The BFS thread is the only FollowReferences caller, so the join below drains any
+  // walk that read the flag before the flip.
+  bool reference_chains_was_active = _reference_chains_active.load(
+      std::memory_order_acquire);
+  if (reference_chains_was_active) {
+    _reference_chains_active.store(false, std::memory_order_release);
+  }
+  if (reference_chains_was_active &&
+      !ReferenceChainTracker::instance()->stopThread()) {
+    // Reopen the gate: teardown was skipped, so the recording stays intact and a retried
+    // stop() re-enters this path (the join itself is idempotent for that retry).
+    _reference_chains_active.store(true, std::memory_order_release);
+    // Threads started while the gate was closed were never registered (onThreadStart gates on
+    // the flag): re-run the start()-time snapshot over the reopened gate. A thread seen by both
+    // the snapshot and a later onThreadStart is re-registered under the same tid, which
+    // registerThreadObject() handles - the same reconciliation start() relies on.
+    ReferenceChainTracker::instance()->registerExistingThreads(VM::jvmti(),
+                                                               VM::jni());
+    return Error("reference chain BFS thread did not join; teardown skipped, retry stop()");
+  }
+
   // Close the registration gate and wait for the calls already past it, so no
   // thread arms a timer or opens an fd after the engines below stop.
   // Unregistration stays open (see _thread_tables_stable). The engine stops
@@ -2337,16 +2404,12 @@ Error Profiler::stop() {
   // A requested engine may fail while another starts; stop only activated engines.
   if (_activated_mask & EM_ALLOC)
     _alloc_engine->stop();
-  if (_reference_chains_active) {
-    // Cleared first so new onThreadStart()/onThreadEnd() calls skip the
-    // thread-object registry; a call that already read the flag is handled
-    // by releaseAllThreadObjects() closing the registry.
-    _reference_chains_active = false;
-    // Join the BFS thread and clear the recording-boundary state before the
-    // rest of the teardown (stopThread() wakes and joins; stop() resets the
-    // per-recording caches). Matches the Profiler::stop() order documented
-    // in referenceChains.cpp's stopThread()/stop() comments.
-    ReferenceChainTracker::instance()->stopThread();
+  if (reference_chains_was_active) {
+    // The flag was flipped before the BFS join (above): new onThreadStart()/onThreadEnd() calls
+    // skip the thread-object registry; a call that already read the flag is handled by
+    // releaseAllThreadObjects() closing the registry.
+    // The BFS thread was joined at the top of stop(); stop() below resets the
+    // per-recording caches.
     // Write the tracker's still-undrained events into the final chunk before stop() clears
     // the queues - otherwise abandonment events queued since the last dump() are dropped for
     // good, and the final chunk's live-object/leak-tag events (written by

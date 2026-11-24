@@ -8,6 +8,7 @@
 #define _MALLOCTRACER_H
 
 #include <stdint.h>
+#include "arguments.h"
 #include "codeCache.h"
 #include "engine.h"
 #include "event.h"
@@ -29,6 +30,7 @@ struct MallocPatchEntry {
 // and are unpatched on stop() to minimize overhead when not profiling.
 class MallocHooker {
   friend class MallocHookerTestAccessor;
+  friend class MallocHookerSlotTestAccessor;
 
   private:
     // Guards the patching bookkeeping below off Linux. On Linux patching and
@@ -72,8 +74,11 @@ class MallocHooker {
     static void keepUnrestoredEntries();
 
   public:
-    // Returns true if symbols were successfully resolved.
-    static bool initialize();
+    // Resolves the allocation symbols and runs the native-memory admission
+    // check; returns the rejection, resolution or indeterminacy error, or
+    // Error::OK. Idempotent: a second call evaluates the cached state and
+    // writes nothing either way.
+    static Error initialize();
     static void patchLibraries();
     static void unpatchLibraries();
     static void installHooks();
@@ -124,5 +129,26 @@ class MallocTracer : public Engine {
     // Rejects exiting threads before TLS acquisition; samples under the TLS reentrancy guard.
     static void maybeRecord(void* ret, size_t size);
 };
+
+// UNIT_TEST-only seam for the admission gtests (declarations; definitions in
+// mallocTracer.cpp). Only gtest configurations define UNIT_TEST.
+#ifdef UNIT_TEST
+class MallocHookerTestAccessor {
+  public:
+    static void* origMalloc();
+    static void* origCalloc();
+    static void* origRealloc();
+    static void* origPosixMemalign();
+    static void* origAlignedAlloc();
+    static bool initialized();
+    static int patchedLibs();
+    static void seedOrigMalloc(void* fn);
+    static void seedOrigCalloc(void* fn);
+    static void seedOrigRealloc(void* fn);
+    static void seedOrigPosixMemalign(void* fn);
+    static void seedOrigAlignedAlloc(void* fn);
+    static void setInitialized(bool value);
+};
+#endif
 
 #endif // _MALLOCTRACER_H

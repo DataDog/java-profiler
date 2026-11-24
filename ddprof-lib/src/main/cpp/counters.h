@@ -275,11 +275,9 @@
    * signal for spotting a recurrence. */                                     \
   X(METADATA_TREE_NULL_CHILD, "metadata_tree_null_child")                     \
   X(METADATA_TREE_DEPTH_EXCEEDED, "metadata_tree_depth_exceeded")             \
-  /* A resolved datadog.ReferenceChain could not be cached in                 \
-   * ReferenceChainTracker::_resolved_chains (referenceChains.h): a brand-new \
-   * leak-candidate klass arrived with the cache already at                   \
-   * MAX_RESOLVED_CHAINS, so its chain is dropped rather than evicting some   \
-   * other still-live sample's chain. See that constant's own comment. */     \
+  /* A reference-chain event could not be retained for a future dump: a      \
+   * bounded cache or queue was full, or invalidation overflow cleared the    \
+   * resolved-chain cache to avoid emitting stale output. */                  \
   X(REFERENCE_CHAIN_EVENTS_DROPPED, "reference_chain_events_dropped")         \
   /* ReferenceChainTracker::releaseSearchTags() (referenceChains.cpp) failed  \
    * to call GetObjectsWithTags() for at least one batch - the search's tag   \

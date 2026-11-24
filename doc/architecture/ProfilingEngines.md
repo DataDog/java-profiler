@@ -350,6 +350,10 @@ event == "ctimer"                           -> ctimer
 any other event name                        -> perf_events
 ```
 
+On OpenJ9, `Profiler::start()` warns when the selected engines use ASGCT on a
+deadlock-prone J9 build. See the J9 sampler warnings in
+[JvmSupportLayer.md](JvmSupportLayer.md#j9).
+
 Because `CTimer` and `PerfEvents` are stubs outside Linux (`ctimer.h:86`,
 `perfEvents.h:81`), their `check()` always fails there. With default
 arguments, the result is:
