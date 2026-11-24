@@ -146,12 +146,12 @@ public:
 
   /**
    * Returns true when s is readable up to a NUL found within its first max_len
-   * bytes, NUL included. Each page is probed with isReadable() before it is
-   * scanned, so a valid string just before an unreadable page is accepted.
+   * bytes, NUL included. Reads only those bytes, one at a time, so a valid
+   * string just before an unreadable page is accepted.
    *
-   * <p>Not race-free: a concurrent munmap can still fault the scan, which runs
-   * in this library so that a caller's sigsetjmp window can recover it. Needs
-   * the SafeAccess fault handler installed, like isReadable().
+   * <p>A faulting read, including one caused by a concurrent munmap, returns
+   * false through the safecstring_impl stub. Needs the SafeAccess fault
+   * handler installed, like safeCopy().
    */
   static bool isReadableCString(const char* s, size_t max_len);
 

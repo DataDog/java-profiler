@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "counters.h"
 #include "safeAccess.h"
 #include "os.h"
 #include "safeAccessTestSupport.h"
@@ -387,7 +388,9 @@ TEST_F(SafeFetchTest, isReadableCString_acceptsNulOnLastReadableByte) {
   const char* s = region.placeAtEnd("join");
   // The fixed 256-byte probe this replaces rejected exactly this string.
   ASSERT_FALSE(SafeAccess::isReadableRange(s, 256));
+  long long faults = Counters::getCounter(SAFECSTRING_FAILED);
   EXPECT_TRUE(SafeAccess::isReadableCString(s, kMaxLen));
+  EXPECT_EQ(faults, Counters::getCounter(SAFECSTRING_FAILED)) << "the scan stops at the NUL";
 }
 
 TEST_F(SafeFetchTest, isReadableCString_acceptsStringSpanningTwoReadablePages) {
@@ -418,7 +421,9 @@ TEST_F(SafeFetchTest, isReadableCString_rejectsNull) {
 TEST_F(SafeFetchTest, isReadableCString_rejectsUnreadableFirstPage) {
   GuardedPage region;
   ASSERT_TRUE(region.ok());
+  long long faults = Counters::getCounter(SAFECSTRING_FAILED);
   EXPECT_FALSE(SafeAccess::isReadableCString(region.guardStart(), kMaxLen));
+  EXPECT_EQ(faults + 1, Counters::getCounter(SAFECSTRING_FAILED));
 }
 
 TEST_F(SafeFetchTest, isReadableCString_rejectsStringRunningIntoGuardPage) {
@@ -426,5 +431,17 @@ TEST_F(SafeFetchTest, isReadableCString_rejectsStringRunningIntoGuardPage) {
   ASSERT_TRUE(region.ok());
   char* s = region.guardStart() - 8;
   memset(s, 'x', 8);  // no NUL before the guard page
+  long long faults = Counters::getCounter(SAFECSTRING_FAILED);
   EXPECT_FALSE(SafeAccess::isReadableCString(s, kMaxLen));
+  EXPECT_EQ(faults + 1, Counters::getCounter(SAFECSTRING_FAILED)) << "the read of the guard page faults";
+}
+
+TEST_F(SafeFetchTest, isReadableCString_stopsAtMaxLenBeforeTheGuardPage) {
+  GuardedPage region;
+  ASSERT_TRUE(region.ok());
+  char* s = region.guardStart() - 8;
+  memset(s, 'x', 8);  // no NUL; max_len ends exactly at the guard page
+  long long faults = Counters::getCounter(SAFECSTRING_FAILED);
+  EXPECT_FALSE(SafeAccess::isReadableCString(s, 8));
+  EXPECT_EQ(faults, Counters::getCounter(SAFECSTRING_FAILED)) << "no byte past max_len is read";
 }

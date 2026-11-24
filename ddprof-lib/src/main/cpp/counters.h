@@ -184,6 +184,7 @@
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
+  X(SAFECSTRING_FAILED, "safecstring_failed")                                 \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(SAFESTORE_FAILED, "safestore_failed")                                     \
   X(ANCHOR_RESTORE_FAILED, "anchor_restore_failed")                           \

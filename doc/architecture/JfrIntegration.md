@@ -371,9 +371,11 @@ counter:
 | `method_resolve_skipped_jvmti_error` | `GetMethodDeclaringClass`, `GetClassSignature` or `GetMethodName` fails, or the declaring class is null. |
 | `method_resolve_skipped_unreadable_name` | A returned string is null, or is not readable up to its NUL. |
 
-The readability check is `SafeAccess::isReadableCString()`. It probes each
-page up to the string's NUL, so a valid name that ends just before an
-unreadable page resolves. These counters count methods, once per chunk.
+The readability check is `SafeAccess::isReadableCString()`. An assembly stub,
+like the one behind `SafeAccess::safeCopy()`, reads the string one byte at a
+time up to its NUL. A faulting read returns false. A valid name that ends just
+before an unreadable page therefore resolves. These counters count methods,
+once per chunk.
 
 `writeStackTraces()` also counts frames through
 `Lookup::countUnresolvedFrame()`: `method_resolve_frames_unloaded` for each
