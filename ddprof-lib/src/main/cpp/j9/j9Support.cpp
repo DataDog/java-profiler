@@ -18,6 +18,7 @@
 #include "j9/j9Support.h"
 #include "common.h"
 #include "jniHelper.h"
+#include "jvmtiHelper.h"
 #include "os.h"
 #include <string.h>
 
@@ -64,60 +65,6 @@ namespace {
 
 constexpr int FIRST_DEADLOCK_PRONE_IBM_FIX_PACK = 70;
 constexpr int FIRST_FIXED_IBM_FIX_PACK = 75;
-
-class JvmtiString {
-public:
-  explicit JvmtiString(jvmtiEnv *jvmti) : _jvmti(jvmti), _value(nullptr) {}
-  ~JvmtiString() {
-    if (_value != nullptr) {
-      _jvmti->Deallocate(reinterpret_cast<unsigned char *>(_value));
-    }
-  }
-  JvmtiString(const JvmtiString &) = delete;
-  JvmtiString &operator=(const JvmtiString &) = delete;
-  char **out() { return &_value; }
-  const char *get() const { return _value; }
-
-private:
-  jvmtiEnv *_jvmti;
-  char *_value;
-};
-
-class JniLocalRef {
-public:
-  JniLocalRef(JNIEnv *jni, jobject ref) : _jni(jni), _ref(ref) {}
-  ~JniLocalRef() {
-    if (_ref != nullptr) {
-      _jni->DeleteLocalRef(_ref);
-    }
-  }
-  JniLocalRef(const JniLocalRef &) = delete;
-  JniLocalRef &operator=(const JniLocalRef &) = delete;
-  jobject get() const { return _ref; }
-
-private:
-  JNIEnv *_jni;
-  jobject _ref;
-};
-
-class JniUtfChars {
-public:
-  JniUtfChars(JNIEnv *jni, jstring str)
-      : _jni(jni), _str(str), _chars(jni->GetStringUTFChars(str, nullptr)) {}
-  ~JniUtfChars() {
-    if (_chars != nullptr) {
-      _jni->ReleaseStringUTFChars(_str, _chars);
-    }
-  }
-  JniUtfChars(const JniUtfChars &) = delete;
-  JniUtfChars &operator=(const JniUtfChars &) = delete;
-  const char *get() const { return _chars; }
-
-private:
-  JNIEnv *_jni;
-  jstring _str;
-  const char *_chars;
-};
 
 bool isDigit(char c) { return c >= '0' && c <= '9'; }
 
