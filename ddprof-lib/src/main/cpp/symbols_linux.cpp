@@ -462,7 +462,7 @@ class ElfParser {
         return _header->e_type == ET_EXEC ? NULL : _vaddr_diff;
     }
 
-    char* dyn_ptr(ElfDyn* dyn) {
+    char* dyn_ptr(const ElfDyn* dyn) {
         // GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
         // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
         if (_relocate_dyn || (_base != NULL && (char*)dyn->d_un.d_ptr < _base)) {
@@ -609,73 +609,112 @@ void ElfParser::calcVirtualLoadAddress() {
     _vaddr_diff = _base;
 }
 
+// DT_RELAENT, or 0 (skip the table) when smaller than an Elf64_Rela: a shorter
+// stride would read one entry's r_addend and the next r_offset as r_offset/r_info.
+static size_t relaEntrySize(size_t relaent) {
+    return relaent >= sizeof(Elf64_Rela) ? relaent : 0;
+}
+
+// Size of one DT_JMPREL entry, from DT_PLTREL (gABI): a library with only PLT
+// relocations has no DT_RELENT/DT_RELAENT. Without DT_PLTREL, fall back to a valid
+// DT_RELAENT, else DT_RELENT. A DT_PLTREL other than REL/RELA declares an unknown
+// entry type, so the table is skipped. 0 means unknown or invalid.
+static size_t pltEntrySize(uint64_t pltrel, size_t relent, size_t relaent) {
+    if (pltrel == DT_REL) return sizeof(Elf64_Rel);
+    if (pltrel == DT_RELA) return sizeof(Elf64_Rela);
+    if (pltrel != 0) return 0;
+    return relaent != 0 ? relaEntrySize(relaent) : relent;
+}
+
+// Bytes of the DT_RELACOUNT/DT_RELCOUNT leading relative relocations, clamped to
+// the table size without multiplying first, so a huge count cannot wrap.
+static size_t relativeBytes(size_t count, size_t ent, size_t size) {
+    return ent != 0 && count < size / ent ? count * ent : size;
+}
+
 void ElfParser::parseDynamicSection() {
     ElfProgramHeader* dynamic = findProgramHeader(PT_DYNAMIC);
     if (dynamic != NULL) {
         const char* symtab = NULL;
         const char* strtab = NULL;
         char* jmprel = NULL;
+        char* rela = NULL;
         char* rel = NULL;
+        uint64_t pltrel = 0;
         size_t pltrelsz = 0;
-        size_t relsz = 0;
-        size_t relent = 0;
-        size_t relcount = 0;
+        size_t relasz = 0, relsz = 0;
+        size_t relaent = 0, relent = 0;
+        size_t relacount = 0, relcount = 0;
         size_t syment = 0;
         size_t strsz = 0;
         uint32_t nsyms = 0;
 
         const char* dyn_start = at(dynamic);
-        // at(dynamic) is NULL when dynamic->p_vaddr == 0 - same null-base
-        // pointer-arithmetic UB as the other fixes in this file.
-        const char* dyn_end = (const char*)((uintptr_t)dyn_start + dynamic->p_memsz);
-        for (ElfDyn* dyn = (ElfDyn*)dyn_start; dyn < (ElfDyn*)dyn_end; dyn++) {
-            switch (dyn->d_tag) {
+        // Whole entries only: a p_memsz that is not a multiple of sizeof(ElfDyn)
+        // must not make the loop read a partial one.
+        size_t dyn_count = dynamic->p_memsz / sizeof(ElfDyn);
+        const ElfDyn* dyn = reinterpret_cast<const ElfDyn*>(dyn_start);
+        // The array ends at the first DT_NULL; slots after it (patchelf, prelink)
+        // are padding and must not override real tags.
+        for (size_t i = 0; i < dyn_count && dyn[i].d_tag != DT_NULL; i++) {
+            switch (dyn[i].d_tag) {
                 case DT_SYMTAB:
-                    symtab = dyn_ptr(dyn);
+                    symtab = dyn_ptr(&dyn[i]);
                     break;
                 case DT_STRTAB:
-                    strtab = dyn_ptr(dyn);
+                    strtab = dyn_ptr(&dyn[i]);
                     break;
                 case DT_SYMENT:
-                    syment = dyn->d_un.d_val;
+                    syment = dyn[i].d_un.d_val;
                     break;
                 case DT_STRSZ:
-                    strsz = dyn->d_un.d_val;
+                    strsz = dyn[i].d_un.d_val;
                     break;
                 case DT_HASH:
-                    nsyms = ((uint32_t*)dyn_ptr(dyn))[1];
+                    nsyms = reinterpret_cast<uint32_t*>(dyn_ptr(&dyn[i]))[1];
                     break;
                 case DT_GNU_HASH:
                     if (nsyms == 0) {
-                        nsyms = getSymbolCount((uint32_t*)dyn_ptr(dyn));
+                        nsyms = getSymbolCount(reinterpret_cast<uint32_t*>(dyn_ptr(&dyn[i])));
                     }
                     break;
                 case DT_JMPREL:
-                    jmprel = dyn_ptr(dyn);
+                    jmprel = dyn_ptr(&dyn[i]);
                     break;
                 case DT_PLTRELSZ:
-                    pltrelsz = dyn->d_un.d_val;
+                    pltrelsz = dyn[i].d_un.d_val;
+                    break;
+                case DT_PLTREL:
+                    pltrel = dyn[i].d_un.d_val;
                     break;
                 case DT_RELA:
+                    rela = dyn_ptr(&dyn[i]);
+                    break;
                 case DT_REL:
-                    rel = dyn_ptr(dyn);
+                    rel = dyn_ptr(&dyn[i]);
                     break;
                 case DT_RELASZ:
+                    relasz = dyn[i].d_un.d_val;
+                    break;
                 case DT_RELSZ:
-                    relsz = dyn->d_un.d_val;
+                    relsz = dyn[i].d_un.d_val;
                     break;
                 case DT_RELAENT:
+                    relaent = dyn[i].d_un.d_val;
+                    break;
                 case DT_RELENT:
-                    relent = dyn->d_un.d_val;
+                    relent = dyn[i].d_un.d_val;
                     break;
                 case DT_RELACOUNT:
+                    relacount = dyn[i].d_un.d_val;
+                    break;
                 case DT_RELCOUNT:
-                    relcount = dyn->d_un.d_val;
+                    relcount = dyn[i].d_un.d_val;
                     break;
             }
         }
 
-        if (symtab == NULL || strtab == NULL || syment == 0 || relent == 0) {
+        if (symtab == NULL || strtab == NULL || syment == 0) {
             return;
         }
 
@@ -699,43 +738,33 @@ void ElfParser::parseDynamicSection() {
         // though the intent is just "sym addresses are already absolute". Do the
         // addition in integer space, same fix as the .plt case above.
         uintptr_t base_addr = (uintptr_t)this->base();
-        // Smaller entries cannot hold r_offset and r_info (hashImportLayout()
-        // skips them too). Walking only while a whole entry fits keeps offs
-        // within the table, so offs += relent cannot wrap.
-        if (jmprel != NULL && pltrelsz != 0 && relent >= sizeof(ElfRelocation)) {
-            // Parse .rela.plt table
-            for (size_t offs = 0; relent <= pltrelsz - offs; offs += relent) {
-                ElfRelocation r = relocationAt(jmprel + offs);
+        // Records one table's imports after its leading `skip` bytes of relative relocations.
+        // The skip guard (callers pass skip <= size) and walking only while a whole entry
+        // fits keep offs within the table. only_got_slots keeps GLOB_DAT/ABS64 entries.
+        auto addImports = [&](char* table, size_t size, size_t ent, size_t skip, bool only_got_slots) {
+            if (table == NULL || size == 0 || ent < sizeof(ElfRelocation) || skip > size) return;
+            for (size_t offs = skip; ent <= size - offs; offs += ent) {
+                ElfRelocation r = relocationAt(table + offs);
+                if (only_got_slots && ELF_R_TYPE(r.r_info) != R_GLOB_DAT && ELF_R_TYPE(r.r_info) != R_ABS64) {
+                    continue;
+                }
                 uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r.r_info) * syment);
                 if (st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, st_name);
                     if (sym_name != NULL) {
-                        _cc->addImport((void**)(base_addr + r.r_offset), sym_name);
+                        _cc->addImport(reinterpret_cast<void**>(base_addr + r.r_offset), sym_name);
                     }
                 }
             }
-        }
+        };
 
-        if (rel != NULL && relsz != 0 && relent >= sizeof(ElfRelocation)) {
-            // Relocation entries for imports can be found in .rela.dyn, for example
-            // if a shared library is built without PLT (-fno-plt). However, if both
-            // entries exist, addImport saves them both.
-            // The leading DT_RELACOUNT entries are relative relocations, without
-            // a symbol; clamp the start as hashImportLayout() does.
-            size_t start = relcount * relent < relsz ? relcount * relent : relsz;
-            for (size_t offs = start; relent <= relsz - offs; offs += relent) {
-                ElfRelocation r = relocationAt(rel + offs);
-                if (ELF_R_TYPE(r.r_info) == R_GLOB_DAT || ELF_R_TYPE(r.r_info) == R_ABS64) {
-                    uint32_t st_name = symbolNameAt(symtab + ELF_R_SYM(r.r_info) * syment);
-                    if (st_name != 0) {
-                        const char* sym_name = strAt(strtab, strsz, st_name);
-                        if (sym_name != NULL) {
-                            _cc->addImport((void**)(base_addr + r.r_offset), sym_name);
-                        }
-                    }
-                }
-            }
-        }
+        // .rela.plt / .rel.plt
+        addImports(jmprel, pltrelsz, pltEntrySize(pltrel, relent, relaent), 0, false);
+        // Imports can also be in .rela.dyn / .rel.dyn, for example if a shared
+        // library is built without PLT (-fno-plt). If both tables exist,
+        // addImport saves them both.
+        addImports(rela, relasz, relaEntrySize(relaent), relativeBytes(relacount, relaent, relasz), true);
+        addImports(rel, relsz, relent, relativeBytes(relcount, relent, relsz), true);
     }
 }
 
@@ -983,6 +1012,23 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
     return result;
 }
 
+// Whether the symbol defines an object at an in-image st_value (gABI "Symbol Values").
+// Not SHN_UNDEF (defined elsewhere), reserved indices other than SHN_XINDEX (absolute
+// value or alignment), STT_TLS (TLS offset) or STT_SECTION/STT_FILE.
+static bool isDefinedInImageSymbol(const ElfSymbol& entry) {
+    if (entry.st_shndx == SHN_UNDEF || (entry.st_shndx >= SHN_LORESERVE && entry.st_shndx != SHN_XINDEX)) {
+        return false;
+    }
+    switch (ELF64_ST_TYPE(entry.st_info)) {
+        case STT_TLS:
+        case STT_SECTION:
+        case STT_FILE:
+            return false;
+        default:
+            return true;
+    }
+}
+
 void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings, size_t strings_size) {
     // A stride smaller than one symbol entry would never advance past (or would
     // re-read) an entry; reject it to avoid an infinite loop / over-read.
@@ -1000,7 +1046,7 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
         // aliasing mapped bytes through a typed pointer.
         ElfSymbol entry;
         memcpy(&entry, symbols + off, sizeof(entry));
-        if (entry.st_name != 0 && entry.st_value != 0) {
+        if (entry.st_name != 0 && entry.st_value != 0 && isDefinedInImageSymbol(entry)) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
             // out of bounds.
@@ -1377,8 +1423,10 @@ static bool hashImportLayout(const LoadedImage& image, u64& hash) {
         return false;
     }
 
-    uintptr_t symtab = 0, strtab = 0, jmprel = 0, rel = 0;
-    size_t syment = 0, strsz = 0, pltrelsz = 0, relsz = 0, relent = 0, relcount = 0;
+    uintptr_t symtab = 0, strtab = 0, jmprel = 0, rela = 0, rel = 0;
+    uint64_t pltrel = 0;
+    size_t syment = 0, strsz = 0, pltrelsz = 0, relasz = 0, relsz = 0;
+    size_t relaent = 0, relent = 0, relacount = 0, relcount = 0;
     size_t count = dynamic->p_filesz / sizeof(ElfDyn);
     for (const ElfDyn* dyn = (const ElfDyn*)dyn_start; count-- > 0 && dyn->d_tag != DT_NULL; dyn++) {
         switch (dyn->d_tag) {
@@ -1392,39 +1440,38 @@ static bool hashImportLayout(const LoadedImage& image, u64& hash) {
                 if (!image.dynamicPointer(dyn->d_un.d_ptr, jmprel)) return false;
                 break;
             case DT_RELA:
+                if (!image.dynamicPointer(dyn->d_un.d_ptr, rela)) return false;
+                break;
             case DT_REL:
                 if (!image.dynamicPointer(dyn->d_un.d_ptr, rel)) return false;
                 break;
             case DT_SYMENT:    syment = dyn->d_un.d_val; break;
             case DT_STRSZ:     strsz = dyn->d_un.d_val; break;
             case DT_PLTRELSZ:  pltrelsz = dyn->d_un.d_val; break;
-            case DT_RELASZ:
+            case DT_PLTREL:    pltrel = dyn->d_un.d_val; break;
+            case DT_RELASZ:    relasz = dyn->d_un.d_val; break;
             case DT_RELSZ:     relsz = dyn->d_un.d_val; break;
-            case DT_RELAENT:
+            case DT_RELAENT:   relaent = dyn->d_un.d_val; break;
             case DT_RELENT:    relent = dyn->d_un.d_val; break;
-            case DT_RELACOUNT:
+            case DT_RELACOUNT: relacount = dyn->d_un.d_val; break;
             case DT_RELCOUNT:  relcount = dyn->d_un.d_val; break;
         }
     }
     // ElfParser::parseDynamicSection() records no imports without these.
-    if (symtab == 0 || strtab == 0 || syment == 0 || relent < sizeof(ElfRelocation)) return true;
+    if (symtab == 0 || strtab == 0 || syment == 0) return true;
     if (strsz == 0 || !image.readable(strtab, strsz)) return false;
 
-    if (jmprel != 0 && pltrelsz != 0) {
-        if (!image.readable(jmprel, pltrelsz)
-            || !hashSymbolRelocations(image, jmprel, pltrelsz, relent, symtab, syment, strtab, strsz, hash)) {
-            return false;
-        }
-    }
-    if (rel != 0 && relsz != 0) {
-        if (!image.readable(rel, relsz)) return false;
-        // The leading DT_RELACOUNT entries are relative relocations, without a symbol.
-        size_t skip = relcount * relent < relsz ? relcount * relent : relsz;
-        if (!hashSymbolRelocations(image, rel + skip, relsz - skip, relent, symtab, syment, strtab, strsz, hash)) {
-            return false;
-        }
-    }
-    return true;
+    // Same tables and entry sizes as parseDynamicSection(). Entries smaller than
+    // sizeof(ElfRelocation) are skipped; the leading `skip` bytes are relative
+    // relocations, without a symbol; the skip guard is defensive (callers pass skip <= size).
+    auto hashTable = [&](uintptr_t table, size_t size, size_t ent, size_t skip) {
+        if (table == 0 || size == 0 || ent < sizeof(ElfRelocation) || skip > size) return true;
+        if (!image.readable(table, size)) return false;
+        return hashSymbolRelocations(image, table + skip, size - skip, ent, symtab, syment, strtab, strsz, hash);
+    };
+    return hashTable(jmprel, pltrelsz, pltEntrySize(pltrel, relent, relaent), 0)
+        && hashTable(rela, relasz, relaEntrySize(relaent), relativeBytes(relacount, relaent, relasz))
+        && hashTable(rel, relsz, relent, relativeBytes(relcount, relent, relsz));
 }
 
 u64 Symbols::imageFingerprint(const void* phdrs, int phnum, uintptr_t load_bias) {
