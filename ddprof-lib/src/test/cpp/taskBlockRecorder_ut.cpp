@@ -1273,7 +1273,7 @@ TEST_F(TaskBlockRecorderOverflowTest, RecorderRefusalAndTerminalShareEventIdenti
   ASSERT_GE(slot, 0);
   TaskBlockDiagnosticRecord identity{};
   const u64 token = tracker.enterBlockedRun(&filter, slot, OSThreadState::SLEEPING,
-      BlockRunOwner::TASK_BLOCK, &identity);
+      BlockRunOwner::TASK_BLOCK, 0, &identity);
   ASSERT_NE(0, token);
   Context context{};
   ASSERT_TRUE(current->taskBlockEnter(token, 1, context));
@@ -1608,7 +1608,7 @@ TEST_F(TaskBlockRecorderTest, StoppedRegistryFallbackReceiptSurvivesRestart) {
   ASSERT_EQ(slot, rebound);
   TaskBlockDiagnosticRecord admitted{};
   u64 next = tracker.enterBlockedRun(&filter, rebound, OSThreadState::SLEEPING,
-      BlockRunOwner::TASK_BLOCK, &admitted);
+      BlockRunOwner::TASK_BLOCK, 0, &admitted);
   ASSERT_NE(0, next);
   auto fresh = diagnosticSince(cursor, TaskBlockStage::ENTER_TOKEN_PUBLISHED);
   EXPECT_EQ(next, admitted.words[TaskBlockDiagnosticRecord::TOKEN]);

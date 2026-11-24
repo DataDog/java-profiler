@@ -18,6 +18,7 @@
 #include "callTraceStorage.h"
 #include "counters.h"
 #include "signalSafety.h"
+#include "tsc.h"
 #include <algorithm>
 #include <memory>
 #include <new>
@@ -66,8 +67,66 @@ bool WallClockBlockTracker::ensureAllocated() {
     return true;
 }
 
+WallClockBlockTracker::SegmentState* WallClockBlockTracker::segmentForId(ThreadFilter::SlotID slot_id) const {
+    if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
+    SlotStorage* storage = _storage.load(std::memory_order_acquire);
+    return storage != nullptr ? &storage->segments[slot_id] : nullptr;
+}
+
+void WallClockBlockTracker::openSegment(ThreadFilter::SlotID slot_id, u64 generation, u64 start_ticks) {
+    SegmentState* segment = segmentForId(slot_id);
+    if (segment == nullptr) return;
+    // Closing before the start[] store fails the CAS of a dump that read a stale run.
+    u64 index = segment->control.fetch_and(kSegmentIndexBit, std::memory_order_acq_rel) & kSegmentIndexBit;
+    segment->start[index].store(start_ticks, std::memory_order_release);
+    segment->control.store((generation << kSegmentGenerationShift) | index, std::memory_order_release);
+}
+
+void WallClockBlockTracker::closeSegment(ThreadFilter::SlotID slot_id, u64 generation,
+                                         BlockRunSnapshot* snapshot) {
+    SegmentState* segment = segmentForId(slot_id);
+    if (segment == nullptr) return;
+    // Keeps the index: a dump that read this run writes only the other start[] entry.
+    u64 control = segment->control.fetch_and(kSegmentIndexBit, std::memory_order_acq_rel);
+    if (snapshot == nullptr || generation == 0 ||
+        (control >> kSegmentGenerationShift) != generation) {
+        return;
+    }
+    snapshot->segment_claimed = true;
+    snapshot->segment_advanced = (control & kSegmentAdvancedBit) != 0;
+    snapshot->segment_start = segment->start[control & kSegmentIndexBit].load(std::memory_order_acquire);
+}
+
+bool WallClockBlockTracker::readOpenSegment(ThreadFilter::SlotID slot_id, OpenSegment& out) const {
+    SegmentState* segment = segmentForId(slot_id);
+    if (segment == nullptr) return false;
+    u64 control = segment->control.load(std::memory_order_acquire);
+    if ((control >> kSegmentGenerationShift) == 0) return false;
+    out.control = control;
+    // A newer value here implies a newer control, so the caller's CAS then fails.
+    out.start = segment->start[control & kSegmentIndexBit].load(std::memory_order_acquire);
+    return true;
+}
+
+bool WallClockBlockTracker::advanceOpenSegment(ThreadFilter::SlotID slot_id, const OpenSegment& read,
+                                               u64 end_ticks, bool close_run) {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    SegmentState* segment = segmentForId(slot_id);
+    if (segment == nullptr || read.generation() == 0) return false;
+    u64 index = read.control & kSegmentIndexBit;
+    u64 desired = index;
+    if (!close_run) {
+        u64 next = index ^ kSegmentIndexBit;
+        segment->start[next].store(end_ticks, std::memory_order_release);
+        desired = (read.control & ~kSegmentIndexBit) | kSegmentAdvancedBit | next;
+    }
+    u64 expected = read.control;
+    return segment->control.compare_exchange_strong(expected, desired, std::memory_order_acq_rel,
+                                                    std::memory_order_acquire);
+}
+
 u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
-                                           OSThreadState state, BlockRunOwner owner
+                                           OSThreadState state, BlockRunOwner owner, u64 start_ticks
                                            TASK_BLOCK_DIAGNOSTIC_ONLY(, TaskBlockDiagnosticRecord* admitted_origin)) {
 #ifdef UNIT_TEST
     if (_block_admission_hook != nullptr) {
@@ -100,6 +159,7 @@ u64 WallClockBlockTracker::enterBlockedRun(ThreadFilter* registry, ThreadFilter:
                                               registry->unfilteredWallTrackingActive() TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) {
         return 0;
     }
+    openSegment(slot_id, generation, start_ticks != 0 ? start_ticks : TSC::ticks());
     block_slot->publishActiveBlockRun(state);
     u64 token = encodeBlockRunToken(slot_id, generation);
 #if defined(DEBUG) || defined(UNIT_TEST)
@@ -163,6 +223,7 @@ bool WallClockBlockTracker::exitBlockedRun(ThreadFilter::SlotID slot_id, u64 gen
 #endif
     if (!isActiveRun(s, generation TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) return false;
     // Owned-run fields only; the unowned-blocked tail survives the exit.
+    closeSegment(slot_id);
     s->clearActiveBlockRun();
     TASK_BLOCK_DIAGNOSTIC(EXIT_MATCHED_AND_CLEARED, diagnostic_ptr, 0);
     return true;
@@ -187,6 +248,7 @@ bool WallClockBlockTracker::snapshotAndExitBlockedRun(ThreadFilter* registry,
     }
     if (!isActiveRun(s, generation TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) return false;
     if (snapshot != nullptr) *snapshot = s->snapshotBlockRun(identity_slot);
+    closeSegment(slot_id, generation, snapshot);
     s->clearActiveBlockRun();
     TASK_BLOCK_DIAGNOSTIC(EXIT_MATCHED_AND_CLEARED, diagnostic_ptr, 0);
     return true;
@@ -220,6 +282,7 @@ bool WallClockBlockTracker::retireSlot(ThreadFilter::SlotID slot_id, int tid) {
     auto* block = slotForId(slot_id);
     if (block == nullptr) return true;
     TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(block, slot_id, TaskBlockStage::INVALIDATE_RETIRE);)
+    closeSegment(slot_id);
     block->clearActiveBlockRun();
     if (!flushUnownedTail(slot_id, tid)) return false;
     resetSlot(slot_id);
@@ -230,6 +293,7 @@ void WallClockBlockTracker::resetSlot(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
     if (s != nullptr) {
         TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(s, slot_id, TaskBlockStage::INVALIDATE_RESET);)
+        closeSegment(slot_id);
         s->resetSlot();
     }
 }
@@ -241,6 +305,7 @@ void WallClockBlockTracker::resetSlotForReuse(ThreadFilter::SlotID slot_id) {
         // Ordinary reuse must not make a closed predecessor token valid again.
         // Saturation recovery relies on the previous native owner having exited.
         if (s->blockGeneration() == kMaxBlockRunGeneration) s->resetBlockGeneration();
+        closeSegment(slot_id);
         s->resetSlot();
     }
 }
@@ -250,9 +315,10 @@ void WallClockBlockTracker::resetAll() {
     if (storage == nullptr) {
         return;
     }
-    TASK_BLOCK_DIAGNOSTIC_ONLY(int slot_id = 0;)
-    for (auto& s : storage->slots) {
-        TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(&s, slot_id++, TaskBlockStage::INVALIDATE_ALL);)
+    for (ThreadFilter::SlotID slot_id = 0; slot_id < ThreadFilter::kMaxThreads; ++slot_id) {
+        BlockState& s = storage->slots[slot_id];
+        TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(&s, slot_id, TaskBlockStage::INVALIDATE_ALL);)
+        closeSegment(slot_id);
         s.resetSlot();
     }
 }
@@ -261,6 +327,7 @@ void WallClockBlockTracker::clearActiveBlockRun(ThreadFilter::SlotID slot_id) {
     BlockState* s = slotForId(slot_id);
     if (s != nullptr && s->needsActiveBlockRunClear()) {
         TASK_BLOCK_DIAGNOSTIC_ONLY(observeInvalidation(s, slot_id, TaskBlockStage::INVALIDATE_CONTEXT);)
+        closeSegment(slot_id);
         s->clearActiveBlockRun();
     }
 }

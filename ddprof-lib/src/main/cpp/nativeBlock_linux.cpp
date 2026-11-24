@@ -73,14 +73,15 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
   ThreadFilter::SlotID slot_id = thread_filter->ensureOwnerSlot(*current);
   if (slot_id < 0) return;
   current->refreshBlockState(thread_filter->slotForId(slot_id)->recordingEpoch());
-  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::NATIVE);
+  u64 start_ticks = TSC::ticks();
+  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::NATIVE, start_ticks);
   if (token == 0) return;
 
   _active = true;
   _tid = current->tid();
   _slot_id = slot_id;
   _generation = WallClockBlockTracker::tokenGeneration(token);
-  _start_ticks = TSC::ticks();
+  _start_ticks = start_ticks;
   _context = context;
 }
 

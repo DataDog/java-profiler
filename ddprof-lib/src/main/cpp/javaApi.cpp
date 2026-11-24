@@ -608,13 +608,14 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
   // may race admission, but only this thread refreshes its retained identity.
   current->refreshBlockState(slot_id >= 0
       ? tf->slotForId(slot_id)->recordingEpoch() : tf->recordingEpoch());
-  if (!current->parkEnter(TSC::ticks(), context)) {
+  u64 start_ticks = TSC::ticks();
+  if (!current->parkEnter(start_ticks, context)) {
     return JNI_FALSE;
   }
 
   if (slot_id >= 0) {
-    current->setParkBlockToken(
-        enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT));
+    current->setParkBlockToken(enterOwnedBlockRun(
+        current, slot_id, OSThreadState::CONDVAR_WAIT, BlockRunOwner::JAVA, start_ticks));
   }
   return JNI_TRUE;
 }
@@ -719,14 +720,15 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (slot_id < 0) return 0;
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   WallClockBlockTracker *tracker = profiler->blockTracker();
-  u64 token = enterOwnedBlockRun(current, slot_id, decoded);
+  u64 start_ticks = TSC::ticks();
+  u64 token = enterOwnedBlockRun(current, slot_id, decoded, BlockRunOwner::JAVA, start_ticks);
   if (token == 0) return 0;
   if (task_block_armable) {
     // enterOwnedBlockRun() acquired the slot's sole ownership above. Any older
     // TLS token is therefore abandoned (for example, addThread() cleared its
     // JAVA-owned run) and cannot still own a live interval.
     current->clearTaskBlock();
-    if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
+    if (!current->taskBlockEnter(token, start_ticks, context)) {
       tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(token));
       return 0;
     }
@@ -812,13 +814,15 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   TaskBlockDiagnosticRecord diagnostic{};
   TaskBlockDiagnosticRecord* diagnostic_ptr = &diagnostic;
 #endif
+  u64 start_ticks = TSC::ticks();
   u64 token = enterOwnedBlockRun(
-      current, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
+      current, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK, start_ticks
+      TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
   if (token == 0) return 0;
   // A successfully acquired run excludes any previous registry owner, even
   // when its TLS payload survived a context-window transition.
   current->clearTaskBlock();
-  if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
+  if (!current->taskBlockEnter(token, start_ticks, context)) {
     tracker->exitBlockedRun(slot_id,
                             WallClockBlockTracker::tokenGeneration(token));
     return 0;
