@@ -1455,7 +1455,8 @@ bool Recording::flush(Buffer *buf) {
 void Recording::holdColdFailure() {
   if (!_cold_failed) {
     _cold_failed = true;
-    _cold_failure_bytes.assign(_buf->data(), _buf->data() + _buf->offset());
+    _cold_failure_buf.reset();
+    _cold_failure_buf.put(_buf->data(), static_cast<u32>(_buf->offset()));
   }
   _buf->reset();
 }
@@ -1465,11 +1466,8 @@ void Recording::endColdIo() {
   if (!_cold_failed) return;
   _cold_failed = false;
   _buf->reset();
-  // data() of an empty vector may be null, which memcpy must not receive.
-  if (!_cold_failure_bytes.empty()) {
-    _buf->put(_cold_failure_bytes.data(), static_cast<u32>(_cold_failure_bytes.size()));
-  }
-  decltype(_cold_failure_bytes)().swap(_cold_failure_bytes);
+  _buf->put(_cold_failure_buf.data(), static_cast<u32>(_cold_failure_buf.offset()));
+  _cold_failure_buf.reset();
 }
 
 bool Recording::patch(Buffer* buf, size_t size, off_t offset) {

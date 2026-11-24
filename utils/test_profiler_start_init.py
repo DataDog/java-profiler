@@ -24,7 +24,7 @@ def dispatch_init_block(source):
     start = source.index("Error Profiler::start(Arguments &args, bool reset)")
     end = source.index("Error Profiler::stop(", start)
     startup = source[start:end]
-    first = startup.index("  if (!replaceCpuEngine(selectCpuEngine(args))) {")
+    first = startup.index("  if (!replaceCpuEngine(selectCpuEngine(args")
     last = startup.index("  const char *filter =", first)
     block = startup[first:last]
     if block.count("VM::initializeRequestStackTrace()") != 1:
@@ -54,6 +54,7 @@ struct Engine {
   void start() { ++launches; }
 };
 static std::string trace;
+struct SamplerChoice {};
 static constexpr int EM_CPU = 1;
 static constexpr int EM_WALL = 2;
 struct VM {
@@ -75,22 +76,25 @@ struct DispatchHarness {
   Engine* _wall_engine = nullptr;
   int _event_mask;
   std::string selected;
-  Engine* selectCpuEngine(Arguments&) {
+  Engine* selectCpuEngine(Arguments&, SamplerChoice*) {
     trace += "select_cpu,";
     if (!(_event_mask & EM_CPU)) return &noop_engine;
     if (selected == "CTimerJvmti") return &ctimer_jvmti;
     if (selected == "ITimerJvmti") return &itimer_jvmti;
     return &asgct;
   }
-  Engine* selectWallEngine(Arguments&) {
+  Engine* selectWallEngine(Arguments&, SamplerChoice*) {
     trace += "select_wall,";
     return (_event_mask & EM_WALL) ? &wall_jvmti_engine : &noop_engine;
   }
+  void reportJ9SamplerRisks(const SamplerChoice&, const SamplerChoice&) {}
   bool replaceCpuEngine(Engine* next) {
     _cpu_engine = next;
     return true;
   }
   Error start(Arguments& args) {
+    SamplerChoice cpu_choice;
+    SamplerChoice wall_choice;
 /* PRODUCTION_DISPATCH_INIT_BLOCK */
     if (_event_mask & EM_CPU) {
       trace += "cpu_launch,";
