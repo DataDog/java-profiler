@@ -25,13 +25,14 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-// Only HotSpot/OpenJ9 with an unmarked identity can recover safeCopy faults.
-// Other callers forward without reading application-owned timeout memory.
+// Only HotSpot/OpenJ9 on a non-exiting thread can recover safeCopy faults. Other
+// callers forward without reading application-owned timeout memory. A reused
+// identity's stale mark is cleared first, so the crash handler recovers its faults.
 static NOINLINE bool nonZeroTimeval(const struct timeval* timeout) {
   if (timeout == nullptr) return true;
   if (!VM::isHotspot() && !VM::isOpenJ9()) return false;
   ErrnoGuard errno_guard;
-  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) return false;
+  if (ThreadExitRegistry::isCurrentExiting()) return false;
   struct timeval value;
   return SafeAccess::safeCopy(&value, timeout, sizeof(value)) &&
       (value.tv_sec != 0 || value.tv_usec != 0);
@@ -41,7 +42,7 @@ static NOINLINE bool nonZeroTimespec(const struct timespec* timeout) {
   if (timeout == nullptr) return true;
   if (!VM::isHotspot() && !VM::isOpenJ9()) return false;
   ErrnoGuard errno_guard;
-  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) return false;
+  if (ThreadExitRegistry::isCurrentExiting()) return false;
   struct timespec value;
   return SafeAccess::safeCopy(&value, timeout, sizeof(value)) &&
       (value.tv_sec != 0 || value.tv_nsec != 0);

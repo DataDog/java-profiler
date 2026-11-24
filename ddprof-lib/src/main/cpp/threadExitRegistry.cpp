@@ -3,6 +3,9 @@
 #include "threadExitRegistry.h"
 
 #include <atomic>
+#include <signal.h>
+
+#include "threadLocalData.inline.h"
 
 namespace {
 constexpr int TABLE_SIZE = 4096;
@@ -68,5 +71,19 @@ bool ThreadExitRegistry::contains(uint64_t tid) {
         unsigned index = (slot + probe) & (TABLE_SIZE - 1);
         if (tids[index].load(std::memory_order_relaxed) == tid) return true;
     }
+    return false;
+}
+
+bool ThreadExitRegistry::isCurrentExiting() {
+    uint64_t tid = currentId();
+    if (!contains(tid)) return false;
+    // TLS acquisition clears stale marks, so a mark beside live TLS is this thread's.
+    if (ProfiledThread::current() != nullptr) return true;
+    sigset_t mask;
+    if (pthread_sigmask(SIG_BLOCK, nullptr, &mask) != 0 ||
+        (sigismember(&mask, SIGPROF) == 1 && sigismember(&mask, SIGVTALRM) == 1)) {
+        return true;
+    }
+    clear(tid);
     return false;
 }
