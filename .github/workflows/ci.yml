@@ -38,13 +38,24 @@ jobs:
         run: |
           bash -n \
             .github/scripts/release.sh \
+            .github/scripts/certify.sh \
+            .github/scripts/pick-release-candidate.sh \
+            .github/scripts/file-jira-issue.sh \
+            .github/scripts/bump-ddtrace.sh \
             utils/release.sh \
-            .github/scripts/tests/test_release_automation.sh
+            .github/scripts/tests/test_release_automation.sh \
+            .github/scripts/tests/test_release_train.sh
           shellcheck \
           .github/scripts/release.sh \
+          .github/scripts/certify.sh \
+          .github/scripts/pick-release-candidate.sh \
+          .github/scripts/file-jira-issue.sh \
+          .github/scripts/bump-ddtrace.sh \
           utils/release.sh \
-            .github/scripts/tests/test_release_automation.sh
+            .github/scripts/tests/test_release_automation.sh \
+            .github/scripts/tests/test_release_train.sh
           .github/scripts/tests/test_release_automation.sh
+          .github/scripts/tests/test_release_train.sh
 
   ci-script-tests:
     runs-on: ubuntu-22.04
