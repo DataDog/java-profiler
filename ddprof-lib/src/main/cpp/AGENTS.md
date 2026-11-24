@@ -102,7 +102,8 @@ done by our SIGSEGV/SIGBUS handler, which is installed **only on HotSpot and Ope
 fatal.
 - Single reads/writes of untrusted memory: `SafeAccess::load*/store*/safeCopy`. They
   must stay `NOINLINE` (the fault is matched by PC). Check an untrusted C string with
-  `SafeAccess::isReadableCString()` before any `strlen`/`strncmp` on it.
+  `SafeAccess::isReadableCString()` before any `strlen`/`strncmp` on it; the check does
+  not cover memory unmapped after it returns.
 - Whole walks: `sigsetjmp` + `JmpCtxScope` (`guards.h`), used exactly as documented
   there — construct the scope before `sigsetjmp(ctx, 1)` (savemask must be 1); at the
   landing pad call `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()` then `restore()` before

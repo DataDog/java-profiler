@@ -39,10 +39,9 @@ extern "C" int64_t safestore64_cont(int64_t* adr, int64_t value);
 extern "C" int safecopy_impl(void* dst, const void* src, size_t len);
 extern "C" int safecopy_cont(void* dst, const void* src, size_t len);
 
-// safecstring_impl reads `s` one byte at a time and returns 1 at the first NUL
-// within `max_len` bytes, 0 if there is none. A faulting load is redirected
-// from anywhere in [safecstring_impl, safecstring_cont) to safecstring_cont,
-// which returns 0.
+// safecstring_impl scans `s` byte by byte: 1 at a NUL within `max_len`, else 0.
+// A fault in [safecstring_impl, safecstring_cont) is redirected to
+// safecstring_cont (returns 0). Frameless leaf routines, like safecopy.
 extern "C" int safecstring_impl(const char* s, size_t max_len);
 extern "C" int safecstring_cont(const char* s, size_t max_len);
 
