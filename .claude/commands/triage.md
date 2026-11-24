@@ -23,8 +23,8 @@ stop after its completion statement. Otherwise run the loop:
    such ticket remains, report that the loop is exhausted and stop.
 2. **Triage it.** Run the `ticket-triage` skill on that ticket through completion,
    including its step-7 Done statement. The loop never overrides the skill's gates:
-   ask-first on every edit/build/run and workspace create/delete, the ILW wizard, and
-   no priority-field writes.
+   ask-first on every edit/build/run and workspace create — the create approval also
+   covers cleanup, per the skill — the ILW wizard, and no priority-field writes.
 3. **Check in.** After the completion statement, report one line —
    `Triage complete: PROF-<n> — <classification>, P<priority>` (for a `stale`
    classification, the close recommendation instead of a priority) — and ask whether

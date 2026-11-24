@@ -51,21 +51,23 @@ report about behavior as an unverified claim.
      the workspace with `workspaces delete <name> --yes`. Create a compatible
      replacement if available, verify its architecture again, and use it only if it
      matches. If no compatible workspace is available, run locally only if this
-     machine matches the target architecture; if neither environment matches, leave
+     machine matches the target architecture — and, for a libc-specific report, its
+     libc; if neither environment matches, leave
      the reproducer blocked and state why. Delete a correctly matched workspace with
      `workspaces delete <name> --yes` after the run, unless the user asks to keep it.
 
      The workspace is only a runner: it auto-clones main, so sync the worktree's
-     reproducer change to it first. From the worktree root, compute the merge base
-     against the local `main` ref, then create and validate a temporary patch before
-     applying it at the cloned checkout's root:
+     reproducer change to it first. From the worktree root, fetch a resolvable main
+     ref, compute the merge base against it, then create and validate a temporary
+     patch before applying it at the cloned checkout's root:
 
      ```sh
      patch_file=$(mktemp) || exit 1
      ws_name=<name>   # the unique workspace name chosen above
      release_ws() { rm -f "$patch_file"; workspaces delete "$ws_name" --yes; }  # any failure after creation releases the machine
      trap release_ws EXIT
-     merge_base=$(git merge-base HEAD "$(git rev-parse --verify -q main || echo origin/main)") || exit 1
+     git fetch origin main   # a resolvable main ref is required for the merge base
+     merge_base=$(git merge-base HEAD origin/main) || exit 1
      git add -N -- path/to/reproducer   # intent-to-add: untracked reproducer files must appear in git diff
      git diff "$merge_base" -- path/to/reproducer > "$patch_file" || exit 1
      test -s "$patch_file" || { echo "No reproducer changes to apply" >&2; exit 1; }
@@ -79,21 +81,26 @@ report about behavior as an unverified claim.
      no patch, stop and investigate instead of running `git apply`. `--3way` tolerates
      a clone that already contains part of the change (its main tip moved past the
      worktree's base); when it cannot find its base blobs (a shallow or pruned clone),
-     fall back to a plain `git apply`. The trap stays armed through the run: a failed
+     fall back to a plain `git apply`. Run this sync block and the approved reproducer
+     commands in one shell invocation, so the EXIT trap stays armed until the run
+     finishes — a standalone execution of the block deletes the workspace before the
+     reproducer runs. A failed
      verification or
      a failed run releases the machine on exit, and the normal exit performs the
      post-run deletion — unless the user asked to keep the workspace, in which case
-     disarm the teardown first (`trap - EXIT; rm -f "$patch_file"`). If the user keeps
-     the worktree, the intent-to-add entry stays
-     in its index; reset it with `git reset -- path/to/reproducer` when a clean index
-     matters.
-   - If it is not, verify that this machine's architecture matches the bug and run
-     the reproducer in the worktree only when it does; otherwise leave it blocked and
-     state why.
+     disarm the teardown first (`trap - EXIT; rm -f "$patch_file"`). The intent-to-add
+     entry stays in the worktree's index, on the failure paths as well as when the
+     user keeps the worktree; reset it with `git reset -- path/to/reproducer` when a
+     clean index matters.
+   - If it is not, verify that this machine's architecture — and, for a libc-specific
+     report, its libc — matches the bug, and run the reproducer in the worktree only
+     when they do; otherwise leave it blocked and state why.
 
-   Record the exact commands and results. Remove the worktree and delete the workspace
-   afterwards, unless the user wants to keep them. When the result is later posted on
-   the ticket, attach the reproducer code or diff to the ticket.
+   Record the exact commands and results. Before the cleanup, save the reproducer code
+   or a complete diff, including new files, outside both disposable environments.
+   Remove the worktree and delete the workspace afterwards, unless the user wants to
+   keep them. When the result is later posted on the ticket, attach the reproducer
+   code or diff to the ticket.
 
 5. **Summary.** Name the likely affected code, its constraints, dependencies and risks,
    and the next steps. Do not implement a fix or commit without the user's separate
