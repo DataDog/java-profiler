@@ -425,6 +425,42 @@ TEST_F(LibraryPatcherPatching, UnhookedEntriesAreBoundedAndLeaveRoomForHookedOne
   EXPECT_EQ(limit + 2, LibraryPatcherTestAccessor::patchedCount());
 }
 
+// A new library whose other slot already holds the hook counts as hooked: with
+// the unhooked bound reached, it still takes an entry for its foreign slot.
+TEST_F(LibraryPatcherPatching, AlreadyHookedSlotIsNotCountedAsUnhooked) {
+  void* hook = real_pthread_create();
+  CodeCache hooked_lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                       /* imports_patchable */ true);
+  hooked_lib.addImport(&hook, "pthread_create");
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&hooked_lib);
+  ASSERT_NE(real_pthread_create(), hook);
+
+  const int limit = LibraryPatcherTestAccessor::maxUnhookedEntries();
+  void* const foreign = reinterpret_cast<void*>(&fake_original_pthread_create);
+  std::vector<void*> slots(limit, foreign);
+  std::vector<std::unique_ptr<CodeCache>> libs;
+  for (int i = 0; i < limit; i++) {
+    libs.emplace_back(new CodeCache(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                                    /* imports_patchable */ true));
+    libs.back()->addImport(&slots[i], "pthread_create");
+    LibraryPatcherTestAccessor::patchLibraryUnlocked(libs.back().get());
+  }
+  ASSERT_EQ(limit + 1, LibraryPatcherTestAccessor::patchedCount());
+
+  void* jump_slot = hook;
+  void* glob_dat = foreign;
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(&jump_slot, "pthread_create");
+  lib.addImport(&glob_dat, "pthread_create");
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_EQ(hook, jump_slot);
+  EXPECT_EQ(foreign, glob_dat);
+  EXPECT_EQ(limit + 2, LibraryPatcherTestAccessor::patchedCount());
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
+}
+
 // A slot left alone marks the entry pending; the visit that hooks it again
 // clears the flag.
 TEST_F(LibraryPatcherRehook, ForeignHookMarksEntryPendingUntilRehooked) {

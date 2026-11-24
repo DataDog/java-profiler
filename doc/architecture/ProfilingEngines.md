@@ -223,50 +223,50 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      `pthread_join()` still sees it even though the hook outlives every
      recording.
    - The hook runs without `_state_lock`, so both calls are gated:
-   - `registerThread()` needs `_engines_ready`, which `CTimer::start()` and
-     `PerfEvents::start()` set via `Profiler::openThreadRegistration()` once
-     their table is sized and before they list threads, and which
-     `Profiler::startCpuEngine()` sets once any CPU engine (including the
-     table-less `ITimer`, `ITimerJvmti` and J9 engines) has started. It is
-     cleared by `start()`, by `stop()`, by a failed CPU engine start and by
-     `ThreadTablesFreeze`, so the gate is open iff the CPU engine started.
-     Wall-only, noop and failed-CPU recordings leave it closed. Because the
-     gate tracks the CPU engine, it admits only that engine:
-     `registerThread()` never calls the wall engine. No wall engine implements
-     `registerThread()`; one that ever does needs a gate of its own, because
-     opening this one would also admit a CPU engine that failed. Every
-     `registerThread()` call raises the registration counter first, then reads
-     the gate `seq_cst`; a closed gate makes it return without reaching the
-     engine. The counter-before-gate order is what lets a closer tell a stale
-     gate read from a call the drain covers, so it must not be reordered.
-   - `PerfEvents::start()`'s stale-fd sweep may close the fd of a tid the hook
-     registered after the thread list was taken, and such a thread is then not
-     sampled for the recording (PROF-16359).
-   - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
-     while CTimer replaces or frees its timer table (`ThreadTablesFreeze`):
-     `CTimer::sizeTimerTable()` in `start()` whenever `stop()` kept a table
-     (to sweep it, and to replace it if `pid_max` changed),
-     and `CTimer::releaseTimerTable()` at the end of `CTimer::stop()`. Since
-     `stop()` frees the table, a `start()` normally allocates into none, which
-     needs no freeze: hook calls see `_max_timers == 0` until the table is
-     published, `_max_timers` last with release. So a start does not fail on
-     thread churn the freeze could not drain. A table that `stop()` had to keep
-     (hook calls did not drain) is swept under the freeze before it is reused
-     at an unchanged `pid_max`.
-     `PerfEvents::start()` replaces its table without clearing it
-     (PROF-16359). An exit that arrives while the gate is closed is recorded
-     by `Profiler::recordSkippedUnregistration()`. `CTimer::start()` replays
-     the record after it lists threads, which removes the timer the listing
-     armed for an exited thread. `PerfEvents::start()` does not replay it, so
-     a thread listed after its exit keeps its fd (PROF-16359). The gate
-     stays set while idle, because `PerfEvents::stop()` keeps per-thread fds
-     open and this call closes the fd of a thread that exits after `stop()`.
-     The call skips a `NULL` engine slot: the hook is normally installed by the
-     first `start()`, but a refresh after `init()` may install it earlier.
-   - `start()` replaces `_cpu_engine`/`_wall_engine` while unregistration is
-     open, so it stores the pointers with release and the hook paths load them
-     with acquire. An unregistration that reaches the previous engine only
-     releases that thread's own slot. `check()` never writes the slots.
+     - `registerThread()` needs `_engines_ready`, which `CTimer::start()` and
+       `PerfEvents::start()` set via `Profiler::openThreadRegistration()` once
+       their table is sized and before they list threads, and which
+       `Profiler::startCpuEngine()` sets once any CPU engine (including the
+       table-less `ITimer`, `ITimerJvmti` and J9 engines) has started. It is
+       cleared by `start()`, by `stop()`, by a failed CPU engine start and by
+       `ThreadTablesFreeze`, so the gate is open iff the CPU engine started.
+       Wall-only, noop and failed-CPU recordings leave it closed. Because the
+       gate tracks the CPU engine, it admits only that engine:
+       `registerThread()` never calls the wall engine. No wall engine implements
+       `registerThread()`; one that ever does needs a gate of its own, because
+       opening this one would also admit a CPU engine that failed. Every
+       `registerThread()` call raises the registration counter first, then reads
+       the gate `seq_cst`; a closed gate makes it return without reaching the
+       engine. The counter-before-gate order is what lets a closer tell a stale
+       gate read from a call the drain covers, so it must not be reordered.
+     - `PerfEvents::start()`'s stale-fd sweep may close the fd of a tid the hook
+       registered after the thread list was taken, and such a thread is then not
+       sampled for the recording (PROF-16359).
+     - `unregisterThread()` needs `_thread_tables_stable`, which is cleared only
+       while CTimer replaces or frees its timer table (`ThreadTablesFreeze`):
+       `CTimer::sizeTimerTable()` in `start()` whenever `stop()` kept a table
+       (to sweep it, and to replace it if `pid_max` changed),
+       and `CTimer::releaseTimerTable()` at the end of `CTimer::stop()`. Since
+       `stop()` frees the table, a `start()` normally allocates into none, which
+       needs no freeze: hook calls see `_max_timers == 0` until the table is
+       published, `_max_timers` last with release. So a start does not fail on
+       thread churn the freeze could not drain. A table that `stop()` had to keep
+       (hook calls did not drain) is swept under the freeze before it is reused
+       at an unchanged `pid_max`.
+       `PerfEvents::start()` replaces its table without clearing it
+       (PROF-16359). An exit that arrives while the gate is closed is recorded
+       by `Profiler::recordSkippedUnregistration()`. `CTimer::start()` replays
+       the record after it lists threads, which removes the timer the listing
+       armed for an exited thread. `PerfEvents::start()` does not replay it, so
+       a thread listed after its exit keeps its fd (PROF-16359). The gate
+       stays set while idle, because `PerfEvents::stop()` keeps per-thread fds
+       open and this call closes the fd of a thread that exits after `stop()`.
+       The call skips a `NULL` engine slot: the hook is normally installed by the
+       first `start()`, but a refresh after `init()` may install it earlier.
+     - `start()` replaces `_cpu_engine`/`_wall_engine` while unregistration is
+       open, so it stores the pointers with release and the hook paths load them
+       with acquire. An unregistration that reaches the previous engine only
+       releases that thread's own slot. `check()` never writes the slots.
 3. **`PerfEvents` only**: a `pthread_setspecific` GOT hook on the JVM library
    (`pthread_setspecific_hook()`), installed in `PerfEvents::start()`.
 
