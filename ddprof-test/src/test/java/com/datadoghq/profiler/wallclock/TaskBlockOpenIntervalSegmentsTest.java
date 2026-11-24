@@ -275,8 +275,8 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
   }
 
   /**
-   * The worker also connects its socket through the native connect hook, which records its own
-   * TaskBlock whenever the call takes 1 ms; only the stream read is under test.
+   * The worker's connect can record its own TaskBlock when it takes 1 ms; only the stream read is
+   * under test. Dump-time segments carry no blocker, so they are kept by their continued flag.
    */
   private static List<JfrEvent> socketReads(JfrEvents events, String thread) {
     return eventsIn(events, thread, 1, true);
@@ -296,7 +296,10 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
           .append(" continued=")
           .append(event.getBoolean("continued"))
           .append(']');
-      if (socketReadsOnly && (event.getLong("blocker") >>> 32) != STREAM_SOCKET_READ_KIND) {
+      boolean dumpSegment = event.getBoolean("continued") && event.getLong("blocker") == 0L;
+      if (socketReadsOnly
+          && !dumpSegment
+          && (event.getLong("blocker") >>> 32) != STREAM_SOCKET_READ_KIND) {
         continue;
       }
       result.add(event);
