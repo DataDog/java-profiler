@@ -6,6 +6,7 @@
 
 #if defined(__linux__)
 #include "counters.h"
+#include "guards.h"
 #include "nativeBlock.h"
 #include "nativeSocketInterposer.h"
 #include "profiler.h"
@@ -37,6 +38,9 @@ public:
 
 namespace {
 enum TimeoutOperation { PPOLL, PSELECT, SELECT };
+// LIVE_MARKED: TLS then mark. EXITING: mark after the exit block, TLS released.
+// REUSED: a predecessor's mark on a thread with no TLS and unblocked profiling signals.
+enum MarkedIdentity { LIVE_MARKED, EXITING, REUSED };
 enum TimeoutScenario {
   KERNEL_FAULT, READABLE_CONTROLS, LIBC_BASELINE, LIBC_HOOK,
   MARKED_REAL_HANDLERS, MARKED_READABLE_REAL_HANDLERS
@@ -126,8 +130,15 @@ int invokeTimeoutHook(TimeoutOperation operation, void *timeout, bool hook) {
               : ::select(1, nullptr, nullptr, nullptr, static_cast<timeval *>(timeout));
 }
 
+// Exiting identities keep their mark and gain no TLS; a reused one loses the mark.
+bool markedIdentityRetained(MarkedIdentity identity) {
+  bool marked = ThreadExitRegistry::contains(ThreadExitRegistry::currentId());
+  if (identity == REUSED) return !marked;
+  return marked && (identity == LIVE_MARKED || ProfiledThread::current() == nullptr);
+}
+
 int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, bool active,
-                 bool partial, bool stale) {
+                 bool partial, MarkedIdentity identity) {
   // A stuck fault handler or accidentally blocking original is a test failure,
   // not an unbounded orphan. This limit is for this finite I/O test only.
   alarm(10);
@@ -146,10 +157,18 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
     action.sa_sigaction = Profiler::busHandler;
     if (sigaction(SIGBUS, &action, nullptr) != 0) return 26;
     ThreadExitRegistry::resetForTest();
-    if (stale) {
+    if (identity != LIVE_MARKED) {
       ProfiledThread* previous = ProfiledThread::clearCurrentThreadTLS();
       if (previous != nullptr) ProfiledThread::deleteForTest(previous);
-      // A reused identity can retain its predecessor's mark before registration.
+      sigset_t profiling;
+      sigemptyset(&profiling);
+      sigaddset(&profiling, SIGPROF);
+      sigaddset(&profiling, SIGVTALRM);
+      if (identity == EXITING) {
+        blockProfilingForExit();
+      } else if (pthread_sigmask(SIG_UNBLOCK, &profiling, nullptr) != 0) {
+        return 29;
+      }
       ThreadExitRegistry::markForTest(ThreadExitRegistry::currentId());
     } else {
       if (ProfiledThread::initCurrentThread() == nullptr) return 27;
@@ -213,11 +232,11 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
       int result = invokeTimeoutHook(operation, timeout, true);
       if (result != 7 || errno != EPIPE || original_calls != 1 || recovered_faults != 0)
         return 30 + value;
-      bool eligible = active && (value == 0 || (!real_handlers && vm != 2 && value > 1));
+      bool readable = !real_handlers || identity == REUSED;
+      bool eligible = active && (value == 0 || (readable && vm != 2 && value > 1));
       if (scope_entries != (eligible ? 1 : 0))
         return 40 + value;
-      if (real_handlers && (!ThreadExitRegistry::contains(ThreadExitRegistry::currentId()) ||
-                            (stale && ProfiledThread::current() != nullptr))) return 45;
+      if (real_handlers && !markedIdentityRetained(identity)) return 45;
     }
     return 0;
   }
@@ -236,18 +255,17 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
     return result == -1 && errno == EFAULT ? 0 : 60;
   if (result != -1 || errno != EFAULT || original_calls != 1 || scope_entries != 0)
     return 61;
-  if (real_handlers && (!ThreadExitRegistry::contains(ThreadExitRegistry::currentId()) ||
-                        (stale && ProfiledThread::current() != nullptr))) return 63;
+  if (real_handlers && !markedIdentityRetained(identity)) return 63;
   return recovered_faults == (active && vm != 2 && !real_handlers ? 1 : 0) ? 0 : 62;
 }
 
 int waitForTimeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, bool active,
-                        bool partial = false, bool stale = false) {
+                        bool partial = false, MarkedIdentity identity = LIVE_MARKED) {
   pid_t child = fork();
   if (child < 0)
     return -1;
   if (child == 0)
-    _exit(timeoutChild(vm, operation, scenario, active, partial, stale));
+    _exit(timeoutChild(vm, operation, scenario, active, partial, identity));
   int status;
   pid_t result;
   do {
@@ -259,13 +277,14 @@ int waitForTimeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scen
 TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesForwardInaccessibleTimeoutsWithRealCrashHandlers) {
   for (int vm : {0, 1}) {
     for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT}) {
-      for (bool stale : {false, true}) {
+      for (MarkedIdentity identity : {LIVE_MARKED, EXITING, REUSED}) {
         for (bool partial : {false, true}) {
           SCOPED_TRACE(vm);
           SCOPED_TRACE(operation);
-          SCOPED_TRACE(stale);
+          SCOPED_TRACE(identity);
           SCOPED_TRACE(partial);
-          EXPECT_EQ(0, waitForTimeoutChild(vm, operation, MARKED_REAL_HANDLERS, true, partial, stale));
+          EXPECT_EQ(0, waitForTimeoutChild(vm, operation, MARKED_REAL_HANDLERS, true, partial,
+                                           identity));
         }
       }
     }
@@ -275,11 +294,12 @@ TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesForwardInaccessibleTimeoutsWit
 TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesDoNotAdmitReadableNonNullTimeouts) {
   for (int vm : {0, 1}) {
     for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT}) {
-      for (bool stale : {false, true}) {
+      for (MarkedIdentity identity : {LIVE_MARKED, EXITING, REUSED}) {
         SCOPED_TRACE(vm);
         SCOPED_TRACE(operation);
-        SCOPED_TRACE(stale);
-        EXPECT_EQ(0, waitForTimeoutChild(vm, operation, MARKED_READABLE_REAL_HANDLERS, true, false, stale));
+        SCOPED_TRACE(identity);
+        EXPECT_EQ(0, waitForTimeoutChild(vm, operation, MARKED_READABLE_REAL_HANDLERS, true, false,
+                                         identity));
       }
     }
   }

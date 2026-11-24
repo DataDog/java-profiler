@@ -157,12 +157,13 @@ pointers. Inactive interposers forward without inspecting them. For an active
 interposer on HotSpot/OpenJ9, the same VM kinds where `setupSignalHandlers()`
 installs the profiler crash handler, a NOINLINE predicate uses
 `SafeAccess::safeCopy()` to copy exactly one timespec/timeval into stack storage.
-Before copying, a raw thread-ID lookup rejects identities marked in `ThreadExitRegistry`;
-crash handlers bypass recovery for those identities. This includes stale marks before
-registration clears a reused identity. The lookup adds one syscall per non-null timeout.
+Before copying, `ThreadExitRegistry::isCurrentExiting()` rejects exiting threads, whose
+faults the crash handlers chain without recovery. A stale mark on a reused identity (no
+`ProfiledThread`, profiling signals unblocked) is cleared instead, so its copy is recovered.
+The lookup adds one syscall per non-null timeout, and a mask query for a marked identity.
 
 The copy is bounded to 16 bytes on supported Linux x64/arm64 and does not allocate.
-A marked identity or failed copy suppresses TaskBlock admission and forwards all original
+An exiting thread or failed copy suppresses TaskBlock admission and forwards all original
 arguments and errno unchanged. The original timeout pointer is not replaced.
 
 Zing does not install that crash handler, so a non-null timeout is never read by
@@ -227,7 +228,7 @@ new hook fault or of successful EFAULT recovery.
 - `nativeIoTimeout_ut.cpp`: contained child faults for ppoll/pselect/select,
   HotSpot/OpenJ9 VM-dispatch safe-copy recovery, Zing/no-active-read forwarding,
   exact-boundary readable/null/zero/positive controls, original arguments/errno,
-  marked/stale identities with real profiler crash handlers, and actual-libc
+  live-marked, exiting and reused identities with real profiler crash handlers, and actual-libc
   baseline/hook fault comparisons. VM flags here model
   dispatch only, not a running JVM. The ppoll/pselect fault originals enter the
   actual kernel with the supplied pointer; select does so where SYS_select is
