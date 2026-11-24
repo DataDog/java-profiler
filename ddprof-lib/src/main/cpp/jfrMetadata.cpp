@@ -321,6 +321,7 @@ void JfrMetadata::initialize(
                   << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
                   << field("observedBlockingState", T_THREAD_STATE,
                            "Observed Blocking State", F_CPOOL)
+                  << field("continued", T_BOOLEAN, "Continued")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
