@@ -87,6 +87,7 @@ ASGCT_CallFrame* MonitorEntryStacks::frames(u64 lease, int& num_frames,
   return slot->_asgct_frames;
 }
 
+#ifdef UNIT_TEST
 int MonitorEntryStacks::claimedForTest() const {
   int claimed = 0;
   for (int i = 0; i < SLOTS; i++) {
@@ -94,3 +95,4 @@ int MonitorEntryStacks::claimedForTest() const {
   }
   return claimed;
 }
+#endif

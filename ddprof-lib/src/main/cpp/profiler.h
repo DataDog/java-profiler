@@ -827,8 +827,8 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
-  // Caller holds its stripe lock or a monitor entry slot and supplies at least
-  // _max_stack_depth + 1 frames, the extra one being the truncation probe. Converts to ASGCT format and
+  // Caller holds its stripe lock or a monitor entry slot and supplies at
+  // least _max_stack_depth + 1 frames, the extra one being the truncation probe. Converts to ASGCT format and
   // marks detected continuation roots; returns 0 on error/empty capture.
   int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer,
                          bool& truncated);

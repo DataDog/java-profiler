@@ -94,7 +94,10 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
         "monitorContentionEmitsTaskBlockOutsideContextWindow");
   }
 
-  /** Verifies the entry-captured contention stack, one event per interval, and no fallback. */
+  /**
+   * Verifies the contention stack and one event per interval; a zero fallback counter proves entry
+   * capture.
+   */
   @Test
   public void contendedMonitorStackIsCapturedAtEntry() throws Exception {
     Object monitor = new Object();
@@ -114,6 +117,11 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
               "taskblock-monitor-entry-stack");
       worker.start();
       assertTrue(attempting.await(5, TimeUnit.SECONDS));
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+      while (worker.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+        Thread.sleep(1);
+      }
+      assertEquals(Thread.State.BLOCKED, worker.getState(), "worker never contended");
       Thread.sleep(20);
     }
     assertCompleted(worker, failure);

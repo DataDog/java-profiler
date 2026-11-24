@@ -43,7 +43,9 @@ class MonitorEntryStacks {
   ASGCT_CallFrame* frames(u64 lease, int& num_frames, bool& truncated) const;
 
   bool allocated() const { return _storage.load(std::memory_order_acquire) != nullptr; }
+#ifdef UNIT_TEST
   int claimedForTest() const;
+#endif
 
  private:
   static int slotOf(u64 lease) { return static_cast<int>(lease & SLOT_MASK); }

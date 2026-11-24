@@ -2822,14 +2822,13 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
-    bool task_block_enabled =
-        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall;
-    // Published before callbacks are admitted; a failed allocation leaves exits capturing.
-    if (task_block_enabled && !_omit_stacktraces &&
+    setTaskBlockEnabled(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
+    // Entries admitted before the publication find no storage and capture at exit.
+    if (nativeMonitorTaskBlockEnabled() && !_omit_stacktraces &&
         !_monitor_entry_stacks.allocate(_max_stack_depth)) {
       Log::warn("Monitor entry stacks not allocated; contended monitors capture at exit");
     }
-    setTaskBlockEnabled(task_block_enabled);
     if (taskBlockEnabled()) {
       Error native_io_error = NativeSocketInterposer::instance()->start();
       if (native_io_error) Log::warn("%s", native_io_error.message());
