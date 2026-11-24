@@ -62,13 +62,12 @@ class OpenTaskBlockSegments {
   };
   int _max_depth;
   std::vector<Candidate> _candidates;
-  std::vector<jthread> _threads;
   jvmtiStackInfo* _stacks = nullptr;
   bool _stackless = false;
 
   void selectCandidates(ThreadFilter* registry, WallClockBlockTracker* tracker, u64 now_ticks);
   void captureStacks();
-  bool blockedInJvmti(const Candidate& candidate) const;
+  bool blockedInJvmti(const Candidate& candidate, OSThreadState state) const;
 };
 
 #endif // _TASK_BLOCK_SEGMENTS_H

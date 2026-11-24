@@ -145,10 +145,32 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
   }
 
   @Test
+  public void abandonedPairedIntervalIsNotReportedWhileThreadParksElsewhere() throws Exception {
+    String name = "taskblock-segments-abandoned";
+    CountDownLatch parked = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Thread worker =
+        worker(
+            name,
+            () -> {
+              assertTrue(profiler.beginTaskBlock() != 0);
+              // No endTaskBlock: the interval is abandoned while the thread parks.
+              parked.countDown();
+              assertTrue(release.await(10, TimeUnit.SECONDS));
+            });
+    AtomicReference<Throwable> error = start(worker);
+    assertTrue(parked.await(5, TimeUnit.SECONDS));
+    Path dump = dumpAfter(200L);
+    release.countDown();
+    join(worker, error);
+    stopProfiler();
+    eventsFor(dump, name, 0);
+  }
+
+  @Test
   public void stopReportsOpenPartAndRestartDoesNotReReportIt() throws Exception {
     String name = "taskblock-segments-stop";
     CountDownLatch began = new CountDownLatch(1);
-    CountDownLatch restarted = new CountDownLatch(1);
     AtomicBoolean endRecorded = new AtomicBoolean(true);
     Thread worker =
         worker(
@@ -156,8 +178,11 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
             () -> {
               long token = profiler.beginTaskBlock();
               began.countDown();
-              assertTrue(restarted.await(10, TimeUnit.SECONDS));
-              Thread.sleep(50L);
+              try {
+                Thread.sleep(10_000L);
+              } catch (InterruptedException restartedRecording) {
+                // Interrupted once the next recording has started.
+              }
               endRecorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
             });
     AtomicReference<Throwable> error = start(worker);
@@ -171,7 +196,7 @@ public class TaskBlockOpenIntervalSegmentsTest extends AbstractProfilerTest {
     Path next = Files.createTempFile("taskblock-segments-restart-", ".jfr");
     profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + next.toAbsolutePath());
     try {
-      restarted.countDown();
+      worker.interrupt();
       join(worker, error);
       Thread.sleep(50L);
     } finally {

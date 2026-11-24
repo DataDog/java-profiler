@@ -2844,7 +2844,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
-  // Stop is a final dump: capture open intervals while exits still record.
+  // Stop is a final dump: capture open intervals before TaskBlock is disabled.
   OpenTaskBlockSegments open_segments(_max_stack_depth);
   if (taskBlockEnabled()) open_segments.collect(&_thread_filter, &_block_tracker);
   setTaskBlockEnabled(false);

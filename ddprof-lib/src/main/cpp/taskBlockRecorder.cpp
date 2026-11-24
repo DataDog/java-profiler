@@ -212,7 +212,7 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   bool exited = current_slot == slot_id &&
       tracker->snapshotAndExitBlockedRun(thread_filter, slot_id, generation,
                                          &snapshot TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
-  // Sampled after the claim, so a racing dump's segment cannot pass the end.
+  // Sampled after the claim, so a racing dump's segment cannot pass a sampled end.
   if (end_ticks == 0) end_ticks = TSC::ticks();
 #if defined(DEBUG) || defined(UNIT_TEST)
   diagnostic.words[TaskBlockDiagnosticRecord::END] = end_ticks;

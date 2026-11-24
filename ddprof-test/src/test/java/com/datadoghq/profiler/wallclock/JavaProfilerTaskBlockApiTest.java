@@ -423,7 +423,6 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   private boolean runLiveDumpBlock(
       String workerName, AtomicLong logicalDuration, AtomicLong prefixDuration) throws Exception {
     CountDownLatch armed = new CountDownLatch(1);
-    CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
     AtomicLong logicalStart = new AtomicLong();
     AtomicLong logicalEnd = new AtomicLong();
@@ -437,7 +436,8 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
                 long token = profiler.beginTaskBlock();
                 assertTrue(token != 0);
                 armed.countDown();
-                assertTrue(release.await(5, TimeUnit.SECONDS));
+                // The paired API owns SLEEPING, so the dump reports the open part of a sleep.
+                sleepUntilInterrupted();
                 recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
                 logicalEnd.set(System.nanoTime());
               } catch (Throwable t) {
@@ -465,17 +465,25 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       prefixDuration.set((long) TaskBlockAssertions.durationNanosForThread(prefix, workerName));
 
       Thread.sleep(150L);
-      release.countDown();
+      worker.interrupt();
       worker.join(5_000L);
       assertFalse(worker.isAlive());
       if (error.get() != null) throw new AssertionError(error.get());
       logicalDuration.set(logicalEnd.get() - logicalStart.get());
       return recorded.get();
     } finally {
-      release.countDown();
+      worker.interrupt();
       worker.join(5_000L);
       if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(snapshot);
       else System.out.println("TASK_BLOCK snapshot recording=" + snapshot.toAbsolutePath());
+    }
+  }
+
+  private static void sleepUntilInterrupted() {
+    try {
+      Thread.sleep(10_000L);
+    } catch (InterruptedException released) {
+      // The test thread interrupts the sleep to end the interval.
     }
   }
 

@@ -98,15 +98,26 @@ void OpenTaskBlockSegments::captureStacks() {
   }
 }
 
-bool OpenTaskBlockSegments::blockedInJvmti(const Candidate& candidate) const {
+// The JVMTI state that each owned block state implies, so a thread that left
+// the blocking call without ending its interval (an abandoned paired interval
+// now idling elsewhere) is not reported; its exit or recovery decides the rest.
+static jint expectedJvmtiState(OSThreadState state) {
+  switch (state) {
+    case OSThreadState::SLEEPING: return JVMTI_THREAD_STATE_SLEEPING;
+    case OSThreadState::CONDVAR_WAIT: return JVMTI_THREAD_STATE_PARKED;
+    case OSThreadState::OBJECT_WAIT: return JVMTI_THREAD_STATE_IN_OBJECT_WAIT;
+    case OSThreadState::MONITOR_WAIT: return JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER;
+    case OSThreadState::IO_WAIT: return JVMTI_THREAD_STATE_IN_NATIVE;
+    default: return 0;
+  }
+}
+
+bool OpenTaskBlockSegments::blockedInJvmti(const Candidate& candidate, OSThreadState state) const {
   if (_stackless) return true;
   if (candidate.stack < 0) return false;
-  // A runnable Java thread is not blocked: its paired interval was abandoned
-  // or is about to end, so its exit or recovery decides the remaining time.
   const jvmtiStackInfo& info = _stacks[candidate.stack];
-  return info.frame_count > 0 &&
-         (info.state & (JVMTI_THREAD_STATE_WAITING | JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER |
-                        JVMTI_THREAD_STATE_IN_NATIVE)) != 0;
+  jint expected = expectedJvmtiState(state);
+  return info.frame_count > 0 && expected != 0 && (info.state & expected) != 0;
 }
 
 int OpenTaskBlockSegments::emit(TaskBlockSegmentSink* sink, ThreadFilter* registry,
@@ -115,7 +126,7 @@ int OpenTaskBlockSegments::emit(TaskBlockSegmentSink* sink, ThreadFilter* regist
   for (const Candidate& candidate : _candidates) {
     WallClockBlockTracker::OpenSegment segment;
     if (!tracker->readOpenSegment(candidate.slot, segment) ||
-        segment.control != candidate.segment.control || !blockedInJvmti(candidate)) {
+        segment.control != candidate.segment.control) {
       continue;
     }
     ThreadFilter::Slot* identity = registry->activeSlotForId(candidate.slot, candidate.tid);
@@ -123,6 +134,7 @@ int OpenTaskBlockSegments::emit(TaskBlockSegmentSink* sink, ThreadFilter* regist
     OSThreadState state = block != nullptr ? block->activeBlockState() : OSThreadState::UNKNOWN;
     // Same rejections as the exit: a context crossing or a too-short segment.
     if (identity == nullptr || state == OSThreadState::UNKNOWN ||
+        !blockedInJvmti(candidate, state) ||
         block->blockGeneration() != segment.generation() ||
         !block->activeBlockRemainedOutsideContextWindow(identity) ||
         checkTaskBlockDuration(segment.start, dump_ticks) != TaskBlockDurationCheck::ELIGIBLE) {

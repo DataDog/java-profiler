@@ -675,14 +675,16 @@ elapsed part of the segment, so a long block contributes to every chunk it spans
    matched by native tid.
 2. Under the stripes, `emit()` writes `[start, dump_ticks)` for each candidate
    whose segment is unchanged. The segment must also pass the exit's context-window
-   check, and JVMTI must report the thread waiting, monitor-blocked or in native.
-   A runnable thread is skipped, so an abandoned paired interval is not reported.
+   check. JVMTI must report the state that matches the block state: SLEEPING,
+   PARKED, IN_OBJECT_WAIT, BLOCKED_ON_MONITOR_ENTER or IN_NATIVE. An abandoned
+   paired interval whose thread idles elsewhere is therefore not reported.
    The segment then restarts at `dump_ticks`. A segment under 1 ms is carried to the
    next dump.
 3. The exit reports `[segment start, end)` with `continued=false`, the blocker and
    `unblockingSpanId`. The last segment can be under 1 ms; the 1 ms check applies to
    the whole interval. Dump segments carry no blocker, unblocking span or context
-   attributes. The entry admits no span.
+   attributes. The entry admits no span. Their stack is the blocked thread's from
+   frame 0, while the exit's stack starts at its hook's caller.
 4. Stop captures the stacks before disabling TaskBlock. Its final chunk reports
    the open parts and closes every segment, so a later exit reports nothing.
 
@@ -694,8 +696,13 @@ run ends when its exit or another end path does a `fetch_and` on `control`, whic
 keeps only the index. The dump CAS and the exit `fetch_and` act on one word, so
 each tick goes to exactly one side. The advancer never writes the entry that an
 exit or a new run reads. Entry closes `control` before it writes `start[]`, so a
-dump that read a stale run fails its CAS. Generations are never reused, so the
-CAS has no ABA. Signal handlers never read segments.
+dump that read a stale run fails its CAS. Generations restart only after a
+saturated slot's owner exits, so the CAS has no practical ABA. Signal handlers never
+read segments.
+
+Each tick is reported at most once. An exit that claims its segment and is then
+dropped, for example during a dump or stop rotation, loses its remainder as before.
+A `continued` chain can therefore lack its closing segment.
 
 HotSpot sends `MonitorWaited` before monitor reacquisition completes. A native
 wait event ends at that callback and excludes the subsequent reacquisition time.
