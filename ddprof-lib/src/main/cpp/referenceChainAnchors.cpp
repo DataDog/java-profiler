@@ -311,11 +311,16 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(
       bool keep = shape_it == _class_shape_cache.end() ||
                   shape_it->second == (u8)AnchorClassShape::CONTAINER ||
                   shape_it->second == (u8)AnchorClassShape::UNKNOWN_TRUNCATED;
-      if (!keep) {
-        // Classified non-container: the other tier owns it - first look spent here.
+      if (!keep && known != _static_anchor_index_class_tags.end()) {
+        // Classified non-container and still indexed: the other tier's scan can select it,
+        // so the fresh lane spends the turn here.
         fresh_spent_tags.push_back(anchor.tag);
         continue;
       }
+      // Evicted non-container (no fair-tier fallback) and container/unknown/truncated shapes
+      // alike: the preserved queued turn is this holder's only rotation walk, so it is spent as
+      // a fresh pick - spending it without a fallback would strand the holder until
+      // re-enumeration and no re-enlist could restore the served turn.
       fresh_picks.push_back(TierPick{idx_size, anchor.tag});
       fresh_kept_tags.insert(anchor.tag);
       if (fresh_picked != nullptr) {

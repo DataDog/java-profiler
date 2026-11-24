@@ -405,6 +405,51 @@ TEST_F(ReferenceChainsBfsTest, EvictedFreshAnchorKeepsRefreshedClassTag) {
     tracker->stop();
 }
 
+// An evicted non-container holder's preserved fresh turn is its only rotation walk: the fair
+// tiers scan only indexed holders, so spending the turn at the shape gate would strand the
+// holder until re-enumeration. Root-attached: selectability rides on the root kind, not the
+// (non-container) shape, and the shape only decides the lane.
+TEST_F(ReferenceChainsBfsTest, EvictedNonContainerWalksPreservedFreshTurn) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong kNonContainer = -511;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kNonContainer, false);
+    const jlong target = 6301;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, target, 0, 1, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        target, kNonContainer, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    // Cross the cap: `target` is evicted oldest, its fresh turn preserved outside the index.
+    for (size_t i = 0; i <= cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            8200 + (jlong)i, -901, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            8);
+    EXPECT_TRUE(std::find(selected.begin(), selected.end(), target) !=
+                selected.end())
+        << "the preserved turn must walk the evicted non-container holder - "
+           "no indexed fallback exists to spend it against";
+
+    tracker->stop();
+}
+
 // Tier fairness: the other tier (everything not leak-tagged, not container-shaped) still
 // reaches full coverage across wraps - a 40-anchor tier at a 16 budget covers all 40 in exactly 3
 // calls with no duplicates within a call.
