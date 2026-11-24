@@ -9,7 +9,6 @@
 #include "context.h"
 #include "counters.h"
 #include "event.h"
-#include "monitorEntryStacks.h"
 #include "profiler.h"
 #include "tsc.h"
 
@@ -77,8 +76,7 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
-                           u64 unblocking_span_id, u64 end_ticks = 0,
-                           const MonitorEntryStackLease* entry_stack = nullptr);
+                           u64 unblocking_span_id, u64 end_ticks = 0);
 
 // JVMTI event callbacks for the native monitor-contention/Object.wait task-block
 // producer. Registered directly into jvmtiEventCallbacks by vmEntry.cpp.
@@ -102,13 +100,6 @@ class TaskBlockActivity {
   bool _owns_activity;
 
  public:
-  // Admission for work that emits no TaskBlock itself, so rejection is not counted.
-  struct Quiet {};
-  explicit TaskBlockActivity(Quiet)
-      : _profiler(Profiler::instance()),
-        _active(_profiler->tryEnterTaskBlockActivityQuietly()),
-        _owns_activity(_active) {}
-
   explicit TaskBlockActivity(bool already_active = false
                              TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr))
       : _profiler(Profiler::instance()),
@@ -163,8 +154,7 @@ static inline bool taskBlockPassesBasicEligibility(u64 start_ticks, u64 end_tick
 static inline bool recordTaskBlockIfEligible(
     int tid, jthread thread, int start_depth, u64 start_ticks, u64 end_ticks,
     const Context& ctx, u64 blocker, u64 unblocking_span_id,
-    OSThreadState observed_state, bool activity_already_held = false,
-    const MonitorEntryStackLease* entry_stack = nullptr
+    OSThreadState observed_state, bool activity_already_held = false
     TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr),
     u64 segment_start = 0) {
 #if defined(DEBUG) || defined(UNIT_TEST)
@@ -193,7 +183,7 @@ static inline bool recordTaskBlockIfEligible(
   TaskBlockStage rejection = TaskBlockStage::COUNT;
 #endif
   Profiler::TaskBlockRecordResult result =
-      Profiler::instance()->recordTaskBlock(tid, thread, start_depth, &event, entry_stack TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic, &rejection));
+      Profiler::instance()->recordTaskBlock(tid, thread, start_depth, &event TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic, &rejection));
   if (result == Profiler::TaskBlockRecordResult::RECORDED) {
     TASK_BLOCK_DIAGNOSTIC(TERMINAL_BUFFER_ACCEPTED, diagnostic, 0);
     Counters::increment(TASK_BLOCK_EMITTED);

@@ -166,8 +166,7 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            WallClockBlockTracker* tracker, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
-                           u64 unblocking_span_id, u64 end_ticks,
-                           const MonitorEntryStackLease* entry_stack) {
+                           u64 unblocking_span_id, u64 end_ticks) {
   Profiler* profiler = Profiler::instance();
 #if defined(DEBUG) || defined(UNIT_TEST)
   TaskBlockDiagnosticRecord diagnostic{};
@@ -260,8 +259,7 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   TASK_BLOCK_DIAGNOSTIC(EXIT_ELIGIBLE, diagnostic_ptr, 0);
   return recordTaskBlockIfEligible(
       current->tid(), thread, start_depth, start_ticks, end_ticks, context,
-      blocker, unblocking_span_id, snapshot.active_state, true, entry_stack
-      TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr),
+      blocker, unblocking_span_id, snapshot.active_state, true TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr),
       segment_start);
 }
 
@@ -285,18 +283,6 @@ static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
   jint hash = 0;
   if (jvmti->GetObjectHashCode(object, &hash) != JVMTI_ERROR_NONE) return 0;
   return static_cast<u64>(static_cast<uint32_t>(hash));
-}
-
-// Captured before the lock is held, so the exit callback does not walk the stack.
-// A lease the exit never consumed (a skipped exit) is released here first.
-static void captureMonitorEntryStack(Profiler *profiler, ProfiledThread *current,
-                                     jthread thread) {
-  MonitorEntryStacks *stacks = profiler->monitorEntryStacks();
-  MonitorEntryStackLease stale(stacks, current->exchangeMonitorEntryStackLease(0));
-  if (!stacks->allocated()) return;
-  TaskBlockActivity activity{TaskBlockActivity::Quiet{}};
-  if (!activity.active()) return;
-  current->exchangeMonitorEntryStackLease(profiler->captureMonitorEntryStack(thread));
 }
 
 // Entry takes no jvmtiEnv: monitorBlockExit resolves the blocker hash after filtering.
@@ -356,9 +342,6 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
     return;
   }
   current->setMonitorBlockToken(token);
-  if (state == OSThreadState::MONITOR_WAIT) {
-    captureMonitorEntryStack(profiler, current, thread);
-  }
 }
 
 static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
@@ -366,11 +349,6 @@ static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   Profiler *profiler = Profiler::instance();
   ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) return;
-  // Taken before any early return so every exit path releases the entry slot.
-  bool contended = state == OSThreadState::MONITOR_WAIT;
-  MonitorEntryStackLease entry_stack(
-      profiler->monitorEntryStacks(),
-      contended ? current->exchangeMonitorEntryStackLease(0) : 0, contended);
   if (!JVMSupport::isPlatformThread(jni, thread)) return;
 
   u64 start_ticks = 0;
@@ -394,7 +372,7 @@ static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
 
   finishTaskBlockAtExit(current, profiler->threadFilter(),
                         profiler->blockTracker(), thread, 0, token,
-                        start_ticks, context, blocker, 0, end_ticks, &entry_stack);
+                        start_ticks, context, blocker, 0, end_ticks);
 }
 
 void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,

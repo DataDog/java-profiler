@@ -116,7 +116,6 @@
   X(TASK_BLOCK_ROTATION_TIMEOUT, "task_block_rotation_timeout")               \
   X(TASK_BLOCK_VIRTUAL_THREAD_DETECTION_FAILED, "task_block_virtual_thread_detection_failed") \
   X(TASK_BLOCK_RECOVERED_ABANDONED, "task_block_recovered_abandoned")         \
-  X(TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK, "task_block_monitor_entry_capture_fallback") \
   X(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT, "block_enter_skipped_trace_context")   \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \

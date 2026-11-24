@@ -163,9 +163,7 @@ Recording-scoped memory is freed at the end of `stop()` by
 - call-trace storage and the per-stripe frame buffers;
 - the `_class_map` and `_string_label_map` storage (`StringDictionary::release()`,
   which keeps the id counter, so an old id cannot alias a new key);
-- the `LivenessTracker` state (`LivenessTracker::release()`);
-- the monitor entry stacks (`MonitorEntryStacks::release()`), after TaskBlock
-  activity is closed and drained.
+- the `LivenessTracker` state (`LivenessTracker::release()`).
 
 A stop whose JFR output failed or is quarantined skips this release: the retained
 recording still owns these roots and uncommitted wall tails, and `start()` refuses to
@@ -660,19 +658,7 @@ recording slot and token, no context-window crossing, and at least 1 ms duration
 Rejected eligibility still clears the exiting owner's lifecycle.
 
 The exit captures the workload stack synchronously and writes blocker,
-unblocking span, entry context, duration and observed state.
-
-Monitor contention is the exception: `MonitorContendedEnter` captures the stack
-before the lock is held, into one of 64 recording-scoped `MonitorEntryStacks`
-slots of `jstackdepth + 1` frames (charged to `NM_CALLTRACE`), claimed under
-TaskBlock activity. `MonitorContendedEntered` reuses those frames for the
-call-trace storage put and releases the slot on every path. An exit without
-entry frames (no free slot, refused admission, an enter before the pool
-publishes, failed capture or allocation, a lease from an earlier recording)
-captures at exit and counts `TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK`. A
-contended enter that claims a slot pays the walk, even if later dropped as
-shorter than 1 ms. Each claim has a
-unique serial, so a lease from an earlier recording never names a new slot. `OBJECT_WAIT`
+unblocking span, entry context, duration and observed state. `OBJECT_WAIT`
 serializes as `WAITING`; monitor contention serializes as `CONTENDED`.
 
 Stop/start invalidates open owners instead of attributing them to a new recording.

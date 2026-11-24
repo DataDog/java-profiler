@@ -106,8 +106,6 @@ private:
   BlockSlot _task_block_slot;
   BlockSlot _monitor_slot;
   u64 _block_recording_epoch;
-  // MonitorEntryStacks lease of the open contended enter, 0 when none; owner thread only.
-  u64 _monitor_entry_stack_lease;
 #if defined(DEBUG) || defined(UNIT_TEST)
   struct TaskBlockDiagnosticOrigin {
     u64 token = 0;
@@ -147,7 +145,6 @@ private:
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_slot{}, _task_block_slot{}, _monitor_slot{}, _block_recording_epoch(0),
-        _monitor_entry_stack_lease(0),
         _filter_slot_id(-1),
         _init_window(0),
         _signal_depth(0),
@@ -644,12 +641,6 @@ public:
   }
 
   inline u64 monitorBlockToken() const { return _monitor_slot.block_token; }
-
-  inline u64 exchangeMonitorEntryStackLease(u64 lease) {
-    u64 previous = _monitor_entry_stack_lease;
-    _monitor_entry_stack_lease = lease;
-    return previous;
-  }
 
   inline void clearMonitorBlock() {
     __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);

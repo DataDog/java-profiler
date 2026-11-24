@@ -1365,8 +1365,7 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 }
 
 Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
-    int tid, jthread thread, int start_depth, TaskBlockEvent *event,
-    const MonitorEntryStackLease* entry_stack
+    int tid, jthread thread, int start_depth, TaskBlockEvent *event
     TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic, TaskBlockStage* rejection)) {
   TASK_BLOCK_DIAGNOSTIC(RECORD_REQUEST, diagnostic, 0);
 #ifdef UNIT_TEST
@@ -1401,24 +1400,14 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     u64 stack_start = TSC::ticks();
 #endif
     bool truncated = false;
-    int num_frames = 0;
-    // Valid only while the caller's TaskBlock activity keeps the entry storage alive.
-    ASGCT_CallFrame* frames =
-        entry_stack == nullptr ? nullptr : entry_stack->frames(num_frames, truncated);
-    if (frames == nullptr) {
-      if (entry_stack != nullptr && entry_stack->expected()) {
-        Counters::increment(TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK);
-      }
-      num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
-      if (num_frames <= 0) {
-        TASK_BLOCK_REJECTION(REJECT_STACK_CAPTURE_EMPTY_OR_ERROR, diagnostic, num_frames, rejection);
-        return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
-      }
-      frames = buffer->_asgct_frames;
+    int num_frames = captureJVMTIFrames(thread, start_depth, buffer, truncated);
+    if (num_frames <= 0) {
+      TASK_BLOCK_REJECTION(REJECT_STACK_CAPTURE_EMPTY_OR_ERROR, diagnostic, num_frames, rejection);
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
     u64 call_trace_id =
-        _call_trace_storage.put(num_frames, frames, truncated, 1);
+        _call_trace_storage.put(num_frames, buffer->_asgct_frames, truncated, 1);
 #ifdef COUNTERS
     u64 stack_duration = TSC::ticks() - stack_start;
     if (stack_duration > 0) {
@@ -1526,33 +1515,6 @@ bool Profiler::tryEnterTaskBlockActivity(TASK_BLOCK_DIAGNOSTIC_ONLY(const TaskBl
   runTaskBlockActivityHookForTest(TaskBlockActivityStage::AFTER_RESERVATION);
 #endif
   return admitted;
-}
-
-bool Profiler::tryEnterTaskBlockActivityQuietly() {
-  u64 state = _task_block_activity_state.load(std::memory_order_acquire);
-  // Same closure contract as tryEnterTaskBlockActivity(), without its counters or hooks.
-  for (int failures = 0; !(state & TASK_BLOCK_CLOSED) &&
-                         failures < SpinLock::DEFAULT_SHARED_SPIN_BUDGET; ++failures) {
-    if (_task_block_activity_state.compare_exchange_weak(
-            state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-u64 Profiler::captureMonitorEntryStack(jthread thread) {
-  DEBUG_ASSERT_NOT_IN_SIGNAL();
-  if (_omit_stacktraces || _max_stack_depth <= 0) return 0;
-  MonitorEntryStackLease lease(&_monitor_entry_stacks,
-                               _monitor_entry_stacks.claim(_max_stack_depth));
-  CallTraceBuffer* buffer = _monitor_entry_stacks.buffer(lease.lease());
-  if (buffer == nullptr) return 0;
-  bool truncated = false;
-  int num_frames = captureJVMTIFrames(thread, 0, buffer, truncated);
-  if (num_frames <= 0) return 0;
-  _monitor_entry_stacks.setCaptured(lease.lease(), num_frames, truncated);
-  return lease.detach();
 }
 
 void Profiler::leaveTaskBlockActivity() {
@@ -2860,11 +2822,6 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     setTaskBlockEnabled(
         (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
-    // Entries admitted before the publication find no storage and capture at exit.
-    if (nativeMonitorTaskBlockEnabled() && !_omit_stacktraces &&
-        !_monitor_entry_stacks.allocate(_max_stack_depth)) {
-      Log::warn("Monitor entry stacks not allocated; contended monitors capture at exit");
-    }
     if (taskBlockEnabled()) {
       Error native_io_error = NativeSocketInterposer::instance()->start();
       if (native_io_error) Log::warn("%s", native_io_error.message());
@@ -3468,9 +3425,6 @@ void Profiler::releaseRecordingMemory() {
     // stripes, so a teardown flushWallTail() cannot write one after the release.
     _thread_filter.resetUnownedBlockedTails();
   }
-  // stop() closed and drained TaskBlock activity, which claim() and frames() run under;
-  // a failed start() released before publishing TaskBlock admission.
-  _monitor_entry_stacks.release();
   // Outside the locks too: release() unpublishes each table and drains its
   // guards before deleting it, so a late put() just drops its trace.
   _call_trace_storage.release();
