@@ -514,6 +514,7 @@ tasks.register("qualityChecks") {
     "check-jvm-boundary-includes.py",
     "check-doc-index.py",
     "check-sigsetjmp-shape.py",
+    "check-cpp-exceptions.py",
     "check-tracked-artifacts.py",
     "check-copyright.py",
     "check-claude-md.py",

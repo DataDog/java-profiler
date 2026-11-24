@@ -987,3 +987,796 @@ TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementa
 
 // Smoke test simulating the hotdog pod conditions that starved BFS:
 
+
+// ---------------------------------------------------------------------------------------------
+// At-risk FIFO requeue under journal overflow. A selected-anchor walk that meets a full journal
+// restores its resolved-but-unwalked drained entries to the FIFO front BEFORE the scope replays
+// the accepted prefix's deferred at-risk pushes, so the older entries keep their turn and the
+// deferred pushes can neither overshoot the FIFO cap nor a class quota.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+using T9RAcc = ReferenceChainsTestAccessor;
+using T9RAtRisk = ReferenceChainsTestAccessor::AtRiskAnchor;
+
+// ReferenceChainTracker::STATIC_ANCHOR_FIFO_DRAIN / STATIC_ANCHOR_FIFO_CAP are private.
+constexpr int kT9RDrain = 16;
+constexpr size_t kT9RFifoCap = 1024;
+// Anchors walked normally before the journal fills at the next walk.
+constexpr int kT9RWalked = 2;
+
+// Fills the live scope's journal from inside a FollowReferences call (the walk of the anchor that
+// follows the kT9RWalked accepted ones) and records which object each call was seeded from.
+struct T9RJournalFill {
+    static inline int fill_on_follow_call = -1; // 0-based call to fill before
+    static inline int follow_calls = 0;
+    static inline jlong holder_tag = 0;
+    static inline jlong holder_class_tag = -9201;
+    static inline u32 count_after_fill = 0;
+    static inline std::vector<jobject> follow_seeds;
+
+    static void reset(ReferenceChainTracker *tracker = nullptr) {
+        fill_on_follow_call = -1;
+        follow_calls = 0;
+        holder_tag = 0;
+        count_after_fill = 0;
+        follow_seeds.clear();
+        if (tracker != nullptr) {
+            T9RAcc::setLocalStagingBudgetOverrideForTest(0);
+        }
+    }
+
+    // Keep the fixture entry used by count assertions; LOCAL fill reports are intentionally
+    // unbounded so tests can exercise the journal's overflow behavior.
+    static void seedHolder(ReferenceChainTracker *tracker) {
+        T9RAcc::setLocalStagingBudgetOverrideForTest(0xFFFFFFFFu);
+        holder_tag = tracker->nextTag();
+        T9RAcc::primeClassShapeForTest(holder_class_tag, false);
+        ASSERT_TRUE(T9RAcc::insertFrontierEntry(
+            tracker->frontierTable(), holder_tag, /*parent_tag=*/1, /*depth=*/1,
+            FrontierEntryState::FRONTIER, JVMTI_HEAP_REFERENCE_STACK_LOCAL, 0,
+            holder_class_tag));
+    }
+
+    static void fill(const void *user_data) {
+        auto *ctx = const_cast<ReferenceChainPassContext *>(
+            static_cast<const ReferenceChainPassContext *>(user_data));
+        count_after_fill = static_cast<u32>(T9RAcc::fillAnchorJournalForTest(
+            *ctx, AnchorObservationBuffer::CAPACITY));
+    }
+};
+
+jvmtiError JNICALL t9RFollow(jvmtiEnv *env, jint heap_filter, jclass klass,
+                             jobject initial_object, const jvmtiHeapCallbacks *callbacks,
+                             const void *user_data) {
+    T9RJournalFill::follow_seeds.push_back(initial_object);
+    if (T9RJournalFill::follow_calls++ == T9RJournalFill::fill_on_follow_call) {
+        T9RJournalFill::fill(user_data);
+    }
+    return ReferenceChainsMockHeap::mock_FollowReferences(env, heap_filter, klass, initial_object,
+                                                          callbacks, user_data);
+}
+
+// Restores the shared mock/tracker state on every exit, including a failed ASSERT.
+struct T9RTestGuard {
+    ReferenceChainsMockHeap &fixture;
+    explicit T9RTestGuard(ReferenceChainsMockHeap &f) : fixture(f) {}
+    ~T9RTestGuard() {
+        fixture.jvmti_tbl.FollowReferences = &ReferenceChainsMockHeap::mock_FollowReferences;
+        ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+        T9RJournalFill::reset(tracker);
+        tracker->releaseAllThreadObjects(&fixture.mock_jni);
+        tracker->stop();
+    }
+};
+
+// kT9RDrain chain-attached anchors, each with two durable-rooted holders it would demote (one
+// FIELD edge per holder). The anchors are the oldest at-risk FIFO entries (class 0 = the class the
+// walk's own pushes use for these classless edges).
+struct T9RAtRiskScenario {
+    jlong anchor[kT9RDrain];
+    jlong holder[kT9RDrain][2];
+};
+
+void t9RBuildAtRiskScenario(ReferenceChainsMockHeap &f, ReferenceChainTracker *tracker,
+                            T9RAtRiskScenario *s) {
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_EQ(0u, tracker->classTags()->resolve(0)) << "classless edges must push class 0";
+    const jlong root_tag = 1000;
+    ASSERT_TRUE(T9RAcc::insertFrontierEntry(frontier, root_tag, 0, 0, FrontierEntryState::FRONTIER,
+                                            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    std::vector<int> anchor_node;
+    std::vector<int> holder_node;
+    for (int i = 0; i < kT9RDrain; i++) {
+        anchor_node.push_back(f.addNode());
+        holder_node.push_back(f.addNode());
+        holder_node.push_back(f.addNode());
+    }
+    for (int i = 0; i < kT9RDrain; i++) {
+        s->anchor[i] = 1001 + i;
+        f.node_tags[anchor_node[i]] = s->anchor[i];
+        ASSERT_TRUE(T9RAcc::insertFrontierEntry(frontier, s->anchor[i], root_tag, 1,
+                                                FrontierEntryState::FRONTIER, 0));
+        for (int j = 0; j < 2; j++) {
+            s->holder[i][j] = 2000 + 2 * i + j;
+            f.node_tags[holder_node[2 * i + j]] = s->holder[i][j];
+            ASSERT_TRUE(T9RAcc::insertFrontierEntry(
+                frontier, s->holder[i][j], 0, 0, FrontierEntryState::FRONTIER,
+                JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+            f.script.push_back(
+                {JVMTI_HEAP_REFERENCE_FIELD, anchor_node[i], holder_node[2 * i + j], -1});
+        }
+        T9RAcc::pushStaticAnchorFifoForTest(s->anchor[i], 0);
+    }
+}
+
+// Runs one pass whose selected-anchor walk meets a full journal at its kT9RWalked-th anchor.
+void t9RRunOverflowPass(ReferenceChainsMockHeap &f, ReferenceChainTracker *tracker) {
+    T9RJournalFill::reset(tracker);
+    T9RJournalFill::seedHolder(tracker);
+    ASSERT_FALSE(::testing::Test::HasFatalFailure());
+    T9RJournalFill::fill_on_follow_call = kT9RWalked;
+    f.jvmti_tbl.FollowReferences = &t9RFollow;
+    T9RAcc::setRootEnumRawStateForTest(0, 0);
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&f.mock_jvmti, &f.mock_jni, &truncated));
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T9RJournalFill::count_after_fill)
+        << "the anchor walk must have been the one that met the full journal";
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(0u, T9RAcc::journalCountForTest());
+}
+
+// Drains the whole FIFO and checks: unwalked anchors (original drained order, whatever order the
+// resolution used) first, then the older entries behind them, then only as many of the walked
+// anchors' deferred pushes as the cap/quota leave room for; no total or class overshoot. Restores
+// the FIFO so the caller can run a retry pass.
+void t9RCheckRequeueBeforePushes(const T9RAtRiskScenario &s, const std::vector<size_t> &walked_order,
+                                 const std::vector<T9RAtRisk> &older, size_t free_slots) {
+    std::vector<bool> walked(kT9RDrain, false);
+    for (int w = 0; w < kT9RWalked; w++) {
+        walked[walked_order[w]] = true;
+    }
+    std::vector<jlong> expected;
+    for (int i = 0; i < kT9RDrain; i++) {
+        if (!walked[i]) {
+            expected.push_back(s.anchor[i]);
+        }
+    }
+    for (const T9RAtRisk &entry : older) {
+        expected.push_back(entry.tag);
+    }
+    std::vector<jlong> pushes;
+    for (int w = 0; w < kT9RWalked; w++) {
+        pushes.push_back(s.holder[walked_order[w]][0]);
+        pushes.push_back(s.holder[walked_order[w]][1]);
+    }
+    ASSERT_GT(pushes.size(), free_slots) << "the scenario must offer more pushes than room";
+    for (size_t i = 0; i < free_slots; i++) {
+        expected.push_back(pushes[i]);
+    }
+
+    std::vector<T9RAtRisk> actual;
+    T9RAcc::drainStaticAnchorFifoForTest(2 * (int)kT9RFifoCap, actual);
+    EXPECT_LE(actual.size(), kT9RFifoCap) << "the FIFO cap was overshot";
+    std::map<u32, u32> per_class;
+    for (const T9RAtRisk &entry : actual) {
+        per_class[entry.klass_id]++;
+    }
+    for (const auto &kv : per_class) {
+        EXPECT_LE(kv.second, T9RAcc::kAtRiskPerKlassCap) << "class " << kv.first << " overshot";
+    }
+    ASSERT_EQ(expected.size(), actual.size());
+    for (size_t i = 0; i < expected.size(); i++) {
+        EXPECT_EQ(expected[i], actual[i].tag) << "FIFO position " << i;
+    }
+    T9RAcc::requeueStaticAnchorFifoFrontForTest(actual);
+}
+
+// After the overflow pass the rejected demotions were not performed; the retry pass walks the
+// requeued anchors first and delivers them.
+void t9RCheckRejectedDemotionsDeliveredOnRetry(ReferenceChainsMockHeap &f,
+                                               ReferenceChainTracker *tracker,
+                                               const T9RAtRiskScenario &s,
+                                               const std::vector<size_t> &walked_order) {
+    FrontierTable *frontier = tracker->frontierTable();
+    std::vector<bool> walked(kT9RDrain, false);
+    for (int w = 0; w < kT9RWalked; w++) {
+        walked[walked_order[w]] = true;
+    }
+    FrontierEntry entry{};
+    for (int i = 0; i < kT9RDrain; i++) {
+        for (int j = 0; j < 2; j++) {
+            ASSERT_TRUE(frontier->lookup(s.holder[i][j], &entry));
+            EXPECT_EQ(walked[i] ? s.anchor[i] : 0, entry.parent_tag)
+                << "anchor " << i << " holder " << j
+                << (walked[i] ? ": accepted demotion applied" : ": rejected demotion performed");
+        }
+    }
+    T9RJournalFill::reset(tracker);
+    f.jvmti_tbl.FollowReferences = &ReferenceChainsMockHeap::mock_FollowReferences;
+    f.gotw_resolution_order.clear();
+    T9RAcc::setRootEnumRawStateForTest(0, 0);
+    bool truncated = false;
+    ASSERT_TRUE(tracker->runPass(&f.mock_jvmti, &f.mock_jni, &truncated));
+    for (int i = 0; i < kT9RDrain; i++) {
+        for (int j = 0; j < 2; j++) {
+            ASSERT_TRUE(frontier->lookup(s.holder[i][j], &entry));
+            EXPECT_EQ(s.anchor[i], entry.parent_tag)
+                << "anchor " << i << " holder " << j << " not delivered by the retry";
+        }
+    }
+}
+
+std::vector<T9RAtRisk> t9RPushOlderEntries(const std::vector<std::pair<u32, u32>> &class_counts) {
+    std::vector<T9RAtRisk> older;
+    jlong tag = 5000;
+    for (const auto &cc : class_counts) {
+        for (u32 i = 0; i < cc.second; i++) {
+            T9RAcc::pushStaticAnchorFifoForTest(tag, cc.first);
+            older.push_back(T9RAtRisk{tag, cc.first});
+            tag++;
+        }
+    }
+    return older;
+}
+
+std::vector<size_t> t9RIdentityOrder() {
+    std::vector<size_t> order;
+    for (int i = 0; i < kT9RDrain; i++) {
+        order.push_back((size_t)i);
+    }
+    return order;
+}
+
+} // namespace
+
+// FIFO at its 1024 cap; the walk overflows after two anchors. The 14 unwalked anchors return to the
+// front (freeing exactly the slots the drain took), so the walked anchors' four deferred pushes
+// find room for only two; had they been replayed first, the requeue would overshoot the cap.
+TEST_F(ReferenceChainsBfsTest, AtRiskFullFifoPartialOverflowRequeuesBeforeDeferredPushes) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9RTestGuard guard(*this);
+
+    T9RAtRiskScenario s;
+    t9RBuildAtRiskScenario(*this, tracker, &s);
+    ASSERT_FALSE(HasFatalFailure());
+    // 15 classes at their quota plus a 16th at 48 fill the cap exactly behind the 16 anchors.
+    std::vector<std::pair<u32, u32>> classes;
+    for (u32 klass = 1; klass <= 15; klass++) {
+        classes.push_back({klass, T9RAcc::kAtRiskPerKlassCap});
+    }
+    classes.push_back({16, 48});
+    std::vector<T9RAtRisk> older = t9RPushOlderEntries(classes);
+    ASSERT_EQ(kT9RFifoCap, T9RAcc::staticAnchorFifoSizeForTest());
+
+    t9RRunOverflowPass(*this, tracker);
+    ASSERT_FALSE(HasFatalFailure());
+    t9RCheckRequeueBeforePushes(s, t9RIdentityOrder(), older, /*free_slots=*/2);
+    ASSERT_FALSE(HasFatalFailure());
+    t9RCheckRejectedDemotionsDeliveredOnRetry(*this, tracker, s, t9RIdentityOrder());
+}
+
+// Class 0 (the class of the walk's own pushes) sits at its quota behind the anchors. The requeue
+// restores the unwalked anchors' occupancy first, leaving two quota slots for four deferred pushes.
+TEST_F(ReferenceChainsBfsTest, AtRiskPerClassSaturationRequeuesBeforeDeferredPushes) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9RTestGuard guard(*this);
+
+    T9RAtRiskScenario s;
+    t9RBuildAtRiskScenario(*this, tracker, &s);
+    ASSERT_FALSE(HasFatalFailure());
+    std::vector<T9RAtRisk> older = t9RPushOlderEntries({{0, T9RAcc::kAtRiskPerKlassCap - kT9RDrain}});
+    ASSERT_EQ((size_t)T9RAcc::kAtRiskPerKlassCap, T9RAcc::staticAnchorFifoSizeForTest());
+
+    t9RRunOverflowPass(*this, tracker);
+    ASSERT_FALSE(HasFatalFailure());
+    // Quota 64 - (14 requeued + 48 older) = 2 free slots, FIFO cap far from binding.
+    t9RCheckRequeueBeforePushes(s, t9RIdentityOrder(), older, /*free_slots=*/2);
+}
+
+// GetObjectsWithTags reports the anchors in an order unrelated to the drain: the walk's cut-off
+// point follows the resolution order, but the requeue must keep the drained order.
+TEST_F(ReferenceChainsBfsTest, AtRiskRequeueKeepsDrainedOrderUnderShuffledResolution) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9RTestGuard guard(*this);
+
+    T9RAtRiskScenario s;
+    t9RBuildAtRiskScenario(*this, tracker, &s);
+    ASSERT_FALSE(HasFatalFailure());
+    std::vector<std::pair<u32, u32>> classes;
+    for (u32 klass = 1; klass <= 15; klass++) {
+        classes.push_back({klass, T9RAcc::kAtRiskPerKlassCap});
+    }
+    classes.push_back({16, 48});
+    std::vector<T9RAtRisk> older = t9RPushOlderEntries(classes);
+
+    const std::vector<size_t> shuffled = {9, 4, 14, 1, 12, 6, 0, 15, 3, 10, 7, 13, 2, 8, 5, 11};
+    ASSERT_EQ((size_t)kT9RDrain, shuffled.size());
+    gotw_resolution_order = shuffled;
+
+    t9RRunOverflowPass(*this, tracker);
+    ASSERT_FALSE(HasFatalFailure());
+    // Walked anchors are the first two RESOLVED (9 and 4), not the first two drained.
+    t9RCheckRequeueBeforePushes(s, shuffled, older, /*free_slots=*/2);
+    ASSERT_FALSE(HasFatalFailure());
+    t9RCheckRejectedDemotionsDeliveredOnRetry(*this, tracker, s, shuffled);
+}
+
+// Candidate-thread descent meeting a full journal on its second thread keeps the cursor on that
+// thread: the retry starts there, not at the thread after it.
+TEST_F(ReferenceChainsBfsTest, CandidateThreadWalkOverflowRetainsCursorOnCutShortThread) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    T9RTestGuard guard(*this);
+    FrontierTable *frontier = tracker->frontierTable();
+
+    void *threadCls = (void *)0x3201, *tlmapCls = (void *)0x3202, *loaderCls = (void *)0x3203;
+    int tlmapIdx = registerClassForFindClass(
+        tlmapCls, "java/lang/ThreadLocal$ThreadLocalMap", "Ljava/lang/ThreadLocal$ThreadLocalMap;");
+    registerClassForFindClass(loaderCls, "java/lang/ClassLoader", "Ljava/lang/ClassLoader;");
+    registerClassForFindClass(threadCls, "java/lang/Thread", "Ljava/lang/Thread;");
+    thread_class = threadCls;
+    T9RAcc::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+
+    int thread0 = addNode();
+    int thread1 = addNode();
+    int thread2 = addNode();
+    int tlmap = addNode();
+    int holder = addNode();
+    node_tags[holder] = 107;
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, thread1, tlmap, tlmapIdx},
+        {JVMTI_HEAP_REFERENCE_FIELD, tlmap, holder, -1},
+    };
+    // Thread 1 is admitted root-attached; threads 0 and 2 are minted on their walks. The durable
+    // holder under thread 1's ThreadLocalMap is what its walk demotes.
+    jlong anchor_tag = tracker->tagObject(
+        &mock_jvmti, reinterpret_cast<jobject>(&node_tags[thread1]));
+    ASSERT_GT(anchor_tag, 0);
+    node_tags[thread1] = anchor_tag;
+    ASSERT_TRUE(T9RAcc::insertFrontierEntry(frontier, anchor_tag, 0, 0, FrontierEntryState::FRONTIER,
+                                            (u8)JVMTI_HEAP_REFERENCE_THREAD));
+    ASSERT_TRUE(T9RAcc::insertFrontierEntry(frontier, 107, 0, 0, FrontierEntryState::FRONTIER,
+                                            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    jint tids[] = {777, 778, 779};
+    T9RAcc::seedCandidateSlotForTest(0, 6, tids, 3);
+    jobject objs[] = {reinterpret_cast<jobject>(&node_tags[thread0]),
+                      reinterpret_cast<jobject>(&node_tags[thread1]),
+                      reinterpret_cast<jobject>(&node_tags[thread2])};
+    for (int i = 0; i < 3; i++) {
+        tracker->registerThreadObject(&mock_jni, tids[i], reinterpret_cast<jthread>(objs[i]));
+    }
+
+    // The walk starts at thread 0 (accepted), and the journal fills before thread 1's walk.
+    T9RJournalFill::reset(tracker);
+    T9RJournalFill::seedHolder(tracker);
+    ASSERT_FALSE(HasFatalFailure());
+    T9RJournalFill::fill_on_follow_call = 1;
+    jvmti_tbl.FollowReferences = &t9RFollow;
+    int edges = 0;
+    T9RAcc::walkCandidateThreadLocalsForTest(&mock_jvmti, &mock_jni, 1000, &edges);
+    ASSERT_EQ(AnchorObservationBuffer::CAPACITY, T9RJournalFill::count_after_fill);
+    ASSERT_EQ(2u, T9RJournalFill::follow_seeds.size()) << "the group must stop at the cut-short thread";
+    EXPECT_EQ(objs[0], T9RJournalFill::follow_seeds[0]);
+    EXPECT_EQ(objs[1], T9RJournalFill::follow_seeds[1]);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(0, entry.parent_tag) << "the rejected demotion must not be performed";
+    EXPECT_EQ(0, T9RAcc::getTagForTest(&mock_jvmti, objs[2]));
+
+    // The retry resumes at thread 1 (a cursor advanced past it would start at thread 2).
+    jvmti_tbl.FollowReferences = &t9RFollow;
+    T9RJournalFill::reset(tracker);
+    edges = 0;
+    T9RAcc::walkCandidateThreadLocalsForTest(&mock_jvmti, &mock_jni, 1000, &edges);
+    ASSERT_GE(T9RJournalFill::follow_seeds.size(), 2u);
+    EXPECT_EQ(objs[1], T9RJournalFill::follow_seeds[0]) << "cursor must stay on the cut-short thread";
+    EXPECT_EQ(objs[2], T9RJournalFill::follow_seeds[1]);
+    ASSERT_TRUE(frontier->lookup(107, &entry));
+    EXPECT_EQ(tags_ever_assigned[tlmap], entry.parent_tag)
+        << "the retried descent delivers the rejected demotion";
+}
+
+TEST_F(ReferenceChainsBfsTest, LocalAnchorTagsStayIndexedAcrossDurableEviction) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong local_class = -3101;
+    const jlong local_tag = 20001;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(local_class, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, local_tag, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::noteLocalRootHolderForTest(local_tag,
+                                                             local_class);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::localAnchorTagsAreIndexedForTest());
+
+    const size_t durable_cap =
+        ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const size_t evict_batch =
+        ReferenceChainsTestAccessor::kDurableAnchorEvictBatch;
+    for (size_t i = 0; i < durable_cap + evict_batch + 1; i++) {
+        jlong tag = 30000 + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, -3200, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+        local_tag));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::localAnchorTagsAreIndexedForTest());
+
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        local_tag, local_class, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::localAnchorCountForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexContainsForTest(
+        local_tag));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::localAnchorTagsAreIndexedForTest());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationUsesIndexCapacityAfterFreshQueueDrains) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3301;
+    constexpr int anchor_count = 20;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    for (int i = 0; i < anchor_count; i++) {
+        jlong tag = 40000 + i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+
+    for (int i = 0; i < anchor_count - 1; i++) {
+        std::vector<jlong> first_look =
+            ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+                1);
+        ASSERT_EQ(1u, first_look.size());
+    }
+    ASSERT_EQ(1u,
+              ReferenceChainsTestAccessor::freshAnchorQueueSizeForTest());
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    EXPECT_EQ(16u, selected.size());
+
+    tracker->stop();
+}
+
+// The fresh lane is capped at half the post-leak budget; with a positive budget the queue keeps
+// its entries' FIFO turns across passes (nothing jumps the queue).
+TEST_F(ReferenceChainsBfsTest, FreshBudgetExhaustionKeepsNextTurnForLater) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3302;
+    const jlong first = 41001;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    for (jlong tag = first; tag < first + 3; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+
+    EXPECT_EQ((std::vector<jlong>{first}),
+              ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+                  1));
+    EXPECT_EQ((std::vector<jlong>{first + 1, first + 2}),
+              ReferenceChainsTestAccessor::freshQueueTagsForTest());
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            2);
+    ASSERT_EQ(2u, selected.size());
+    EXPECT_NE(std::find(selected.begin(), selected.end(), first + 1),
+              selected.end());
+    EXPECT_NE(std::find(selected.begin(), selected.end(), first),
+              selected.end());
+    EXPECT_EQ((std::vector<jlong>{first + 2}),
+              ReferenceChainsTestAccessor::freshQueueTagsForTest());
+
+    FrontierEntry picked{};
+    ASSERT_TRUE(frontier->lookup(first + 1, &picked));
+    // Selection no longer spends a picked anchor's first look: the walk does (post-descent).
+    // first+1 was picked here but never walked (this test drives the collector alone), so its
+    // pending turn is intact.
+    EXPECT_NE(0, picked.anchor_rotation_flags &
+                     FrontierAnchorRotation::FIRST_LOOK_PENDING);
+    EXPECT_EQ(0, picked.anchor_rotation_flags &
+                     FrontierAnchorRotation::FIRST_LOOK_SERVED);
+
+    tracker->stop();
+}
+
+// When the leak tier saturates the whole selection budget, the fresh lane gets no budget: queued
+// entries would never pop and never receive fair-tier budget, so they spend their first looks at
+// that point (old queue.clear() semantics) and fall back to the fair tiers once the leak tier
+// ebbs.
+TEST_F(ReferenceChainsBfsTest, LeakSaturatedBudgetSpendsQueuedFirstLooks) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3304;
+    const jlong first = 43001;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    // The fresh lane's queued containers.
+    for (jlong tag = first; tag < first + 3; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    // Leak-tagged anchors saturating the selection budget.
+    for (jlong tag = first + 100; tag < first + 120; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        frontier->setLeakTag(tag, 777, /*leak_tag_incarnation=*/0);
+    }
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    ASSERT_EQ(16u, selected.size());
+    for (jlong tag : selected) {
+        EXPECT_GE(tag, first + 100) << "only leak-tier picks fit the saturated budget";
+    }
+    // The queued containers spent their first looks at the saturated pass and left the queue.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshQueueTagsForTest().empty());
+    for (jlong tag = first; tag < first + 3; tag++) {
+        FrontierEntry spent{};
+        ASSERT_TRUE(frontier->lookup(tag, &spent));
+        EXPECT_EQ(0, spent.anchor_rotation_flags &
+                         FrontierAnchorRotation::FIRST_LOOK_PENDING);
+        EXPECT_NE(0, spent.anchor_rotation_flags &
+                         FrontierAnchorRotation::FIRST_LOOK_SERVED);
+    }
+
+    // Once the leak tier ebbs, the spent entries are selected through the fair tiers.
+    for (jlong tag = first + 100; tag < first + 120; tag++) {
+        frontier->setLeakTag(tag, 0, /*leak_tag_incarnation=*/0);
+    }
+    std::vector<jlong> after =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    for (jlong tag = first; tag < first + 3; tag++) {
+        EXPECT_NE(std::find(after.begin(), after.end(), tag), after.end())
+            << "the spent first look must fall back to the fair tiers";
+    }
+
+    tracker->stop();
+}
+
+// An entry evicted from the durable index has no fair-tier fallback: the saturated pass must keep
+// its queued turn instead of spending it, so the fresh lane can still walk it once the leak tier
+// ebbs.
+TEST_F(ReferenceChainsBfsTest, LeakSaturatedBudgetKeepsEvictedQueuedTurns) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3305;
+    const jlong evicted = 43101;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, evicted, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        evicted, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ReferenceChainsTestAccessor::evictStaticAnchorIndexEntryForTest(evicted);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(evicted));
+
+    // Leak-tagged anchors saturate the selection budget.
+    for (jlong tag = evicted + 100; tag < evicted + 120; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        frontier->setLeakTag(tag, 777, /*leak_tag_incarnation=*/0);
+    }
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    ASSERT_EQ(16u, selected.size());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(evicted))
+        << "the evicted entry keeps its queued turn through the saturated pass";
+
+    // Once the leak tier ebbs, the fresh lane walks the evicted holder's queued turn.
+    for (jlong tag = evicted + 100; tag < evicted + 120; tag++) {
+        frontier->setLeakTag(tag, 0, /*leak_tag_incarnation=*/0);
+    }
+    std::vector<jlong> after =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    EXPECT_NE(std::find(after.begin(), after.end(), evicted), after.end())
+        << "the kept turn is spent by the fresh lane, not lost";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshQueueTagsForTest().empty());
+
+    tracker->stop();
+}
+
+// A fair-tier pick whose holder still sits in the fresh queue must not strand the queued first
+// look: the selection hands the queue entry to the caller's requeue path alongside the
+// fresh-lane picks.
+TEST_F(ReferenceChainsBfsTest, FairTierPickRestoresItsQueuedFirstLook) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong leak_class_tag = -3306;
+    const jlong container_class_tag = -3307;
+    const jlong fresh_pick = 43201;
+    const jlong deep = 43202;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(leak_class_tag, true);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(container_class_tag, true);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, fresh_pick, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        fresh_pick, container_class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    // Deeper in the fresh queue, selected by the container tier before the fresh lane reaches it.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, deep, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        deep, container_class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    const jlong leak_anchor = 43301;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, leak_anchor, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        leak_anchor, leak_class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    frontier->setLeakTag(leak_anchor, 778, /*leak_tag_incarnation=*/0);
+
+    std::vector<ReferenceChainsTestAccessor::FreshAnchor> fresh_picked;
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            3, &fresh_picked);
+    ASSERT_EQ(3u, selected.size());
+    // The fresh lane spent its whole room on the queue's head entry; the deep entry's selection
+    // came from the container tier while it was still queued. Every selected tag's queue entry
+    // is handed to the caller's requeue path - the leak pick's too - so an unwalked selection
+    // keeps its queued turn for the next pass.
+    ASSERT_EQ(3u, fresh_picked.size());
+    EXPECT_EQ(fresh_pick, fresh_picked[0].tag);
+    EXPECT_EQ(deep, fresh_picked[1].tag);
+    EXPECT_EQ(container_class_tag, fresh_picked[1].own_class_tag);
+    EXPECT_EQ(leak_anchor, fresh_picked[2].tag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshQueueTagsForTest().empty());
+
+    tracker->stop();
+}
+
+// A fresh pick's first look is consumed by the WALK, not the selection: a pick the caller never
+// walked (budget exhausted before its descent, or unwalked mid-batch) is requeued to the fresh
+// queue's front with its pending turn intact.
+TEST_F(ReferenceChainsBfsTest, UnwalkedFreshPicksKeepTheirQueuedTurn) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong class_tag = -3303;
+    const jlong first = 42001;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag, true);
+    for (jlong tag = first; tag < first + 6; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+
+    std::vector<ReferenceChainsTestAccessor::FreshAnchor> fresh_picked;
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            4, &fresh_picked);
+    // 2 fresh-lane picks (half the post-leak budget); the fair container tier fills the rest of
+    // the selection from the index (it may pick a still-queued entry - the fresh queue is not
+    // exclusive). The fair picks' queue entries are handed to the caller's requeue path with the
+    // lane picks, so an unwalked fair pick keeps its queued turn.
+    ASSERT_EQ(4u, selected.size());
+    ASSERT_EQ(4u, fresh_picked.size());
+    EXPECT_EQ(first, fresh_picked[0].tag);
+    EXPECT_EQ(class_tag, fresh_picked[0].own_class_tag);
+    EXPECT_EQ(first + 2, fresh_picked[2].tag);
+    EXPECT_EQ(first + 3, fresh_picked[3].tag);
+    // Selection alone must not spend the picks' first look.
+    for (jlong tag : selected) {
+        FrontierEntry entry{};
+        ASSERT_TRUE(frontier->lookup(tag, &entry));
+        EXPECT_NE(0, entry.anchor_rotation_flags &
+                         FrontierAnchorRotation::FIRST_LOOK_PENDING);
+        EXPECT_EQ(0, entry.anchor_rotation_flags &
+                         FrontierAnchorRotation::FIRST_LOOK_SERVED);
+    }
+    // The fresh lane had budget, so the entries beyond the picks and the fair tier's share KEEP
+    // their queued turns (no spending without a walk when the lane is not starved).
+    EXPECT_EQ((std::vector<jlong>{first + 4, first + 5}),
+              ReferenceChainsTestAccessor::freshQueueTagsForTest());
+    FrontierEntry queued{};
+    ASSERT_TRUE(frontier->lookup(first + 4, &queued));
+    EXPECT_NE(0, queued.anchor_rotation_flags &
+                     FrontierAnchorRotation::FIRST_LOOK_PENDING);
+
+    // The caller requeues the pick whose walk never happened; the queue keeps its turn at the
+    // front, ahead of the not-yet-popped entries, with its pending flag intact.
+    ReferenceChainsTestAccessor::requeueStaticAnchorFreshFrontForTest(
+        std::vector<ReferenceChainsTestAccessor::FreshAnchor>{fresh_picked[1]});
+    EXPECT_EQ((std::vector<jlong>{fresh_picked[1].tag, first + 4, first + 5}),
+              ReferenceChainsTestAccessor::freshQueueTagsForTest());
+
+    tracker->stop();
+}
+
+// A queued first look carries the enqueue-time class tag; the index's stored tag is the
+// authority at pop time. A holder indexed before its class resolved (stored 0, later upgraded)
+// must not be rejected by the stale carried tag: after reparenting, isSelectableAnchor() judged
+// on the stale tag spends the holder's only queued turn on an otherwise eligible container.
+TEST_F(ReferenceChainsBfsTest, FreshLanePopUsesIndexClassTagForQueuedEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    const jlong tag = 43501;
+    const jlong resolved_class = -3310;
+    // Reparented holder: parent_tag != 0, so isSelectableAnchor() needs the class shape.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, tag, 999, 1, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::primeClassShapeForTest(resolved_class, true);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        tag, 0, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+    ReferenceChainsTestAccessor::indexAnchorForRotationForTest(tag, resolved_class);
+    ASSERT_EQ(resolved_class, ReferenceChainsTestAccessor::indexedAnchorClassTagForTest(tag));
+    // The first index admission queued the holder with the admission-time tag 0; the stored
+    // index tag has since been upgraded to the resolved class.
+
+    std::vector<ReferenceChainsTestAccessor::FreshAnchor> fresh_picked;
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            1, &fresh_picked);
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(tag, selected[0]);
+    ASSERT_EQ(1u, fresh_picked.size());
+    EXPECT_EQ(tag, fresh_picked[0].tag);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::freshQueueTagsForTest().empty());
+
+    tracker->stop();
+}

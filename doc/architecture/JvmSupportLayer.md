@@ -281,12 +281,29 @@ Caveats:
   and `selectWallEngine` choose `J9WallClock` (the JVMTI path) when any of these
   holds:
   - `J9Support::shouldUseAsgct()` is false. The system property
-    `dd.profiling.ddprof.j9.sampler` set to `jvmti` makes it false
-    (`j9/j9Support.h:108-126`).
+    `dd.profiling.ddprof.j9.sampler` set to `jvmti` makes it false.
   - `J9Support::can_use_ASGCT()` is false. J9's ASGCT is not
     async-signal-safe before OpenJ9 0.51, so the profiler requires at least
-    8u451, 11.0.27, 17.0.15, or 21.0.7 (`j9/j9Support.h:88-100`).
+    8u451, 11.0.27, 17.0.15, or 21.0.7. It rejects every other J9 major version.
   - For wall clock only: `wallsampler=jvmti` is set.
+
+  An explicit CPU event (`event=itimer`, `ctimer` or a perf event) without a
+  `cpu=` interval skips these checks and uses ASGCT.
+- **J9 sampler warnings.** Each selection function reports why it chose, as a
+  `SamplerChoice`. Before `_jfr.start()`, `Profiler::start()` passes both
+  choices to `J9Support::reportSamplerRisks()`, which prints a
+  `[ddprof] [WARN]` line to stderr in two cases:
+  - ASGCT is in use and `J9Support::isAsgctDeadlockProneVersion()` is true. On
+    OpenJ9 0.60 and IBM SDK 8 SR8 FP70 to FP74, ASGCT can take a JIT monitor
+    that the interrupted thread holds, and the JVM deadlocks. The profiler
+    keeps ASGCT. The warning recommends an upgrade, or
+    `-Ddd.profiling.ddprof.j9.sampler=jvmti`. With an explicit CPU event, the
+    property needs a `cpu=` interval or `event=cpu` as well.
+  - `can_use_ASGCT()` replaced ASGCT with the JVMTI sampler.
+
+  The recording setting `j9AsgctDeadlockRisk` is true only in the first case.
+  It follows the selected engine, so it stays true if that engine then fails to
+  start.
 - **`J9WallClock` names itself by mode.** In CPU mode `name()` is
   `J9Execution` and it skips threads that are not RUNNABLE. In wall mode it
   calls `sampleIdleThreads()`, `name()` becomes `J9WallClock`, and every thread

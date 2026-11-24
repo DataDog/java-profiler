@@ -386,8 +386,18 @@ public:
   void **findImport(ImportId id, size_t index = 0);
   bool patchImport(ImportId, void *hook_func);
   // Import lookup without making the library writable.
-  void **peekImport(ImportId id);
+  void **peekImport(ImportId id) { return peekImport(id, 0); }
+  // Slot `index` of an import, same order as findImport(); NULL past importCount(id).
+  // Never makes the GOT writable.
+  void **peekImport(ImportId id, size_t index);
   bool makeImportsWritable() { return makeImportsPatchable(); }
+
+#ifdef UNIT_TEST
+  // Whether makeImportsWritable() has already switched this cache's import
+  // slots to writable. Read-only observation for tests; compiled only into
+  // gtest binaries.
+  bool importsPatchableForTest() const { return _imports_patchable; }
+#endif
 
   CodeBlob *findBlob(const char *name);
   CodeBlob *findBlobByAddress(const void *address);
