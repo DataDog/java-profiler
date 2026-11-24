@@ -114,14 +114,14 @@ public class TaskBlockMonitorBenchmark {
     if ("contended".equals(benchmark)) {
       check(tooShort > 0, benchmark + " never reached the duration check");
     } else if ("pingPong".equals(benchmark)) {
-      // Each operation waits at most once and may also contend once; both are short.
-      checkBetween("pingPong events", tooShort + emitted, ops / 4, 2 * ops + SLACK);
+      // An operation can wake early and wait again, plus contend once: at most 3 events.
+      checkBetween("pingPong events", tooShort + emitted, ops / 4, 3 * ops + SLACK);
     } else if ("timedWait".equals(benchmark)) {
       check(emitted * 2 >= ops, benchmark + " emitted " + emitted + " of " + ops);
     } else if ("contendedLong".equals(benchmark)) {
-      // Holds are the only long blocks: the holder is excluded, so the waiter emits at most one
-      // event per hold.
-      checkBetween("emitted", emitted, holds.get() / 2, holds.get() + SLACK);
+      // The holder is excluded, so the waiter emits at most once per hold. Monitors are unfair,
+      // so the waiter may miss holds; the low bound only proves it was not silent.
+      checkBetween("emitted", emitted, holds.get() / 8, holds.get() + SLACK);
     }
   }
 
@@ -141,7 +141,9 @@ public class TaskBlockMonitorBenchmark {
     }
   }
 
-  /** Marks the holder's JMH worker thread ineligible once, so its own blocking cannot count. */
+  /**
+   * Makes the holder's JMH worker thread ineligible for the trial, so its blocking cannot count.
+   */
   @State(Scope.Thread)
   public static class HolderThread {
     private boolean excluded;
@@ -149,8 +151,16 @@ public class TaskBlockMonitorBenchmark {
     void exclude(TaskBlockMonitorBenchmark benchmark) {
       if (!excluded && benchmark.recording.taskBlockActive()) {
         TaskBlockBenchmarkSupport.excludeFromTaskBlock(benchmark.profiler);
+        excluded = true;
       }
-      excluded = true;
+    }
+
+    @TearDown(Level.Trial)
+    public void include(TaskBlockMonitorBenchmark benchmark) {
+      if (excluded) {
+        benchmark.profiler.clearTraceContext();
+      }
+      excluded = false;
     }
   }
 
