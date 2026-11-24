@@ -1468,4 +1468,66 @@ TEST_F(ElfTest, dynamicSectionStopsAtDtNull) {
     EXPECT_EQ(cc.peekImport(im_pthread_create), reinterpret_cast<void**>(image + PLT_SLOT));
 }
 
+// A PT_DYNAMIC with p_vaddr == 0 in an ET_EXEC image resolves to address 0; the
+// parser must skip it instead of reading dyn[0] from there.
+TEST_F(ElfTest, dynamicSectionNullVaddr) {
+    auto mem = buildPltImage([] { auto d = pltDyn(); d.push_back({DT_NULL, {0}}); return d; }());
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    Elf64_Ehdr e;
+    memcpy(&e, image, sizeof(e));
+    e.e_type = ET_EXEC;
+    memcpy(image, &e, sizeof(e));
+    Elf64_Phdr ph[DYN_NPH];
+    memcpy(ph, image + sizeof(Elf64_Ehdr), sizeof(ph));
+    ph[0].p_vaddr = reinterpret_cast<uintptr_t>(image);  // PT_LOAD sets the base to 0
+    ph[1].p_vaddr = 0;
+    memcpy(image + sizeof(Elf64_Ehdr), ph, sizeof(ph));
+
+    // A fault at address 0 would end the test process.
+    EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
+}
+
+// Without DT_STRSZ the fingerprint cannot cover the image (it is 0), so the
+// parser must load neither imports nor symbols from it. With DT_STRSZ restored
+// the same image yields both, so the checks below can fail.
+TEST_F(ElfTest, dynamicSectionMissingStrsz) {
+    constexpr uint64_t HASH_OFF = 0xc00;
+    constexpr uint64_t SYM_VALUE = 0x100;
+    const uint32_t hash[] = {1, 2, 0, 0, 0};  // nbucket, nchain (= symbol count), bucket, chain
+    static_assert(HASH_OFF >= DYN_JMPREL_OFF + sizeof(Elf64_Rela), "hash table overlaps the image data");
+    static_assert(HASH_OFF + sizeof(hash) <= DYN_IMAGE_SIZE, "hash table outside the image");
+
+    for (bool with_strsz : {false, true}) {
+        auto dyn = pltDyn();
+        if (!with_strsz) {
+            dyn.erase(std::remove_if(dyn.begin(), dyn.end(), [](const Elf64_Dyn& d) { return d.d_tag == DT_STRSZ; }),
+                      dyn.end());
+        }
+        dyn.push_back({DT_HASH, {HASH_OFF}});
+        dyn.push_back({DT_NULL, {0}});
+        auto mem = buildPltImage(dyn);
+        ASSERT_THAT(mem.get(), ::testing::NotNull());
+        char* image = static_cast<char*>(mem.get());
+        memcpy(image + HASH_OFF, hash, sizeof(hash));
+        Elf64_Sym sym;
+        memcpy(&sym, image + DYN_SYM_OFF + sizeof(Elf64_Sym), sizeof(sym));
+        sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
+        sym.st_shndx = 1;
+        sym.st_value = SYM_VALUE;
+        sym.st_size = 4;
+        memcpy(image + DYN_SYM_OFF + sizeof(Elf64_Sym), &sym, sizeof(sym));
+
+        CodeCache cc("inmem");
+        ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+        if (with_strsz) {
+            EXPECT_EQ(cc.peekImport(im_pthread_create), reinterpret_cast<void**>(image + PLT_SLOT));
+            EXPECT_EQ(cc.findSymbol("pthread_create"), static_cast<const void*>(image + SYM_VALUE));
+        } else {
+            EXPECT_EQ(cc.peekImport(im_pthread_create), nullptr);
+            EXPECT_EQ(cc.findSymbol("pthread_create"), nullptr);
+        }
+    }
+}
+
 #endif //__linux__

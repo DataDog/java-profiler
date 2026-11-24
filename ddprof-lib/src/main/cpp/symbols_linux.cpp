@@ -650,6 +650,11 @@ void ElfParser::parseDynamicSection() {
         uint32_t nsyms = 0;
 
         const char* dyn_start = at(dynamic);
+        // p_vaddr == 0 with a null base (ET_EXEC, or no load bias) puts the table at
+        // address 0; only a corrupt or crafted image has that.
+        if (dyn_start == NULL) {
+            return;
+        }
         // Whole entries only: a p_memsz that is not a multiple of sizeof(ElfDyn)
         // must not make the loop read a partial one.
         size_t dyn_count = dynamic->p_memsz / sizeof(ElfDyn);
@@ -718,15 +723,12 @@ void ElfParser::parseDynamicSection() {
             return;
         }
 
-        // DT_STRSZ is required by the ELF spec whenever DT_STRTAB is present.
-        // When it is absent (strsz == 0) all string lookups via strAt() would
-        // be rejected, silently dropping every symbol. Cap to 1 MB: real dynamic
-        // string tables are well under that, and live linker memory guarantees
-        // NUL termination, so memchr will always find a terminator before the cap.
+        // The ELF spec requires DT_STRSZ with DT_STRTAB. Without it no string can be
+        // bounds-checked, so load neither symbols nor imports from the image.
         if (strsz == 0) {
-            Log::warn("DT_STRSZ absent from dynamic section in %s; capping string-table scan to 1 MB",
+            Log::warn("DT_STRSZ absent from dynamic section in %s; ignoring its symbols and imports",
                       _file_name != NULL ? _file_name : "unknown");
-            strsz = 1u << 20;
+            return;
         }
 
         if (!_cc->hasDebugSymbols() && nsyms > 0) {
@@ -1459,6 +1461,7 @@ static bool hashImportLayout(const LoadedImage& image, u64& hash) {
     }
     // ElfParser::parseDynamicSection() records no imports without these.
     if (symtab == 0 || strtab == 0 || syment == 0) return true;
+    // ElfParser::parseDynamicSection() skips an image without DT_STRSZ as well.
     if (strsz == 0 || !image.readable(strtab, strsz)) return false;
 
     // Same tables and entry sizes as parseDynamicSection(). Entries smaller than
