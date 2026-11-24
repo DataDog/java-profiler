@@ -74,7 +74,10 @@ tasks.named<Jar>("jmhJar") {
 // runs under a dd-java-agent.jar patched with the locally built ddprof.jar.
 
 sourceSets {
-  create("chaos")
+  create("chaos") {
+    // Compile-only: chaos reads just the inlined OSTHREAD_STATE_SLEEPING constant.
+    compileClasspath += sourceSets["jmh"].output
+  }
   create("chaosTest") {
     compileClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output
     runtimeClasspath += sourceSets["chaos"].output + sourceSets["jmh"].output

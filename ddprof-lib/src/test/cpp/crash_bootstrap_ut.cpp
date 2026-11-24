@@ -726,3 +726,83 @@ TEST(CrashBootstrapTest, ThreadEndMarkedSamplerFaultIsNotAdmitted) {
         _exit(157);
     }, ::testing::ExitedWithCode(0), "");
 }
+
+namespace {
+static void markAdmitted() {
+    char entry = 'A';
+    if (write(entry_pipe, &entry, 1) != 1) _exit(160);
+}
+
+// Raises signal in a child with the given address range and reports, through
+// the pipe, every TLS bootstrap ('E') and crash-handler admission ('A').
+static void runPrefilterChild(int signal, uintptr_t min, uintptr_t max, int* entry_count,
+                              int* admit_count, int* status) {
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+    pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        close(fds[0]);
+        entry_pipe = fds[1];
+        disableCoreForTest();
+        alarm(5);
+        ProfiledThread::initCurrentThread();
+        installHandlers();
+        Profiler::setAddressRangeForTest(min, max);
+        SignalHandlerScope::bootstrapHookForTest = markBootstrap;
+        Profiler::crashHandlerAdmittedForTest = markAdmitted;
+        raise(signal);
+        _exit(0);
+    }
+    close(fds[1]);
+    char events[16];
+    int count = 0;
+    ssize_t size;
+    while ((size = read(fds[0], events + count, sizeof(events) - count)) > 0) count += size;
+    close(fds[0]);
+    ASSERT_EQ(child, waitpid(child, status, 0));
+    *entry_count = 0;
+    *admit_count = 0;
+    for (int i = 0; i < count; ++i) {
+        *entry_count += events[i] == 'E';
+        *admit_count += events[i] == 'A';
+    }
+}
+
+// raise() faults inside libc, so [1, 2) excludes the PC and [1, max) covers it.
+static void expectForeignFaultChains(int signal) {
+    int entry_count = -1, admit_count = -1, status = 0;
+    runPrefilterChild(signal, 1, 2, &entry_count, &admit_count, &status);
+    EXPECT_EQ(0, entry_count) << "foreign fault must not bootstrap TLS";
+    EXPECT_EQ(0, admit_count) << "foreign fault must not reach crashHandlerInternal";
+    ASSERT_TRUE(WIFSIGNALED(status)) << "child status=" << status;
+    EXPECT_EQ(signal, WTERMSIG(status));
+}
+
+static void expectOwnedFaultAdmitted(int signal, uintptr_t min, uintptr_t max) {
+    int entry_count = -1, admit_count = -1, status = 0;
+    runPrefilterChild(signal, min, max, &entry_count, &admit_count, &status);
+    EXPECT_EQ(1, entry_count);
+    EXPECT_EQ(1, admit_count);
+    ASSERT_TRUE(WIFEXITED(status)) << "child status=" << status;
+    EXPECT_EQ(0, WEXITSTATUS(status));
+}
+}
+
+TEST(CrashBootstrapTest, PrefilterChainsSegvOutsideProfilerRange) {
+    expectForeignFaultChains(SIGSEGV);
+}
+
+TEST(CrashBootstrapTest, PrefilterChainsBusOutsideProfilerRange) {
+    expectForeignFaultChains(SIGBUS);
+}
+
+TEST(CrashBootstrapTest, PrefilterAdmitsFaultInsideProfilerRange) {
+    expectOwnedFaultAdmitted(SIGSEGV, 1, UINTPTR_MAX);
+    expectOwnedFaultAdmitted(SIGBUS, 1, UINTPTR_MAX);
+}
+
+TEST(CrashBootstrapTest, PrefilterAdmitsFaultWhileRangeUnknown) {
+    expectOwnedFaultAdmitted(SIGSEGV, 0, 0);
+    expectOwnedFaultAdmitted(SIGBUS, 0, 0);
+}

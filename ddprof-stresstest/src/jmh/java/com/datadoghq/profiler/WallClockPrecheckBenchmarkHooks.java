@@ -9,9 +9,12 @@ package com.datadoghq.profiler;
 public final class WallClockPrecheckBenchmarkHooks {
   private WallClockPrecheckBenchmarkHooks() {}
 
+  /** Native {@code OSThreadState::SLEEPING} (ddprof-lib/src/main/cpp/threadState.h). */
+  public static final int OSTHREAD_STATE_SLEEPING = 7;
+
   /** Marks the current benchmark worker as entering an owned sleeping interval. */
   public static long enterSleeping(JavaProfiler profiler) {
-    return profiler.blockEnter(7);
+    return profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
   }
 
   /** Closes an interval returned by {@link #enterSleeping(JavaProfiler)}. */

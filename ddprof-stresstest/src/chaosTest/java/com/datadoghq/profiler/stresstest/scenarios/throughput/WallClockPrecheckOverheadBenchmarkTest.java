@@ -4,12 +4,16 @@
  */
 package com.datadoghq.profiler.stresstest.scenarios.throughput;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.JavaProfiler;
 import java.lang.reflect.Field;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
@@ -82,6 +86,50 @@ class WallClockPrecheckOverheadBenchmarkTest {
         });
     IllegalStateException failure = assertThrows(IllegalStateException.class, benchmark::setup);
     assertTrue(failure.getCause().getMessage().contains("returned no token"), failure.toString());
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void stuckWorkerStillStopsProfilerAndDeletesRecording() throws Exception {
+    WallClockPrecheckOverheadBenchmark benchmark = benchmark(false);
+    CountDownLatch release = new CountDownLatch(1);
+    Thread stuck = new Thread(() -> awaitQuietly(release), "stuck-benchmark-worker");
+    stuck.setDaemon(true);
+    try {
+      benchmark.setup();
+      Path recording = (Path) field("recording").get(benchmark);
+      assertTrue(Files.exists(recording));
+      stuck.start();
+      ((List<Thread>) field("workers").get(benchmark)).add(stuck);
+      IllegalStateException failure =
+          assertThrows(IllegalStateException.class, benchmark::tearDown);
+      assertTrue(failure.getMessage().contains("did not exit"), failure.toString());
+      assertEquals(
+          Boolean.getBoolean("ddprof_test.keep_jfrs"),
+          Files.exists(recording),
+          "recording must be deleted unless kept");
+      assertThrows(
+          IllegalStateException.class,
+          JavaProfiler.getInstance()::stop,
+          "profiler must already be stopped");
+    } finally {
+      release.countDown();
+      stuck.join();
+    }
+  }
+
+  private static void awaitQuietly(CountDownLatch latch) {
+    try {
+      latch.await();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private static Field field(String name) throws Exception {
+    Field field = WallClockPrecheckOverheadBenchmark.class.getDeclaredField(name);
+    field.setAccessible(true);
+    return field;
   }
 
   private static WallClockPrecheckOverheadBenchmark benchmark(boolean precheck) {

@@ -180,6 +180,10 @@ public:
     static unsigned tidIndexBucketForTest(int tid) {
         return hashTid(tid) & kTidIndexMask;
     }
+    // Makes the next tid-index allocation fail as if new (std::nothrow) returned null.
+    void setTidIndexAllocationFailureForTest(bool fail) {
+        _tid_index_allocation_failure_for_test = fail;
+    }
 
     // Invoked by registerThread() immediately before _registry_lock is
     // acquired, once the pre-lock _registry_active and capacity checks have
@@ -318,6 +322,7 @@ private:
     mutable std::atomic<unsigned> _tid_index_probes_for_test{0};
     PostActiveCheckHook _post_active_check_hook = nullptr;
     void* _post_active_check_hook_arg = nullptr;
+    bool _tid_index_allocation_failure_for_test = false;
 #endif
 
     // Cache line aligned to prevent false sharing between shards
@@ -349,7 +354,8 @@ private:
     bool indexOrRollback(Slot& slot, SlotID slot_id, int tid);
     void refreshSlotForRecording(SlotID slot_id, Slot* slot, RecordingEpoch epoch,
                                   u64 logical_window_state);
-    void ensureTidIndexLocked();
+    // False if the index could not be allocated; it then stays null.
+    bool ensureTidIndexLocked();
     void enqueueRetired(SlotID slot_id, Slot* slot);
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
     SlotID lookupSlotIdByTid(int tid, int probe_budget = kTidIndexSize) const;
