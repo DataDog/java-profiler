@@ -19,9 +19,11 @@
 #define _J9_J9SUPPORT_H
 
 #include <jvmti.h>
+#include <string>
 
 #include "frame.h"
 #include "log.h"
+#include "samplerChoice.h"
 #include "vmEntry.h"
 
 #define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
@@ -71,6 +73,17 @@ static inline int sanitizeJ9FrameType(jint j9_type) {
   return FRAME_JIT_COMPILED;
 }
 
+struct J9SamplerRisk {
+  bool deadlock_risk;   // ASGCT in use on a deadlock-prone J9 build
+  bool gated_fallback;  // the version gate replaced ASGCT with the JVMTI sampler
+};
+
+/** Version properties that identify the J9 build; empty when unavailable. */
+struct J9VersionProps {
+  std::string vm_version;
+  std::string runtime_version;
+};
+
 class J9Support {
   friend class JVMThread;
   friend class J9WallClock;
@@ -93,6 +106,8 @@ public:
     // Fixed upstream in eclipse-openj9/openj9#20577 (0.51, April 2025 refresh):
     //   JDK 8u451 (IBM SDK SR8 FP45) / 8u452 (IBM Semeru), JDK 11.0.27,
     //   JDK 17.0.15, JDK 21.0.7
+    // OpenJ9 0.60 has a different ASGCT self-deadlock that this
+    // gate does not reject: see isAsgctDeadlockProneVersion().
     return (VM::java_version() == 8 && VM::java_update_version() >= 451) ||
            (VM::java_version() == 11 && VM::java_update_version() >= 27) ||
            (VM::java_version() == 17 && VM::java_update_version() >= 15) ||
@@ -126,6 +141,26 @@ public:
   }
 
   static bool initialize(jvmtiEnv *jvmti, const void *j9thread_self);
+
+  // True for J9 builds whose ASGCT re-takes a JIT monitor held by the thread it
+  // interrupted and self-deadlocks: OpenJ9 0.60 (fixed in 0.61) and IBM SDK 8
+  // SR8 FP70-FP74 (fixed in FP75). Null or unparseable input is unaffected.
+  static bool isAsgctDeadlockProneVersion(const char *vm_version,
+                                          const char *runtime_version);
+
+  // java.runtime.version is read through JNI because OpenJ9's JVMTI only sees
+  // VM-defined properties and Java code sets that one. jni must be the calling
+  // thread's env; a null jvmti or jni leaves the property it reads empty.
+  static J9VersionProps readVersionProps(jvmtiEnv *jvmti, JNIEnv *jni);
+
+  static J9SamplerRisk assessSamplers(SamplerChoice cpu, SamplerChoice wall,
+                                      bool deadlock_prone);
+
+  // Prints a stderr warning for each risk in the given sampler choices and
+  // returns the assessment.
+  static J9SamplerRisk reportSamplerRisks(SamplerChoice cpu,
+                                          SamplerChoice wall,
+                                          const J9VersionProps &props);
 
   static JNIEnv *GetJ9vmThread(jthread thread) {
     JNIEnv *result;
