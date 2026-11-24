@@ -37,7 +37,7 @@ report about behavior as an unverified claim.
      ticket and cannot collide with another run. Verify with
      `ssh workspace-<name> 'uname -sm'` that its architecture actually matches the bug
      (aarch64 vs x86_64), and delete it with `workspaces delete <name> --yes`
-     afterwards, always. The workspace is only a runner: it auto-clones main, so sync
+     afterwards. The workspace is only a runner: it auto-clones main, so sync
      the worktree's reproducer change to it first: generate a patch with `git diff
      <merge-base>` in the worktree and apply it with `git -C <workspace-clone> apply`
      at the repository root of the cloned checkout.
@@ -87,8 +87,10 @@ report about behavior as an unverified claim.
 7. **Done.** End by stating explicitly that the triage is complete, restating: the
    classification, the reproducer verdict (`run` with commands and results, or
    `blocked` with the reason), the settled I/L/W ratings, the proposed priority and
-   whether the user overrode it, and the next steps. A triage is done only when the
-   user has seen all of these; do not stop silently or leave any of them implicit.
+   whether the user overrode it, and the next steps. For a `stale` ticket, restate the
+   classification, the reproducer verdict, the close recommendation and the next steps
+   instead. A triage is done only when the user has seen all of these; do not stop
+   silently or leave any of them implicit.
 
 Post the result on the ticket only when the user asks. The comment follows the
 `ticket-writing` skill. Its evidence table holds the reproducer with its commands and
