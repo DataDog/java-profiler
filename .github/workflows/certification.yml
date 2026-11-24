@@ -1,0 +1,378 @@
+name: Release Certification
+run-name: "Certify ${{ github.sha }}"
+
+# Nightly certification of the main HEAD for release readiness. A green run
+# attaches a git note on the certified commit (refs/notes/certification);
+# the Friday release train releases only certified commits. A failed run
+# notifies Slack and files a PROF ticket immediately.
+#
+# The suite is the pre-release gate of release-validated.yml (testDebug +
+# testAsan, regular and slow, gtests included) plus the fuzz job of
+# nightly.yml, plus the dd-trace-integration cells from the SHA's GitLab
+# pipeline (queried, not re-run: those cells run on every push to main).
+
+on:
+  schedule:
+    # 04:00 UTC, after the 03:00 UTC nightly
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: certification
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  GITLAB_HOST: gitlab.ddbuild.io
+  GITLAB_PROJECT: DataDog%2Fjava-profiler
+  # Jobs whose success is required for the dd-trace-integration verdict
+  INTEGRATION_JOBS: prepare-patched-agent integration-test-x64-glibc integration-test-x64-musl integration-test-arm64-glibc integration-test-arm64-musl
+
+jobs:
+  test-debug:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["debug"]'
+      artifact_suffix: cert-debug
+
+  test-asan:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["asan"]'
+      artifact_suffix: cert-asan
+
+  slow-test-debug:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["debug"]'
+      slow_tests: true
+      artifact_suffix: cert-slow-debug
+
+  slow-test-asan:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["asan"]'
+      slow_tests: true
+      artifact_suffix: cert-slow-asan
+
+  fuzz:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+      - name: Setup OS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Fuzz
+        run: ./gradlew :ddprof-lib:fuzz:fuzz -Pfuzz-duration=120 --no-daemon
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashes
+          path: ddprof-lib/fuzz/build/fuzz-crashes/
+
+  gitlab-integration:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
+    if: github.ref == 'refs/heads/main'
+    # Verdict on the dd-trace-integration cells of the candidate's GitLab
+    # pipeline. Those cells run on every push to main; this job waits for
+    # them and reads their results.
+    runs-on: ubuntu-latest
+    # The pipeline lookup allows 36x5min and the cell polling 60x3min; the
+    # timeout must exceed both budgets combined or GitHub cancels the job
+    # before the verdict or the failure summary is written.
+    timeout-minutes: 420
+    steps:
+      - name: Wait for and evaluate integration cells
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_API_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GITLAB_TOKEN" ]; then
+            echo "::error::GITLAB_API_TOKEN secret is not configured; cannot verify dd-trace-integration cells"
+            exit 1
+          fi
+          API="https://${{ env.GITLAB_HOST }}/api/v4/projects/${{ env.GITLAB_PROJECT }}"
+          REQUIRED_JOBS=(${{ env.INTEGRATION_JOBS }})
+
+          # Pipelines carry the ref of their trigger; a SHA can have several
+          # (push, merge request, manual). Query the push pipeline for the
+          # candidate's branch; a SHA-shaped ref name (manual dispatch on a
+          # pinned commit) falls back to the sha-only query.
+          REF="$GITHUB_REF_NAME"
+          REF_PARAM=""
+          if ! [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+            REF_PARAM="&ref=$(jq -rn --arg r "$REF" '$r|@uri')"
+          fi
+
+          # Find the pipeline for this SHA; retry in case the push landed
+          # just before the schedule fired and the pipeline is still being
+          # created.
+          PIPELINE_ID=""
+          for attempt in $(seq 1 36); do
+            # The first half of the window filters by ref (the push pipeline
+            # for the candidate's branch); if the mirror names its refs
+            # differently, the second half falls back to any pipeline for
+            # the SHA instead of burning the whole budget on an empty
+            # ref-filtered result.
+            if [ "$attempt" -gt 18 ]; then REF_PARAM=""; fi
+            # A trigger/child pipeline (e.g. a JDK-integration trigger) can
+            # exist for the same SHA and lack the integration jobs entirely;
+            # certify against the push pipeline that has them. sort=asc puts
+            # the push pipeline first: trigger pipelines are created after
+            # it and would push it off page 1 under sort=desc.
+            PIPELINE_ID=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+              "$API/pipelines?sha=$SHA$REF_PARAM&sort=asc&per_page=100" \
+              | jq -r '[.[] | select(.source == "push")][0].id // empty') || true
+            [ -n "$PIPELINE_ID" ] && break
+            echo "attempt $attempt/36: no pipeline for $SHA yet, retrying in 5 min"
+            sleep 300
+          done
+          if [ -z "$PIPELINE_ID" ]; then
+            echo "::error::No GitLab pipeline found for $SHA"
+            exit 1
+          fi
+          echo "GitLab pipeline: $PIPELINE_ID"
+
+          # Wait until every required job exists, then until all of them
+          # reached a terminal state. Cells can be created late: the pipeline
+          # runs many stages before integration-test.
+          declare -A STATUS
+          for job in ${{ env.INTEGRATION_JOBS }}; do STATUS[$job]="unknown"; done
+          # Matrix expansion can push a dd-trace-integration pipeline past 100
+          # jobs; follow GitLab's page links until a short page arrives. Fetch
+          # inside the retry loop: cell statuses must refresh every attempt.
+          fetch_all_jobs() {
+            local jobs_json="" page_json page=1
+            while :; do
+              # A curl failure must abort the fetch (return 1), never
+              # masquerade as an empty-but-complete listing: the caller
+              # retries the whole fetch on the next attempt.
+              page_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page") || return 1
+              if [ -z "$jobs_json" ]; then
+                jobs_json="$page_json"
+              else
+                # Merge through stdin: a full 100-job page as --argjson can
+                # exceed the kernel's per-argument limit and jq would fail
+                # with "Argument list too long". A failed merge aborts the
+                # fetch so the caller retries the whole listing.
+                jobs_json=$(printf '%s\n%s\n' "$jobs_json" "$page_json" | jq -sc 'add') || return 1
+              fi
+              [ "$(echo "$page_json" | jq 'length')" -lt 100 ] && break
+              page=$((page+1))
+            done
+            echo "$jobs_json"
+          }
+          for attempt in $(seq 1 60); do
+            jobs_json=""
+            if ! jobs_json=$(fetch_all_jobs); then
+              echo "attempt $attempt/60: GitLab job fetch failed, retrying"
+              sleep 180
+              continue
+            fi
+            missing=0; pending=0
+            for job in "${REQUIRED_JOBS[@]}"; do
+              # GitLab matrix expansion names cells "name: [hotspot, 8]": match
+              # the exact name or the matrix-suffixed form. Aggregate: every
+              # cell success → success; any terminal non-success (failed,
+              # canceled, skipped, manual) → failed; else pending.
+              st=$(echo "$jobs_json" | jq -r --arg j "$job" \
+                '[.[] | select(.name == $j or (.name | startswith($j + ": ["))) | .status] |
+                 if length == 0 then empty
+                 elif all(. == "success" or . == "failed" or . == "canceled" or . == "skipped" or . == "manual") then
+                   (if all(. == "success") then "success" else "failed" end)
+                 else "pending" end')
+              if [ -z "$st" ]; then missing=$((missing+1));
+              elif [ "$st" != "success" ] && [ "$st" != "failed" ]; then pending=$((pending+1)); fi
+              STATUS[$job]="${st:-pending}"
+            done
+            if [ "$missing" -eq 0 ] && [ "$pending" -eq 0 ]; then break; fi
+            echo "attempt $attempt/60: $(for job in "${REQUIRED_JOBS[@]}"; do echo -n "$job=${STATUS[$job]} "; done)"
+            sleep 180
+          done
+
+          rc=0
+          echo "## dd-trace-integration cells ($SHA)" >> "$GITHUB_STEP_SUMMARY"
+          for job in "${REQUIRED_JOBS[@]}"; do
+            echo "- ${job}: ${STATUS[$job]}" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${STATUS[$job]}" != "success" ]; then rc=1; fi
+          done
+          exit $rc
+
+  certify:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
+    if: github.ref == 'refs/heads/main'
+    needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration]
+    runs-on: ubuntu-latest
+    outputs:
+      certified_sha: ${{ steps.certify.outputs.certified_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Attach certification note
+        id: certify
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          NOTE=$(.github/scripts/certify.sh "$GITHUB_SHA" --run-url "$RUN_URL" \
+            --suite "testDebug+testAsan (regular+slow, gtests), fuzz, dd-trace-integration")
+          echo "certified_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "$NOTE" >> "$GITHUB_STEP_SUMMARY"
+
+  report-failure:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group. The report itself must
+    # still run whenever a main run fails.
+    if: github.ref == 'refs/heads/main' && (failure() || cancelled())
+    needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration, certify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download all failure artifacts
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: failures-*
+          path: ./artifacts
+          merge-multiple: true
+      - name: Collect failing components
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Certification of ${GITHUB_SHA} failed."
+            for job in test-debug test-asan slow-test-debug slow-test-asan fuzz gitlab-integration certify; do
+              # Reusable-workflow jobs carry matrix suffixes and a cancelled
+              # cell may be listed first, so aggregate: any failed cell fails
+              # the component.
+              st=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                --jq ".jobs[] | select(.name | startswith(\"$job\")) | .conclusion" | awk '
+                  $0 == "failure" { f = 1 }
+                  $0 == "cancelled" { c = 1 }
+                  $0 == "timed_out" { t = 1 }
+                  ($0 != "" && $0 != "skipped" && $0 != "null" && $0 != "failure" && $0 != "cancelled" && $0 != "timed_out") && !s { s = $0 }
+                  END { if (f) print "failure"; else if (c) print "cancelled"; else if (t) print "timed_out"; else if (s) print s; else print "unknown" }')
+              echo "- ${job}: ${st:-unknown}"
+            done
+            if ls ./artifacts/failures_*.txt >/dev/null 2>&1; then
+              echo ""
+              echo "Failing scenarios:"
+              cat ./artifacts/failures_*.txt
+            fi
+          } > summary.txt
+          cat summary.txt
+      # The job only starts on failure() || cancelled(); !cancelled() here
+      # runs the notifications on the failure path and skips them when the
+      # run was cancelled. Step-level failure() would be false when only a
+      # dependency job failed, so it must not gate these steps.
+      - name: Notify Slack
+        if: ${{ !cancelled() }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          webhook = os.environ.get("SLACK_WEBHOOK", "")
+          if not webhook:
+              print("SLACK_WEBHOOK not configured, skipping notification")
+              raise SystemExit(0)
+          with open("summary.txt") as f:
+              summary = f.read()
+          run_url = (os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"]
+                     + "/actions/runs/" + os.environ["GITHUB_RUN_ID"])
+          # nightly.yml's receiver consumes {"scenarios", "failed_run_url"};
+          # send the same fields alongside text so one webhook serves both
+          # workflows (a plain Slack incoming webhook ignores the extras).
+          payload = {
+              "text": "java-profiler nightly certification FAILED on "
+                      + os.environ["GITHUB_SHA"] + "\n"
+                      + summary + "\n" + run_url,
+              "scenarios": summary,
+              "failed_run_url": run_url
+          }
+          req = urllib.request.Request(webhook,
+                                       data=json.dumps(payload).encode(),
+                                       headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req):
+              pass
+          PY
+      - name: File PROF ticket
+        if: ${{ !cancelled() }}
+        id: jira
+        env:
+          ATLASSIAN_BASE_URL: ${{ secrets.ATLASSIAN_BASE_URL }}
+          ATLASSIAN_USER_EMAIL: ${{ secrets.ATLASSIAN_USER_EMAIL }}
+          ATLASSIAN_API_TOKEN: ${{ secrets.ATLASSIAN_API_TOKEN }}
+          GITHUB_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Run: ${RUN_URL}"
+            echo ""
+            echo "Certification suite: testDebug+testAsan (regular and slow, gtests), fuzz, dd-trace-integration cells."
+            echo "The commit cannot enter the Friday release train until a nightly certification passes on it or a successor."
+            echo ""
+            # Collect may have failed before writing the summary; the ticket
+            # must still carry the run coordinates.
+            cat summary.txt 2>/dev/null || true
+          } > body.txt
+          KEY=$(.github/scripts/file-jira-issue.sh \
+            --summary "java-profiler nightly certification failed on ${GITHUB_SHA}" \
+            --body-file body.txt --priority High --label certification-failure) && echo "$KEY" || {
+            echo "::warning::Jira ticket could not be filed (missing or invalid ATLASSIAN_* secrets); Slack notification was sent"
+            exit 0
+          }
+          echo "Filed ${KEY}" >> "$GITHUB_STEP_SUMMARY"
