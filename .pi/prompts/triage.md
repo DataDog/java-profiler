@@ -19,7 +19,9 @@ after its completion statement. Otherwise run the loop:
 3. **Check in.** After the completion statement, report one line —
    `Triage complete: PROF-<n> — <classification>, P<priority>` (for a `stale`
    classification, the close recommendation instead of a priority) — and ask whether
-   to continue to the next ticket. Continue only on an explicit yes; any other reply
+   to post the result comment on the ticket (producing its `## Triage evidence`
+   marker, which keeps the loop from re-triaging it) and whether to continue to the
+   next ticket. Continue only on an explicit yes; any other reply
    (stop, a new instruction, or silence) ends the loop.
 4. Repeat from step 1.
 

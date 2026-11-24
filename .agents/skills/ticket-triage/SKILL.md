@@ -36,7 +36,10 @@ report about behavior as an unverified claim.
      characters>` such as `triage-PROF-1234-x7k2`, so the machine is traceable to its
      ticket and cannot collide with another run. If `workspaces create` fails, clean up
      any partially created workspace and fall back to the local worktree run, stating
-     the reason. Verify with
+     the reason. From workspace creation onward, every exit path — failed sync, failed
+     verification, failed run — deletes the workspace with `workspaces delete <name>
+     --yes` before falling back or ending; a failed run is never a reason to leave the
+     machine allocated. Verify with
      `ssh workspace-<name> 'uname -sm'` that its architecture actually matches the bug
      (aarch64 vs x86_64). If it does not match, do not run the reproducer there: delete
      the workspace with `workspaces delete <name> --yes`. Create a compatible
@@ -57,13 +60,14 @@ report about behavior as an unverified claim.
      git add -N -- path/to/reproducer   # intent-to-add: untracked reproducer files must appear in git diff
      git diff "$merge_base" -- path/to/reproducer > "$patch_file" || { rm -f "$patch_file"; exit 1; }
      test -s "$patch_file" || { echo "No reproducer changes to apply" >&2; rm -f "$patch_file"; exit 1; }
-     git -C <workspace-clone> apply "$patch_file" || { rm -f "$patch_file"; exit 1; }
+     git -C <workspace-clone> apply --3way "$patch_file" || { rm -f "$patch_file"; exit 1; }
      rm -f "$patch_file"
      ```
 
      Replace `path/to/reproducer` with the path(s) containing the reproducer changes.
      The non-empty check is required: if there is no patch, stop and investigate
-     instead of running `git apply`.
+     instead of running `git apply`. `--3way` tolerates a clone that already contains
+     part of the change (its main tip moved past the worktree's base).
    - If it is not, verify that this machine's architecture matches the bug and run
      the reproducer in the worktree only when it does; otherwise leave it blocked and
      state why.
