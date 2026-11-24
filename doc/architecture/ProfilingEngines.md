@@ -667,10 +667,11 @@ before the lock is held, into one of 64 recording-scoped `MonitorEntryStacks`
 slots of `jstackdepth + 1` frames (charged to `NM_CALLTRACE`), claimed under
 TaskBlock activity. `MonitorContendedEntered` reuses those frames for the
 call-trace storage put and releases the slot on every path. An exit without
-entry frames (no free slot, rotation-closed admission, failed capture or
-allocation, a lease from an earlier recording) captures at exit and counts
-`TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK`. Every contended enter pays the walk,
-including intervals later dropped as shorter than 1 ms. Each claim has a
+entry frames (no free slot, refused admission, an enter before the pool
+publishes, failed capture or allocation, a lease from an earlier recording)
+captures at exit and counts `TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK`. A
+contended enter that claims a slot pays the walk, even if later dropped as
+shorter than 1 ms. Each claim has a
 unique serial, so a lease from an earlier recording never names a new slot. `OBJECT_WAIT`
 serializes as `WAITING`; monitor contention serializes as `CONTENDED`.
 
