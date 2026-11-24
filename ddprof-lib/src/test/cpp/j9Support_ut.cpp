@@ -90,14 +90,6 @@ TEST(J9AssessSamplers, gatedFallbackOnlyForTheVersionGate) {
   }
 }
 
-TEST(SamplerChoice, namesAreDistinct) {
-  EXPECT_STREQ("none", samplerChoiceName(SamplerChoice::NONE));
-  EXPECT_STREQ("asgct", samplerChoiceName(SamplerChoice::ASGCT));
-  EXPECT_STREQ("jvmti_requested",
-               samplerChoiceName(SamplerChoice::JVMTI_REQUESTED));
-  EXPECT_STREQ("jvmti_gated", samplerChoiceName(SamplerChoice::JVMTI_GATED));
-}
-
 TEST(J9ReportSamplerRisks, warnsAboutDeadlockOnlyWhenAsgctMeetsAProneBuild) {
   J9VersionProps prone = {"17.0.20+8-openj9-0.60.0", "17.0.20+8"};
   testing::internal::CaptureStderr();

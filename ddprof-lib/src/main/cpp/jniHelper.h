@@ -53,11 +53,13 @@ private:
   jobject _ref;
 };
 
-// Owns the chars from GetStringUTFChars and releases them at scope exit.
+// Owns the chars from GetStringUTFChars and releases them at scope exit; a
+// null str, or a failed copy, gives get() == nullptr.
 class JniUtfChars {
 public:
   JniUtfChars(JNIEnv *jni, jstring str)
-      : _jni(jni), _str(str), _chars(jni->GetStringUTFChars(str, nullptr)) {}
+      : _jni(jni), _str(str),
+        _chars(str != nullptr ? jni->GetStringUTFChars(str, nullptr) : nullptr) {}
   ~JniUtfChars() {
     if (_chars != nullptr) {
       _jni->ReleaseStringUTFChars(_str, _chars);

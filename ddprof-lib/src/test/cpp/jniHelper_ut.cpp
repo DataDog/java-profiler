@@ -108,6 +108,27 @@ TEST(JniHelperTest, UtfCharsAreReleasedAtScopeExit) {
     EXPECT_EQ(UTF_CHARS, last_released_chars);
 }
 
+static int utf_char_calls = 0;
+
+static const char *JNICALL countUtfChars(JNIEnv *, jstring, jboolean *) {
+    utf_char_calls++;
+    return UTF_CHARS;
+}
+
+TEST(JniHelperTest, NullStringIsNotCopiedOrReleased) {
+    JNINativeInterface_ table{};
+    JNIEnv env = fakeEnv(table);
+    table.GetStringUTFChars = &countUtfChars;
+    utf_char_calls = 0;
+    released_chars = 0;
+    {
+        JniUtfChars chars(&env, nullptr);
+        EXPECT_EQ(nullptr, chars.get());
+    }
+    EXPECT_EQ(0, utf_char_calls);
+    EXPECT_EQ(0, released_chars);
+}
+
 TEST(JniHelperTest, FailedUtfCharsAreNotReleased) {
     JNINativeInterface_ table{};
     JNIEnv env = fakeEnv(table);

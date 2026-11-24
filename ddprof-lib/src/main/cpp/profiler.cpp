@@ -1616,8 +1616,9 @@ Engine *Profiler::selectCpuEngine(Arguments &args, SamplerChoice *choice) {
     if (VM::isOpenJ9()) {
       bool jvmti_requested = !J9Support::shouldUseAsgct();
       if (jvmti_requested || !J9Support::can_use_ASGCT()) {
-        recordSamplerChoice(choice, jvmti_requested ? SamplerChoice::JVMTI_REQUESTED
-                                               : SamplerChoice::JVMTI_GATED);
+        recordSamplerChoice(choice, jvmti_requested
+                                        ? SamplerChoice::JVMTI_REQUESTED
+                                        : SamplerChoice::JVMTI_GATED);
         if (!J9Support::is_jvmti_jmethodid_safe()) {
           LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                     "CPU profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1673,8 +1674,9 @@ Engine *Profiler::selectWallEngine(Arguments &args, SamplerChoice *choice) {
   if (VM::isOpenJ9()) {
     bool jvmti_requested = args._wallclock_sampler == JVMTI || !J9Support::shouldUseAsgct();
     if (jvmti_requested || !J9Support::can_use_ASGCT()) {
-      recordSamplerChoice(choice, jvmti_requested ? SamplerChoice::JVMTI_REQUESTED
-                                             : SamplerChoice::JVMTI_GATED);
+      recordSamplerChoice(choice, jvmti_requested
+                                      ? SamplerChoice::JVMTI_REQUESTED
+                                      : SamplerChoice::JVMTI_GATED);
       if (!J9Support::is_jvmti_jmethodid_safe()) {
         LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "

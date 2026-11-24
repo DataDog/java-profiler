@@ -284,7 +284,8 @@ private:
   void updateNativeLibMemStats();
   void mangle(const char *name, char *buf, size_t size);
 
-  // choice, when non-null, receives why ASGCT was or was not selected.
+  // choice, when non-null, receives why a JVM-specific ASGCT gate (today only
+  // J9's) picked or rejected ASGCT; it stays NONE where no such gate applies.
   Engine *selectCpuEngine(Arguments &args, SamplerChoice *choice = nullptr);
   Engine *selectWallEngine(Arguments &args, SamplerChoice *choice = nullptr);
   void reportJ9SamplerRisks(SamplerChoice cpu, SamplerChoice wall);
