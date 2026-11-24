@@ -709,6 +709,26 @@ TEST_F(LookupResolveMethodJavaFrameTest, J9OrdinaryClassResolves) {
     EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
 }
 
+// The (jclass)-1 sentinel means "loader unloaded" only on J9; HotSpot resolves it.
+TEST_F(LookupResolveMethodJavaFrameTest, MinusOneClassOutsideJ9Resolves) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.override_declaring_class = true;
+    fake.counters.declaring_class = reinterpret_cast<jclass>(-1);
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    ASSERT_NE(nullptr, mi);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    EXPECT_EQ(before.invalid_id, Counters::getCounter(METHOD_RESOLVE_SKIPPED_INVALID_ID));
+    EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
+}
+
 // A failed probe does not skip the probes after it, so a later unreadable
 // pointer is also kept from Deallocate().
 TEST_F(LookupResolveMethodJavaFrameTest, EveryUnreadableStringIsKeptFromDeallocate) {
@@ -883,17 +903,51 @@ TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterCountsEachUnresolvedFra
     OwnedTrace trace1(1, {unloaded, resolved, unknown});
     OwnedTrace trace2(2, {resolved, unloaded});
     FrameCounters before;
-    Buffer buffer;
+    Buffer buffer1;
+    Buffer buffer2;
     int flushes = 0;
 
-    RecordingTestAccessor::writeStackTrace(&buffer, trace1.get(), &lookup, countFlush, &flushes);
-    RecordingTestAccessor::writeStackTrace(&buffer, trace2.get(), &lookup, countFlush, &flushes);
+    RecordingTestAccessor::writeStackTrace(&buffer1, trace1.get(), &lookup, countFlush, &flushes);
+    RecordingTestAccessor::writeStackTrace(&buffer2, trace2.get(), &lookup, countFlush, &flushes);
 
     FrameCounters after;
     EXPECT_EQ(before.unloaded + 2, after.unloaded);
     EXPECT_EQ(before.unknown + 1, after.unknown);
     EXPECT_EQ(5, flushes) << "one flush check per written frame";
-    EXPECT_GT(buffer.offset(), 0);
+    // Header: trace id, truncated flag, frame count. The flag is derived from
+    // the root (the last frame): set only for a non-entry Java root.
+    const unsigned char* header1 = reinterpret_cast<const unsigned char*>(buffer1.data());
+    EXPECT_EQ(1, header1[0]);
+    EXPECT_EQ(0, header1[1]) << "trace 1's root is the native unknown row";
+    EXPECT_EQ(3, header1[2]);
+    const unsigned char* header2 = reinterpret_cast<const unsigned char*>(buffer2.data());
+    EXPECT_EQ(2, header2[0]);
+    EXPECT_EQ(1, header2[1]) << "trace 2's root is the <unloaded> Java row";
+    EXPECT_EQ(2, header2[2]);
+}
+
+// A trace with no frames writes only its header and resolves nothing.
+TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterWritesEmptyTraceWithoutResolving) {
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    OwnedTrace empty(3, {});
+    FrameCounters before;
+    Buffer buffer;
+    int flushes = 0;
+
+    RecordingTestAccessor::writeStackTrace(&buffer, empty.get(), &lookup, countFlush, &flushes);
+
+    EXPECT_TRUE(method_map.empty());
+    EXPECT_FALSE(lookup._unknown_method._mark) << "no frame may be resolved";
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded, after.unloaded);
+    EXPECT_EQ(before.unknown, after.unknown);
+    EXPECT_EQ(0, flushes);
+    ASSERT_EQ(2, buffer.offset()) << "trace id and frame count, no truncated flag without a root";
+    const unsigned char* header = reinterpret_cast<const unsigned char*>(buffer.data());
+    EXPECT_EQ(3, header[0]);
+    EXPECT_EQ(0, header[1]);
 }
 
 // A row is re-filled in each chunk; one that resolves in a later chunk must
