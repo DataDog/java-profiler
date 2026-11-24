@@ -152,8 +152,10 @@ Marks persist across lifetimes until registration clears them or pressure
 evicts them. Once a 64-slot window is full, one colliding insertion can evict
 even a recent mark; 64 simultaneous exits are not required.
 
-A reused identity can bypass recovery until registration. A thread that never
-registers can retain that degradation for its whole lifetime.
+A reused identity can bypass recovery until registration or a sampled
+allocation clears the mark (`ThreadExitRegistry::isCurrentExiting()`). A thread
+that does neither can retain that degradation for its whole lifetime. The crash
+handler keeps the raw check: the reuse test reads TLS, which can fault here.
 
 ## Scope
 

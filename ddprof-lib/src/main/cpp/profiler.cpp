@@ -1390,8 +1390,8 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // JVM-owned faults (implicit null checks, polling pages) chain before any
   // syscall or TLS read; chainOrTerminate keeps the no-handler default action.
   if (!isProfilerOwnedFault(static_cast<uintptr_t>(StackFrame(ucontext).pc())) ||
-      // Raw mark only: a TLS read here can fault during pthread teardown and
-      // re-enter this handler.
+      // Raw mark, not isCurrentExiting(): its TLS read can fault during
+      // pthread teardown and re-enter this handler.
       ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
     chainOrTerminate(signo, siginfo, ucontext, OS::getSegvChainTarget(), orig_segvHandler);
     return;

@@ -418,7 +418,7 @@ bool MallocTracer::shouldSample(size_t size) {
 }
 
 // shouldSample() reads no TLS, so unsampled allocations skip the identity syscall and TLS.
-// Exit-marked threads are rejected before TLS acquisition; their faults bypass recovery.
+// Exiting threads are rejected before TLS acquisition; their faults bypass recovery.
 // CriticalSection excludes recursive malloc recording and same-thread profiling samples.
 void MallocTracer::maybeRecord(void* ret, size_t size) {
     // Read before running(): a hook descheduled across a stop()/start() must not record
@@ -431,7 +431,7 @@ void MallocTracer::maybeRecord(void* ret, size_t size) {
 #ifdef UNIT_TEST
     if (beforeExitCheckForTest != nullptr) beforeExitCheckForTest();
 #endif
-    if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    if (ThreadExitRegistry::isCurrentExiting()) {
         Counters::increment(MALLOC_SAMPLES_DROPPED);
         return;
     }

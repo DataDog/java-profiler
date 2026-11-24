@@ -23,7 +23,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current implementation, including root-anchor indexing and rotation
 - [MallocArenaWarning](architecture/MallocArenaWarning.md) - glibc malloc arena detector: arena walk, rule, and JFR events
-- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception (hooks installed per recording, restored on stop), raw-identity exit admission and allocation sampling
+- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception (hooks installed per recording, restored on stop), reuse-aware exit admission and allocation sampling
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; filtered wall reservoir and epoch accounting; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
