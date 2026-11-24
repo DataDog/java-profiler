@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-24 07:51:04 EST
+**Date:** 2026-11-24 08:09:19 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 49 |
-| CPU Cores (end) | 45 |
+| CPU Cores (start) | 48 |
+| CPU Cores (end) | 51 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 197 |
-| Sample Rate | 3.28/sec |
-| Health Score | 205% |
-| Threads | 6 |
+| CPU Samples | 178 |
+| Sample Rate | 2.97/sec |
+| Health Score | 186% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 265 |
-| Sample Rate | 4.42/sec |
-| Health Score | 276% |
-| Threads | 10 |
+| CPU Samples | 196 |
+| Sample Rate | 3.27/sec |
+| Health Score | 204% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (4 unique values: 45-70 cores)</summary>
+<summary>CPU Timeline (4 unique values: 46-51 cores)</summary>
 
 ```
-1795524384 49
-1795524389 49
-1795524394 49
-1795524399 49
-1795524404 49
-1795524409 70
-1795524414 70
-1795524419 70
-1795524424 70
-1795524429 70
-1795524434 70
-1795524439 70
-1795524444 70
-1795524449 70
-1795524454 70
-1795524459 50
-1795524464 50
-1795524469 45
-1795524474 45
-1795524479 45
+1795525565 48
+1795525570 48
+1795525575 48
+1795525580 48
+1795525585 48
+1795525590 48
+1795525595 48
+1795525600 48
+1795525605 48
+1795525610 46
+1795525615 46
+1795525620 49
+1795525625 49
+1795525630 49
+1795525635 49
+1795525640 49
+1795525645 49
+1795525650 51
+1795525655 51
+1795525660 51
 ```
 </details>
 
