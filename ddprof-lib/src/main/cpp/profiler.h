@@ -23,6 +23,7 @@
 #include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
+#include "samplerChoice.h"
 #include "spinLock.h"
 #include "threadLocalData.h"
 #include "threadFilter.h"
@@ -90,8 +91,6 @@ union CallTraceBuffer {
 class FrameName;
 class StackContext;
 class VM;
-// Defined in j9/j9Support.h, which only profiler.cpp may include.
-enum class J9SamplerChoice : int;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
 
@@ -285,10 +284,10 @@ private:
   void updateNativeLibMemStats();
   void mangle(const char *name, char *buf, size_t size);
 
-  // choice, when non-null, receives why J9's ASGCT was or was not selected.
-  Engine *selectCpuEngine(Arguments &args, J9SamplerChoice *choice = nullptr);
-  Engine *selectWallEngine(Arguments &args, J9SamplerChoice *choice = nullptr);
-  void reportJ9SamplerRisks(J9SamplerChoice cpu, J9SamplerChoice wall);
+  // choice, when non-null, receives why ASGCT was or was not selected.
+  Engine *selectCpuEngine(Arguments &args, SamplerChoice *choice = nullptr);
+  Engine *selectWallEngine(Arguments &args, SamplerChoice *choice = nullptr);
+  void reportJ9SamplerRisks(SamplerChoice cpu, SamplerChoice wall);
   Engine *selectAllocEngine(Arguments &args);
   Error checkJvmCapabilities();
 

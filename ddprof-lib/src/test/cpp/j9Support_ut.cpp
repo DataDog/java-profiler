@@ -57,7 +57,7 @@ TEST(J9AsgctDeadlockProneVersion, nullInputsAreNotProne) {
 }
 
 TEST(J9AssessSamplers, deadlockRiskNeedsAsgctOnAProneJvm) {
-  using C = J9SamplerChoice;
+  using C = SamplerChoice;
   EXPECT_TRUE(J9Support::assessSamplers(C::ASGCT, C::NONE, true).deadlock_risk);
   EXPECT_TRUE(J9Support::assessSamplers(C::NONE, C::ASGCT, true).deadlock_risk);
   EXPECT_TRUE(J9Support::assessSamplers(C::ASGCT, C::ASGCT, true).deadlock_risk);
@@ -68,13 +68,13 @@ TEST(J9AssessSamplers, deadlockRiskNeedsAsgctOnAProneJvm) {
   for (C cpu : non_asgct) {
     for (C wall : non_asgct) {
       EXPECT_FALSE(J9Support::assessSamplers(cpu, wall, true).deadlock_risk)
-          << J9Support::choiceName(cpu) << "/" << J9Support::choiceName(wall);
+          << samplerChoiceName(cpu) << "/" << samplerChoiceName(wall);
     }
   }
 }
 
 TEST(J9AssessSamplers, gatedFallbackOnlyForTheVersionGate) {
-  using C = J9SamplerChoice;
+  using C = SamplerChoice;
   EXPECT_TRUE(
       J9Support::assessSamplers(C::JVMTI_GATED, C::NONE, false).gated_fallback);
   EXPECT_TRUE(
@@ -85,24 +85,24 @@ TEST(J9AssessSamplers, gatedFallbackOnlyForTheVersionGate) {
   for (C cpu : not_gated) {
     for (C wall : not_gated) {
       EXPECT_FALSE(J9Support::assessSamplers(cpu, wall, true).gated_fallback)
-          << J9Support::choiceName(cpu) << "/" << J9Support::choiceName(wall);
+          << samplerChoiceName(cpu) << "/" << samplerChoiceName(wall);
     }
   }
 }
 
-TEST(J9AssessSamplers, choiceNamesAreDistinct) {
-  EXPECT_STREQ("none", J9Support::choiceName(J9SamplerChoice::NONE));
-  EXPECT_STREQ("asgct", J9Support::choiceName(J9SamplerChoice::ASGCT));
+TEST(SamplerChoice, namesAreDistinct) {
+  EXPECT_STREQ("none", samplerChoiceName(SamplerChoice::NONE));
+  EXPECT_STREQ("asgct", samplerChoiceName(SamplerChoice::ASGCT));
   EXPECT_STREQ("jvmti_requested",
-               J9Support::choiceName(J9SamplerChoice::JVMTI_REQUESTED));
-  EXPECT_STREQ("jvmti_gated", J9Support::choiceName(J9SamplerChoice::JVMTI_GATED));
+               samplerChoiceName(SamplerChoice::JVMTI_REQUESTED));
+  EXPECT_STREQ("jvmti_gated", samplerChoiceName(SamplerChoice::JVMTI_GATED));
 }
 
 TEST(J9ReportSamplerRisks, warnsAboutDeadlockOnlyWhenAsgctMeetsAProneBuild) {
   J9VersionProps prone = {"17.0.20+8-openj9-0.60.0", "17.0.20+8"};
   testing::internal::CaptureStderr();
   J9SamplerRisk risk = J9Support::reportSamplerRisks(
-      J9SamplerChoice::ASGCT, J9SamplerChoice::JVMTI_REQUESTED, prone);
+      SamplerChoice::ASGCT, SamplerChoice::JVMTI_REQUESTED, prone);
   std::string err = testing::internal::GetCapturedStderr();
   EXPECT_TRUE(risk.deadlock_risk);
   EXPECT_NE(std::string::npos, err.find("AsyncGetCallTrace can deadlock")) << err;
@@ -114,8 +114,8 @@ TEST(J9ReportSamplerRisks, warnsAboutDeadlockOnlyWhenAsgctMeetsAProneBuild) {
   EXPECT_EQ(std::string::npos, err.find("using the JVMTI sampler")) << err;
 
   testing::internal::CaptureStderr();
-  risk = J9Support::reportSamplerRisks(J9SamplerChoice::JVMTI_REQUESTED,
-                                       J9SamplerChoice::JVMTI_REQUESTED, prone);
+  risk = J9Support::reportSamplerRisks(SamplerChoice::JVMTI_REQUESTED,
+                                       SamplerChoice::JVMTI_REQUESTED, prone);
   err = testing::internal::GetCapturedStderr();
   EXPECT_FALSE(risk.deadlock_risk);
   EXPECT_TRUE(err.empty()) << err;
@@ -124,8 +124,8 @@ TEST(J9ReportSamplerRisks, warnsAboutDeadlockOnlyWhenAsgctMeetsAProneBuild) {
 TEST(J9ReportSamplerRisks, namesUnreadPropertiesUnknown) {
   J9VersionProps ibm = {"", "pxa6480sr8fp70-20260702_01 (SR8 FP70)"};
   testing::internal::CaptureStderr();
-  EXPECT_TRUE(J9Support::reportSamplerRisks(J9SamplerChoice::ASGCT,
-                                            J9SamplerChoice::NONE, ibm)
+  EXPECT_TRUE(J9Support::reportSamplerRisks(SamplerChoice::ASGCT,
+                                            SamplerChoice::NONE, ibm)
                   .deadlock_risk);
   std::string err = testing::internal::GetCapturedStderr();
   EXPECT_NE(std::string::npos, err.find("java.vm.version=unknown")) << err;
@@ -135,7 +135,7 @@ TEST(J9ReportSamplerRisks, warnsAboutTheVersionGateOnly) {
   J9VersionProps fixed = {"17.0.21+1-openj9-0.63.0", "17.0.21+1"};
   testing::internal::CaptureStderr();
   J9SamplerRisk risk = J9Support::reportSamplerRisks(
-      J9SamplerChoice::JVMTI_GATED, J9SamplerChoice::ASGCT, fixed);
+      SamplerChoice::JVMTI_GATED, SamplerChoice::ASGCT, fixed);
   std::string err = testing::internal::GetCapturedStderr();
   EXPECT_FALSE(risk.deadlock_risk);
   EXPECT_TRUE(risk.gated_fallback);
@@ -147,7 +147,7 @@ TEST(J9ReportSamplerRisks, reportsBothRisksTogether) {
   J9VersionProps prone = {"21.0.12+8-openj9-0.60.0", "21.0.12+8"};
   testing::internal::CaptureStderr();
   J9SamplerRisk risk = J9Support::reportSamplerRisks(
-      J9SamplerChoice::ASGCT, J9SamplerChoice::JVMTI_GATED, prone);
+      SamplerChoice::ASGCT, SamplerChoice::JVMTI_GATED, prone);
   std::string err = testing::internal::GetCapturedStderr();
   EXPECT_TRUE(risk.deadlock_risk);
   EXPECT_TRUE(risk.gated_fallback);

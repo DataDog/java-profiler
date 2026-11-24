@@ -1601,14 +1601,14 @@ void Profiler::updateNativeThreadNames(bool defer_initializing) {
   delete thread_list;
 }
 
-static void recordJ9Choice(J9SamplerChoice *choice, J9SamplerChoice value) {
+static void recordSamplerChoice(SamplerChoice *choice, SamplerChoice value) {
   if (choice != nullptr) {
     *choice = value;
   }
 }
 
-Engine *Profiler::selectCpuEngine(Arguments &args, J9SamplerChoice *choice) {
-  recordJ9Choice(choice, J9SamplerChoice::NONE);
+Engine *Profiler::selectCpuEngine(Arguments &args, SamplerChoice *choice) {
+  recordSamplerChoice(choice, SamplerChoice::NONE);
   if (args._cpu < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_NOOP) == 0)) {
     return &noop_engine;
@@ -1616,8 +1616,8 @@ Engine *Profiler::selectCpuEngine(Arguments &args, J9SamplerChoice *choice) {
     if (VM::isOpenJ9()) {
       bool jvmti_requested = !J9Support::shouldUseAsgct();
       if (jvmti_requested || !J9Support::can_use_ASGCT()) {
-        recordJ9Choice(choice, jvmti_requested ? J9SamplerChoice::JVMTI_REQUESTED
-                                               : J9SamplerChoice::JVMTI_GATED);
+        recordSamplerChoice(choice, jvmti_requested ? SamplerChoice::JVMTI_REQUESTED
+                                               : SamplerChoice::JVMTI_GATED);
         if (!J9Support::is_jvmti_jmethodid_safe()) {
           LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                     "CPU profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1627,7 +1627,7 @@ Engine *Profiler::selectCpuEngine(Arguments &args, J9SamplerChoice *choice) {
         return &j9_engine;
       }
       TEST_LOG("J9[cpu]=asgct");
-      recordJ9Choice(choice, J9SamplerChoice::ASGCT);
+      recordSamplerChoice(choice, SamplerChoice::ASGCT);
     }
     // Prefer the JVMTI JFR-delegated engine when the HotSpot extension is
     // available and the user opted into jvmtistacks.  On Linux, CTimerJvmti
@@ -1653,7 +1653,7 @@ Engine *Profiler::selectCpuEngine(Arguments &args, J9SamplerChoice *choice) {
   }
   // Explicit CPU events skip the J9 sampler gate above and always use ASGCT.
   if (VM::isOpenJ9()) {
-    recordJ9Choice(choice, J9SamplerChoice::ASGCT);
+    recordSamplerChoice(choice, SamplerChoice::ASGCT);
   }
   if (strcmp(args._event, EVENT_ITIMER) == 0) {
     return &itimer;
@@ -1664,8 +1664,8 @@ Engine *Profiler::selectCpuEngine(Arguments &args, J9SamplerChoice *choice) {
   }
 }
 
-Engine *Profiler::selectWallEngine(Arguments &args, J9SamplerChoice *choice) {
-  recordJ9Choice(choice, J9SamplerChoice::NONE);
+Engine *Profiler::selectWallEngine(Arguments &args, SamplerChoice *choice) {
+  recordSamplerChoice(choice, SamplerChoice::NONE);
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
     return &noop_engine;
@@ -1673,8 +1673,8 @@ Engine *Profiler::selectWallEngine(Arguments &args, J9SamplerChoice *choice) {
   if (VM::isOpenJ9()) {
     bool jvmti_requested = args._wallclock_sampler == JVMTI || !J9Support::shouldUseAsgct();
     if (jvmti_requested || !J9Support::can_use_ASGCT()) {
-      recordJ9Choice(choice, jvmti_requested ? J9SamplerChoice::JVMTI_REQUESTED
-                                             : J9SamplerChoice::JVMTI_GATED);
+      recordSamplerChoice(choice, jvmti_requested ? SamplerChoice::JVMTI_REQUESTED
+                                             : SamplerChoice::JVMTI_GATED);
       if (!J9Support::is_jvmti_jmethodid_safe()) {
         LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1685,7 +1685,7 @@ Engine *Profiler::selectWallEngine(Arguments &args, J9SamplerChoice *choice) {
       return (Engine *)&j9_engine;
     } else {
       TEST_LOG("J9[wall]=asgct");
-      recordJ9Choice(choice, J9SamplerChoice::ASGCT);
+      recordSamplerChoice(choice, SamplerChoice::ASGCT);
       return (Engine *)&wall_asgct_engine;
     }
   }
@@ -1704,13 +1704,13 @@ Engine *Profiler::selectWallEngine(Arguments &args, J9SamplerChoice *choice) {
     }
 }
 
-void Profiler::reportJ9SamplerRisks(J9SamplerChoice cpu, J9SamplerChoice wall) {
+void Profiler::reportJ9SamplerRisks(SamplerChoice cpu, SamplerChoice wall) {
   _j9_asgct_deadlock_risk = false;
   if (!VM::isOpenJ9()) {
     return;
   }
-  TEST_LOG("J9[choice] cpu=%s wall=%s", J9Support::choiceName(cpu),
-           J9Support::choiceName(wall));
+  TEST_LOG("J9[choice] cpu=%s wall=%s", samplerChoiceName(cpu),
+           samplerChoiceName(wall));
   J9VersionProps props = J9Support::readVersionProps(VM::jvmti(), VM::jni());
   TEST_LOG("J9[props] vm=%s runtime=%s", props.vm_version.c_str(),
            props.runtime_version.c_str());
@@ -2025,8 +2025,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   _engines_ready.store(false, std::memory_order_seq_cst);
   // Records left by an earlier recording's freezes must not be replayed now.
   clearSkippedUnregistrations();
-  J9SamplerChoice cpu_choice;
-  J9SamplerChoice wall_choice;
+  SamplerChoice cpu_choice;
+  SamplerChoice wall_choice;
   if (!replaceCpuEngine(selectCpuEngine(args, &cpu_choice))) {
     // Nothing replaced or released yet. Retryable, like the earlier error
     // returns in this function.

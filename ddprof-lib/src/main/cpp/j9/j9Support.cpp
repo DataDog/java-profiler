@@ -201,35 +201,21 @@ J9VersionProps J9Support::readVersionProps(jvmtiEnv *jvmti, JNIEnv *jni) {
   return props;
 }
 
-J9SamplerRisk J9Support::assessSamplers(J9SamplerChoice cpu,
-                                        J9SamplerChoice wall,
+J9SamplerRisk J9Support::assessSamplers(SamplerChoice cpu,
+                                        SamplerChoice wall,
                                         bool deadlock_prone) {
-  bool asgct = cpu == J9SamplerChoice::ASGCT || wall == J9SamplerChoice::ASGCT;
-  bool gated = cpu == J9SamplerChoice::JVMTI_GATED ||
-               wall == J9SamplerChoice::JVMTI_GATED;
+  bool asgct = cpu == SamplerChoice::ASGCT || wall == SamplerChoice::ASGCT;
+  bool gated = cpu == SamplerChoice::JVMTI_GATED ||
+               wall == SamplerChoice::JVMTI_GATED;
   return {asgct && deadlock_prone, gated};
-}
-
-const char *J9Support::choiceName(J9SamplerChoice choice) {
-  switch (choice) {
-  case J9SamplerChoice::NONE:
-    return "none";
-  case J9SamplerChoice::ASGCT:
-    return "asgct";
-  case J9SamplerChoice::JVMTI_REQUESTED:
-    return "jvmti_requested";
-  case J9SamplerChoice::JVMTI_GATED:
-    return "jvmti_gated";
-  }
-  return "unknown";
 }
 
 static const char *orUnknown(const std::string &value) {
   return value.empty() ? "unknown" : value.c_str();
 }
 
-J9SamplerRisk J9Support::reportSamplerRisks(J9SamplerChoice cpu,
-                                            J9SamplerChoice wall,
+J9SamplerRisk J9Support::reportSamplerRisks(SamplerChoice cpu,
+                                            SamplerChoice wall,
                                             const J9VersionProps &props) {
   J9SamplerRisk risk = assessSamplers(
       cpu, wall,

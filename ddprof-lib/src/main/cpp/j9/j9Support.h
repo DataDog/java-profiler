@@ -23,6 +23,7 @@
 
 #include "frame.h"
 #include "log.h"
+#include "samplerChoice.h"
 #include "vmEntry.h"
 
 #define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
@@ -71,14 +72,6 @@ static inline int sanitizeJ9FrameType(jint j9_type) {
   // Unexpected value - default to JIT compiled as the safest assumption
   return FRAME_JIT_COMPILED;
 }
-
-/** Why engine selection did or did not pick J9's AsyncGetCallTrace. */
-enum class J9SamplerChoice : int {
-  NONE,             // engine off, or not running on J9
-  ASGCT,
-  JVMTI_REQUESTED,  // dd.profiling.ddprof.j9.sampler=jvmti or wallsampler=jvmti
-  JVMTI_GATED       // can_use_ASGCT() rejected this JVM version
-};
 
 struct J9SamplerRisk {
   bool deadlock_risk;   // ASGCT in use on a deadlock-prone J9 build
@@ -160,15 +153,13 @@ public:
   // thread's env; a null jvmti or jni leaves the property it reads empty.
   static J9VersionProps readVersionProps(jvmtiEnv *jvmti, JNIEnv *jni);
 
-  static J9SamplerRisk assessSamplers(J9SamplerChoice cpu, J9SamplerChoice wall,
+  static J9SamplerRisk assessSamplers(SamplerChoice cpu, SamplerChoice wall,
                                       bool deadlock_prone);
-
-  static const char *choiceName(J9SamplerChoice choice);
 
   // Prints a stderr warning for each risk in the given sampler choices and
   // returns the assessment.
-  static J9SamplerRisk reportSamplerRisks(J9SamplerChoice cpu,
-                                          J9SamplerChoice wall,
+  static J9SamplerRisk reportSamplerRisks(SamplerChoice cpu,
+                                          SamplerChoice wall,
                                           const J9VersionProps &props);
 
   static JNIEnv *GetJ9vmThread(jthread thread) {

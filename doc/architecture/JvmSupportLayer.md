@@ -257,7 +257,7 @@ Caveats:
   An explicit CPU event (`event=itimer`, `ctimer` or a perf event) without a
   `cpu=` interval skips these checks and uses ASGCT.
 - **J9 sampler warnings.** Each selection function reports why it chose, as a
-  `J9SamplerChoice`. Before `_jfr.start()`, `Profiler::start()` passes both
+  `SamplerChoice`. Before `_jfr.start()`, `Profiler::start()` passes both
   choices to `J9Support::reportSamplerRisks()`, which prints a
   `[ddprof] [WARN]` line to stderr in two cases:
   - ASGCT is in use and `J9Support::isAsgctDeadlockProneVersion()` is true. On
