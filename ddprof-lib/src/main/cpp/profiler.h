@@ -22,6 +22,7 @@
 #include "flightRecorder.h"
 #include "guards.h"
 #include "libraries.h"
+#include "monitorEntryStacks.h"
 #include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
@@ -212,6 +213,8 @@ private:
   std::atomic<bool> _intern_open{false};
   ThreadFilter _thread_filter;
   WallClockBlockTracker _block_tracker;
+  // Storage lives from start() to releaseRecordingMemory(); see MonitorEntryStacks.
+  MonitorEntryStacks _monitor_entry_stacks;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
   // CPU engine is only replaced by start(), while thread unregistration is open, so the
@@ -642,6 +645,7 @@ public:
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
   WallClockBlockTracker *blockTracker() { return &_block_tracker; }
+  MonitorEntryStacks *monitorEntryStacks() { return &_monitor_entry_stacks; }
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
@@ -823,8 +827,8 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
-  // Caller holds its stripe lock and supplies CallTraceBuffer::capacity() space,
-  // including the one-extra-frame truncation probe. Converts to ASGCT format and
+  // Caller holds its stripe lock or a monitor entry slot and supplies at least
+  // _max_stack_depth + 1 frames (one truncation probe). Converts to ASGCT format,
   // marks detected continuation roots; returns 0 on error/empty capture.
   int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer,
                          bool& truncated);
@@ -851,9 +855,12 @@ public:
     STACK_CAPTURE_FAILED,
     RECORD_FAILED,
   };
+  // entry_stack: frames captured at monitor entry replace the capture; expected
+  // leases without frames count TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK.
   TaskBlockRecordResult recordTaskBlock(int tid, jthread thread,
                                         int start_depth,
-                                        TaskBlockEvent *event
+                                        TaskBlockEvent *event,
+                                        const MonitorEntryStackLease* entry_stack = nullptr
                                         TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr,
                                                                    TaskBlockStage* rejection = nullptr));
   // Dump/stop thread with every recording stripe held: stores the frames of an
@@ -877,6 +884,10 @@ public:
   static void runTaskBlockActivityHookForTest(TaskBlockActivityStage stage);
 #endif
   bool tryEnterTaskBlockActivity(TASK_BLOCK_DIAGNOSTIC_ONLY(const TaskBlockDiagnosticRecord* diagnostic = nullptr));
+  // Uncounted admission for work that is not itself a TaskBlock (entry capture).
+  bool tryEnterTaskBlockActivityQuietly();
+  // Caller holds TaskBlock activity. Returns a lease on frames of thread's stack, or 0.
+  u64 captureMonitorEntryStack(jthread thread);
   void leaveTaskBlockActivity();
   bool omitStacktraces() const { return _omit_stacktraces; }
 
