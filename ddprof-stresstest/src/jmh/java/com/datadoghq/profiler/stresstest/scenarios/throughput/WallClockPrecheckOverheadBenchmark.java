@@ -141,7 +141,7 @@ public class WallClockPrecheckOverheadBenchmark {
     } catch (Exception | Error failure) {
       try {
         tearDown();
-      } catch (Exception cleanupFailure) {
+      } catch (Exception | Error cleanupFailure) {
         failure.addSuppressed(cleanupFailure);
       }
       throw failure;
@@ -156,16 +156,22 @@ public class WallClockPrecheckOverheadBenchmark {
     for (Thread worker : workers) {
       LockSupport.unpark(worker);
     }
-    for (Thread worker : workers) {
-      worker.join(TimeUnit.SECONDS.toMillis(5));
-      if (worker.isAlive()) throw new IllegalStateException("Benchmark worker did not exit");
-    }
-    workers.clear();
-    if (profiler != null) {
-      profiler.stop();
-    }
-    if (recording != null) {
-      Files.deleteIfExists(recording);
+    // Closed in reverse order, also when a worker is stuck; later failures are suppressed.
+    AutoCloseable deleteRecording =
+        () -> {
+          if (recording != null) Files.deleteIfExists(recording);
+        };
+    AutoCloseable stopProfiler =
+        () -> {
+          if (profiler != null) profiler.stop();
+        };
+    try (AutoCloseable delete = deleteRecording;
+        AutoCloseable stop = stopProfiler) {
+      for (Thread worker : workers) {
+        worker.join(TimeUnit.SECONDS.toMillis(5));
+        if (worker.isAlive()) throw new IllegalStateException("Benchmark worker did not exit");
+      }
+      workers.clear();
     }
   }
 
