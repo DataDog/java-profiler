@@ -115,6 +115,11 @@ the recording rather than the neighbouring buffer (`buffers.h:15-22`,
 `Recording::flush()` reserves a disjoint file range and uses bounded `pwrite()`
 retries. It resets the buffer only after every byte is written. Output failure
 is sticky and stops later event admission.
+Cold sequences (the constructor, `finishChunk()` and the `switchChunk()` restart)
+write only to stripe 0. After their first failed flush, that stripe serves as
+scratch for the rest of the sequence. The sequence then returns before its next
+step that changes shared state, and stripe 0 again holds the bytes it held at the
+failure.
 There is no background writer: the thread that fills a buffer past the
 threshold, which can be a signal handler, writes it out.
 
