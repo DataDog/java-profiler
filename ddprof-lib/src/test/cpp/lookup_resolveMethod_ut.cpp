@@ -711,6 +711,7 @@ TEST_F(LookupResolveMethodJavaFrameTest, J9OrdinaryClassResolves) {
 
 // The (jclass)-1 sentinel means "loader unloaded" only on J9; HotSpot resolves it.
 TEST_F(LookupResolveMethodJavaFrameTest, MinusOneClassOutsideJ9Resolves) {
+    VMTestAccessor::setOpenJ9(false);
     ScopedFakeJvmAndJni fake;
     fake.counters.override_declaring_class = true;
     fake.counters.declaring_class = reinterpret_cast<jclass>(-1);
@@ -914,8 +915,9 @@ TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterCountsEachUnresolvedFra
     EXPECT_EQ(before.unloaded + 2, after.unloaded);
     EXPECT_EQ(before.unknown + 1, after.unknown);
     EXPECT_EQ(5, flushes) << "one flush check per written frame";
-    // Header: trace id, truncated flag, frame count. The flag is derived from
-    // the root (the last frame): set only for a non-entry Java root.
+    // Header: trace id, truncated flag, frame count, each one byte here (values < 128).
+    // These traces are not walker-truncated, so the flag comes from the root (the
+    // last frame) alone: set for a non-entry Java root.
     const unsigned char* header1 = reinterpret_cast<const unsigned char*>(buffer1.data());
     EXPECT_EQ(1, header1[0]);
     EXPECT_EQ(0, header1[1]) << "trace 1's root is the native unknown row";
