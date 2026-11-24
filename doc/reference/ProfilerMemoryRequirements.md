@@ -319,8 +319,9 @@ See [NativeIoHooks.md](../architecture/NativeIoHooks.md#fd-type-and-lifecycle) f
 
 ### Idle Profiler (after `stop()`)
 
-Recording-scoped memory is freed when a recording stops: the call-trace tables and
-per-stripe frame buffers (`calltrace`), the class-name and string-label dictionaries
+Recording-scoped memory is freed when a recording stops: the call-trace tables,
+per-stripe frame buffers and TaskBlock monitor entry stacks (`calltrace`; the entry
+stacks are 64 × (`jstackdepth` + 1) × 16 bytes, about 2 MiB at a depth of 2048), the class-name and string-label dictionaries
 (the `dictionary_classes_bytes` and `dictionary_endpoints_bytes` debug counters), the JFR buffers (`jfr_buffers`), and the liveness tracker's tracking
 table and its weak refs (`liveness`; up to 262,144 × 256 bytes = 64 MB while
 recording), and the CPU timer table (`ctimer`; `pid_max × 4` bytes, 16 MiB at a

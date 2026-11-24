@@ -94,6 +94,63 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
         "monitorContentionEmitsTaskBlockOutsideContextWindow");
   }
 
+  /** Verifies the entry-captured contention stack, one event per interval, and no fallback. */
+  @Test
+  public void contendedMonitorStackIsCapturedAtEntry() throws Exception {
+    Object monitor = new Object();
+    CountDownLatch attempting = new CountDownLatch(1);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    Thread worker;
+    synchronized (monitor) {
+      worker =
+          new Thread(
+              () -> {
+                try {
+                  enterContendedMonitor(monitor, attempting);
+                } catch (Throwable t) {
+                  failure.set(t);
+                }
+              },
+              "taskblock-monitor-entry-stack");
+      worker.start();
+      assertTrue(attempting.await(5, TimeUnit.SECONDS));
+      Thread.sleep(20);
+    }
+    assertCompleted(worker, failure);
+    stopProfiler();
+
+    Map<String, Long> counters = profiler.getDebugCounters();
+    assertEquals(
+        Long.valueOf(0L),
+        counters.getOrDefault("task_block_monitor_entry_capture_fallback", -1L),
+        "a single contender must find a free entry slot");
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    int matching = 0;
+    for (JfrEvent event : events) {
+      if (event.getLong("blocker", -1L) != identityHash(monitor)) continue;
+      assertEquals("CONTENDED", event.getString("observedBlockingState"));
+      String stack = event.getStackTraceString();
+      assertNotNull(stack);
+      String[] frames = stack.split("\n");
+      assertTrue(frames.length >= 2, stack);
+      assertTrue(frames[0].endsWith("MonitorTaskBlockTest.synchronizedOn()"), stack);
+      assertTrue(frames[1].endsWith("MonitorTaskBlockTest.enterContendedMonitor()"), stack);
+      matching++;
+    }
+    assertEquals(1, matching, "Exactly one event per completed monitor interval");
+  }
+
+  private static void enterContendedMonitor(Object monitor, CountDownLatch attempting) {
+    attempting.countDown();
+    synchronizedOn(monitor);
+  }
+
+  private static void synchronizedOn(Object monitor) {
+    synchronized (monitor) {
+      monitor.hashCode();
+    }
+  }
+
   /** Verifies that repeated monitor contention leaves the producer able to record later blocks. */
   @Test
   public void contentionBurstDoesNotSuppressLongerContention() throws Exception {
