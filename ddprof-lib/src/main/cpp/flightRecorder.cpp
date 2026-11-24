@@ -1955,6 +1955,35 @@ void Recording::writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
   buf->putVar64(trace->num_frames);
 }
 
+void Recording::writeStackTrace(Buffer *buf, CallTrace *trace, Lookup *lookup,
+                                FlushFn flush, void *flush_ctx) {
+  MethodInfo *root = nullptr;
+  if (trace->num_frames > 0) {
+    root = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+    root->_referenced = true;
+  }
+  writeStackTraceHeader(buf, trace, root);
+  for (int i = 0; i < trace->num_frames; i++) {
+    MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
+    mi->_referenced = true;  // Mark method as referenced
+    lookup->countUnresolvedFrame(mi);
+    buf->putVar64(mi->_key);
+    jint bci = trace->frames[i].bci;
+    if (mi->_type < FRAME_NATIVE) {
+      FrameTypeId type = FrameType::decode(bci);
+      bci = FrameType::bci(bci);
+      buf->putVar32(mi->getLineNumber(bci));
+      buf->putVar32(bci);
+      buf->put8(type);
+    } else {
+      buf->putVar32(0);
+      buf->putVar32(bci);
+      buf->put8(mi->_type);
+    }
+    flush(flush_ctx, buf);
+  }
+}
+
 int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // Reset all referenced flags before processing
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
@@ -1974,32 +2003,9 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
     buf->putVar64(T_STACK_TRACE);
     buf->putVar64(traces.size());
     for (auto it = traces.begin(); it != traces.end(); ++it) {
-      CallTrace *trace = *it;
-      MethodInfo *root = nullptr;
-      if (trace->num_frames > 0) {
-        root = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
-        root->_referenced = true;
-      }
-      writeStackTraceHeader(buf, trace, root);
-      for (int i = 0; i < trace->num_frames; i++) {
-        MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
-        mi->_referenced = true;  // Mark method as referenced
-        lookup->countUnresolvedFrame(mi);
-        buf->putVar64(mi->_key);
-        jint bci = trace->frames[i].bci;
-        if (mi->_type < FRAME_NATIVE) {
-          FrameTypeId type = FrameType::decode(bci);
-          bci = FrameType::bci(bci);
-          buf->putVar32(mi->getLineNumber(bci));
-          buf->putVar32(bci);
-          buf->put8(type);
-        } else {
-          buf->putVar32(0);
-          buf->putVar32(bci);
-          buf->put8(mi->_type);
-        }
-        flushIfNeeded(buf);
-      }
+      writeStackTrace(buf, *it, lookup,
+                      [](void *rec, Buffer *b) { static_cast<Recording *>(rec)->flushIfNeeded(b); },
+                      this);
       flushIfNeeded(buf);
     }
   });  // End of processCallTraces lambda

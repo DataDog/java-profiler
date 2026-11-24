@@ -293,6 +293,12 @@ private:
   // completeness only when the walker has not already reported missing frames.
   static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
                                    const MethodInfo *root);
+  // Writes one stack-pool record and counts each unresolved frame once: the
+  // root is resolved again for the header but counted only in the frame loop.
+  // flush(flush_ctx, buf) runs after every frame, as the buffer can fill mid-trace.
+  using FlushFn = void (*)(void *flush_ctx, Buffer *buf);
+  static void writeStackTrace(Buffer *buf, CallTrace *trace, Lookup *lookup,
+                              FlushFn flush, void *flush_ctx);
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention

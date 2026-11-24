@@ -32,6 +32,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../../main/cpp/callTraceHashTable.h"
 #include "../../main/cpp/flightRecorder.h"
 #include "../../main/cpp/flightRecorder.inline.h"
 #include "../../main/cpp/gtest_crash_handler.h"
@@ -41,7 +42,10 @@
 
 #include <cstring>
 #include <map>
+#include <memory>
+#include <new>
 #include <string>
+#include <vector>
 
 static constexpr char LOOKUP_RESOLVE_METHOD_TEST_NAME[] = "LookupResolveMethodTest";
 class LookupResolveMethodGlobalSetup {
@@ -70,6 +74,16 @@ public:
     static void setVm(JavaVM* vm) { VM::_vm = vm; }
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+};
+
+// Reaches the private static per-trace writer; Recording itself needs a live
+// JVMTI environment to construct.
+class RecordingTestAccessor {
+public:
+    static void writeStackTrace(Buffer* buf, CallTrace* trace, Lookup* lookup,
+                                Recording::FlushFn flush, void* flush_ctx) {
+        Recording::writeStackTrace(buf, trace, lookup, flush, flush_ctx);
+    }
 };
 
 namespace {
@@ -817,6 +831,69 @@ TEST_F(LookupResolveMethodJavaFrameTest, ResolvedRowIsNotCounted) {
     FrameCounters after;
     EXPECT_EQ(before.unloaded, after.unloaded);
     EXPECT_EQ(before.unknown, after.unknown);
+}
+
+// ---------------------------------------------------------------------------
+// Recording::writeStackTrace(): the per-trace writer counts each written
+// frame once, including a root it resolves a second time for the header.
+// ---------------------------------------------------------------------------
+
+// Owns a CallTrace with room for frames.size() frames (CallTrace ends in
+// frames[1], so the storage is allocated past sizeof(CallTrace)).
+class OwnedTrace {
+public:
+    OwnedTrace(u64 trace_id, const std::vector<ASGCT_CallFrame>& frames)
+        : _storage(new char[sizeof(CallTrace) + frames.size() * sizeof(ASGCT_CallFrame)]) {
+        _trace = new (_storage.get()) CallTrace(false, static_cast<int>(frames.size()), trace_id);
+        for (size_t i = 0; i < frames.size(); i++) {
+            _trace->frames[i] = frames[i];
+        }
+    }
+    CallTrace* get() { return _trace; }
+
+private:
+    std::unique_ptr<char[]> _storage;
+    CallTrace* _trace;
+};
+
+void countFlush(void* flush_ctx, Buffer*) {
+    ++*static_cast<int*>(flush_ctx);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterCountsEachUnresolvedFrameOnce) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;  // jmethodID frames -> <unloaded>
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+
+    int fake_method_storage = 0;
+    ASGCT_CallFrame unloaded{};
+    unloaded.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    unloaded.method_id = reinterpret_cast<jmethodID>(&fake_method_storage);
+    ASGCT_CallFrame unknown{};  // null method_id -> shared unknown row
+    unknown.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    ASGCT_CallFrame resolved{};  // a native frame name: resolves, never counted
+    resolved.bci = BCI_ERROR;
+    resolved.native_function_name = "resolved_native_frame";
+
+    // The root is the last frame. Trace 1 has an unknown root, trace 2 an
+    // <unloaded> root, and both share the <unloaded> method.
+    OwnedTrace trace1(1, {unloaded, resolved, unknown});
+    OwnedTrace trace2(2, {resolved, unloaded});
+    FrameCounters before;
+    Buffer buffer;
+    int flushes = 0;
+
+    RecordingTestAccessor::writeStackTrace(&buffer, trace1.get(), &lookup, countFlush, &flushes);
+    RecordingTestAccessor::writeStackTrace(&buffer, trace2.get(), &lookup, countFlush, &flushes);
+
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded + 2, after.unloaded);
+    EXPECT_EQ(before.unknown + 1, after.unknown);
+    EXPECT_EQ(5, flushes) << "one flush check per written frame";
+    EXPECT_GT(buffer.offset(), 0);
 }
 
 // A row is re-filled in each chunk; one that resolves in a later chunk must
