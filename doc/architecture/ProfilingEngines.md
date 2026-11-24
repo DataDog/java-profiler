@@ -638,8 +638,8 @@ This engine has no collapsing or cached-stack replay; unowned samples keep unit 
 
 ### TaskBlock producer contract
 
-`wallprecheck=true` with unfiltered wall tracking enables completed-at-exit
-`datadog.TaskBlock` events. Java park hooks own park intervals. Java generic
+`wallprecheck=true` with unfiltered wall tracking enables `datadog.TaskBlock`
+events, written at exit and, for still-open intervals, at each dump. Java park hooks own park intervals. Java generic
 hooks own `SLEEPING` and `OBJECT_WAIT`; the public paired API owns `SLEEPING`.
 Linux native I/O hooks own physical platform/carrier `IO_WAIT` intervals; see
 [NativeIoHooks](NativeIoHooks.md). Native owners suppress wall signals immediately
@@ -661,9 +661,41 @@ The exit captures the workload stack synchronously and writes blocker,
 unblocking span, entry context, duration and observed state. `OBJECT_WAIT`
 serializes as `WAITING`; monitor contention serializes as `CONTENDED`.
 
-A live dump does not emit a prefix for an open interval. A later eligible exit
-writes one completed event, so its start may precede an earlier dump. Stop/start
-invalidates open owners instead of attributing them to a new recording.
+Stop/start invalidates open owners instead of attributing them to a new recording.
+
+#### Open-interval segments
+
+Each open owned run has a segment in the tracker (`SegmentState`, beside
+`BlockState`). The segment starts at the producer's entry tick. A dump reports the
+elapsed part of the segment, so a long block contributes to every chunk it spans:
+
+1. Before taking the stripes, `OpenTaskBlockSegments::collect()` selects segments
+   of at least 1 ms on live registry slots. It captures their threads' stacks with
+   one `GetThreadListStackTraces` call. The jthreads come from `GetAllThreads`,
+   matched by native tid.
+2. Under the stripes, `emit()` writes `[start, dump_ticks)` for each candidate
+   whose segment is unchanged. The segment must also pass the exit's context-window
+   check, and JVMTI must report the thread waiting, monitor-blocked or in native.
+   A runnable thread is skipped, so an abandoned paired interval is not reported.
+   The segment then restarts at `dump_ticks`. A segment under 1 ms is carried to the
+   next dump.
+3. The exit reports `[segment start, end)` with `continued=false`, the blocker and
+   `unblockingSpanId`. The last segment can be under 1 ms; the 1 ms check applies to
+   the whole interval. Dump segments carry no blocker, unblocking span or context
+   attributes. The entry admits no span.
+4. Stop captures the stacks before disabling TaskBlock. Its final chunk reports
+   the open parts and closes every segment, so a later exit reports nothing.
+
+The segment's `control` word packs the run generation, an ADVANCED bit and the
+index of the live entry in `start[2]`. Generation 0 means closed. Only the dump or
+stop thread advances segments; `_state_lock` serializes those threads. The advancer
+writes the next start into the other `start[]` entry and then CASes `control`. A
+run ends when its exit or another end path does a `fetch_and` on `control`, which
+keeps only the index. The dump CAS and the exit `fetch_and` act on one word, so
+each tick goes to exactly one side. The advancer never writes the entry that an
+exit or a new run reads. Entry closes `control` before it writes `start[]`, so a
+dump that read a stale run fails its CAS. Generations are never reused, so the
+CAS has no ABA. Signal handlers never read segments.
 
 HotSpot sends `MonitorWaited` before monitor reacquisition completes. A native
 wait event ends at that callback and excludes the subsequent reacquisition time.

@@ -189,6 +189,11 @@ See [TLSContext](TLSContext.md#retained-unowned-wall-context).
   use `_buf[lock_index]`; their `Profiler` callers take the stripe lock first
   (`Profiler::writeDatadogProfilerSetting()`, `writeHeapUsage()`, and the
   reference-chain drains in `dump()` and `stop()`).
+- Dump-time `datadog.TaskBlock` segments go through `Profiler::recordTaskBlockSegment()`
+  inside `rotateDictsAndRun()`, before `_jfr.dump()`/`_jfr.stop()`, so their call
+  traces land in the chunk being sealed. `continued` is true on these segments and
+  false on the exit's last segment; see
+  [ProfilingEngines](ProfilingEngines.md#open-interval-segments).
 - `recordLog()` builds the event in an `alloca` buffer and writes it to the
   file at once, without a stripe lock (`flightRecorder.cpp:2945-2966`).
 - `cpuMonitorCycle()` writes `jdk.CPULoad` into `_cpu_monitor_buf`, which
