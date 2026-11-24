@@ -290,7 +290,9 @@ TEST_F(TaskBlockSegmentsTest, ExitAfterFinalDumpEmitsNothing) {
   EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot)->activeBlockOwner());
 }
 
-TEST_F(TaskBlockSegmentsTest, ExitEndBeforeRacingDumpEmitsNothing) {
+// A caller-supplied end that a dump already passed still closes the chain with a one-tick
+// segment, so the continued=false event keeps its blocker.
+TEST_F(TaskBlockSegmentsTest, ExitEndBeforeRacingDumpStillEmitsClosingEvent) {
   previous_enabled = ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
   Profiler::setTaskBlockRecordOverrideForTest(captureExitEvent);
   g_exit_records.store(0);
@@ -302,9 +304,13 @@ TEST_F(TaskBlockSegmentsTest, ExitEndBeforeRacingDumpEmitsNothing) {
   RecordingSink sink;
   ASSERT_EQ(1, dump(sink, start + 3 * kMs));
   Context context{};
-  EXPECT_FALSE(finishTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, token, start,
-                                     context, 0, 0, start + 3 * kMs));
-  EXPECT_EQ(0, g_exit_records.load());
+  EXPECT_TRUE(finishTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, token, start,
+                                    context, 0x11, 0, start + 3 * kMs));
+  ASSERT_EQ(1, g_exit_records.load());
+  EXPECT_EQ(start + 3 * kMs, g_exit_event._start);
+  EXPECT_EQ(start + 3 * kMs + 1, g_exit_event._end);
+  EXPECT_FALSE(g_exit_event._continued);
+  EXPECT_EQ(0x11ULL, g_exit_event._blocker);
 }
 
 namespace {

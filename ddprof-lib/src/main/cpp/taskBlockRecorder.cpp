@@ -246,8 +246,9 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   if (!snapshot.segment_claimed) return false;
   u64 segment_start = 0;
   if (snapshot.segment_advanced) {
-    // A caller-supplied end can precede a racing dump's segment end.
-    if (end_ticks <= snapshot.segment_start) return false;
+    // A caller-supplied end can precede a racing dump's segment end. Close the chain with a
+    // one-tick segment so the last event (continued=false, blocker) is still written.
+    if (end_ticks <= snapshot.segment_start) end_ticks = snapshot.segment_start + 1;
     segment_start = snapshot.segment_start;
   }
   TASK_BLOCK_DIAGNOSTIC(EXIT_ELIGIBLE, diagnostic_ptr, 0);
@@ -313,7 +314,8 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
   ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (!tf->unfilteredWallTrackingActive() || slot_id < 0) return;
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
-  if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
+  u64 enter_ticks = monitorTicks();
+  if (!current->monitorEnter(enter_ticks, context, /*blocker=*/0, state)) {
     u64 token = current->monitorBlockToken();
     bool current_owner = false;
     if (token != 0) {
@@ -333,12 +335,12 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
       return;
     }
     current->clearMonitorBlock();
-    if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
+    if (!current->monitorEnter(enter_ticks, context, /*blocker=*/0, state)) {
       return;
     }
   }
 
-  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::JVMTI);
+  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::JVMTI, enter_ticks);
   if (token == 0) {
     ThreadFilter::Slot *slot = tf->slotForId(slot_id);
     if (slot != nullptr && slot->inContextWindow()) {
