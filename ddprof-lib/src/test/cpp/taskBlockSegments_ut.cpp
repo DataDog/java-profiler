@@ -313,6 +313,25 @@ TEST_F(TaskBlockSegmentsTest, ExitEndBeforeRacingDumpStillEmitsClosingEvent) {
   EXPECT_EQ(0x11ULL, g_exit_event._blocker);
 }
 
+// The one-tick rewrite must not make an interval eligible whose real duration is too short.
+TEST_F(TaskBlockSegmentsTest, ShortRealEndBeforeRacingDumpEmitsNothing) {
+  previous_enabled = ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  Profiler::setTaskBlockRecordOverrideForTest(captureExitEvent);
+  g_exit_records.store(0);
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(kTid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot);
+  const u64 start = 10 * kMs;
+  u64 token = enter(start);
+  RecordingSink sink;
+  ASSERT_EQ(1, dump(sink, start + 3 * kMs));
+  Context context{};
+  EXPECT_FALSE(finishTaskBlockAtExit(current.get(), &filter, &tracker, nullptr, 0, token, start,
+                                     context, 0x11, 0, start + kMs / 2));
+  EXPECT_EQ(0, g_exit_records.load());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+}
+
 namespace {
 struct Segment {
   u64 generation;

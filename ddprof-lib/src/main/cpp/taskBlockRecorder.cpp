@@ -247,8 +247,14 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   u64 segment_start = 0;
   if (snapshot.segment_advanced) {
     // A caller-supplied end can precede a racing dump's segment end. Close the chain with a
-    // one-tick segment so the last event (continued=false, blocker) is still written.
-    if (end_ticks <= snapshot.segment_start) end_ticks = snapshot.segment_start + 1;
+    // one-tick segment; eligibility (and its skip counters) is judged on the real end.
+    if (end_ticks <= snapshot.segment_start) {
+      if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, context
+                                           TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) {
+        return false;
+      }
+      end_ticks = snapshot.segment_start + 1;
+    }
     segment_start = snapshot.segment_start;
   }
   TASK_BLOCK_DIAGNOSTIC(EXIT_ELIGIBLE, diagnostic_ptr, 0);
