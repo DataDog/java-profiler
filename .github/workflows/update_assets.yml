@@ -84,7 +84,10 @@ jobs:
     # pass the open-PR lookup; serialized here, the later run observes the
     # opened PR instead of deleting its head branch on push rejection.
     concurrency:
-      group: dd-trace-java-bump
+      # Per release version: a queued bump for one version must not gate a
+      # queued bump for another; runs for the same version serialize (see
+      # above).
+      group: dd-trace-java-bump-${{ inputs.release_tag || github.ref_name }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:

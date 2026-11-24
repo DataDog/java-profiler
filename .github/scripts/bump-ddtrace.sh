@@ -130,6 +130,7 @@ EOF
 )
 
 PR_URL=$(gh pr create --draft --title "Bump java-profiler (ddprof) to ${VERSION}" \
-  --body "$PR_BODY" --label "type: bug fix" --label "comp: profiling" --label "tag: ai generated")
+  --body "$PR_BODY" --label "type: bug fix" --label "comp: profiling" \
+  --label "tag: dependencies" --label "tag: ai generated")
 
 echo "Opened $PR_URL"

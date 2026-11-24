@@ -271,10 +271,10 @@ jobs:
   report-failure:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
     # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
-    if: github.ref == 'refs/heads/main'
+    # group and cancel-in-progress would kill the nightly mid-run. The
+    # report itself must still run whenever a main run fails.
+    if: github.ref == 'refs/heads/main' && (failure() || cancelled())
     needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration, certify]
-    if: failure() || cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -236,26 +236,6 @@ exit 90
 EOF
 chmod +x "$GH_STUB_BIN/gh"
 
-# The script uses GNU sed -i; BSD sed (macOS) treats the expression as the
-# backup suffix. Shim only the -i form: GNU runs through unchanged, BSD gets
-# an explicit empty suffix.
-cat > "$GH_STUB_BIN/sed" <<'EOF'
-#!/usr/bin/env bash
-if [ "${1:-}" == "-i" ]; then
-  shift
-  # Never probe with sed --version: BSD sed consumes it as a script and
-  # blocks on stdin. uname is the reliable GNU-vs-BSD signal here.
-  # Absolute path: the shim itself is first on PATH, so a bare "sed" would
-  # recurse into the shim forever.
-  case "$(uname -s)" in
-    Darwin) exec /usr/bin/sed -i '' "$@" ;;
-    *) exec /usr/bin/sed -i "$@" ;;
-  esac
-fi
-exec /usr/bin/sed "$@"
-EOF
-chmod +x "$GH_STUB_BIN/sed"
-
 run_bump() {
   # run_bump <version> <rc-file> [out-file]; the script clones through the gh
   # stub and pushes to the local bare origin; the rc is captured inside the

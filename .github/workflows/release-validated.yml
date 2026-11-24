@@ -42,8 +42,9 @@ on:
 concurrency:
   # Dry runs share nothing with real releases: GitHub keeps one queued run
   # per group even with cancel-in-progress:false, so without the suffix a
-  # queued dry run would cancel a queued train release.
-  group: ${{ (inputs.release_type == 'patch' || inputs.release_type == 'retag') && format('release-maintenance-{0}', github.ref) || (inputs.dry_run && 'release-mainline-dry-run' || 'release-mainline') }}
+  # queued dry run would gate a queued train release (mainline) or a real
+  # maintenance release (patch/retag).
+  group: ${{ (inputs.release_type == 'patch' || inputs.release_type == 'retag') && format('release-maintenance-{0}{1}', github.ref, inputs.dry_run && '-dry-run' || '') || (inputs.dry_run && 'release-mainline-dry-run' || 'release-mainline') }}
   cancel-in-progress: false
 
 permissions:
@@ -141,7 +142,10 @@ jobs:
             # commit pinned here would release code the nightly never
             # certified. merge-base --is-ancestor accepts side branches too,
             # so membership on the first-parent line is checked separately.
-            if ! git rev-list --first-parent origin/main | grep -qx "$TARGET_SHA"; then
+            # Captured before matching: grep -qx exiting early would SIGPIPE
+            # rev-list under pipefail and read the match as a failure.
+            MAINLINE=$(git rev-list --first-parent origin/main)
+            if ! grep -qx "$TARGET_SHA" <<< "$MAINLINE"; then
               echo "::error::Major or minor releases must pin a commit on main's first-parent line, not a merged side branch"
               exit 1
             fi
