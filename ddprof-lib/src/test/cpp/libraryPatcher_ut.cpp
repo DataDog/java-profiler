@@ -459,6 +459,17 @@ TEST_F(LibraryPatcherPatching, AlreadyHookedSlotIsNotCountedAsUnhooked) {
   EXPECT_EQ(foreign, glob_dat);
   EXPECT_EQ(limit + 2, LibraryPatcherTestAccessor::patchedCount());
   EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
+
+  // A revisit that finds the hook clears unhooked, so a foreign-only library
+  // fits again: only if neither lib nor libs[0] counts as unhooked.
+  slots[0] = hook;
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(libs[0].get());
+  void* newcomer_slot = foreign;
+  CodeCache newcomer(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                     /* imports_patchable */ true);
+  newcomer.addImport(&newcomer_slot, "pthread_create");
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&newcomer);
+  EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&newcomer));
 }
 
 // A slot left alone marks the entry pending; the visit that hooks it again
