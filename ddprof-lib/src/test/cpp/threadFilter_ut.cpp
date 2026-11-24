@@ -1950,3 +1950,22 @@ TEST_F(ThreadRegistryTest, FilteredResetDoesNotRestoreLogicalMembershipFromBlock
     ASSERT_EQ(1u, selected.size());
     EXPECT_EQ(owner->tid(), selected[0].tid);
 }
+
+TEST(ThreadFilterTidIndexTest, AllocationFailureKeepsRegistryInactive) {
+    ThreadFilter filter;
+    filter.setTidIndexAllocationFailureForTest(true);
+    filter.init("1");
+    EXPECT_FALSE(filter.registryActive());
+    EXPECT_EQ(-1, filter.registerThread(1234));
+    filter.init("", true);
+    EXPECT_FALSE(filter.registryActive());
+    EXPECT_FALSE(filter.unfilteredWallTrackingActive());
+    EXPECT_EQ(0u, filter.recordingEpoch());
+
+    // A later start retries the allocation.
+    filter.setTidIndexAllocationFailureForTest(false);
+    filter.init("", true);
+    EXPECT_TRUE(filter.registryActive());
+    EXPECT_TRUE(filter.unfilteredWallTrackingActive());
+    EXPECT_GE(filter.registerThread(1234), 0);
+}

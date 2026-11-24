@@ -16,6 +16,10 @@ public:
     static void clearCurrent();
     static void clear(uint64_t tid);
     static bool contains(uint64_t tid);
+    // Async-signal-safe; for malloc hooks, not crash handlers (reads TLS when marked).
+    // A marked thread is exiting if it owns TLS or blocks profiling signals (every
+    // mark site blocks first); otherwise the tid was reused and its mark is cleared.
+    static bool isCurrentExiting();
 #ifdef UNIT_TEST
     static void resetForTest();
     static void markForTest(uint64_t tid);
