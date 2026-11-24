@@ -13,28 +13,35 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    acceptance criteria and the Build plan. If one is missing, stop. Tell the engineer
    which sign-off is missing, and suggest that they finish the Design phase first,
    with the `work-planning` skill. Do not start that phase. Otherwise create the
-   task's worktree and branch under the main checkout's root `<root>`: from any
-   worktree, `git rev-parse --path-format=absolute --git-common-dir` prints
-   `<root>/.git`; drop the `/.git`. Then run
-   `git worktree add -b <branch> <path> <start>`, with `<path>` set to
-   `<root>/.claude/worktrees/<name>`.
-   - `<name>` is the ticket key in lower case, for example `prof-1234`. When the
-     Build plan has several PRs, each PR gets its own worktree, and each name ends in
-     `-pr<id>`, with the PR's id as the Build plan writes it: `prof-1234-pr1`,
-     `prof-1234-pr1a`.
+   task's worktree and branch, with these values:
+   - `<root>` is the main checkout's root:
+     `git rev-parse --path-format=absolute --git-common-dir` prints `<root>/.git`.
+     If the path does not end in `/.git` (a submodule, a bare repository, a
+     `--separate-git-dir` clone), stop and ask the engineer.
+   - `<path>` is `<root>/.claude/worktrees/<name>`. `<name>` is the ticket key in
+     lower case, for example `prof-1234`. When the Build plan has several PRs, each
+     PR gets its own worktree, and each name ends in `-pr<id>`, with the PR's id as
+     the Build plan writes it: `prof-1234-pr1`, `prof-1234-pr1a`.
    - `<start>` is `refs/remotes/origin/<base>`, with the base that the Build plan
      names. A stacked PR starts from the local branch of the PR below it,
      `refs/heads/<branch>`: create its worktree once that branch has its commits.
-   - If `git worktree list` shows the branch at `<path>`, reuse that worktree. If it
-     shows the branch checked out anywhere else, stop and ask the engineer; do not
-     move or remove that checkout. If the branch exists without a worktree, run
-     `git worktree add <path> <branch>`, without `-b`. Never use `-B`: it resets
-     the branch, and its local commits are lost.
+
+   If `<root>/.git/info/exclude` has no `.claude/worktrees/` line, append one: it
+   applies on every branch, and `.gitignore` only on branches that have the line.
+   Then pick the first case that applies. Never use `-B`: it resets the branch, and
+   its local commits are lost.
+   1. `git worktree list` shows the branch at `<path>`: reuse that worktree.
+   2. It shows the branch checked out anywhere else: stop and ask the engineer; do
+      not move or remove that checkout.
+   3. `git show-ref --verify --quiet refs/heads/<branch>` succeeds: run
+      `git worktree add <path> <branch>`.
+   4. Otherwise run `git worktree add -b <branch> <path> <start>`.
 
    In Claude Code, enter the worktree with `EnterWorktree` `path:`, which keeps the
-   file tools out of the main checkout. Inside `<root>`, the worktree is one of the
-   session's working directories, so the shell stays in it and the review gate checks
-   it without a `cd`. Do not use `EnterWorktree` `name:`: it cannot set the branch
+   file tools out of the main checkout. If this session did not start in `<root>`,
+   ask the engineer to restart it there: only then is the worktree one of the
+   session's working directories, so the shell stays in it and the review gate
+   checks it without a `cd`. Do not use `EnterWorktree` `name:`: it cannot set the branch
    name or `<start>`. An entered session refuses `git` inside `$(...)` and cannot add
    a worktree under `<root>`: to create the next PR's worktree, leave with
    `ExitWorktree` `keep`, create it, then enter it with `path:`. Before working in
