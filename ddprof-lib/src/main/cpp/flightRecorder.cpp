@@ -521,8 +521,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
   // from the first fill as on the jmethodID path.
   if (resolved.lineNumberTable() != nullptr) {
     int size = resolved.lineNumberTableSize();
-    // Built before ownership moves, so a std::bad_alloc here leaves the table
-    // with `resolved`, which frees it.
+    // Built before ownership moves: `resolved` keeps the table until the
+    // shared_ptr owns it, so no exit path leaves it unowned.
     auto table = std::make_shared<SharedLineNumberTable>(
         size, const_cast<jvmtiLineNumberEntry *>(resolved.lineNumberTable()),
         false /* malloc'd */);
@@ -779,9 +779,8 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
 
   assert(prof_thread != nullptr);
   assert(method_id != nullptr && "Already filtered by caller");
-  // Reinstates the thread's previous landing pad on every exit from this frame,
-  // including a std::bad_alloc thrown by one of the map or dictionary inserts
-  // underneath. Leaving ours installed past the end of this frame would leave
+  // Reinstates the thread's previous landing pad on every exit from this
+  // frame. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
   JmpCtxScope jmp_scope(prof_thread);
   ResolveMethodState state;
@@ -1033,7 +1032,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // fjmethodid=lazy resolves raw frames only of these classes: they stay
   // pinned until the local references are deleted below. Always called, so a
   // failed GetLoadedClasses() leaves no list at all rather than a stale one,
-  // and ended on every exit from this function, including a std::bad_alloc.
+  // and ended on every exit from this function.
   JVMSupport::beginDump(env, err ? nullptr : classes, err ? 0 : count);
   struct DumpScope {
     ~DumpScope() { JVMSupport::endDump(); }
@@ -1518,6 +1517,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Log::LEVEL_NAME[Log::level()]);
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
+  writeBoolSetting(buf, T_ACTIVE_RECORDING, "j9AsgctDeadlockRisk",
+                   Profiler::instance()->j9AsgctDeadlockRisk());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "sanityCheckFailed",
                    Profiler::instance()->sanityCheckFailed());
   if (Profiler::instance()->sanityCheckFailed()) {
