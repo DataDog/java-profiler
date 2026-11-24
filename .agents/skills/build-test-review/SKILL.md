@@ -16,8 +16,8 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    task's worktree and branch, with these values:
    - `<root>` is the main checkout's root:
      `git rev-parse --path-format=absolute --git-common-dir` prints `<root>/.git`.
-     If the path does not end in `/.git` (a submodule, a bare repository, a
-     `--separate-git-dir` clone), stop and ask the engineer.
+     If the printed path does not end in `/.git` (a submodule, a bare repository,
+     a `--separate-git-dir` clone), stop and ask the engineer.
    - `<path>` is `<root>/.claude/worktrees/<name>`. `<name>` is the ticket key in
      lower case, for example `prof-1234`. When the Build plan has several PRs, each
      PR gets its own worktree, and each name ends in `-pr<id>`, with the PR's id as
@@ -25,6 +25,11 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    - `<start>` is `refs/remotes/origin/<base>`, with the base that the Build plan
      names. A stacked PR starts from the local branch of the PR below it,
      `refs/heads/<branch>`: create its worktree once that branch has its commits.
+
+   In Claude Code, if this session did not start in `<root>`, stop before creating
+   anything and ask the engineer to restart it there: only then is the worktree one
+   of the session's working directories, so the shell stays in it and the review
+   gate checks it without a `cd`.
 
    If `<root>/.git/info/exclude` has no `.claude/worktrees/` line, append one: it
    applies on every branch, and `.gitignore` only on branches that have the line.
@@ -38,14 +43,12 @@ for the build. The `ticket-writing` skill applies to every ticket edit and comme
    4. Otherwise run `git worktree add -b <branch> <path> <start>`.
 
    In Claude Code, enter the worktree with `EnterWorktree` `path:`, which keeps the
-   file tools out of the main checkout. If this session did not start in `<root>`,
-   ask the engineer to restart it there: only then is the worktree one of the
-   session's working directories, so the shell stays in it and the review gate
-   checks it without a `cd`. Do not use `EnterWorktree` `name:`: it cannot set the branch
-   name or `<start>`. An entered session refuses `git` inside `$(...)` and cannot add
-   a worktree under `<root>`: to create the next PR's worktree, leave with
-   `ExitWorktree` `keep`, create it, then enter it with `path:`. Before working in
-   another existing worktree, enter that one with `path:`.
+   file tools out of the main checkout. Do not use `EnterWorktree` `name:`: it
+   cannot set the branch name or `<start>`. An entered session refuses `git` inside
+   `$(...)` and cannot add a worktree under `<root>`: to create the next PR's
+   worktree, leave with `ExitWorktree` `keep`, create it, then enter it with
+   `path:`. Before working in another existing worktree, enter that one with
+   `path:`.
 
 2. **Checklist.** Derive a "Sub-sessions" section from the Build plan and add it to the
    ticket description. It needs no separate sign-off; the engineer can edit it. It
