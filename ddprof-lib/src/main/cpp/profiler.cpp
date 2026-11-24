@@ -2299,6 +2299,12 @@ Error Profiler::stop() {
     // Reopen the gate: teardown was skipped, so the recording stays intact and a retried
     // stop() re-enters this path (the join itself is idempotent for that retry).
     _reference_chains_active.store(true, std::memory_order_release);
+    // Threads started while the gate was closed were never registered (onThreadStart gates on
+    // the flag): re-run the start()-time snapshot over the reopened gate. A thread seen by both
+    // the snapshot and a later onThreadStart is re-registered under the same tid, which
+    // registerThreadObject() handles - the same reconciliation start() relies on.
+    ReferenceChainTracker::instance()->registerExistingThreads(VM::jvmti(),
+                                                               VM::jni());
     return Error("reference chain BFS thread did not join; teardown skipped, retry stop()");
   }
 
