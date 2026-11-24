@@ -33,18 +33,30 @@ env:
 
 jobs:
   test-debug:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["debug"]'
       artifact_suffix: cert-debug
 
   test-asan:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["asan"]'
       artifact_suffix: cert-asan
 
   slow-test-debug:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["debug"]'
@@ -52,6 +64,10 @@ jobs:
       artifact_suffix: cert-slow-debug
 
   slow-test-asan:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["asan"]'
@@ -59,6 +75,10 @@ jobs:
       artifact_suffix: cert-slow-asan
 
   fuzz:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     continue-on-error: false
     timeout-minutes: 30
@@ -94,6 +114,10 @@ jobs:
           path: ddprof-lib/fuzz/build/fuzz-crashes/
 
   gitlab-integration:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     # Verdict on the dd-trace-integration cells of the candidate's GitLab
     # pipeline. Those cells run on every push to main; this job waits for
     # them and reads their results.
@@ -222,6 +246,10 @@ jobs:
           exit $rc
 
   certify:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration]
     runs-on: ubuntu-latest
     outputs:
@@ -241,6 +269,10 @@ jobs:
           echo "$NOTE" >> "$GITHUB_STEP_SUMMARY"
 
   report-failure:
+    # Scheduled and manual runs certify GITHUB_SHA only when it is main:
+    # a feature-branch dispatch would enter the 'certification' concurrency
+    # group and cancel-in-progress would kill the nightly mid-run.
+    if: github.ref == 'refs/heads/main'
     needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration, certify]
     if: failure() || cancelled()
     runs-on: ubuntu-latest
