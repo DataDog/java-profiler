@@ -902,6 +902,8 @@ public:
 
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
+  // True iff a fault at pc can be one crashHandlerInternal() handles.
+  static bool isProfilerOwnedFault(uintptr_t pc);
   static void setupSignalHandlers();
   static void checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext);
 

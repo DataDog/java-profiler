@@ -1866,7 +1866,8 @@ void Profiler::enableCpuEngine(int activated) {
 // it involves no runtime constructor that would be unsafe in signal context.
 static const struct sigaction kDefaultAction = {};
 
-// Exiting-thread fault path: hand the fault to whoever owned it before us.
+// Early fault path (JVM-owned fault or exiting thread): hand the fault to
+// whoever owned it before us.
 // With no prior handler, the pre-profiler behavior is the default action, so
 // restore it and re-raise (both sigaction() and raise() are async-signal-safe).
 static void chainOrTerminate(int signo, siginfo_t *siginfo, void *ucontext,
@@ -1881,10 +1882,27 @@ static void chainOrTerminate(int signo, siginfo_t *siginfo, void *ucontext,
   }
 }
 
+static std::atomic<uintptr_t> profiler_min_address{0};
+static std::atomic<uintptr_t> profiler_max_address{0};
+
+// Every case crashHandlerInternal() handles is identified by the fault PC; the
+// checks are address comparisons on static state, with no TLS or syscall.
+bool Profiler::isProfilerOwnedFault(uintptr_t pc) {
+  const uintptr_t min = profiler_min_address.load(std::memory_order_relaxed);
+  const uintptr_t max = profiler_max_address.load(std::memory_order_relaxed);
+  if (min == 0 || (pc >= min && pc < max)) return true;  // range unknown: stay conservative
+  if (WX_MEMORY && Trap::isFaultInstruction(pc)) return true;
+  return VM::isHotspot() && _need_JDK_8313796_workaround &&
+         VMStructs::isInterpretedFrameValidFunc(reinterpret_cast<const void*>(pc));
+}
+
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  // Faults on an exiting thread skip the TLS bootstrap entirely: the lookup
-  // itself can fault during pthread teardown and re-enter the handler.
-  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+  // JVM-owned faults (implicit null checks, polling pages) chain before any
+  // syscall or TLS read; chainOrTerminate keeps the no-handler default action.
+  if (!isProfilerOwnedFault(static_cast<uintptr_t>(StackFrame(ucontext).pc())) ||
+      // Raw mark, not isCurrentExiting(): its TLS read can fault during
+      // pthread teardown and re-enter this handler.
+      ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
     chainOrTerminate(signo, siginfo, ucontext, OS::getSegvChainTarget(), orig_segvHandler);
     return;
   }
@@ -1917,8 +1935,9 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  // See segvHandler: exiting threads skip the faultable TLS bootstrap.
-  if (ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+  // See segvHandler: JVM-owned faults and exiting threads chain before TLS.
+  if (!isProfilerOwnedFault(static_cast<uintptr_t>(StackFrame(ucontext).pc())) ||
+      ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
     chainOrTerminate(signo, siginfo, ucontext, OS::getBusChainTarget(), orig_busHandler);
     return;
   }
@@ -2004,9 +2023,6 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   }
   return 0;  // not handled, safe to chain
 }
-
-static std::atomic<uintptr_t> profiler_min_address{0};
-static std::atomic<uintptr_t> profiler_max_address{0};
 
 #ifdef UNIT_TEST
 void Profiler::setAddressRangeForTest(uintptr_t min, uintptr_t max) {
