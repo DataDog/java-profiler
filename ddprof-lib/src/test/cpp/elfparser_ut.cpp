@@ -384,7 +384,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
     // TSan aborts the whole binary (halt_on_error) on the uninstrumented-libc
     // window this test exists to exercise: dlclose on the unmap thread frees
     // loader structures while the main thread's dlinfo/dladdr reads run. The
-    // race is a TSan-visibility artifact, not a product defect (PROF-16632),
+    // race is a TSan-visibility artifact, not a product defect,
     // and an abort skips XML writing, so quarantine cannot express it - skip
     // at runtime instead.
     GTEST_SKIP() << "TSan flags the intentional dlclose-vs-parseLibraries race";

@@ -235,28 +235,34 @@ void FrontierTable::markRootReportObserved(jlong tag, u8 root_kind,
     return;
   }
   int idx = (int)(tag - 1);
-  bool chain_attached_static = false;
   if (static_sweep) {
+    const u16 sweep_seq = (u16)(attempt_id & 0xFFFF);
     {
       SharedLockGuard guard(&_table_lock);
       if (idx >= _table_size) {
         return;
       }
-      chain_attached_static = _table[idx].parent_tag != 0;
-      if (chain_attached_static &&
-          (u32)_table[idx].referrer_class_tag == attempt_id) {
+      const bool chain_attached = _table[idx].parent_tag != 0;
+      if (chain_attached
+              ? (u32)_table[idx].referrer_class_tag == attempt_id
+              : _table[idx].root_report_sweep_attempt == sweep_seq) {
         return;
       }
     }
-    if (chain_attached_static) {
-      // Chain hops read their referrer's class from the parent entry instead.
-      // Preserve this unused field for the in-flight static-chunk retry stamp.
-      ExclusiveLockGuard guard(&_table_lock);
-      if (idx < _table_size && _table[idx].parent_tag != 0) {
+    ExclusiveLockGuard guard(&_table_lock);
+    if (idx < _table_size) {
+      // The sweep stamp never touches root_report_attempt: a root-attached write there
+      // would displace the enumeration stamp and restage the weaker JNI-global report on
+      // every retry (the starvation the stamp machinery prevents). Chain-attached
+      // entries keep the referrer_class_tag stamp - reconstructChain never reads that
+      // field on a parented entry.
+      if (_table[idx].parent_tag != 0) {
         _table[idx].referrer_class_tag = (jlong)attempt_id;
+      } else {
+        _table[idx].root_report_sweep_attempt = sweep_seq;
       }
-      return;
     }
+    return;
   }
   {
     SharedLockGuard guard(&_table_lock);
@@ -339,13 +345,24 @@ bool FrontierTable::rootReportCompleted(jlong tag, u8 root_kind,
       !weaker_jni_global) {
     return false;
   }
-  if (static_sweep && root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
-      entry.parent_tag != 0) {
-    u32 stamped = (u32)entry.referrer_class_tag;
+  if (static_sweep && root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+    // Chain-attached entries keep the referrer_class_tag stamp; root-attached entries keep
+    // the parallel u16 field (see markRootReportObserved). Low-16 comparisons match the stored
+    // truncation.
+    if (entry.parent_tag != 0) {
+      u32 stamped = (u32)entry.referrer_class_tag;
+      return anchor_indexed ||
+             (attempt_id != 0 && stamped == attempt_id) ||
+             (retrying_incomplete && previous_attempt_id != 0 &&
+              stamped == previous_attempt_id);
+    }
+    u16 stamped = entry.root_report_sweep_attempt;
+    u16 now_seq = (u16)(attempt_id & 0xFFFF);
+    u16 prev_seq = (u16)(previous_attempt_id & 0xFFFF);
     return anchor_indexed ||
-           (attempt_id != 0 && stamped == attempt_id) ||
+           (attempt_id != 0 && stamped == now_seq) ||
            (retrying_incomplete && previous_attempt_id != 0 &&
-            stamped == previous_attempt_id);
+            stamped == prev_seq);
   }
   u8 kind_bit = root_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD
                     ? FrontierRootReport::STATIC_FIELD_MASK

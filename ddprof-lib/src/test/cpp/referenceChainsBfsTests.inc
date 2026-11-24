@@ -1821,7 +1821,7 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 // loop (shouldRunPass -> runPass -> pollWatchedTargets, the exact threadLoop body) driven over the
 // scripted mock heap, asserting SYSTEM INVARIANTS instead of unit symptoms.
 
-// PROF-16316: an improveChain() deeper-path invalidation must REPLACE a resolved leak chain, never
+// An improveChain() deeper-path invalidation must REPLACE a resolved leak chain, never
 // erase it. Sequence from the late-TL RCA: a leak-correlated chain is cached, a later pass re-reaches
 // its source through a strictly deeper path (improveChain() queues a deferred invalidation), the
 // search then terminates (candidate/discovered slots zeroed, so no poll path can rebuild from
@@ -1897,7 +1897,7 @@ TEST_F(ReferenceChainsBfsTest, ImprovedPathInvalidationKeepsLeakChainAcrossTermi
     tracker->stop();
 }
 
-// PROF-16316 split semantics: the dump path applies only EVICT (noise eviction still erases at
+// Split semantics: the dump path applies only EVICT (noise eviction still erases at
 // dump time, exactly as before), EVICT wins over a REBUILD queued for the same tag, and REBUILD is
 // left for the BFS-thread poll, which keeps the old chain when the frontier cannot rebuild it.
 TEST_F(ReferenceChainsBfsTest, DumpDrainAppliesEvictAndLeavesRebuildToPoll) {

@@ -709,6 +709,23 @@ void ReferenceChainTracker::eraseAnchorEntries(
   if (_static_anchor_own_class_tags.size() > out) {
     _static_anchor_own_class_tags.resize(out);
   }
+  if (preserve_pending_turns && !_static_anchor_fresh_queue.empty()) {
+    // Durable eviction preserves the queued first look but discards the index's class-tag
+    // metadata: write the resolved tag back into the queued entry here (before the map erase),
+    // or a re-enlist that re-inserts it (the queued entry is PENDING, so no new push happens)
+    // followed by another eviction would leave the preserved turn carrying the admission-time 0
+    // and spend it on the unresolvable shape fallback.
+    for (FreshAnchor &anchor : _static_anchor_fresh_queue) {
+      if (anchor.own_class_tag != 0 || removed.count(anchor.tag) == 0) {
+        continue;
+      }
+      auto known = _static_anchor_index_class_tags.find(anchor.tag);
+      if (known != _static_anchor_index_class_tags.end() &&
+          known->second.class_tag != 0) {
+        anchor.own_class_tag = known->second.class_tag;
+      }
+    }
+  }
   for (jlong tag : removed) {
     _static_anchor_index_tags.erase(tag);
     auto known = _static_anchor_index_class_tags.find(tag);
@@ -803,10 +820,15 @@ void ReferenceChainTracker::indexAnchorForRotation(jlong tag,
   }
   _static_anchor_index.push_back(tag);
   _static_anchor_own_class_tags.push_back(own_class_tag);
-  if (_frontier != nullptr &&
-      _static_anchor_fresh_queue.size() < STATIC_ANCHOR_FRESH_CAP &&
-      _frontier->tryMarkAnchorRotationPending(tag)) {
-    _static_anchor_fresh_queue.push_back(FreshAnchor{tag, own_class_tag});
+  if (_frontier != nullptr) {
+    if (_static_anchor_fresh_queue.size() < STATIC_ANCHOR_FRESH_CAP &&
+        _frontier->tryMarkAnchorRotationPending(tag)) {
+      _static_anchor_fresh_queue.push_back(FreshAnchor{tag, own_class_tag});
+    } else if (_static_anchor_fresh_queue.size() >= STATIC_ANCHOR_FRESH_CAP) {
+      // The prioritized first look was lost to the queue cap (the counter's documented
+      // meaning); the anchor keeps fair-tier coverage via the index.
+      Counters::increment(REFERENCE_CHAIN_STATIC_FRESH_DROPPED);
+    }
   }
 }
 
@@ -1089,6 +1111,16 @@ void ReferenceChainTracker::requeueStaticAnchorFreshFront(
   // Reverse order onto the front preserves the tags' relative admission order (push_front of the
   // LAST entry first leaves the FIRST entry at the deque's front).
   for (size_t i = entries.size(); i-- > 0;) {
+    if (_static_anchor_fresh_queue.size() >= STATIC_ANCHOR_FRESH_CAP) {
+      // A flush between this pass's pops and the requeue can refill the freed slots: an
+      // entry requeued past the cap spends its first look here (fair-tier coverage via the
+      // index) rather than overfilling the queue or stranding a PENDING flag no later
+      // re-enlist could clear (tryMarkAnchorRotationPending refuses while PENDING is set).
+      if (_frontier != nullptr) {
+        _frontier->markAnchorRotationServed(&entries[i].tag, 1);
+      }
+      continue;
+    }
     _static_anchor_fresh_queue.push_front(entries[i]);
   }
 }

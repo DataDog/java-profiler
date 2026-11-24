@@ -509,7 +509,8 @@ TEST_F(ReferenceChainsBfsTest, DurableRootReportProgressStampBoundaries) {
     EXPECT_TRUE(frontier->rootReportCompleted(
         static_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD, false,
         FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 8U,
-        FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 7U, true));
+        FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 7U, true,
+        nullptr, /*static_sweep=*/true));
     weaker_root_noop = false;
     // A stale static-sweep stamp alone no longer suppresses the weaker JNI report: after the
     // static edge disappears and eviction drops the holder from the durable index, the JNI report
@@ -589,6 +590,58 @@ TEST_F(ReferenceChainsBfsTest, WeakerJniGlobalReportStagesDespiteStaleSweepStamp
               AnchorAcc::journalCountForTest())
         << "the stale sweep stamp must not suppress the JNI re-enlistment observation";
     pass.scope.flush();
+
+    tracker->stop();
+}
+
+// A static-sweep stamp must never displace a stored enumeration stamp: both share
+// root_report_attempt, and the sweep's high-bit id falls outside root enumeration's retry-sequence
+// window, so the overwrite would restage the weaker JNI-global report on every retry - the exact
+// starvation the stamp machinery prevents.
+TEST_F(ReferenceChainsBfsTest, SweepStampDoesNotDisplaceEnumerationStamp) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+    // Root-attached static holder (the shape whose sweep stamp takes the shared field): the
+    // enumeration accepts its weaker JNI-global report first.
+    const jlong tag = 21021;
+    insertAnchorEntry(frontier, tag, 0, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    frontier->markRootReportObserved(tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, 7);
+
+    // The sweep arrives between enumeration attempts: it must keep the enumeration stamp.
+    frontier->markRootReportObserved(
+        tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD,
+        FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 40U,
+        /*static_sweep=*/true);
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(tag, &entry));
+    EXPECT_EQ(7u, entry.root_report_attempt)
+        << "a sweep stamp must not clobber the enumeration stamp";
+    EXPECT_TRUE(entry.root_report_kind_mask &
+                FrontierRootReport::JNI_GLOBAL_MASK);
+
+    // The retry sequence still recognizes the stamp: the weaker JNI-global report stays
+    // suppressed instead of restaging on every attempt.
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 8, 7, true));
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL, false, 9, 7, true));
+
+    // A root-attached entry with no enumeration stamp keeps its sweep suppression through
+    // the parallel sweep field (chain-attached entries use referrer_class_tag instead).
+    const jlong free_tag = 21022;
+    insertAnchorEntry(frontier, free_tag, 0, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    frontier->markRootReportObserved(
+        free_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD,
+        FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 41U,
+        /*static_sweep=*/true);
+    EXPECT_TRUE(frontier->rootReportCompleted(
+        free_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD, false,
+        FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 42U,
+        FrontierRootReport::STATIC_SWEEP_ATTEMPT_BIT | 41U, true,
+        nullptr, /*static_sweep=*/true));
 
     tracker->stop();
 }

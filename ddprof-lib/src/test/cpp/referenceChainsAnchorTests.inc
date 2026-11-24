@@ -324,6 +324,8 @@ TEST_F(ReferenceChainsBfsTest, FreshQueueCapDropsNewestAnchors) {
     const jlong first = 2000;
     const jlong klass = -799100;
     ReferenceChainsTestAccessor::primeClassShapeForTest(klass, true);
+    long long dropped_before =
+        Counters::getCounter(REFERENCE_CHAIN_STATIC_FRESH_DROPPED);
     for (size_t i = 0; i < cap + 2; i++) {
         const jlong tag = first + (jlong)i;
         ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
@@ -341,12 +343,75 @@ TEST_F(ReferenceChainsBfsTest, FreshQueueCapDropsNewestAnchors) {
         first + (jlong)cap));
     EXPECT_FALSE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
         first + (jlong)cap + 1));
+    EXPECT_EQ(2, Counters::getCounter(REFERENCE_CHAIN_STATIC_FRESH_DROPPED) -
+                     dropped_before)
+        << "each cap-rejected admission must count its lost prioritized first look";
 
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(1);
     ASSERT_EQ(1u, selected.size());
     EXPECT_EQ(first, selected[0]) << "the retained FIFO head must receive the next first look";
     EXPECT_EQ(first + 1, ReferenceChainsTestAccessor::freshQueueTagsForTest().front());
+
+    tracker->stop();
+}
+
+// A requeue past the queue cap spends the overflow entries' first looks instead of overfilling
+// the deque: flush admissions between this pass's pops and the requeue can refill the freed
+// slots, and an unbounded push_front would grow the queue past its fixed cap.
+TEST_F(ReferenceChainsBfsTest, FreshRequeuePastCapSpendsOverflowFirstLooks) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::freshAnchorQueueCapForTest();
+    const jlong klass = -799200;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(klass, true);
+    for (size_t i = 0; i < cap; i++) {
+        const jlong tag = 3000 + (jlong)i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, klass, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_EQ(cap, ReferenceChainsTestAccessor::freshQueueTagsForTest().size());
+
+    // Three popped turns (PENDING set, as the production requeue receives them) requeued against
+    // a full queue: all three overflow.
+    constexpr jlong overflow_base = 6000;
+    for (int i = 0; i < 3; i++) {
+        const jlong tag = overflow_base + i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, klass, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        ASSERT_TRUE(frontier->tryMarkAnchorRotationPending(tag));
+    }
+    ReferenceChainsTestAccessor::requeueStaticAnchorFreshFrontForTest(
+        std::vector<ReferenceChainsTestAccessor::FreshAnchor>{
+            {overflow_base, klass},
+            {overflow_base + 1, klass},
+            {overflow_base + 2, klass}});
+
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::freshQueueTagsForTest().size())
+        << "the requeue must not grow the queue past its cap";
+    for (int i = 0; i < 3; i++) {
+        EXPECT_FALSE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+            overflow_base + i));
+    }
+    for (int i = 0; i < 3; i++) {
+        FrontierEntry entry{};
+        ASSERT_TRUE(frontier->lookup(overflow_base + i, &entry));
+        EXPECT_TRUE(entry.anchor_rotation_flags &
+                    FrontierAnchorRotation::FIRST_LOOK_SERVED)
+            << "an overflowed turn is spent, never left PENDING outside the queue";
+        EXPECT_FALSE(entry.anchor_rotation_flags &
+                     FrontierAnchorRotation::FIRST_LOOK_PENDING);
+    }
 
     tracker->stop();
 }
@@ -401,6 +466,69 @@ TEST_F(ReferenceChainsBfsTest, EvictedFreshAnchorKeepsRefreshedClassTag) {
                 selected.end())
         << "the preserved first look must walk the holder, not be spent on "
            "the stale 0 class tag";
+
+    tracker->stop();
+}
+
+// A tag admitted with class tag 0, evicted, re-enlisted with the resolved tag, and evicted again
+// before selection keeps its resolved tag on the preserved queue entry: the eviction writes the
+// index's resolved tag back into the queued turn, so the fresh lane never falls back to the
+// admission-time 0 and rejects a chain-attached container whose first look it then spends.
+TEST_F(ReferenceChainsBfsTest, DoubleEvictionPreservesResolvedFreshClassTag) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    ReferenceChainsTestAccessor::TrackerStopGuard stop_guard;
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const size_t cap = ReferenceChainsTestAccessor::kDurableAnchorIndexCap;
+    const jlong kContainer = -525;
+    ReferenceChainsTestAccessor::primeClassShapeForTest(kContainer, true);
+    const jlong target = 6401, parent = 6402;
+    // Chain-attached: eligibility rides on the holder's class shape, so the queued entry's tag
+    // must resolve for the fresh lane to keep the turn.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, target, parent, 1, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    // First admission with class tag 0: the queue entry carries the unresolvable 0.
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        target, 0, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    // First eviction: the pending turn survives outside the index with its 0 tag.
+    for (size_t i = 0; i <= cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            8300 + (jlong)i, -905, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    // Re-enlist with the resolved tag: the PENDING flag suppresses a fresh queue push, and the
+    // upgrade path's queue refresh never runs (the class-tag map was erased by the eviction).
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        target, kContainer, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    // Second eviction drops the re-inserted metadata; the write-back keeps the resolved tag on
+    // the preserved queued entry. The oversized wave leaves no doubt the re-inserted target
+    // (admitted before the whole wave) falls outside the surviving window.
+    for (size_t i = 0; i <= 2 * cap; i++) {
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            9300 + (jlong)i, -906, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    }
+    ASSERT_FALSE(
+        ReferenceChainsTestAccessor::anchorIndexContainsForTest(target));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::freshAnchorQueueContainsForTest(
+        target));
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            8);
+    EXPECT_TRUE(std::find(selected.begin(), selected.end(), target) !=
+                selected.end())
+        << "the preserved turn must carry the resolved tag and walk the container";
 
     tracker->stop();
 }
@@ -2405,8 +2533,8 @@ TEST_F(ReferenceChainsBfsTest, AnchorReplayedLocalsClassifiedLaterOrRejectedAsNo
     tracker->stop();
 }
 
-// === Tests integrated from the merged PR #889 rework, adapted to this branch's journal and
-// pending-buffer design (see the merge commit message for what was ported and what was not) ===
+// === Tests integrated from the earlier reference-chain rework, adapted to this branch's
+// journal and pending-buffer design ===
 
 // Dead entries inside the fresh-queue window (the ABANDONED shape the production death path
 // leaves): the selection must skip them, spend their first look, and drain the queue in
@@ -2956,7 +3084,7 @@ TEST_F(ReferenceChainsBfsTest, GlobalRootsIndexNewAndPreviouslyDiscoveredCollect
 // Indexed holders whose objects die stop resolving in GetObjectsWithTags(); the anchor walk
 // drops them from the rotation index (removeMissingAnchors()) instead of accumulating them for
 // the tracker's lifetime (released tags get re-minted, so the same holder would otherwise
-// re-index under its fresh tag every pass). Adapted from the merged #889 test: the walk-path
+// re-index under its fresh tag every pass). Adapted from the earlier rework's walk-path test: the
 // prune covers tags the scan picked; the selection scan reclaims the tags it must skip
 // (RotationScanReclaimsDeadEntriesBelowCap).
 TEST_F(ReferenceChainsBfsTest, DeadAnchorIndexEntriesArePruned) {

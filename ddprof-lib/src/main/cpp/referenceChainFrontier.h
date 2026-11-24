@@ -84,6 +84,11 @@ typedef struct FrontierEntry {
   // reconstructChain()'s callers want to report (they want to label the chain's root, not every
   // hop).
   u8 root_kind;
+  // Static-sweep retry stamp for ROOT-ATTACHED entries (the chain-attached shape uses
+  // referrer_class_tag): low 16 bits of the sweep attempt id, so the enumeration stamp in
+  // root_report_attempt is never displaced. A false suppression needs the same tag re-swept
+  // exactly 65,536 sweep attempts apart - one missed staging, bounded and rare.
+  u16 root_report_sweep_attempt;
   // Last accepted root-report attempt and its kinds; attempt ids distinguish traversal sources.
   u32 root_report_attempt;
   // Raw JVMTI class tag of THIS entry's own object, from the shared, process-wide allocator
