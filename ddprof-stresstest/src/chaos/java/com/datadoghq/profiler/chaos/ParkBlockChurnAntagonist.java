@@ -4,6 +4,8 @@
  */
 package com.datadoghq.profiler.chaos;
 
+import static com.datadoghq.profiler.WallClockPrecheckBenchmarkHooks.OSTHREAD_STATE_SLEEPING;
+
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Field;
@@ -327,7 +329,7 @@ public final class ParkBlockChurnAntagonist implements Antagonist {
 
   /** Always closes the owned sleep interval, including interrupted sleeps. */
   private void sleepOwned(long millis) throws Throwable {
-    long token = (long) blockEnter.invokeExact(7); // OSThreadState::SLEEPING
+    long token = (long) blockEnter.invokeExact(OSTHREAD_STATE_SLEEPING);
     if (token != 0) armedSleepingRuns.incrementAndGet();
     try {
       Thread.sleep(millis);

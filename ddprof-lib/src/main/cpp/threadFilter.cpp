@@ -29,6 +29,7 @@
 #include "threadLocalData.h"
 #include "wallClockBlockTracker.h"
 #include <cassert>
+#include <new>
 #include <cstdlib>
 #include <cstdio>
 #include <thread>
@@ -745,9 +746,16 @@ void ThreadFilter::drainRetiredLocked() {
     }
 }
 
-void ThreadFilter::ensureTidIndexLocked() {
-    if (_tid_index.load(std::memory_order_acquire) != nullptr) return;
-    TidIndex* tid_index = new TidIndex();
+bool ThreadFilter::ensureTidIndexLocked() {
+    if (_tid_index.load(std::memory_order_acquire) != nullptr) return true;
+    TidIndex* tid_index = nullptr;
+#ifdef UNIT_TEST
+    if (!_tid_index_allocation_failure_for_test)
+#endif
+    {
+        tid_index = new (std::nothrow) TidIndex();
+    }
+    if (tid_index == nullptr) return false;
     for (int i = 0; i < kTidIndexSize; ++i) {
         tid_index->entries[i].store(0, std::memory_order_relaxed);
     }
@@ -755,6 +763,7 @@ void ThreadFilter::ensureTidIndexLocked() {
     // the zeroed entries rather than uninitialized memory.
     _tid_index.store(tid_index, std::memory_order_release);
     NativeMem::record(NM_THREAD_FILTER, (long long)sizeof(TidIndex));
+    return true;
 }
 
 bool ThreadFilter::pushToFreeList(SlotID slot_id) {
@@ -898,12 +907,16 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     // in-lock admission check in registerThread().
     // Idle live owners still count against kMaxThreads between recordings;
     // reclaiming them here would allow a paused hook to write a new owner's slot.
+    bool registry_active = unfiltered_tracking || context_filter;
     {
         std::lock_guard<std::mutex> lock(_registry_lock);
         drainRetiredLocked();
         _registry_active.store(false, std::memory_order_release);
-        if (unfiltered_tracking || context_filter) {
-            ensureTidIndexLocked();
+        // Without an index no thread can register: keep the registry and
+        // unfiltered tracking off, as when every registration fails.
+        if (registry_active && !ensureTidIndexLocked()) {
+            registry_active = false;
+            unfiltered_tracking = false;
         }
         if (context_filter && _block_tracker != nullptr) {
             ensureLiveOwnerContextsLocked();
@@ -921,8 +934,7 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     _recording_epoch.store(epoch, std::memory_order_release);
     _track_unfiltered_wall.store(unfiltered_tracking,
                                  std::memory_order_release);
-    _registry_active.store(unfiltered_tracking || context_filter,
-                           std::memory_order_release);
+    _registry_active.store(registry_active, std::memory_order_release);
     _enabled.store(context_filter, std::memory_order_release);
 }
 
