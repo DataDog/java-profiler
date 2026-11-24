@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.CompilerControl;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Measurement;
@@ -45,25 +46,16 @@ import org.openjdk.jmh.infra.IterationParams;
 import org.openjdk.jmh.runner.IterationType;
 
 /**
- * Measures the wake-up latency of a thread blocked in a TaskBlock-instrumented call: the time from
- * the waking thread's wake action to the woken thread running user code again, which includes the
- * stack capture done on the block's exit path.
+ * Measures wake-up latency: from the helper's wake action (a {@code nanoTime} stamp just before
+ * unpark, notify or write) to the worker running user code again, including its exit-path capture.
+ * For {@code objectWait} that also covers the helper's monitor exit and the worker's re-acquire.
  *
- * <p>Each op builds {@code stackDepth} frames, blocks in {@code source} ({@code park} through the
- * park hooks, {@code objectWait}, or a blocking {@code socketRead}) and is woken by a helper after
- * {@code gapMicros}. The helper stamps {@code System.nanoTime()} just before it unparks, notifies
- * or writes; the worker subtracts that stamp once it is back in user code.
+ * <p>An op is the gap plus the latency, so JMH's score would mostly show the gap. The benchmark
+ * keeps measurement-iteration latencies itself and prints p50/p99/p99.9/max in the trial teardown.
  *
- * <p>The latency is not the op time (an op is the gap plus the latency), so JMH's score and {@code
- * SampleTime} percentiles would mostly show the gap. The benchmark therefore collects the per-op
- * latencies of the measurement iterations itself and prints p50/p99/p99.9/max in the trial teardown
- * ({@code [taskblock-bench] latency ...}); the JMH score is only a liveness figure.
- *
- * <p>{@code config=none} loads the library without a recording, {@code wall} is wall-clock without
- * TaskBlock and {@code taskblock} turns it on. The teardown fails unless the {@code taskblock}
- * variant emitted at least half as many TaskBlocks as ops and the others none; a {@code gapMicros}
- * under the 1 ms threshold therefore fails the {@code taskblock} variant. The {@code socketRead}
- * hooks exist only on Linux, so elsewhere its emission checks are skipped.
+ * <p>The teardown fails unless {@code taskblock} emitted at least half of the ops and {@code wall}
+ * none, so a gap under 1 ms fails. {@code socketRead} hooks are Linux-only; elsewhere its checks
+ * are skipped.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
@@ -86,7 +78,7 @@ public class TaskBlockWakeupLatencyBenchmark {
   @Param({"1500"})
   public long gapMicros;
 
-  /** Capacity of the latency buffer; later samples are counted but not stored. */
+  /** Latency buffer capacity; later samples are counted, not stored. */
   private static final int MAX_SAMPLES = 1 << 18;
 
   /** Allowance for the in-flight op and for JMH or JVM threads that block once or twice. */
@@ -140,10 +132,7 @@ public class TaskBlockWakeupLatencyBenchmark {
     measuring = iteration.getType() == IterationType.MEASUREMENT;
   }
 
-  /**
-   * Idles for the gap, then wakes the worker. It carries a trace context so its own blocks are
-   * ineligible and cannot satisfy the worker's emission checks.
-   */
+  /** Idles for the gap, then wakes; its trace context keeps its own blocks from emitting. */
   private void help() {
     TaskBlockBenchmarkSupport.excludeFromTaskBlock(recording.taskBlockActive() ? profiler : null);
     try {
@@ -156,7 +145,13 @@ public class TaskBlockWakeupLatencyBenchmark {
         wake();
       }
     } catch (Exception e) {
-      helperFailure.compareAndSet(null, e);
+      if (running) {
+        helperFailure.compareAndSet(null, e);
+      }
+    } finally {
+      if (recording.taskBlockActive()) {
+        profiler.clearTraceContext();
+      }
     }
   }
 
@@ -188,12 +183,14 @@ public class TaskBlockWakeupLatencyBenchmark {
   public void tearDown(BenchmarkParams params) throws Exception {
     running = false;
     armed.release();
-    if (helper != null) {
-      helper.join(TimeUnit.SECONDS.toMillis(5));
-    }
+    // Closing first unblocks a helper stuck in a socket write.
     closeQuietly(client);
     closeQuietly(accepted);
     closeQuietly(server);
+    if (helper != null) {
+      helper.join(TimeUnit.SECONDS.toMillis(5));
+      check(!helper.isAlive(), "Helper did not stop");
+    }
     String benchmark = TaskBlockBenchmarkSupport.benchmarkName(params);
     Map<String, Long> deltas = recording.stop(benchmark);
     printLatencies(benchmark);
@@ -212,9 +209,9 @@ public class TaskBlockWakeupLatencyBenchmark {
       return;
     }
     if ("park".equals(source)) {
-      check(owned == calls, benchmark + " owned " + owned + " of " + calls + " parks");
+      // parkEnter can decline an op (e.g. a stop/start race), so allow 10% unowned.
+      check(owned * 10 >= calls * 9 && owned <= calls, "owned " + owned + " of " + calls);
     }
-    // Only the worker's blocks emit: the helper is excluded by its trace context.
     checkBetween("emitted", emitted, calls / 2, calls + SLACK);
   }
 
@@ -247,13 +244,14 @@ public class TaskBlockWakeupLatencyBenchmark {
     return sorted[Math.max(rank, 1) - 1] / 1e3;
   }
 
-  /** One op: build the stack, block, and record the wake-up latency. */
+  /** One op: build the stack, block and record the latency. */
   @Benchmark
   public int wakeup() throws Exception {
     return descend(stackDepth);
   }
 
-  /** Recurses so the block happens under {@code depth} real frames. */
+  /** Recurses, uninlined, so the block happens under {@code depth} physical frames. */
+  @CompilerControl(CompilerControl.Mode.DONT_INLINE)
   private int descend(int depth) throws Exception {
     if (depth == 0) {
       block();

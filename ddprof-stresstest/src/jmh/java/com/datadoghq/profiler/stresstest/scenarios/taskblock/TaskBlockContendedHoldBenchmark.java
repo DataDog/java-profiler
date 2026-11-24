@@ -37,23 +37,17 @@ import org.openjdk.jmh.infra.IterationParams;
 import org.openjdk.jmh.runner.IterationType;
 
 /**
- * Measures how TaskBlock recording on a contended monitor delays the lock's critical section.
+ * Measures how TaskBlock recording on a contended monitor delays the critical section. The JMH
+ * thread, excluded by a trace context, holds the monitor for {@code holdMicros} per op, so the
+ * score is time per hold. {@code waiters} ordinary threads contend; a blocked waiter's capture runs
+ * after it acquires the lock, inside the critical section.
  *
- * <p>The JMH thread is the holder, excluded from TaskBlock by a trace context: each op holds one
- * monitor for {@code holdMicros} (above the 1 ms emission threshold) and pauses briefly without it,
- * so the JMH score is the holder's time per hold (inverse throughput). {@code waiters} ordinary
- * threads contend for the same monitor. A blocked waiter's TaskBlock is emitted by a JVMTI monitor
- * event that fires after the waiter acquires the lock and before it returns to user code, so its
- * stack capture runs inside the critical section.
+ * <p>The teardown prints {@code handoffUs}, the mean from release to the next acquirer's first user
+ * instruction, over waiters that observed the lock held before entering (so they blocked), and
+ * {@code holderAcquireUs}, the holder's mean wait to retake the lock.
  *
- * <p>Two means over the measurement iterations are printed in the teardown ({@code
- * [taskblock-bench] contended ...}): {@code handoffUs}, from the holder's release to the first user
- * instruction of the waiter that acquired next, and {@code holderAcquireUs}, how long the holder
- * waits to take the lock back.
- *
- * <p>{@code config=none} loads the library without a recording, {@code wall} is wall-clock without
- * TaskBlock and {@code taskblock} turns it on. The teardown fails unless the {@code taskblock}
- * variant emitted at least half as many TaskBlocks as holds and the others none.
+ * <p>The teardown fails unless {@code taskblock} emitted at least half as many TaskBlocks as holds
+ * and {@code wall} none.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
@@ -69,14 +63,14 @@ public class TaskBlockContendedHoldBenchmark {
   @Param({"1", "4"})
   public int waiters;
 
-  /** Time the monitor is held per op; above the 1 ms emission threshold. */
-  @Param({"1200"})
+  /** Hold time; well above 1 ms so a waiter's blocked time clears the emission threshold. */
+  @Param({"2000"})
   public long holdMicros;
 
   /** Allowance for the in-flight hold and for JMH or JVM threads that block once or twice. */
   private static final long SLACK = 16;
 
-  /** Pause between holds and between waiter acquisitions, so waiters get a turn and block again. */
+  /** Pauses that let a waiter take a turn, then block again on the next hold. */
   private static final long HOLDER_PAUSE_NANOS = 50_000;
 
   private static final long WAITER_PAUSE_NANOS = 100_000;
@@ -91,7 +85,10 @@ public class TaskBlockContendedHoldBenchmark {
   private volatile boolean running;
   private volatile boolean measuring;
 
-  /** Written by the holder just before it releases and cleared by the first waiter inside. */
+  /** True while the holder is inside; a waiter reading it before entering will block. */
+  private volatile boolean holding;
+
+  /** Set by the holder just before release, cleared by the first waiter inside. */
   private volatile long releaseStamp;
 
   private long holderAcquireNanos;
@@ -122,13 +119,13 @@ public class TaskBlockContendedHoldBenchmark {
   private void contend() {
     try {
       while (running) {
+        boolean blocks = holding;
         synchronized (lock) {
-          // Taken right after the (possibly TaskBlock-instrumented) enter returns.
           long now = System.nanoTime();
           long released = releaseStamp;
           if (released != 0) {
             releaseStamp = 0;
-            if (measuring) {
+            if (blocks && measuring) {
               handoffNanos.addAndGet(now - released);
               handoffs.incrementAndGet();
             }
@@ -145,6 +142,7 @@ public class TaskBlockContendedHoldBenchmark {
   public void hold() {
     long start = System.nanoTime();
     synchronized (lock) {
+      holding = true;
       if (measuring) {
         holderAcquireNanos += System.nanoTime() - start;
         measuredHolds++;
@@ -155,6 +153,7 @@ public class TaskBlockContendedHoldBenchmark {
         // spin
       }
       holds++;
+      holding = false;
       releaseStamp = System.nanoTime();
     }
     LockSupport.parkNanos(HOLDER_PAUSE_NANOS);
@@ -166,6 +165,10 @@ public class TaskBlockContendedHoldBenchmark {
     running = false;
     for (Thread thread : threads) {
       thread.join(TimeUnit.SECONDS.toMillis(5));
+      check(!thread.isAlive(), "Contender did not stop");
+    }
+    if (recording.taskBlockActive()) {
+      profiler.clearTraceContext();
     }
     String benchmark = TaskBlockBenchmarkSupport.benchmarkName(params);
     Map<String, Long> deltas = recording.stop(benchmark);
