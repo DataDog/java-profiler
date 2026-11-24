@@ -34,7 +34,9 @@ report about behavior as an unverified claim.
    - If it is, create a throwaway Datadog workspace with `workspaces create <name> -y`;
      make `<name>` unique and self-describing, e.g. `triage-<TICKET-KEY>-<4 random
      characters>` such as `triage-PROF-1234-x7k2`, so the machine is traceable to its
-     ticket and cannot collide with another run. Verify with
+     ticket and cannot collide with another run. If `workspaces create` fails, clean up
+     any partially created workspace and fall back to the local worktree run, stating
+     the reason. Verify with
      `ssh workspace-<name> 'uname -sm'` that its architecture actually matches the bug
      (aarch64 vs x86_64). If it does not match, do not run the reproducer there: delete
      the workspace with `workspaces delete <name> --yes`. Create a compatible
@@ -52,6 +54,7 @@ report about behavior as an unverified claim.
      ```sh
      merge_base=$(git merge-base HEAD main) || { echo "Cannot find merge base with main" >&2; exit 1; }
      patch_file=$(mktemp) || { echo "Cannot create temporary patch" >&2; exit 1; }
+     git add -N -- path/to/reproducer   # intent-to-add: untracked reproducer files must appear in git diff
      git diff "$merge_base" -- path/to/reproducer > "$patch_file" || { rm -f "$patch_file"; exit 1; }
      test -s "$patch_file" || { echo "No reproducer changes to apply" >&2; rm -f "$patch_file"; exit 1; }
      git -C <workspace-clone> apply "$patch_file" || { rm -f "$patch_file"; exit 1; }
