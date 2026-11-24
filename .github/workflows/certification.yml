@@ -34,8 +34,8 @@ env:
 jobs:
   test-debug:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
@@ -44,8 +44,8 @@ jobs:
 
   test-asan:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
@@ -54,8 +54,8 @@ jobs:
 
   slow-test-debug:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
@@ -65,8 +65,8 @@ jobs:
 
   slow-test-asan:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/test_workflow.yml
     with:
@@ -76,8 +76,8 @@ jobs:
 
   fuzz:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     continue-on-error: false
@@ -115,8 +115,8 @@ jobs:
 
   gitlab-integration:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
     # Verdict on the dd-trace-integration cells of the candidate's GitLab
     # pipeline. Those cells run on every push to main; this job waits for
@@ -247,8 +247,8 @@ jobs:
 
   certify:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
     needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration]
     runs-on: ubuntu-latest
@@ -270,9 +270,9 @@ jobs:
 
   report-failure:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:
-    # a feature-branch dispatch would enter the 'certification' concurrency
-    # group and cancel-in-progress would kill the nightly mid-run. The
-    # report itself must still run whenever a main run fails.
+    # a feature-branch dispatch runs no certification jobs. Defense in
+    # depth behind the per-ref concurrency group. The report itself must
+    # still run whenever a main run fails.
     if: github.ref == 'refs/heads/main' && (failure() || cancelled())
     needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration, certify]
     runs-on: ubuntu-latest

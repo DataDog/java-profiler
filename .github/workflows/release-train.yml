@@ -186,28 +186,26 @@ jobs:
         env:
           RUN_ID: ${{ steps.dispatch.outputs.run_id }}
         run: |
-          # gh run watch fails on transient transport errors as well as on a
-          # failed conclusion, and the fallback view of an in-progress run
-          # has no conclusion. Resume monitoring until a terminal status is
-          # confirmed, or the train would report a live release as failed.
-          # The cap must expire well inside the job timeout: a timeout-killed
-          # step never writes the conclusion output nor reaches the Slack
-          # step, leaving the release unreported.
-          ATTEMPTS=0
-          MAX_ATTEMPTS=300
+          # gh run view fails on transient transport errors as well as on a
+          # failed conclusion, and an in-progress run has no conclusion.
+          # Resume monitoring until a terminal status is confirmed, or the
+          # train would report a live release as failed. gh run watch cannot
+          # be the wait primitive: it blocks until terminal, so the attempt
+          # counter never advances while the release runs and the cap can
+          # never fire — the job timeout would kill the step with the
+          # conclusion output unwritten and the Slack step unreached. The
+          # deadline must expire well inside the job timeout: a
+          # timeout-killed step never writes the conclusion output nor
+          # reaches the Slack step, leaving the release unreported.
+          DEADLINE=$((SECONDS + 300 * 60))
           while :; do
-            if gh run watch "$RUN_ID" --exit-status --interval 60 >/dev/null 2>&1; then
-              CONCLUSION=success
-              break
-            fi
-            CONCLUSION=$(gh run view "$RUN_ID" --json status,conclusion \
+            CONCLUSION=$(timeout 30 gh run view "$RUN_ID" --json status,conclusion \
               --jq 'if .status == "completed" then (.conclusion // "") else "" end') || CONCLUSION=""
             [ -n "$CONCLUSION" ] && break
-            if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
-              echo "::error::Release run $RUN_ID produced no confirmed conclusion after $MAX_ATTEMPTS minutes of monitoring"
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::Release run $RUN_ID produced no confirmed conclusion after 300 minutes of monitoring"
               exit 1
             fi
-            ATTEMPTS=$((ATTEMPTS + 1))
             echo "::warning::Release run $RUN_ID has no confirmed conclusion; retrying monitoring"
             sleep 60
           done
