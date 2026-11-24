@@ -24,7 +24,10 @@ report about behavior as an unverified claim.
 4. **Reproducer.** Propose the smallest reproducer that proves or disproves the report:
    prerequisites, exact steps, expected and actual results. The `verify-profiler-change`
    skill names the builds and tests for the code concerned. Ask the user before you edit
-   a file, run a build, or run the reproducer; do not offer skipping the run — a triage
+   a file, run a build, run the reproducer, or create a workspace; the create
+   approval also covers the workspace's cleanup, including the failure-path teardown,
+   so deletion needs a separate ask only when the user might want to keep it; do not
+   offer skipping the run — a triage
    ends with the reproducer run unless it is genuinely blocked, in which case say what
    blocks it and keep the evidence `blocked`. If the user declines the run, record the
    evidence `blocked` with the reason `user declined`.
@@ -39,15 +42,18 @@ report about behavior as an unverified claim.
      the reason. From workspace creation onward, every exit path — failed sync, failed
      verification, failed run — deletes the workspace with `workspaces delete <name>
      --yes` before falling back or ending; a failed run is never a reason to leave the
-     machine allocated. Verify with
+     machine allocated. A failed sync or apply falls back to the local worktree run
+     under the same architecture rule, with the failure stated. Verify with
      `ssh workspace-<name> 'uname -sm'` that its architecture actually matches the bug
-     (aarch64 vs x86_64). If it does not match, do not run the reproducer there: delete
+     (aarch64 vs x86_64; for a libc-specific report also match the libc via
+     `ldd --version`, glibc vs musl). If it does not match, do not run the reproducer
+     there: delete
      the workspace with `workspaces delete <name> --yes`. Create a compatible
      replacement if available, verify its architecture again, and use it only if it
      matches. If no compatible workspace is available, run locally only if this
      machine matches the target architecture; if neither environment matches, leave
      the reproducer blocked and state why. Delete a correctly matched workspace with
-     `workspaces delete <name> --yes` after the run.
+     `workspaces delete <name> --yes` after the run, unless the user asks to keep it.
 
      The workspace is only a runner: it auto-clones main, so sync the worktree's
      reproducer change to it first. From the worktree root, compute the merge base
@@ -55,19 +61,32 @@ report about behavior as an unverified claim.
      applying it at the cloned checkout's root:
 
      ```sh
-     merge_base=$(git merge-base HEAD main) || { echo "Cannot find merge base with main" >&2; exit 1; }
-     patch_file=$(mktemp) || { echo "Cannot create temporary patch" >&2; exit 1; }
+     patch_file=$(mktemp) || exit 1
+     ws_name=<name>   # the unique workspace name chosen above
+     release_ws() { rm -f "$patch_file"; workspaces delete "$ws_name" --yes; }  # any failure after creation releases the machine
+     trap release_ws EXIT
+     merge_base=$(git merge-base HEAD "$(git rev-parse --verify -q main || echo origin/main)") || exit 1
      git add -N -- path/to/reproducer   # intent-to-add: untracked reproducer files must appear in git diff
-     git diff "$merge_base" -- path/to/reproducer > "$patch_file" || { rm -f "$patch_file"; exit 1; }
-     test -s "$patch_file" || { echo "No reproducer changes to apply" >&2; rm -f "$patch_file"; exit 1; }
-     git -C <workspace-clone> apply --3way "$patch_file" || { rm -f "$patch_file"; exit 1; }
+     git diff "$merge_base" -- path/to/reproducer > "$patch_file" || exit 1
+     test -s "$patch_file" || { echo "No reproducer changes to apply" >&2; exit 1; }
+     ssh workspace-$ws_name "git -C <workspace-clone> apply --3way" < "$patch_file" || exit 1
      rm -f "$patch_file"
      ```
 
-     Replace `path/to/reproducer` with the path(s) containing the reproducer changes.
-     The non-empty check is required: if there is no patch, stop and investigate
-     instead of running `git apply`. `--3way` tolerates a clone that already contains
-     part of the change (its main tip moved past the worktree's base).
+     Replace `path/to/reproducer` with the path(s) containing the reproducer changes
+     and `<workspace-clone>` with the clone's path on the workspace; the patch file is
+     local, so the apply runs over ssh. The non-empty check is required: if there is
+     no patch, stop and investigate instead of running `git apply`. `--3way` tolerates
+     a clone that already contains part of the change (its main tip moved past the
+     worktree's base); when it cannot find its base blobs (a shallow or pruned clone),
+     fall back to a plain `git apply`. The trap stays armed through the run: a failed
+     verification or
+     a failed run releases the machine on exit, and the normal exit performs the
+     post-run deletion — unless the user asked to keep the workspace, in which case
+     disarm the teardown first (`trap - EXIT; rm -f "$patch_file"`). If the user keeps
+     the worktree, the intent-to-add entry stays
+     in its index; reset it with `git reset -- path/to/reproducer` when a clean index
+     matters.
    - If it is not, verify that this machine's architecture matches the bug and run
      the reproducer in the worktree only when it does; otherwise leave it blocked and
      state why.
