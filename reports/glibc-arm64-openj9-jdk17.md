@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-24 05:15:27 EST
+**Date:** 2026-11-24 05:51:08 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 332 |
-| Sample Rate | 5.53/sec |
-| Health Score | 346% |
-| Threads | 9 |
-| Allocations | 145 |
+| CPU Samples | 305 |
+| Sample Rate | 5.08/sec |
+| Health Score | 318% |
+| Threads | 12 |
+| Allocations | 148 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 716 |
-| Sample Rate | 11.93/sec |
-| Health Score | 746% |
-| Threads | 11 |
-| Allocations | 427 |
+| CPU Samples | 360 |
+| Sample Rate | 6.00/sec |
+| Health Score | 375% |
+| Threads | 12 |
+| Allocations | 130 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
+<summary>CPU Timeline (2 unique values: 29-34 cores)</summary>
 
 ```
-1795514998 34
-1795515003 34
-1795515008 34
-1795515013 34
-1795515018 34
-1795515023 34
-1795515028 34
-1795515033 34
-1795515038 34
-1795515043 34
-1795515048 34
-1795515053 34
-1795515058 34
-1795515063 34
-1795515068 34
-1795515073 34
-1795515078 34
-1795515083 34
-1795515088 34
-1795515093 34
+1795517185 34
+1795517190 34
+1795517195 34
+1795517200 34
+1795517205 29
+1795517210 29
+1795517215 29
+1795517220 29
+1795517225 29
+1795517230 29
+1795517235 29
+1795517240 29
+1795517245 29
+1795517250 29
+1795517255 29
+1795517260 29
+1795517265 29
+1795517271 29
+1795517276 29
+1795517281 29
 ```
 </details>
 
