@@ -5,17 +5,17 @@
 package com.datadoghq.profiler;
 
 /**
- * Whitebox testing hooks for {@link JavaProfiler} internals. Kept in a separate class so these do
- * not appear on JavaProfiler's public API surface.
+ * Whitebox testing hooks for {@link JavaProfiler} internals. Package-private, so the hooks are not
+ * public API of the jar; tests reach them through a same-package bridge in the test sources.
  */
-public final class JavaProfilerTestSupport {
+final class JavaProfilerTestSupport {
   private JavaProfilerTestSupport() {}
 
   /**
    * Test-only hook (debug builds only): forces the next wall-clock engine start() call to fail.
    * No-op in release builds. For whitebox testing.
    */
-  public static void setForceWallStartFailureForTest(boolean force) {
+  static void setForceWallStartFailureForTest(boolean force) {
     setForceWallStartFailureForTest0(force);
   }
 
@@ -24,7 +24,7 @@ public final class JavaProfilerTestSupport {
    * Returns {@code false} in release builds (where the setter is a no-op), so callers can self-skip
    * via {@code Assumptions.assumeTrue}. For whitebox testing.
    */
-  public static boolean isForceWallStartFailureArmedForTest() {
+  static boolean isForceWallStartFailureArmedForTest() {
     return isForceWallStartFailureArmedForTest0();
   }
 
@@ -32,7 +32,7 @@ public final class JavaProfilerTestSupport {
    * Test-only accessor: whether the thread registry currently admits new registrations. For
    * whitebox testing.
    */
-  public static boolean isThreadRegistryActiveForTest() {
+  static boolean isThreadRegistryActiveForTest() {
     return isThreadRegistryActiveForTest0();
   }
 

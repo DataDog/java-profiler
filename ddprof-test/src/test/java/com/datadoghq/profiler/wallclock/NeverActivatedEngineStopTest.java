@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.JavaProfilerTestSupport;
+import com.datadoghq.profiler.WallStartFailureTestHooks;
 import java.util.Map;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -33,13 +33,13 @@ public class NeverActivatedEngineStopTest extends AbstractProfilerTest {
   protected void beforeProfilerStart() throws Exception {
     super.beforeProfilerStart();
     // In effect only for this test's start() call; cleared at the top of the test method below.
-    JavaProfilerTestSupport.setForceWallStartFailureForTest(true);
+    WallStartFailureTestHooks.setForceWallStartFailure(true);
     // The forced-start-failure toggle is a DEBUG-only native hook (no-op in
     // release builds). Self-skip when it isn't armed so the test doesn't fail
     // spuriously in release: without a real wall-engine start failure, the wall
     // engine activates normally and the assertion below cannot hold.
     Assumptions.assumeTrue(
-        JavaProfilerTestSupport.isForceWallStartFailureArmedForTest(),
+        WallStartFailureTestHooks.isForceWallStartFailureArmed(),
         "force-wall-start-failure test hook is a no-op outside DEBUG native builds;"
             + " the Profiler::stop() gating fix under test only fires when the wall engine"
             + " can be made to fail, which requires the DEBUG-only hook -- skipping");
@@ -56,7 +56,7 @@ public class NeverActivatedEngineStopTest extends AbstractProfilerTest {
 
   @Test
   public void wallEngineNeverActivatedIsNeverStopped() {
-    JavaProfilerTestSupport.setForceWallStartFailureForTest(false);
+    WallStartFailureTestHooks.setForceWallStartFailure(false);
     stopProfiler();
     Map<String, Long> counters = profiler.getDebugCounters();
     assertTrue(counters.containsKey(COUNTER_NAME), "Missing required stop-counter key");
