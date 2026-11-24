@@ -20,6 +20,7 @@
 #include "jfrMetadata.h"
 #include "jniHelper.h"
 #include "jvmSupport.inline.h"
+#include "mallocArenaEvents.h"
 #include "mallocInfo.h"
 #include "os.h"
 #include "profiler.h"
@@ -184,7 +185,7 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
     state._demangled = abi::__cxa_demangle(name, NULL, NULL, &status);
     if (state._demangled != NULL) {
       cutArguments(state._demangled);
-      mi->_sig = _symbols.lookup("()L;");
+      mi->_sig = _symbols.lookupSignature("()L;");
       mi->_type = FRAME_CPP;
 
       // Rust legacy demangling
@@ -203,11 +204,11 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
   size_t len = strlen(name);
   if (len >= 4 && strcmp(name + len - 4, "_[k]") == 0) {
     mi->_name = _symbols.lookup(name, len - 4);
-    mi->_sig = _symbols.lookup("(Lk;)L;");
+    mi->_sig = _symbols.lookupSignature("(Lk;)L;");
     mi->_type = FRAME_KERNEL;
   } else {
     mi->_name = _symbols.lookup(name);
-    mi->_sig = _symbols.lookup("()L;");
+    mi->_sig = _symbols.lookupSignature("()L;");
     mi->_type = FRAME_NATIVE;
   }
 }
@@ -220,7 +221,7 @@ void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
   // Store PC offset in hex format in the signature field
   char offset_hex[32];
   snprintf(offset_hex, sizeof(offset_hex), "0x%" PRIxPTR, rfi->pc_offset);
-  mi->_sig = _symbols.lookup(offset_hex);
+  mi->_sig = _symbols.lookupSignature(offset_hex);
 
   // Use same modifiers as regular native frames (0x100 = ACC_NATIVE for consistency)
   mi->_modifiers = 0x100;
@@ -386,7 +387,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       Counters::increment(JMETHODID_SKIPPED);
       mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       mi->_name = _symbols.lookup("<unloaded>");
-      mi->_sig = _symbols.lookup("()L;");
+      mi->_sig = _symbols.lookupSignature("()L;");
     }
 
     mi->_type = FRAME_INTERPRETED;
@@ -498,7 +499,7 @@ void Lookup::fillJavaMethodNames(MethodInfo *mi, const char *class_name,
 
   mi->_class = class_name_id;
   mi->_name = method_name_id;
-  mi->_sig = _symbols.lookup(method_sig);
+  mi->_sig = _symbols.lookupSignature(method_sig);
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
@@ -519,8 +520,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
   // from the first fill as on the jmethodID path.
   if (resolved.lineNumberTable() != nullptr) {
     int size = resolved.lineNumberTableSize();
-    // Built before ownership moves, so a std::bad_alloc here leaves the table
-    // with `resolved`, which frees it.
+    // Built before ownership moves: `resolved` keeps the table until the
+    // shared_ptr owns it, so no exit path leaves it unowned.
     auto table = std::make_shared<SharedLineNumberTable>(
         size, const_cast<jvmtiLineNumberEntry *>(resolved.lineNumberTable()),
         false /* malloc'd */);
@@ -777,9 +778,8 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
 
   assert(prof_thread != nullptr);
   assert(method_id != nullptr && "Already filtered by caller");
-  // Reinstates the thread's previous landing pad on every exit from this frame,
-  // including a std::bad_alloc thrown by one of the map or dictionary inserts
-  // underneath. Leaving ours installed past the end of this frame would leave
+  // Reinstates the thread's previous landing pad on every exit from this
+  // frame. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
   JmpCtxScope jmp_scope(prof_thread);
   ResolveMethodState state;
@@ -867,15 +867,12 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
         fillNativeMethodInfo(mi, "unknown_library", nullptr, state);
       }
     } else if (bci == BCI_VTABLE_RECEIVER) {
-      // Synthetic vtable-receiver frame: method_id holds a VMSymbol*
-      // captured in walkVM. The Symbol -> class_id resolution (with
-      // synthetic-accessor/LambdaForm normalisation) was already done
-      // above via resolveVTableReceiverCached, which also handles
-      // resolution failures by mapping them to "<unresolved_vtable_receiver>"
-      // and incrementing VTABLE_RECEIVER_RESOLVE_FAILED.
+      // HotSpot walkers store a raw VMSymbol* in method_id for this frame.
+      // resolveVTableReceiverCached supplies the class id or the unresolved
+      // fallback and counts VTABLE_RECEIVER_RESOLVE_FAILED on resolution failure.
       mi->_class = vtable_class_id;
       mi->_name = _symbols.lookup("<vtable_receiver>");
-      mi->_sig = _symbols.lookup("()V");
+      mi->_sig = _symbols.lookupSignature("()V");
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
     } else {
@@ -939,6 +936,7 @@ u32 Lookup::getPackage(const char *class_name) {
   if (class_name[0] == '[') {
     class_name = strchr(class_name, 'L') + 1;
   }
+  // A failed insert also yields 0, which means "no package".
   return _packages.lookup(class_name, package - class_name);
 }
 
@@ -950,7 +948,9 @@ char *Recording::_jvm_flags = NULL;
 char *Recording::_java_command = NULL;
 
 Recording::Recording(int fd, Arguments &args)
-    : _fd(fd), _method_map(), _has_post_flush(false) {
+    : _fd(fd), _method_map(), _arena_inputs(), _arena_reemit(false),
+      _has_malloc_free_held(false), _malloc_free_held(0),
+      _has_post_flush(false) {
 
   memset(_post_flush_live, 0, sizeof(_post_flush_live));
   memset(_post_flush_max, 0, sizeof(_post_flush_max));
@@ -962,6 +962,10 @@ Recording::Recording(int fd, Arguments &args)
   _recording_start_time = _start_time;
   _recording_start_ticks = _start_ticks;
   _bytes_written = 0;
+
+#if defined(__linux__) && defined(__GLIBC__)
+  _arena_inputs = MallocArenaInputs::capture();
+#endif
 
   _tid = OS::threadId();
   _active_index.store(0, std::memory_order_relaxed);
@@ -1024,7 +1028,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // fjmethodid=lazy resolves raw frames only of these classes: they stay
   // pinned until the local references are deleted below. Always called, so a
   // failed GetLoadedClasses() leaves no list at all rather than a stale one,
-  // and ended on every exit from this function, including a std::bad_alloc.
+  // and ended on every exit from this function.
   JVMSupport::beginDump(env, err ? nullptr : classes, err ? 0 : count);
   struct DumpScope {
     ~DumpScope() { JVMSupport::endDump(); }
@@ -1075,6 +1079,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   updateNativeMemStats();
   writeCounters(_buf);
   writeNativeMem(_buf);
+  writeMallocArenaEvents(_buf);
 
   // Keep a simple stats for where we failed to unwind
   // For the sakes of simplicity we are not keeping the count of failed unwinds which would also be
@@ -1172,6 +1177,7 @@ void Recording::switchChunk(int fd) {
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
   _bytes_written = 0;
+  _arena_reemit = true;
 
   // move the chunk to the external file and reset the continuous recording file
   OS::copyFile(_fd, fd, 0, _chunk_start);
@@ -1486,6 +1492,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Log::LEVEL_NAME[Log::level()]);
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
+  writeBoolSetting(buf, T_ACTIVE_RECORDING, "j9AsgctDeadlockRisk",
+                   Profiler::instance()->j9AsgctDeadlockRisk());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "sanityCheckFailed",
                    Profiler::instance()->sanityCheckFailed());
   if (Profiler::instance()->sanityCheckFailed()) {
@@ -1788,7 +1796,13 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   pool_count += writeMethods(buf, &lookup);
   pool_count += writeClasses(buf, &lookup);
   pool_count += writePackages(buf, &lookup);
-  pool_count += writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+  {
+    // Must follow every pool that looks up a symbol: collect() adds the
+    // unresolved entry only once all lookups ran. The scope frees the map before the next pools collect theirs.
+    std::map<u32, const char *> symbols;
+    lookup._symbols.collect(symbols);
+    pool_count += writeConstantPoolSection(buf, T_SYMBOL, symbols);
+  }
   pool_count += writeConstantPoolSection(
       buf, T_STRING, Profiler::instance()->stringLabelMap()->standby());
   pool_count += writeConstantPoolSection(
@@ -2174,6 +2188,7 @@ bool Recording::glibcMallocActive() {
 // symbol is resolved at runtime, so a build made against old headers still
 // picks it up from a newer runtime glibc (see mallocInfo.cpp).
 void Recording::updateMallocArenaStats() {
+  _has_malloc_free_held = false;
   if (!glibcMallocActive()) {
     return;
   }
@@ -2197,6 +2212,117 @@ void Recording::updateMallocArenaStats() {
   Counters::set(MALLOC_FREE_HELD_BYTES, (long long)mi.fordblks);
   Counters::set(MALLOC_TRIMMABLE_BYTES, (long long)mi.keepcost);
   Counters::set(MALLOC_MMAP_BYTES, (long long)mi.hblkhd);
+  // The arena warning rule reads the same fordblks value, so the chunk makes
+  // only one mallinfo2() call.
+  _malloc_free_held = (u64)mi.fordblks;
+  _has_malloc_free_held = true;
+}
+
+ArenaWalkStatus Recording::gateStatus(bool fault_recovery, bool glibc_active,
+                                      bool hugetlb) {
+  if (!fault_recovery) {
+    return ARENA_WALK_UNSUPPORTED_JVM;
+  }
+  if (!glibc_active) {
+    return ARENA_WALK_REPLACED_ALLOCATOR;
+  }
+  if (hugetlb) {
+    return ARENA_WALK_HUGETLB_TUNABLE;
+  }
+  return ARENA_WALK_OK;
+}
+
+// Runs once per chunk on the flush path. The walk reads arena memory only
+// through SafeAccess, which needs the SIGSEGV handler that
+// Profiler::setupSignalHandlers() installs on HotSpot and OpenJ9.
+void Recording::writeMallocArenaEvents(Buffer *buf) {
+#if defined(__linux__) && defined(__GLIBC__)
+  const bool reemit = _arena_reemit;
+
+  ArenaWalkResult res;
+  memset(&res, 0, sizeof(res));
+  res.layoutIndex = -1;
+  res.threadPrivateArenas = -1;
+  res.status = gateStatus(VM::isHotspot() || VM::isOpenJ9(),
+                          glibcMallocActive(), _arena_inputs.hugetlbHeaps);
+  if (res.status == ARENA_WALK_OK) {
+    // mallopt() and glibc tunables can make the live arena limit differ from
+    // the environment estimate, so only an absolute cap bounds the walk.
+    MallocArenaWalker::walk(&res, 65536 + 64);
+  }
+
+  const long long max_heap = JVMSupport::maxHeapBytes();
+
+  MallocArenaRuleInput in;
+  in.walkOk = res.status == ARENA_WALK_OK;
+  if (in.walkOk) {
+    _arena_reemit = false;  // a failed walk keeps the re-emit armed for the next chunk
+  }
+  in.arenaCount = res.arenaCount;
+  in.nonMainArenaBytes = res.nonMainBytes;
+  in.hasFreeHeld = _has_malloc_free_held;
+  in.freeHeldBytes = _malloc_free_held;
+  in.cpuQuotaMilli = _arena_inputs.cpuQuotaMilli;
+  in.memoryLimit = _arena_inputs.memoryLimit;
+  in.maxHeap = max_heap;
+  in.thresholdPercent = _args._arena_warn_percent;
+  MallocArenaEvaluation eval = evaluateMallocArenaRule(in);
+
+  const long long free_held =
+      _has_malloc_free_held ? (long long)_malloc_free_held : -1;
+  const char *status_name = arenaWalkStatusName(res.status);
+  // _stop_ticks is already fixed here, so a fresh timestamp would fall outside the chunk.
+  const u64 ticks = _start_ticks;
+
+  MallocArenaStatsRecord stats;
+  stats.arenaCount = res.arenaCount;
+  stats.nonMainArenaBytes = (long long)res.nonMainBytes;
+  stats.freeHeldBytes = free_held;
+  stats.largestArenaBytes = (long long)res.largestBytes;
+  stats.cpuQuotaMilli = (int)_arena_inputs.cpuQuotaMilli;
+  stats.memoryLimit = _arena_inputs.memoryLimit;
+  stats.maxHeap = max_heap;
+  stats.walkStatus = status_name;
+  MallocArenaEvents::writeStats(buf, ticks, stats);
+  flushIfNeeded(buf);
+
+  MallocArenaWarningState::Transition transition =
+      _arena_warning.step(in.walkOk, eval.active, eval.measureBytes);
+  if (transition == MallocArenaWarningState::NONE && reemit && in.walkOk &&
+      _arena_warning.active()) {
+    transition = _arena_warning.current();
+  }
+  if (transition == MallocArenaWarningState::NONE) {
+    return;
+  }
+
+  const ArenaLayout *layout =
+      res.layoutIndex >= 0 ? arenaLayoutAt(res.layoutIndex) : nullptr;
+  MallocArenaWarningRecord warn;
+  warn.arenaCount = res.arenaCount;
+  warn.arenaLimit = (int)_arena_inputs.arenaLimit;
+  warn.arenaLimitSource = _arena_inputs.arenaLimitSource;
+  warn.onlineCpus = _arena_inputs.onlineCpus;
+  warn.cpuQuotaMilli = (int)_arena_inputs.cpuQuotaMilli;
+  warn.memoryLimit = _arena_inputs.memoryLimit;
+  warn.memoryLimitSource = _arena_inputs.memoryLimitSource;
+  warn.maxHeap = max_heap;
+  warn.freeHeldBytes = free_held;
+  warn.nonMainArenaBytes = (long long)res.nonMainBytes;
+  warn.thresholdPercent = _args._arena_warn_percent;
+  warn.threadPrivateArenas = res.threadPrivateArenas;
+  warn.largestArenaBytes = (long long)res.largestBytes;
+  warn.largestArenaMaxBytes = (long long)res.largestMaxBytes;
+  warn.glibcVersion = _arena_inputs.glibcVersion;
+  warn.layout = layout != nullptr ? layout->name : "";
+  warn.walkStatus = status_name;
+  warn.evaluation = eval;
+  MallocArenaEvents::writeWarning(buf, ticks,
+                                  MallocArenaWarningState::name(transition), warn);
+  flushIfNeeded(buf);
+#else
+  (void)buf;
+#endif
 }
 
 void Recording::capturePostFlushNativeMem() {

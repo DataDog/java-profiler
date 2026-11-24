@@ -90,7 +90,13 @@ Error ITimer::check(Arguments &args) {
 }
 
 Error ITimer::start(Arguments &args) {
-  _interval = args.cpuSamplerInterval();
+  // cpuSamplerInterval() already substitutes DEFAULT_CPU_INTERVAL for a CPU
+  // event, so <= 0 can only mean a non-CPU event reached a CPU engine.
+  long interval = args.cpuSamplerInterval();
+  if (interval <= 0) {
+    return Error("interval must be positive");
+  }
+  _interval = interval;
   _cstack = args._cstack;
 
   OS::installSignalHandler(SIGPROF, signalHandler);
@@ -157,7 +163,12 @@ Error ITimerJvmti::check(Arguments &args) {
   struct sigaction ign = {};
   sigemptyset(&ign.sa_mask);
   ign.sa_handler = SIG_IGN;
-  sigaction(SIGPROF, &ign, &oldsa);
+  // On failure oldsa is left uninitialized; restoring from it would install
+  // garbage as the process-wide SIGPROF handler. sigaction is all-or-nothing,
+  // so a failed probe changed neither the disposition nor the handler.
+  if (sigaction(SIGPROF, &ign, &oldsa) != 0) {
+    return Error("failed to query the SIGPROF disposition");
+  }
 
   struct itimerval tv_on = {{1, 0}, {1, 0}};
   Error err = setitimer(ITIMER_PROF, &tv_on, nullptr) != 0
@@ -171,10 +182,14 @@ Error ITimerJvmti::check(Arguments &args) {
 }
 
 Error ITimerJvmti::start(Arguments &args) {
-  if (args._interval < 0) {
+  // Validate the value actually assigned: cpuSamplerInterval() resolves
+  // _cpu over _interval over DEFAULT_CPU_INTERVAL, and returns 0 only for a
+  // non-CPU event reaching a CPU engine.
+  long interval = args.cpuSamplerInterval();
+  if (interval <= 0) {
     return Error("interval must be positive");
   }
-  _interval = args.cpuSamplerInterval();
+  _interval = interval;
 
   OS::installSignalHandler(SIGPROF, signalHandler);
 
@@ -190,5 +205,11 @@ Error ITimerJvmti::start(Arguments &args) {
 void ITimerJvmti::stop() {
   struct itimerval tv = {};
   setitimer(ITIMER_PROF, &tv, nullptr);
+  // _enabled is owned by Profiler::disableEngines()/enableCpuEngine(); stop()
+  // must not write it: disableEngines() runs before engine teardown, so no
+  // recording boundary leaves _enabled stale across sessions.
+
+  // Unlike ITimer::stop(), SIG_IGN makes a late SIGPROF a kernel-level no-op
+  // instead of a handler run that drops on the _enabled check.
   OS::installSignalHandler(SIGPROF, nullptr, SIG_IGN);
 }

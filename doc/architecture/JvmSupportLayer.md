@@ -121,6 +121,7 @@ If either step fails, profiling is disabled.
 | `enterRedefinitionCall` / `exitRedefinitionCall` / `beforeClassRedefinition` / `afterClassRedefinition` | forwarded to `HotspotSupport` | no-op, except that `afterClassRedefinition` reloads the class's jmethodIDs after a successful redefinition |
 | `beginDump` / `endDump` | forwarded to `HotspotSupport` | no-op |
 | `resolve(method, bci, result)` (inline) | `HotspotSupport::resolve` (raw `Method*` frames) | `assert(false)` and returns `false`. Raw frames come only from HotSpot `walkVM` |
+| `maxHeapBytes()` | `Runtime.maxMemory()` through JNI, resolved once in `initExecution()`. `-1` until resolved | same |
 | `isHidden(modifiers)` (inline) | shared modifier-mask test | shared |
 
 `jvmSupport.inline.h` includes `hotspot/hotspotSupport.h` directly
@@ -217,6 +218,23 @@ preserves truncation established earlier in the walk. The blocking virtual-threa
 wall-clock regression checks truthful truncation when carrier ancestry is missing;
 carrier recovery itself remains a separate correctness requirement.
 
+### HotSpot vtable receiver frames
+
+VM walking and ASGCT stub recovery can emit `<vtable_receiver>` immediately before the leaf vtable stub.
+This requires `vtable_target` and class-name VMStructs; `cstack=no` omits both frames.
+The `cpu` option enables the feature; `event=cpu` and implicit CPU defaults do not.
+
+Capture runs inside the walker's crash-protection scope, before unwinding.
+`VMKlass::fromOop` reads the receiver header with `SafeAccess` and validates the decoded klass.
+An unreadable receiver drops only the receiver frame.
+PC/SP/FP must match the interrupted leaf to prevent redirected callers from using stale arguments.
+
+Capture reserves space for the stub and, with ASGCT, a retry or error frame.
+If an ASGCT recovery prefix fills the frame budget, the trace is marked truncated.
+
+Receiver frames store a raw `VMSymbol*`, not a `jmethodID`.
+Dump-time resolution reads the symbol with `SafeAccess` to assign the declaring class.
+
 ### `j9/`
 
 | File | Role |
@@ -230,12 +248,29 @@ Caveats:
   and `selectWallEngine` choose `J9WallClock` (the JVMTI path) when any of these
   holds:
   - `J9Support::shouldUseAsgct()` is false. The system property
-    `dd.profiling.ddprof.j9.sampler` set to `jvmti` makes it false
-    (`j9/j9Support.h:108-126`).
+    `dd.profiling.ddprof.j9.sampler` set to `jvmti` makes it false.
   - `J9Support::can_use_ASGCT()` is false. J9's ASGCT is not
     async-signal-safe before OpenJ9 0.51, so the profiler requires at least
-    8u451, 11.0.27, 17.0.15, or 21.0.7 (`j9/j9Support.h:88-100`).
+    8u451, 11.0.27, 17.0.15, or 21.0.7. It rejects every other J9 major version.
   - For wall clock only: `wallsampler=jvmti` is set.
+
+  An explicit CPU event (`event=itimer`, `ctimer` or a perf event) without a
+  `cpu=` interval skips these checks and uses ASGCT.
+- **J9 sampler warnings.** Each selection function reports why it chose, as a
+  `SamplerChoice`. Before `_jfr.start()`, `Profiler::start()` passes both
+  choices to `J9Support::reportSamplerRisks()`, which prints a
+  `[ddprof] [WARN]` line to stderr in two cases:
+  - ASGCT is in use and `J9Support::isAsgctDeadlockProneVersion()` is true. On
+    OpenJ9 0.60 and IBM SDK 8 SR8 FP70 to FP74, ASGCT can take a JIT monitor
+    that the interrupted thread holds, and the JVM deadlocks. The profiler
+    keeps ASGCT. The warning recommends an upgrade, or
+    `-Ddd.profiling.ddprof.j9.sampler=jvmti`. With an explicit CPU event, the
+    property needs a `cpu=` interval or `event=cpu` as well.
+  - `can_use_ASGCT()` replaced ASGCT with the JVMTI sampler.
+
+  The recording setting `j9AsgctDeadlockRisk` is true only in the first case.
+  It follows the selected engine, so it stays true if that engine then fails to
+  start.
 - **`J9WallClock` names itself by mode.** In CPU mode `name()` is
   `J9Execution` and it skips threads that are not RUNNABLE. In wall mode it
   calls `sampleIdleThreads()`, `name()` becomes `J9WallClock`, and every thread

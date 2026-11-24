@@ -148,6 +148,7 @@ shell-unit-tests:
     - bash .gitlab/scripts/tests/includes_test.sh
     - bash .gitlab/scripts/tests/test_check_stack_top.sh
     - bash .gitlab/scripts/tests/test_generate_benchmarks.sh
+    - bash ddprof-lib/src/test/resources/native-libs/ddprof-admission/test_makefile_libc_gate.sh
     - bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
     - bash .gitlab/jdk-integration/tests/select_test_jdk_test.sh
     - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh

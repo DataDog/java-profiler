@@ -29,6 +29,9 @@
 #include "frame.h"
 #include "jfrMetadata.h"
 #include "log.h"
+#include "mallocArenaInputs.h"
+#include "mallocArenaRule.h"
+#include "mallocArenaWalker.h"
 #include "mutex.h"
 #include "objectSampler.h"
 #include "threadFilter.h"
@@ -301,6 +304,19 @@ private:
   MethodMap _method_map;
 
   Arguments _args;
+
+  // Malloc arena detector state. It lives as long as the Recording, so it
+  // survives switchChunk() and is dropped with the Recording on stop.
+  MallocArenaInputs _arena_inputs;
+  MallocArenaWarningState _arena_warning;
+  // Set by switchChunk(); the next writeMallocArenaEvents() call re-emits the
+  // active warning state, so that every chunk file carries it.
+  bool _arena_reemit;
+  // mallinfo2().fordblks of the last updateMallocArenaStats() call. Valid only
+  // when _has_malloc_free_held is true.
+  bool _has_malloc_free_held;
+  u64 _malloc_free_held;
+
   u64 _start_time;
   u64 _recording_start_time;
   u64 _start_ticks;
@@ -444,6 +460,11 @@ public:
   // updateMallocArenaStats() for why this matters. Exposed for
   // RecordingTestAccessor.
   static bool glibcMallocActive();
+  // Walk gate. Precedence: no SIGSEGV recovery (UNSUPPORTED_JVM), replacement
+  // allocator (REPLACED_ALLOCATOR), hugetlb heaps (HUGETLB_TUNABLE).
+  // Exposed for RecordingTestAccessor.
+  static ArenaWalkStatus gateStatus(bool fault_recovery, bool glibc_active,
+                                    bool hugetlb);
   // Process-wide malloc arena state (glibc mallinfo2, resolved at runtime --
   // see mallocInfo.h). Flush path only -- takes every arena lock, so not
   // async-signal-safe. No-op when the runtime allocator does not provide
@@ -451,6 +472,10 @@ public:
   // glibcMallocActive() reports a replacement allocator.
   void updateMallocArenaStats();
   void writeNativeMem(Buffer *buf);
+  // Writes one datadog.MallocArenaStats event, and a datadog.MallocArenaWarning
+  // event on a state change, and again on the first chunk after switchChunk()
+  // while a warning is active. Flush path only. Does nothing off Linux glibc.
+  void writeMallocArenaEvents(Buffer *buf);
 
   void writeUnwindFailures(Buffer *buf);
 
@@ -532,14 +557,13 @@ public:
       _raw_method_cache;
 
   Dictionary _packages;
-  Dictionary _symbols;
+  SymbolDictionary _symbols;
 
   // The single row every frame that could not be resolved collapses onto.
   //
   // Deliberately NOT a MethodMap entry: resolveMethod()'s siglongjmp landing pad
   // hands this row back with crash protection already disarmed, so it must be
-  // reachable without touching the map, whose operator[] allocates a node and
-  // can throw std::bad_alloc.
+  // reachable without touching the map, whose operator[] allocates a node.
   //
   // Because it is outside the map, the map walk in writeMethods() cannot see it,
   // so writeMethods() emits it separately. It has to reach the method pool:

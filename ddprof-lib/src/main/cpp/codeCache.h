@@ -356,6 +356,11 @@ public:
   // Like findImport(), but never makes the GOT writable, so it does not touch
   // the library's memory. For bookkeeping only; patch through findImport().
   void **peekImport(ImportId id) const { return _imports[id][PRIMARY]; }
+  // Read-only access to a single slot cell: returns the stored GOT-entry
+  // pointer for the given import and slot, or NULL when nothing was saved
+  // there. Never makes the GOT writable and never touches the library's
+  // memory. Reads PRIMARY or SECONDARY; for bookkeeping only.
+  void **peekImport(ImportId id, ImportType type) const { return _imports[id][type]; }
   // Makes the import slots writable even if they were made so before: when the
   // library was unloaded and reloaded at the same address, the new mapping's
   // GOT is read-only again under full RELRO.
@@ -364,6 +369,13 @@ public:
     _imports_patchable = true;
   }
   void patchImport(ImportId, void *hook_func);
+
+#ifdef UNIT_TEST
+  // Whether makeImportsWritable() has already switched this cache's import
+  // slots to writable. Read-only observation for tests; compiled only into
+  // gtest binaries.
+  bool importsPatchableForTest() const { return _imports_patchable; }
+#endif
 
   CodeBlob *findBlob(const char *name);
   CodeBlob *findBlobByAddress(const void *address);

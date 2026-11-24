@@ -1,0 +1,45 @@
+# Policy for: agentic workstation writes
+# Used by: local agentic coding sessions (Datadog Studio, Vitrine, or any
+#   local agent harness) driven by profiling-team engineers.
+# Lets an engineer's ddtool-authenticated sycamore identity exchange
+# short-lived installation tokens for THIS repository with contents/pull
+# requests write, so agent-authored work is pushed and opened as PRs under
+# the dd-octo-sts pool bot identity instead of the engineer's personal
+# account.
+# Repo-level policy: scoped to this repository only; no `repositories:`
+# field (that is org-level-policy syntax).
+issuer: https://ticino.identity.local-cluster.local-dc.fabric.dog:8443/v1/issuer/sycamore
+
+audience: octo-sts
+
+# ddtool sycamore tokens carry aud=octo-sts; the pin is required — without
+# it the exchange falls back to the domain's default audience and rejects
+# the token.
+
+# Subject: profiling team engineers' sycamore identities (email claim),
+# deliberately enumerated to keep the initial grant to named people. The
+# dd-octo-sts fork's CheckToken can match the array-typed groups claim;
+# switch to it if team-wide scope is ever wanted. dd-octo-sts compiles
+# every pattern anchored (^(?:...)$, dd-octo-sts
+# libs/octo-sts/trustpolicy/trust_policy.go), so this alternation matches
+# exactly these four emails and nothing else.
+subject_pattern: "(jaroslav\\.bachorik|roman\\.kennke|zhengyu\\.gu|paul\\.fournillon)@datadoghq\\.com"
+
+claim_pattern:
+  email: "(jaroslav\\.bachorik|roman\\.kennke|zhengyu\\.gu|paul\\.fournillon)@datadoghq\\.com"
+
+permissions:
+  contents: write      # push agent-authored branches
+  pull_requests: write # open agent-authored PRs
+  metadata: read       # required for repository info
+# Intended flow: the driving engineer reviews and approves the agent's PR —
+# process, not enforcement (the pool runs several GitHub Apps; GitHub's
+# self-approval block is per app). main and release/* branches are guarded
+# by the branch ruleset require-approval-for-bot-actors-on-main: merges
+# need one approval that must come from a code owner (@DataDog/profiling-java covers every path)
+# and the most recent push must itself be approved, so bot approvals do
+# not count. Its bypass entries are repository roles (user identities);
+# the pool apps authenticate as app installations and match no bypass
+# entry, so they cannot direct-push to main either. The trivial-approve
+# automation is removed by PROF-16767, so no automated path grants
+# approvals.

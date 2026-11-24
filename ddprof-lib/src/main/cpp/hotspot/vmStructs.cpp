@@ -28,6 +28,7 @@ bool VMStructs::_has_class_loader_data = false;
 bool VMStructs::_has_native_thread_id = false;
 bool VMStructs::_can_dereference_jmethod_id = false;
 bool VMStructs::_compact_object_headers = false;
+VMStructs::InflatedMark VMStructs::_inflated_mark = VMStructs::InflatedMark::Unknown;
 
 char* VMStructs::_code_heap[3] = {};
 const void* VMStructs::_code_heap_low = NO_MIN_ADDRESS;
@@ -359,6 +360,9 @@ void VMStructs::resolveOffsets() {
     if (coh != NULL && coh->get()) {
         _compact_object_headers = true;
     }
+
+    // fromOop reads this only with compact headers.
+    _inflated_mark = inflatedMarkFor(readBoolFlag("UseObjectMonitorTable"), VM::hotspot_version());
 
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)
@@ -806,6 +810,17 @@ int ScopeDesc::readInt() {
     return n;
 }
 
+VMStructs::BoolFlag VMStructs::readBoolFlag(const char* name) {
+    VMFlag* flag = VMFlag::find(name);
+    if (flag == NULL) {
+        return BoolFlag::Absent;
+    }
+    if (flag->type() != VMFlag::Type::Bool) {
+        return BoolFlag::NotBool;
+    }
+    return flag->get() ? BoolFlag::True : BoolFlag::False;
+}
+
 VMFlag* VMFlag::find(const char* name) {
     if (_flags_addr != NULL && VMFlag::type_size() > 0) {
         size_t count = *(size_t*)_flag_count;
@@ -835,7 +850,7 @@ VMFlag *VMFlag::find(const char *name, int type_mask) {
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
             const char* fname = f->name();
-            if (fname != nullptr && strcmp(fname, name) == 0) {
+            if (fname != nullptr && strcmp(fname, name) == 0 && f->addr() != nullptr) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
                     return (VMFlag*)f;

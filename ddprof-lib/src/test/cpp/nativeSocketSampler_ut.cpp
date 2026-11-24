@@ -19,7 +19,9 @@
 #if defined(__linux__)
 
 #include "nativeSocketSampler.h"
+#include "guards.h"
 #include "libraryPatcher.h"
+#include "threadLocalData.h"
 
 #include <atomic>
 #include <chrono>
@@ -170,7 +172,57 @@ public:
     static void setObserver(void (*observer)(int, u64, u64, ssize_t, u8)) {
         NativeSocketSampler::_record_observer_for_test = observer;
     }
+    static void setRecordSampleHook(void (*hook)(ProfiledThread*)) {
+        NativeSocketSampler::_record_sample_for_test = hook;
+    }
+    static void recordProfilerSample(ProfiledThread* current, NativeSocketEvent* event) {
+        NativeSocketSampler::recordProfilerSample(current, 1, event);
+    }
 };
+
+static int g_recorder_calls;
+static bool g_nested_section_entered;
+
+// Stands in for Profiler::recordSample(): a profiling signal on this thread
+// would enter CriticalSection the same way before reaching put().
+static void record_sample_probe(ProfiledThread* current) {
+    g_recorder_calls++;
+    CriticalSection nested(current);
+    g_nested_section_entered = nested.entered();
+}
+
+class NativeSocketSamplerCriticalSectionTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        _thread = ProfiledThread::initCurrentThreadSignalSafe();
+        ASSERT_NE(_thread, nullptr);
+        g_recorder_calls = 0;
+        g_nested_section_entered = true;
+        NativeSocketSamplerTestAccessor::setRecordSampleHook(record_sample_probe);
+    }
+    void TearDown() override { NativeSocketSamplerTestAccessor::setRecordSampleHook(nullptr); }
+
+    ProfiledThread* _thread = nullptr;
+    NativeSocketEvent _event;
+};
+
+// A signal that lands while the socket sample is in put() must find this
+// thread's CriticalSection taken and drop its own sample.
+TEST_F(NativeSocketSamplerCriticalSectionTest, RecordsSampleInsideCriticalSection) {
+    NativeSocketSamplerTestAccessor::recordProfilerSample(_thread, &_event);
+
+    EXPECT_EQ(g_recorder_calls, 1);
+    EXPECT_FALSE(g_nested_section_entered) << "a nested signal could re-enter put()";
+}
+
+TEST_F(NativeSocketSamplerCriticalSectionTest, DropsSampleWhenThreadIsInCriticalSection) {
+    CriticalSection outer(_thread);
+    ASSERT_TRUE(outer.entered());
+
+    NativeSocketSamplerTestAccessor::recordProfilerSample(_thread, &_event);
+
+    EXPECT_EQ(g_recorder_calls, 0);
+}
 
 static u64 g_io_start;
 static u64 g_io_end;

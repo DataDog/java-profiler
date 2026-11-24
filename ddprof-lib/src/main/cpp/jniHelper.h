@@ -35,4 +35,44 @@ inline bool jniExceptionCheck(JNIEnv *jni, bool describe = false) {
   return false;
 }
 
+// Owns a JNI local reference and deletes it at scope exit; null is a no-op.
+class JniLocalRef {
+public:
+  JniLocalRef(JNIEnv *jni, jobject ref) : _jni(jni), _ref(ref) {}
+  ~JniLocalRef() {
+    if (_ref != nullptr) {
+      _jni->DeleteLocalRef(_ref);
+    }
+  }
+  JniLocalRef(const JniLocalRef &) = delete;
+  JniLocalRef &operator=(const JniLocalRef &) = delete;
+  jobject get() const { return _ref; }
+
+private:
+  JNIEnv *_jni;
+  jobject _ref;
+};
+
+// Owns the chars from GetStringUTFChars and releases them at scope exit; a
+// null str, or a failed copy, gives get() == nullptr.
+class JniUtfChars {
+public:
+  JniUtfChars(JNIEnv *jni, jstring str)
+      : _jni(jni), _str(str),
+        _chars(str != nullptr ? jni->GetStringUTFChars(str, nullptr) : nullptr) {}
+  ~JniUtfChars() {
+    if (_chars != nullptr) {
+      _jni->ReleaseStringUTFChars(_str, _chars);
+    }
+  }
+  JniUtfChars(const JniUtfChars &) = delete;
+  JniUtfChars &operator=(const JniUtfChars &) = delete;
+  const char *get() const { return _chars; }
+
+private:
+  JNIEnv *_jni;
+  jstring _str;
+  const char *_chars;
+};
+
 #endif
