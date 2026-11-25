@@ -109,27 +109,37 @@ TEST_F(ContinuationEntryX64Test, HandlesLargeImmediateSetupAndCleanup) {
 }
 
 TEST_F(ContinuationEntryX64Test, RequiresMatchingStoragePopAndReturn) {
+    // Without a recognized normal exit, no PC may use the complete frame size.
     exitSequence();
     method.code[35] = 0x30; // wrong storage size
-    EXPECT_EQ(10, wordsAt(48));
+    EXPECT_EQ(-1, wordsAt(8));
+    EXPECT_EQ(-1, wordsAt(48));
     method.code[35] = 0x40;
     method.code[36] = 0x58; // pop rax instead of rbp
-    EXPECT_EQ(10, wordsAt(48));
+    EXPECT_EQ(-1, wordsAt(48));
     method.code[36] = 0x5d;
     method.code[37] = 0x90; // no ret
-    EXPECT_EQ(10, wordsAt(48));
+    EXPECT_EQ(-1, wordsAt(48));
+}
+
+TEST_F(ContinuationEntryX64Test, UnrecognizedExitRejectsExceptionJump) {
+    exitSequence();
+    method.code[27] = 0x90; // the cleanup store no longer precedes add rsp
+    EXPECT_EQ(-1, wordsAt(64 + 23)) << "final jmp rbx after pop rdx";
+    EXPECT_EQ(-1, wordsAt(64 + 4)) << "exception pop rbp";
 }
 
 TEST_F(ContinuationEntryX64Test, DoesNotScanBeforeTheVerifiedEntry) {
     exitSequence();
     method.entry = method.code + 48;
     method.complete = 48;
-    EXPECT_EQ(10, wordsAt(64));
+    EXPECT_EQ(-1, wordsAt(64)) << "no recognized exit follows the verified entry";
 }
 
 TEST_F(ContinuationEntryX64Test, IgnoresEpilogueBytesInsideAnImmediate) {
     const unsigned char literal[] = {0x48, 0xb8, 0x48, 0x83, 0xc4, 0x40, 0x5d, 0xc3, 0, 0};
     memcpy(method.code + 16, literal, sizeof(literal));
+    exitSequence();
     EXPECT_EQ(10, wordsAt(30));
 }
 

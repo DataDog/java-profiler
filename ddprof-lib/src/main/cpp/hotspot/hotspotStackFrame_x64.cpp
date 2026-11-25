@@ -195,19 +195,33 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     size_t completed = ip - entry;
     if (completed > 1024) return -1;
     unsigned int storage = (words - 2) * sizeof(uintptr_t);
-    for (size_t offset = 7; offset + 6 <= completed; offset++) {
+    // Length of the normal cleanup epilogue at entry + offset, else 0. Cleanup first
+    // restores JavaThread::_cont_entry from RBX; including that store ignores
+    // add/pop/ret bytes inside a movabs immediate.
+    auto epilogueAt = [&](size_t offset) -> size_t {
         instruction_t* scan = entry + offset;
-        // Cleanup first restores JavaThread::_cont_entry from RBX. Include
-        // that store so an add/pop/ret byte pattern inside movabs is ignored.
-        if (scan[-7] != 0x49 || scan[-6] != 0x89 || scan[-5] != 0x9f || scan[0] != 0x48 || scan[2] != 0xc4) continue;
-        if (storage < 128 && scan[1] == 0x83 && scan[3] == storage && scan[4] == 0x5d && scan[5] == 0xc3) return -1;
-        if (offset + 9 <= completed && scan[1] == 0x81 && scan[3] == (storage & 0xff) &&
-                scan[4] == (storage >> 8) && scan[5] == 0 && scan[6] == 0 && scan[7] == 0x5d && scan[8] == 0xc3) return -1;
+        if (offset < 7 || !nm->contains(scan + 5)) return 0;
+        if (scan[-7] != 0x49 || scan[-6] != 0x89 || scan[-5] != 0x9f || scan[0] != 0x48 || scan[2] != 0xc4) return 0;
+        if (storage < 128 && scan[1] == 0x83 && scan[3] == storage && scan[4] == 0x5d && scan[5] == 0xc3) return 6;
+        if (nm->contains(scan + 8) && scan[1] == 0x81 && scan[3] == (storage & 0xff) &&
+                scan[4] == (storage >> 8) && scan[5] == 0 && scan[6] == 0 && scan[7] == 0x5d && scan[8] == 0xc3) return 9;
+        return 0;
+    };
+    for (size_t offset = 7; offset < completed; offset++) {
+        size_t length = epilogueAt(offset);
+        if (length == 0) continue;
+        if (offset + length <= completed) return -1; // past the normal exit
+        size_t phase = completed - offset;
+        if (phase == length - 2) return 2;           // pop FP: storage already deallocated
+        if (phase == length - 1) return 1;           // ret: FP already restored
+        return words;
     }
-
-    if (*ip == 0x5d) return 2;           // pop FP: storage already deallocated
-    if (*ip == 0xc3) return 1;           // ret: FP already restored
-    return words;
+    // The complete frame size applies only before a recognized normal exit;
+    // an unrecognized one could leave this PC in the exception section.
+    for (size_t offset = completed; offset <= 1024 && nm->contains(entry + offset + 5); offset++) {
+        if (epilogueAt(offset) != 0) return words;
+    }
+    return -1;
 }
 
 // Inline reads of code bytes: checkFault() cannot recover a fault inside libc memcmp/memcpy.
