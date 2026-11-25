@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import com.datadoghq.native.util.NativeLibJarCheck
 import com.datadoghq.native.util.PlatformUtils
-import java.util.zip.ZipFile
 
 plugins {
   java
@@ -70,30 +70,18 @@ tasks.named<Jar>("jmhJar") {
   archiveFileName.set("stresstests.jar")
 }
 
-// Fails if the jmh jar carries more than one libjavaProfiler per platform directory: the JVM
-// would load an arbitrary one (a debug build makes benchmark numbers meaningless).
+// Fails if the jmh jar carries more than one libjavaProfiler per platform directory, because the
+// JVM would load an arbitrary one. Every task that runs the jar depends on it: a finalizer of
+// jmhJar is not guaranteed to run before them.
 val verifyJmhJarNativeLibs = tasks.register("verifyJmhJarNativeLibs") {
   group = "verification"
   description = "Verify the JMH jar contains exactly one libjavaProfiler per platform"
   val jar = tasks.named<Jar>("jmhJar").flatMap { it.archiveFile }
   inputs.file(jar)
-  doLast {
-    // Exact library files only: -Pwith-libs also copies *.debug files and .dSYM bundles next to them.
-    val nativeLib = Regex("META-INF/native-libs/[^/]+/libjavaProfiler\\.(so|dylib)")
-    val perDir = ZipFile(jar.get().asFile).use { zip ->
-      zip.entries().asSequence()
-        .map { it.name }
-        .filter { nativeLib.matches(it) }
-        .groupBy { it.substringBeforeLast('/') }
-    }
-    check(perDir.isNotEmpty()) { "No libjavaProfiler found in ${jar.get().asFile}" }
-    perDir.forEach { (dir, entries) ->
-      check(entries.size == 1) { "Expected one libjavaProfiler in $dir of ${jar.get().asFile}, found ${entries.size}" }
-    }
-  }
+  doLast { NativeLibJarCheck.verifyOneLibPerPlatform(jar.get().asFile) }
 }
 
-tasks.named("jmhJar") { finalizedBy(verifyJmhJarNativeLibs) }
+tasks.named("jmh") { dependsOn(verifyJmhJarNativeLibs) }
 
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH
