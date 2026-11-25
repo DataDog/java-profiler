@@ -205,7 +205,7 @@ TESTS=$((TESTS + 4))
 # The boundary is >=: a budget exhausted at exactly $SECONDS elapsed expires.
 PROBE_DEADLINE_SECONDS=5
 deadline_expired "$((SECONDS - 5))" || fail "deadline_expired at the exact boundary"
-deadline_expired "$SECONDS" && fail "deadline_expired before the boundary" || true
+if deadline_expired "$SECONDS"; then fail "deadline_expired before the boundary"; fi
 TESTS=$((TESTS + 2))
 unset PROBE_DEADLINE_SECONDS
 
