@@ -449,13 +449,18 @@ TEST_F(SafeFetchTest, isReadableCString_countsCallsInsideAProtectedWindow) {
   EXPECT_TRUE(SafeAccess::isReadableCString("abc", 4));
   EXPECT_EQ(before, Counters::getCounter(SAFECSTRING_WHILE_PROTECTED)) << "outside a window";
   {
-    // The string is valid, so nothing faults and the landing pad is never used.
     JmpCtxScope scope(thread);
     sigjmp_buf ctx;
+    if (sigsetjmp(ctx, 1) != 0) {
+      scope.restore();
+      ProfiledThread::release();
+      FAIL() << "unexpected fault inside the protected window";
+    }
     scope.install(&ctx);
     EXPECT_TRUE(SafeAccess::isReadableCString("abc", 4));
   }
   EXPECT_EQ(before + 1, Counters::getCounter(SAFECSTRING_WHILE_PROTECTED));
+  ProfiledThread::release();
 }
 #endif
 

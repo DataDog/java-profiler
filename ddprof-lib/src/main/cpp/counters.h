@@ -400,7 +400,7 @@
 #define DD_COUNTER_TABLE_SAMPLER_PERF(X)
 #endif
 
-// Debug-only counters: SafeAccess reads/copies issued while the thread is
+// Debug-only counters: SafeAccess calls issued while the thread is
 // already inside a walkVM siglongjmp-protected region (redundant safefetch
 // overhead). Not compiled into release builds at all, so they occupy no enum
 // slot and add no storage there.
