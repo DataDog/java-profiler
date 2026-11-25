@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-25 13:36:22 EST
+**Date:** 2026-11-25 13:44:59 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 181 |
-| Sample Rate | 3.02/sec |
-| Health Score | 189% |
-| Threads | 5 |
+| CPU Samples | 186 |
+| Sample Rate | 3.10/sec |
+| Health Score | 194% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 223 |
-| Sample Rate | 3.72/sec |
-| Health Score | 233% |
-| Threads | 8 |
+| CPU Samples | 155 |
+| Sample Rate | 2.58/sec |
+| Health Score | 161% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
 
 ```
-1795631467 66
-1795631472 66
-1795631477 66
-1795631482 66
-1795631487 66
-1795631492 66
-1795631497 66
-1795631502 66
-1795631507 66
-1795631512 66
-1795631517 66
-1795631522 66
-1795631527 66
-1795631532 66
-1795631537 66
-1795631542 66
-1795631547 66
-1795631552 66
-1795631557 66
-1795631562 66
+1795632013 66
+1795632018 66
+1795632023 66
+1795632028 66
+1795632033 66
+1795632038 66
+1795632043 66
+1795632048 66
+1795632053 66
+1795632058 66
+1795632063 66
+1795632068 66
+1795632073 66
+1795632078 66
+1795632083 66
+1795632088 66
+1795632093 66
+1795632098 66
+1795632103 66
+1795632108 66
 ```
 </details>
 
