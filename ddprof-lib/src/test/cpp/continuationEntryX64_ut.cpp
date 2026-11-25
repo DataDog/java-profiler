@@ -131,9 +131,14 @@ TEST_F(ContinuationEntryX64Test, UnrecognizedExitRejectsExceptionJump) {
 
 TEST_F(ContinuationEntryX64Test, DoesNotScanBeforeTheVerifiedEntry) {
     exitSequence();
+    // A second exit after the verified entry: a scan from code would instead see the one at 32.
+    const unsigned char restore_parent[] = {0x49, 0x89, 0x9f, 0x38, 0x05, 0, 0};
+    const unsigned char normal[] = {0x48, 0x83, 0xc4, 0x40, 0x5d, 0xc3};
+    memcpy(method.code + 100, restore_parent, sizeof(restore_parent));
+    memcpy(method.code + 107, normal, sizeof(normal));
     method.entry = method.code + 48;
     method.complete = 48;
-    EXPECT_EQ(-1, wordsAt(64)) << "no recognized exit follows the verified entry";
+    EXPECT_EQ(10, wordsAt(64));
 }
 
 TEST_F(ContinuationEntryX64Test, IgnoresEpilogueBytesInsideAnImmediate) {
@@ -147,6 +152,12 @@ TEST_F(ContinuationEntryX64Test, RejectsOutOfBlobAndUnboundedCodePositions) {
     EXPECT_EQ(-1, wordsAt(1100));
     method.size = offsetof(Method, code) + 16;
     EXPECT_EQ(-1, wordsAt(32));
+}
+
+TEST_F(ContinuationEntryX64Test, IgnoresAnExitThatStraddlesTheBlobEnd) {
+    exitSequence();
+    method.size = offsetof(Method, code) + 37; // the exit's ret lies outside the nmethod
+    EXPECT_EQ(-1, wordsAt(8));
 }
 
 TEST_F(ContinuationEntryX64Test, RejectsInvalidFrameSizes) {
