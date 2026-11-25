@@ -98,6 +98,7 @@ case "$url" in
     case "$url" in
       */search/jql)
         [ "${FAKE_SEARCH_FAIL:-0}" = 1 ] && exit 22
+        [ "${FAKE_ISSUE_KEYS:-0}" = 1 ] && { echo '{"issueKeys":["PROF-12"]}'; exit 0; }
         summary=$(jq -r .jql <<<"$data" | sed -E 's/.*summary ~ "\\"(.*)\\"" AND resolution.*/\1/')
         # Jira phrase matching also hits longer summaries: every open issue
         # whose summary contains the phrase is returned, with its summary.
@@ -168,7 +169,7 @@ reset_fakes() {
   : > "$FAKE_CURL_LOG"
   unset FAKE_URLS FAKE_OPEN FAKE_IBM_LISTING FAKE_NO_DONE FAKE_JIRA_FAIL FAKE_SLACK_URL FAKE_SLACK_FAIL \
     FAKE_TRANSITION_FAIL FAKE_TRANSITIONS_GET_FAIL FAKE_COMMENT_FAIL FAKE_SEARCH_FAIL FAKE_DOWNLOAD FAKE_TAR_RC \
-    FAKE_CURL_DELAY
+    FAKE_CURL_DELAY FAKE_ISSUE_KEYS
 }
 
 with_jira() {
@@ -199,6 +200,13 @@ version_gt 8.0.9.0 8.0.8.75 || fail "version_gt 8.0.9.0 8.0.8.75"
 ! version_gt 8.0.8.75 8.0.8.75 || fail "version_gt equal"
 ! version_gt 8.0.8.9 8.0.8.10 || fail "version_gt lower"
 TESTS=$((TESTS + 4))
+
+# The boundary is >=: a budget exhausted at exactly $SECONDS elapsed expires.
+PROBE_DEADLINE_SECONDS=5
+deadline_expired "$((SECONDS - 5))" || fail "deadline_expired at the exact boundary"
+deadline_expired "$SECONDS" && fail "deadline_expired before the boundary" || true
+TESTS=$((TESTS + 2))
+unset PROBE_DEADLINE_SECONDS
 
 assert_eq 8.0.8.75 "$(pinned_ibm_version "$IBM_PIN")" "pinned_ibm_version"
 assert_eq "" "$(pinned_ibm_version "https://example.invalid/jdk.tgz")" "pinned_ibm_version without a release directory"
@@ -335,7 +343,7 @@ env:
   JAVA_17_MUSL_URL: "https://gone.example.invalid/jdk.tgz"
   JAVA_11_MUSL_URL: "https://ok.example.invalid/musl11.tar.gz"
 EOF
-export FAKE_URLS="$TEMP_DIR/urls.txt" FAKE_CURL_DELAY=1 PROBE_DEADLINE_SECONDS=2
+export FAKE_URLS="$TEMP_DIR/urls.txt" FAKE_CURL_DELAY=1 PROBE_DEADLINE_SECONDS=3
 rc=0
 output=$("$CHECK" check --out "$TEMP_DIR/deadline" --workflow "$TEMP_DIR/deadline.yml" 2>&1) || rc=$?
 unset FAKE_CURL_DELAY PROBE_DEADLINE_SECONDS
@@ -343,7 +351,7 @@ assert_eq 1 "$rc" "deadline: an earlier STALE pin still fails the check"
 assert_eq "JAVA_8_IBM_URL:OK JAVA_17_MUSL_URL:STALE JAVA_11_MUSL_URL:INCONCLUSIVE " \
   "$(awk -F '\t' '{ printf "%s:%s ", $1, $3 }' "$TEMP_DIR/deadline/results.tsv")" "deadline: probed pins keep their class, the rest is INCONCLUSIVE"
 assert_eq "000" "$(awk -F '\t' '$1 == "JAVA_11_MUSL_URL" { print $4 }' "$TEMP_DIR/deadline/results.tsv")" "deadline: an unprobed pin reports no HTTP status"
-assert_contains "$output" "::warning::Probe deadline (2s) reached" "deadline expiry warns"
+assert_contains "$output" "::warning::Probe deadline (3s) reached" "deadline expiry warns"
 assert_contains "$output" "::warning::Probe deadline reached; skipping the IBM newer-release check" "deadline skips the IBM check"
 assert_not_contains "$(cat "$FAKE_CURL_LOG")" "GET $IBM_BASE" "deadline: no IBM listing fetch after the deadline"
 
@@ -610,7 +618,14 @@ output=$("$RESOLVE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk
 assert_eq 0 "$rc" "a non-exact phrase hit resolves nothing and exits 0"
 assert_contains "$(cat "$TEMP_DIR/resolve-long.err")" "none with the exact summary" "a non-exact phrase hit warns"
 assert_not_contains "$(cat "$FAKE_CURL_LOG")" "/transitions" "no transition without an exact summary match"
-unset FAKE_OPEN
+# An issueKeys response carries no summaries to verify: warn, resolve nothing.
+export FAKE_ISSUE_KEYS=1
+rc=0
+output=$("$RESOLVE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)" --comment-file "$TEMP_DIR/body.txt" 2>"$TEMP_DIR/resolve-keys.err") || rc=$?
+assert_eq 0 "$rc" "an issueKeys response resolves nothing and exits 0"
+assert_contains "$(cat "$TEMP_DIR/resolve-keys.err")" "issue keys without summaries" "an issueKeys response warns"
+assert_not_contains "$(cat "$FAKE_CURL_LOG")" "/transitions" "no transition on an issueKeys response"
+unset FAKE_ISSUE_KEYS FAKE_OPEN
 
 # --- java_setup.sh fetchAndExtract ---------------------------------------------------
 # GitHub's default run shell is bash -e without pipefail; each case runs so.

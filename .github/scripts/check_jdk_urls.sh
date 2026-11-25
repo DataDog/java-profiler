@@ -41,6 +41,12 @@ CURL_OPTS=(-sS -L --retry 1 --retry-all-errors --connect-timeout 15 --max-time 3
 # the job being killed at timeout-minutes before any alert. Overridable for
 # the hermetic tests.
 PROBE_DEADLINE_SECONDS="${PROBE_DEADLINE_SECONDS:-1200}"
+
+# True once the shared probe budget is exhausted; $1 is the budget's origin
+# (SECONDS at the start of the check).
+deadline_expired() {
+  (( SECONDS - $1 >= PROBE_DEADLINE_SECONDS ))
+}
 JIRA_COMPONENT="library-java"
 JIRA_LABEL="ci"
 
@@ -201,7 +207,7 @@ cmd_check() {
   local var url probe code final class
   local deadline_start=$SECONDS deadline_hit=0
   while read -r var url; do
-    if (( SECONDS - deadline_start >= PROBE_DEADLINE_SECONDS )); then
+    if deadline_expired "$deadline_start"; then
       if [ "$deadline_hit" = 0 ]; then
         echo "::warning::Probe deadline (${PROBE_DEADLINE_SECONDS}s) reached; marking the remaining pins INCONCLUSIVE without probing"
         deadline_hit=1
@@ -227,7 +233,7 @@ cmd_check() {
   done <<<"$pins"
 
   if [ -n "$ibm_url" ]; then
-    if [ "$deadline_hit" = 1 ]; then
+    if deadline_expired "$deadline_start"; then
       : > "$out/ibm.txt"
       echo "::warning::Probe deadline reached; skipping the IBM newer-release check"
     else

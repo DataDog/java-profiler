@@ -72,19 +72,19 @@ jira() {
 JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\""; "\\\\\"")')
 JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\\\"\" AND resolution = Unresolved AND statusCategory != Done"
 SEARCH=$(jira 1 -X POST --data "$(jq -n --arg jql "$JQL" \
-  '{jql: $jql, maxResults: 10, fields: ["key", "summary"]}')" "$API/search/jql")
+  '{jql: $jql, maxResults: 100, fields: ["key", "summary"]}')" "$API/search/jql") || exit 1
 
 # Closing the first phrase hit could transition an unrelated open ticket
 # whose summary merely contains the phrase, so resolve only an exact,
 # case-insensitive summary match and leave the rest untouched.
 EXISTING_KEY=$(jq -r --arg s "$SUMMARY" '
-  [.issues[] | select((.fields.summary // "") | ascii_downcase == ($s | ascii_downcase))][0].key // empty' <<<"$SEARCH")
-if [ -z "$EXISTING_KEY" ] && [ "$(jq '.issues | length' <<<"$SEARCH")" != 0 ]; then
-  echo "WARNING: Jira phrase search matched issues but none with the exact summary '$SUMMARY'; not resolving" >&2
-  exit 0
-fi
-
+  [.issues[]? | select((.fields.summary // "") | ascii_downcase == ($s | ascii_downcase))][0].key // empty' <<<"$SEARCH")
 if [ -z "$EXISTING_KEY" ]; then
+  if [ "$(jq '[.issues[]?] | length' <<<"$SEARCH")" != 0 ]; then
+    echo "WARNING: Jira phrase search matched issues but none with the exact summary '$SUMMARY'; not resolving" >&2
+  elif [ "$(jq '.issueKeys | length' <<<"$SEARCH")" != 0 ]; then
+    echo "WARNING: Jira search returned issue keys without summaries; not resolving" >&2
+  fi
   exit 0
 fi
 echo "$EXISTING_KEY"
