@@ -89,6 +89,8 @@ public class UnownedBlockedTailDumpTest extends AbstractProfilerTest {
     profiler.clearTraceContext();
     Path snapshot = Files.createTempFile("unowned-tail-drop-", ".jfr");
     try {
+      // An earlier test on this reused thread can leave logical membership behind.
+      profiler.removeThread();
       JavaProfilerTestSupport.exchangeUnownedWallTailAcrossDumpDropsForTest(step, 1);
       assertTrue(record(snapshot, false, false));
       assertEquals(
