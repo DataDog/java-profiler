@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-25 10:00:28 EST
+**Date:** 2026-11-25 10:01:35 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 82 |
-| Sample Rate | 1.37/sec |
-| Health Score | 86% |
-| Threads | 10 |
-| Allocations | 64 |
+| CPU Samples | 94 |
+| Sample Rate | 1.57/sec |
+| Health Score | 98% |
+| Threads | 11 |
+| Allocations | 85 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 16 |
-| Sample Rate | 0.27/sec |
-| Health Score | 17% |
-| Threads | 7 |
-| Allocations | 17 |
+| CPU Samples | 302 |
+| Sample Rate | 5.03/sec |
+| Health Score | 314% |
+| Threads | 14 |
+| Allocations | 134 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
 
 ```
-1795618509 33
-1795618514 33
-1795618519 33
-1795618524 33
-1795618529 33
-1795618534 33
-1795618539 33
-1795618544 33
-1795618549 33
-1795618554 33
-1795618559 33
-1795618564 33
-1795618569 33
-1795618574 33
-1795618579 33
-1795618584 33
-1795618589 33
-1795618594 33
-1795618599 33
-1795618604 33
+1795618639 33
+1795618644 33
+1795618649 33
+1795618654 33
+1795618659 33
+1795618665 33
+1795618670 33
+1795618675 33
+1795618680 33
+1795618685 33
+1795618690 33
+1795618695 33
+1795618700 33
+1795618705 33
+1795618710 33
+1795618715 33
+1795618720 33
+1795618725 33
+1795618730 33
+1795618735 33
 ```
 </details>
 
