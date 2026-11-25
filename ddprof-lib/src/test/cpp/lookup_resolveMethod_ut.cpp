@@ -32,15 +32,20 @@
 
 #include <gtest/gtest.h>
 
+#include "../../main/cpp/callTraceHashTable.h"
 #include "../../main/cpp/flightRecorder.h"
 #include "../../main/cpp/flightRecorder.inline.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include "../../main/cpp/threadLocalData.inline.h"
 #include "../../main/cpp/vmEntry.h"
+#include "safeAccessTestSupport.h"
 
 #include <cstring>
 #include <map>
+#include <memory>
+#include <new>
 #include <string>
+#include <vector>
 
 static constexpr char LOOKUP_RESOLVE_METHOD_TEST_NAME[] = "LookupResolveMethodTest";
 class LookupResolveMethodGlobalSetup {
@@ -63,10 +68,22 @@ public:
     static void setHotspot(bool v) { VM::_hotspot = v; }
     static int getHotspotVersion() { return VM::_hotspot_version; }
     static void setHotspotVersion(int v) { VM::_hotspot_version = v; }
+    static bool getOpenJ9() { return VM::_openj9; }
+    static void setOpenJ9(bool v) { VM::_openj9 = v; }
     static JavaVM* getVm() { return VM::_vm; }
     static void setVm(JavaVM* vm) { VM::_vm = vm; }
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+};
+
+// Reaches the private static per-trace writer; Recording itself needs a live
+// JVMTI environment to construct.
+class RecordingTestAccessor {
+public:
+    static void writeStackTrace(Buffer* buf, CallTrace* trace, Lookup* lookup,
+                                Recording::FlushFn flush, void* flush_ctx) {
+        Recording::writeStackTrace(buf, trace, lookup, flush, flush_ctx);
+    }
 };
 
 namespace {
@@ -158,6 +175,23 @@ struct FakeJvmCounters {
     // When set, getLineNumberTable() hands back a real (malloc'd) table
     // instead of JVMTI_ERROR_ABSENT_INFORMATION.
     bool provide_line_number_table = false;
+    // Errors returned by the JVMTI calls fillJavaMethodInfo() makes.
+    jvmtiError declaring_class_error = JVMTI_ERROR_NONE;
+    jvmtiError class_signature_error = JVMTI_ERROR_NONE;
+    jvmtiError method_name_error = JVMTI_ERROR_NONE;
+    // When set, GetMethodDeclaringClass() hands back declaring_class.
+    bool override_declaring_class = false;
+    jclass declaring_class = nullptr;
+    // When set, GetMethodName() hands back borrowed_method_name (possibly
+    // null or unreadable) instead of a malloc'd copy; Deallocate() never frees it.
+    bool borrow_method_name = false;
+    char* borrowed_method_name = nullptr;
+    // Same for the method signature GetMethodName() hands back.
+    bool borrow_method_sig = false;
+    char* borrowed_method_sig = nullptr;
+    int deallocate_borrowed = 0;
+    // When non-empty, GetClassSignature() returns a malloc'd copy of it.
+    std::string class_signature;
 };
 
 class ScopedFakeJvmAndJni {
@@ -187,6 +221,8 @@ public:
     }
 
     ~ScopedFakeJvmAndJni() {
+        // The profiler never Deallocate()s an unreadable class signature; free it here.
+        free(_class_signature_alloc);
         VMTestAccessor::setVm(_saved_vm);
         s_instance = nullptr;
     }
@@ -221,11 +257,21 @@ private:
     }
     static jvmtiError JNICALL getMethodDeclaringClass(jvmtiEnv*, jmethodID, jclass* declaring_class_ptr) {
         static int fake_class_storage = 0;
-        *declaring_class_ptr = reinterpret_cast<jclass>(&fake_class_storage);
+        FakeJvmCounters& c = s_instance->counters;
+        if (c.declaring_class_error != JVMTI_ERROR_NONE) {
+            return c.declaring_class_error;
+        }
+        *declaring_class_ptr = c.override_declaring_class
+            ? c.declaring_class : reinterpret_cast<jclass>(&fake_class_storage);
         return JVMTI_ERROR_NONE;
     }
     static jvmtiError JNICALL getClassSignature(jvmtiEnv*, jclass, char** signature_ptr, char** generic_ptr) {
-        *signature_ptr = dup("Lcom/example/Foo;");
+        if (s_instance->counters.class_signature_error != JVMTI_ERROR_NONE) {
+            return s_instance->counters.class_signature_error;
+        }
+        const std::string& sig = s_instance->counters.class_signature;
+        *signature_ptr = dup(sig.empty() ? "Lcom/example/Foo;" : sig.c_str());
+        s_instance->_class_signature_alloc = *signature_ptr;
         if (generic_ptr != nullptr) {
             *generic_ptr = nullptr;
         }
@@ -237,8 +283,12 @@ private:
         // fillJavaMethodInfo checks) so the Thread.run/main entry-frame
         // detection -- which would need FindClass/GetMethodID/
         // CallBooleanMethod mocked too -- never fires.
-        *name_ptr = dup("sampleMethod");
-        *signature_ptr = dup("()V");
+        FakeJvmCounters& c = s_instance->counters;
+        if (c.method_name_error != JVMTI_ERROR_NONE) {
+            return c.method_name_error;
+        }
+        *name_ptr = c.borrow_method_name ? c.borrowed_method_name : dup("sampleMethod");
+        *signature_ptr = c.borrow_method_sig ? c.borrowed_method_sig : dup("()V");
         if (generic_ptr != nullptr) {
             *generic_ptr = nullptr;
         }
@@ -260,12 +310,23 @@ private:
         return JVMTI_ERROR_NONE;
     }
     static jvmtiError JNICALL deallocate(jvmtiEnv*, unsigned char* mem) {
-        s_instance->counters.deallocate++;
+        FakeJvmCounters& c = s_instance->counters;
+        c.deallocate++;
+        char* p = reinterpret_cast<char*>(mem);
+        if ((c.borrow_method_name && p == c.borrowed_method_name) ||
+            (c.borrow_method_sig && p == c.borrowed_method_sig)) {
+            c.deallocate_borrowed++;
+            return JVMTI_ERROR_NONE;
+        }
+        if (p == s_instance->_class_signature_alloc) {
+            s_instance->_class_signature_alloc = nullptr;
+        }
         free(mem); // matches the real JVMTI contract; a double-free here aborts the test
         return JVMTI_ERROR_NONE;
     }
 
     static ScopedFakeJvmAndJni* s_instance;
+    char* _class_signature_alloc = nullptr;
 
     JavaVM* _saved_vm;
     JNINativeInterface_ _jni_tbl{};
@@ -292,15 +353,20 @@ protected:
         ProfiledThread::initCurrentThreadSignalSafe();
 
         _saved_jvmti = VMTestAccessor::getJvmti();
+        _saved_openj9 = VMTestAccessor::getOpenJ9();
     }
 
     void TearDown() override {
+        VMTestAccessor::setOpenJ9(_saved_openj9);
         VMTestAccessor::setJvmti(_saved_jvmti);
         VMTestAccessor::setHotspot(_saved_hotspot);
         VMTestAccessor::setHotspotVersion(_saved_hotspot_version);
     }
 
+    // The string probe in fillJavaMethodInfo() needs SafeAccess fault recovery.
+    ScopedSafeAccessHandler _safe_access{LOOKUP_RESOLVE_METHOD_TEST_NAME};
     jvmtiEnv* _saved_jvmti;
+    bool _saved_openj9;
     bool _saved_hotspot;
     int _saved_hotspot_version;
 };
@@ -425,6 +491,529 @@ TEST_F(LookupResolveMethodJavaFrameTest, LineNumberTableSurvivesReResolveInALate
         << "the table fetched on the first resolve must not be discarded "
            "just because this call didn't re-fetch one";
     EXPECT_EQ(42, mi_again->getLineNumber(0));
+}
+
+// ---------------------------------------------------------------------------
+// "<unloaded>" causes: each skip bumps jmethodid_skipped_count and exactly one
+// reason counter; a valid name next to an unreadable page is not a skip.
+// ---------------------------------------------------------------------------
+
+struct SkipCounters {
+    long long skipped = Counters::getCounter(JMETHODID_SKIPPED);
+    long long invalid_id = Counters::getCounter(METHOD_RESOLVE_SKIPPED_INVALID_ID);
+    long long jvmti_error = Counters::getCounter(METHOD_RESOLVE_SKIPPED_JVMTI_ERROR);
+    long long unreadable_name = Counters::getCounter(METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
+};
+
+// Resolves one interpreted frame for `method` and returns its row.
+MethodInfo* resolveJavaFrame(Lookup& lookup, jmethodID method) {
+    ASGCT_CallFrame frame{};
+    frame.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    frame.method_id = method;
+    return lookup.resolveMethod(frame);
+}
+
+// Asserts mi is an "<unloaded>" row counted once, under `reason` only.
+void expectSkippedFor(Lookup& lookup, MethodInfo* mi, const SkipCounters& before, CounterId reason) {
+    if (mi == nullptr) {
+        ADD_FAILURE() << "resolveMethod() returned no row";
+        return;
+    }
+    EXPECT_EQ(lookup.getSymbol("<unloaded>"), mi->_name);
+    SkipCounters after;
+    EXPECT_EQ(before.skipped + 1, after.skipped);
+    EXPECT_EQ(before.invalid_id + (reason == METHOD_RESOLVE_SKIPPED_INVALID_ID ? 1 : 0), after.invalid_id);
+    EXPECT_EQ(before.jvmti_error + (reason == METHOD_RESOLVE_SKIPPED_JVMTI_ERROR ? 1 : 0), after.jvmti_error);
+    EXPECT_EQ(before.unreadable_name + (reason == METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME ? 1 : 0),
+              after.unreadable_name);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, ValidNameJustBeforeUnreadablePageResolves) {
+    GuardedPage region;
+    ASSERT_TRUE(region.ok());
+    ScopedFakeJvmAndJni fake;
+    fake.counters.borrow_method_name = true;
+    fake.counters.borrowed_method_name = region.placeAtEnd("sampleMethod");
+    // A 256-byte range from the name is not readable; the name itself is.
+    ASSERT_FALSE(SafeAccess::isReadableRange(fake.counters.borrowed_method_name, 256));
+    VMTestAccessor::setJvmti(fake.jvmti());
+
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    ASSERT_NE(nullptr, mi);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
+    EXPECT_EQ(1, fake.counters.deallocate_borrowed);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, InvalidJmethodIdCountsInvalidId) {
+    // hotspot_version <= 25 makes check_jmethodID_hotspot() read the slot,
+    // and a NULL slot is a freed jmethodID.
+    VMTestAccessor::setHotspotVersion(25);
+    ScopedFakeJvmAndJni fake;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    void* null_slot = nullptr;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&null_slot));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_INVALID_ID);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, J9UnloadedLoaderClassCountsInvalidId) {
+    VMTestAccessor::setOpenJ9(true);
+    VMTestAccessor::setHotspot(false);
+    ScopedFakeJvmAndJni fake;
+    fake.counters.override_declaring_class = true;
+    fake.counters.declaring_class = reinterpret_cast<jclass>(-1);
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    // check_jmethodID_J9() only requires a non-null slot.
+    int fake_method = 0;
+    void* slot = &fake_method;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&slot));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_INVALID_ID);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, DeclaringClassErrorCountsJvmtiError) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_JVMTI_ERROR);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, NullDeclaringClassCountsJvmtiError) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.override_declaring_class = true;
+    fake.counters.declaring_class = nullptr;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_JVMTI_ERROR);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, ClassSignatureErrorCountsJvmtiError) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.class_signature_error = JVMTI_ERROR_INVALID_CLASS;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_JVMTI_ERROR);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, MethodNameErrorCountsJvmtiError) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.method_name_error = JVMTI_ERROR_INVALID_METHODID;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_JVMTI_ERROR);
+    // The class signature fetched before the failing call is still freed.
+    EXPECT_EQ(1, fake.counters.deallocate);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, NullMethodNameCountsUnreadableName) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.borrow_method_name = true;
+    fake.counters.borrowed_method_name = nullptr;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
+}
+
+// A corrupt JVMTI string pointer, as seen in crash telemetry, is rejected
+// without faulting and never handed to Deallocate(); its siblings still are.
+TEST_F(LookupResolveMethodJavaFrameTest, UnreadableNamePointerIsSkippedAndNotDeallocated) {
+    GuardedPage region;
+    ASSERT_TRUE(region.ok());
+    ScopedFakeJvmAndJni fake;
+    fake.counters.borrow_method_name = true;
+    fake.counters.borrowed_method_name = region.guardStart();
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
+    EXPECT_EQ(0, fake.counters.deallocate_borrowed);
+    EXPECT_EQ(2, fake.counters.deallocate);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, J9OrdinaryClassResolves) {
+    VMTestAccessor::setOpenJ9(true);
+    VMTestAccessor::setHotspot(false);
+    ScopedFakeJvmAndJni fake;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method = 0;
+    void* slot = &fake_method;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&slot));
+
+    ASSERT_NE(nullptr, mi);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
+}
+
+// The (jclass)-1 sentinel means "loader unloaded" only on J9; HotSpot resolves it.
+TEST_F(LookupResolveMethodJavaFrameTest, MinusOneClassOutsideJ9Resolves) {
+    VMTestAccessor::setOpenJ9(false);
+    ScopedFakeJvmAndJni fake;
+    fake.counters.override_declaring_class = true;
+    fake.counters.declaring_class = reinterpret_cast<jclass>(-1);
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    ASSERT_NE(nullptr, mi);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    EXPECT_EQ(before.invalid_id, Counters::getCounter(METHOD_RESOLVE_SKIPPED_INVALID_ID));
+    EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
+}
+
+// A failed probe does not skip the probes after it, so a later unreadable
+// pointer is also kept from Deallocate().
+TEST_F(LookupResolveMethodJavaFrameTest, EveryUnreadableStringIsKeptFromDeallocate) {
+    GuardedPage region;
+    ASSERT_TRUE(region.ok());
+    ScopedFakeJvmAndJni fake;
+    fake.counters.borrow_method_name = true;
+    fake.counters.borrowed_method_name = region.guardStart();
+    fake.counters.borrow_method_sig = true;
+    fake.counters.borrowed_method_sig = region.guardStart() + 8;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
+    EXPECT_EQ(0, fake.counters.deallocate_borrowed);
+    EXPECT_EQ(1, fake.counters.deallocate);  // the class signature only
+}
+
+// The longest legal class signature: a 65535-byte name plus "L" and ";".
+TEST_F(LookupResolveMethodJavaFrameTest, LongestLegalClassSignatureResolves) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.class_signature = "L" + std::string(65535, 'a') + ";";
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    ASSERT_NE(nullptr, mi);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    EXPECT_EQ(before.skipped, Counters::getCounter(JMETHODID_SKIPPED));
+}
+
+// One byte past the longest legal class signature: no NUL within the bound.
+TEST_F(LookupResolveMethodJavaFrameTest, ClassSignaturePastTheBoundCountsUnreadableName) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.class_signature = "L" + std::string(65536, 'a') + ";";
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    SkipCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+
+    expectSkippedFor(lookup, mi, before, METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME);
+}
+
+// ---------------------------------------------------------------------------
+// countUnresolvedFrame(): one count per written frame of an "<unloaded>" row
+// or the shared unknown row, none for a resolved row.
+// ---------------------------------------------------------------------------
+
+struct FrameCounters {
+    long long unloaded = Counters::getCounter(METHOD_RESOLVE_FRAMES_UNLOADED);
+    long long unknown = Counters::getCounter(METHOD_RESOLVE_FRAMES_UNKNOWN);
+};
+
+TEST_F(LookupResolveMethodJavaFrameTest, UnloadedRowIsCountedOncePerFrame) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    jmethodID method = reinterpret_cast<jmethodID>(&fake_method_storage);
+    FrameCounters before;
+
+    // Two traces that share one unresolved method: one row, two frames.
+    MethodInfo* first = resolveJavaFrame(lookup, method);
+    lookup.countUnresolvedFrame(first);
+    MethodInfo* second = resolveJavaFrame(lookup, method);
+    lookup.countUnresolvedFrame(second);
+
+    ASSERT_EQ(first, second);
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded + 2, after.unloaded);
+    EXPECT_EQ(before.unknown, after.unknown);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, UnknownRowIsCountedAsUnknown) {
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    FrameCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, nullptr);
+    lookup.countUnresolvedFrame(mi);
+
+    ASSERT_EQ(&lookup._unknown_method, mi);
+    FrameCounters after;
+    EXPECT_EQ(before.unknown + 1, after.unknown);
+    EXPECT_EQ(before.unloaded, after.unloaded);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, ResolvedRowIsNotCounted) {
+    ScopedFakeJvmAndJni fake;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    FrameCounters before;
+
+    MethodInfo* mi = resolveJavaFrame(lookup, reinterpret_cast<jmethodID>(&fake_method_storage));
+    lookup.countUnresolvedFrame(mi);
+
+    ASSERT_EQ(lookup.getSymbol("sampleMethod"), mi->_name);
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded, after.unloaded);
+    EXPECT_EQ(before.unknown, after.unknown);
+}
+
+// ---------------------------------------------------------------------------
+// Recording::writeStackTrace(): the per-trace writer counts each written
+// frame once, including a root it resolves a second time for the header.
+// ---------------------------------------------------------------------------
+
+// Owns a CallTrace with room for frames.size() frames (CallTrace ends in
+// frames[1], so the storage is allocated past sizeof(CallTrace)).
+class OwnedTrace {
+public:
+    OwnedTrace(u64 trace_id, const std::vector<ASGCT_CallFrame>& frames)
+        : _storage(new char[sizeof(CallTrace) + frames.size() * sizeof(ASGCT_CallFrame)]) {
+        _trace = new (_storage.get()) CallTrace(false, static_cast<int>(frames.size()), trace_id);
+        for (size_t i = 0; i < frames.size(); i++) {
+            _trace->frames[i] = frames[i];
+        }
+    }
+    CallTrace* get() { return _trace; }
+
+private:
+    std::unique_ptr<char[]> _storage;
+    CallTrace* _trace;
+};
+
+void countFlush(void* flush_ctx, Buffer*) {
+    ++*static_cast<int*>(flush_ctx);
+}
+
+TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterCountsEachUnresolvedFrameOnce) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;  // jmethodID frames -> <unloaded>
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+
+    int fake_method_storage = 0;
+    ASGCT_CallFrame unloaded{};
+    unloaded.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    unloaded.method_id = reinterpret_cast<jmethodID>(&fake_method_storage);
+    ASGCT_CallFrame unknown{};  // null method_id -> shared unknown row
+    unknown.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    ASGCT_CallFrame resolved{};  // a native frame name: resolves, never counted
+    resolved.bci = BCI_ERROR;
+    resolved.native_function_name = "resolved_native_frame";
+
+    // The root is the last frame. Trace 1 has an unknown root, trace 2 an
+    // <unloaded> root, and both share the <unloaded> method.
+    OwnedTrace trace1(1, {unloaded, resolved, unknown});
+    OwnedTrace trace2(2, {resolved, unloaded});
+    FrameCounters before;
+    Buffer buffer1;
+    Buffer buffer2;
+    int flushes = 0;
+
+    RecordingTestAccessor::writeStackTrace(&buffer1, trace1.get(), &lookup, countFlush, &flushes);
+    RecordingTestAccessor::writeStackTrace(&buffer2, trace2.get(), &lookup, countFlush, &flushes);
+
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded + 2, after.unloaded);
+    EXPECT_EQ(before.unknown + 1, after.unknown);
+    EXPECT_EQ(5, flushes) << "one flush check per written frame";
+    // Header: trace id, truncated flag, frame count, each one byte here (values < 128).
+    // These traces are not walker-truncated, so the flag comes from the root (the
+    // last frame) alone: set for a non-entry Java root.
+    const unsigned char* header1 = reinterpret_cast<const unsigned char*>(buffer1.data());
+    EXPECT_EQ(1, header1[0]);
+    EXPECT_EQ(0, header1[1]) << "trace 1's root is the native unknown row";
+    EXPECT_EQ(3, header1[2]);
+    const unsigned char* header2 = reinterpret_cast<const unsigned char*>(buffer2.data());
+    EXPECT_EQ(2, header2[0]);
+    EXPECT_EQ(1, header2[1]) << "trace 2's root is the <unloaded> Java row";
+    EXPECT_EQ(2, header2[2]);
+    // Every written row is marked referenced, so ageing keeps the map rows.
+    // resolveMethod() returns the already-filled row and leaves the flag alone.
+    EXPECT_TRUE(lookup.resolveMethod(unloaded)->_referenced);
+    EXPECT_TRUE(lookup.resolveMethod(unknown)->_referenced);
+    EXPECT_TRUE(lookup.resolveMethod(resolved)->_referenced);
+}
+
+// A one-frame trace: its only frame is also its root, resolved for the header.
+TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterResolvesTheRootOfAOneFrameTrace) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;  // -> <unloaded>
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    ASGCT_CallFrame unloaded{};
+    unloaded.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    unloaded.method_id = reinterpret_cast<jmethodID>(&fake_method_storage);
+    OwnedTrace single(4, {unloaded});
+    FrameCounters before;
+    Buffer buffer;
+    int flushes = 0;
+
+    RecordingTestAccessor::writeStackTrace(&buffer, single.get(), &lookup, countFlush, &flushes);
+
+    EXPECT_EQ(before.unloaded + 1, Counters::getCounter(METHOD_RESOLVE_FRAMES_UNLOADED));
+    EXPECT_EQ(before.unknown, Counters::getCounter(METHOD_RESOLVE_FRAMES_UNKNOWN));
+    EXPECT_EQ(1, flushes);
+    // 3 header bytes (trace id, truncated flag, frame count) + 4 frame bytes (key,
+    // line, bci, type), each one byte here; without a resolved root the flag is absent.
+    ASSERT_EQ(7, buffer.offset()) << "the single frame must be resolved as the root";
+    const unsigned char* header = reinterpret_cast<const unsigned char*>(buffer.data());
+    EXPECT_EQ(4, header[0]);
+    EXPECT_EQ(1, header[1]) << "truncated: the root is a non-entry Java row";
+    EXPECT_EQ(1, header[2]);
+}
+
+// A trace with no frames writes only its header and resolves nothing.
+TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterWritesEmptyTraceWithoutResolving) {
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    OwnedTrace empty(3, {});
+    FrameCounters before;
+    Buffer buffer;
+    int flushes = 0;
+
+    RecordingTestAccessor::writeStackTrace(&buffer, empty.get(), &lookup, countFlush, &flushes);
+
+    EXPECT_TRUE(method_map.empty());
+    EXPECT_FALSE(lookup._unknown_method._mark) << "no frame may be resolved";
+    FrameCounters after;
+    EXPECT_EQ(before.unloaded, after.unloaded);
+    EXPECT_EQ(before.unknown, after.unknown);
+    EXPECT_EQ(0, flushes);
+    ASSERT_EQ(2, buffer.offset()) << "trace id and frame count, no truncated flag without a root";
+    const unsigned char* header = reinterpret_cast<const unsigned char*>(buffer.data());
+    EXPECT_EQ(3, header[0]);
+    EXPECT_EQ(0, header[1]);
+}
+
+// A row is re-filled in each chunk; one that resolves in a later chunk must
+// no longer count as "<unloaded>".
+TEST_F(LookupResolveMethodJavaFrameTest, SuccessfulRefillClearsUnloaded) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    jmethodID method = reinterpret_cast<jmethodID>(&fake_method_storage);
+
+    MethodInfo* mi = resolveJavaFrame(lookup, method);
+    ASSERT_TRUE(mi->_unloaded);
+
+    // Next chunk: writeMethods() cleared _mark, and the method now resolves.
+    mi->_mark = false;
+    fake.counters.declaring_class_error = JVMTI_ERROR_NONE;
+    FrameCounters before;
+    MethodInfo* again = resolveJavaFrame(lookup, method);
+    lookup.countUnresolvedFrame(again);
+
+    ASSERT_EQ(mi, again);
+    EXPECT_FALSE(again->_unloaded);
+    EXPECT_EQ(lookup.getSymbol("sampleMethod"), again->_name);
+    EXPECT_EQ(before.unloaded, Counters::getCounter(METHOD_RESOLVE_FRAMES_UNLOADED));
 }
 
 } // namespace

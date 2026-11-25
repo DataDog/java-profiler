@@ -133,12 +133,13 @@ public:
 class MethodInfo {
 public:
   MethodInfo()
-      : _mark(false), _is_entry(false), _referenced(false), _age(0), _key(0), _class(0),
+      : _mark(false), _is_entry(false), _referenced(false), _unloaded(false), _age(0), _key(0), _class(0),
         _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr), _type() {}
 
   bool _mark;
   bool _is_entry;
   bool _referenced;  // Tracked during writeStackTraces() for cleanup
+  bool _unloaded;    // Last fill wrote the "<unloaded>" sentinel
   int _age;          // Consecutive chunks without reference (0 = recently used)
   u32 _key;
   u32 _class;
@@ -296,6 +297,12 @@ private:
   // completeness only when the walker has not already reported missing frames.
   static void writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
                                    const MethodInfo *root);
+  // Writes one stack-pool record and counts each unresolved frame once: the
+  // root is resolved again for the header but counted only in the frame loop.
+  // flush(flush_ctx, buf) runs after every frame, as the buffer can fill mid-trace.
+  using FlushFn = void (*)(void *flush_ctx, Buffer *buf);
+  static void writeStackTrace(Buffer *buf, CallTrace *trace, Lookup *lookup,
+                              FlushFn flush, void *flush_ctx);
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention
@@ -678,6 +685,10 @@ public:
         _symbols() {}
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
+  // Counts one written frame that resolved to mi, if it is the "<unloaded>"
+  // sentinel or the shared unknown row; per frame, not weighted by samples.
+  // Recording::writeStackTrace() calls it once per frame of each trace.
+  void countUnresolvedFrame(const MethodInfo *mi) const;
   u32 getPackage(const char *class_name);
   u32 getSymbol(const char *name);
 };

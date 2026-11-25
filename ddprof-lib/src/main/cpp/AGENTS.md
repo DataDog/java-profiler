@@ -101,7 +101,9 @@ done by our SIGSEGV/SIGBUS handler, which is installed **only on HotSpot and Ope
 (`Profiler::setupSignalHandlers()`); elsewhere treat any fault in profiler code as
 fatal.
 - Single reads/writes of untrusted memory: `SafeAccess::load*/store*/safeCopy`. They
-  must stay `NOINLINE` (the fault is matched by PC).
+  must stay `NOINLINE` (the fault is matched by PC). Check an untrusted C string with
+  `SafeAccess::isReadableCString()` before any `strlen`/`strncmp` on it; the check does
+  not cover memory unmapped after it returns.
 - Whole walks: `sigsetjmp` + `JmpCtxScope` (`guards.h`), used exactly as documented
   there — construct the scope before `sigsetjmp(ctx, 1)` (savemask must be 1); at the
   landing pad call `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()` then `restore()` before
@@ -183,8 +185,9 @@ entries are re-interned. Details:
 **Persistent hooks.** The `pthread_create` and `sigaction` GOT hooks are installed once
 (`LibraryPatcher::initialize_persistent()`) and never unpatched, so they run before the
 first `start()` and between recordings. They must stay transparent (the `pthread_create`
-wrapper passes the routine's return value to `pthread_exit()`), and code they reach must
-tolerate an idle profiler, including one that never started: go through the registration
+wrapper passes the routine's return value to `pthread_exit()`), they leave a slot
+holding another interposer's wrapper alone, and code they reach must tolerate an idle
+profiler, including one that never started: go through the registration
 gates and skip a `NULL` engine slot. Details:
 [ProfilingEngines.md](/doc/architecture/ProfilingEngines.md#thread-registration),
 [SigsegvPatching.md](/doc/architecture/SigsegvPatching.md#initialization-flow).
