@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import com.datadoghq.native.util.PlatformUtils
+import java.util.zip.ZipFile
 
 plugins {
   java
@@ -22,7 +23,9 @@ plugins {
 }
 
 dependencies {
-  implementation(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
+  // Release only: ddprof-test-tracer already brings the release library in transitively, and a
+  // second (debug) library in the jmh jar makes the loaded one undefined and skews overheads.
+  implementation(project(mapOf("path" to ":ddprof-lib", "configuration" to "release")))
   implementation(project(":ddprof-test-tracer"))
   implementation(libs.bundles.jmh)
 }
@@ -66,6 +69,30 @@ tasks.named<Jar>("jmhJar") {
   }
   archiveFileName.set("stresstests.jar")
 }
+
+// Fails if the jmh jar carries more than one libjavaProfiler per platform directory: the JVM
+// would load an arbitrary one (a debug build makes benchmark numbers meaningless).
+val verifyJmhJarNativeLibs = tasks.register("verifyJmhJarNativeLibs") {
+  group = "verification"
+  description = "Verify the JMH jar contains exactly one libjavaProfiler per platform"
+  val jar = tasks.named<Jar>("jmhJar").flatMap { it.archiveFile }
+  inputs.file(jar)
+  doLast {
+    val perDir = ZipFile(jar.get().asFile).use { zip ->
+      zip.entries().asSequence()
+        .map { it.name }
+        .filter { it.startsWith("META-INF/native-libs/") && it.substringAfterLast('/').startsWith("libjavaProfiler.") }
+        .groupBy { it.substringBeforeLast('/') }
+    }
+    check(perDir.isNotEmpty()) { "No libjavaProfiler found in ${jar.get().asFile}" }
+    perDir.forEach { (dir, entries) ->
+      check(entries.size == 1) { "Expected one libjavaProfiler in $dir of ${jar.get().asFile}, found ${entries.size}" }
+    }
+  }
+}
+
+tasks.named("jmhJar") { finalizedBy(verifyJmhJarNativeLibs) }
+tasks.named("check") { dependsOn(verifyJmhJarNativeLibs) }
 
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH
@@ -141,7 +168,7 @@ tasks.register<Jar>("reproJar") {
 }
 
 tasks.register<Exec>("runStressTests") {
-  dependsOn(tasks.named("jmhJar"))
+  dependsOn(tasks.named("jmhJar"), verifyJmhJarNativeLibs)
 
   group = "application"
   description = "Run JMH stresstests"
