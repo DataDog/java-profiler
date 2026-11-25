@@ -56,6 +56,7 @@ jobs:
             .github/scripts/tests/test_release_train.sh
           .github/scripts/tests/test_release_automation.sh
           .github/scripts/tests/test_release_train.sh
+          python3 -m unittest discover -s .github/scripts/tests -p 'test_certification_*.py'
 
   ci-script-tests:
     runs-on: ubuntu-22.04

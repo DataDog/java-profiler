@@ -8,8 +8,8 @@ run-name: "Certify ${{ github.sha }}"
 #
 # The suite is the pre-release gate of release-validated.yml (testDebug +
 # testAsan, regular and slow, gtests included) plus the fuzz job of
-# nightly.yml, plus the dd-trace-integration cells from the SHA's GitLab
-# pipeline (queried, not re-run: those cells run on every push to main).
+# nightly.yml, plus the quarantine-aware dd-trace-integration verdict
+# published to GitHub for the SHA (queried, not re-run).
 
 on:
   schedule:
@@ -24,12 +24,6 @@ concurrency:
 permissions:
   contents: write
   actions: read
-
-env:
-  GITLAB_HOST: gitlab.ddbuild.io
-  GITLAB_PROJECT: DataDog%2Fjava-profiler
-  # Jobs whose success is required for the dd-trace-integration verdict
-  INTEGRATION_JOBS: prepare-patched-agent integration-test-x64-glibc integration-test-x64-musl integration-test-arm64-glibc integration-test-arm64-musl
 
 jobs:
   test-debug:
@@ -118,132 +112,25 @@ jobs:
     # a feature-branch dispatch runs no certification jobs. Defense in
     # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
-    # Verdict on the dd-trace-integration cells of the candidate's GitLab
-    # pipeline. Those cells run on every push to main; this job waits for
-    # them and reads their results.
+    # Read the candidate's integration verdict from GitHub commit statuses.
+    # GitLab owns the matrix and quarantine policy; this job needs no GitLab
+    # credentials and must not replace missing evidence with an overall green.
     runs-on: ubuntu-latest
-    # The pipeline lookup allows 36x5min and the cell polling 60x3min; the
-    # timeout must exceed both budgets combined or GitHub cancels the job
-    # before the verdict or the failure summary is written.
+    permissions:
+      contents: read
+      statuses: read
+    # The waiter has a six-hour deadline, including API reads and retries.
+    # Leave time for checkout and the final failure summary before cancellation.
     timeout-minutes: 420
     steps:
-      - name: Wait for and evaluate integration cells
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Wait for the GitHub-published integration verdict
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_API_TOKEN }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "$GITLAB_TOKEN" ]; then
-            echo "::error::GITLAB_API_TOKEN secret is not configured; cannot verify dd-trace-integration cells"
-            exit 1
-          fi
-          API="https://${{ env.GITLAB_HOST }}/api/v4/projects/${{ env.GITLAB_PROJECT }}"
-          REQUIRED_JOBS=(${{ env.INTEGRATION_JOBS }})
-
-          # Pipelines carry the ref of their trigger; a SHA can have several
-          # (push, merge request, manual). Query the push pipeline for the
-          # candidate's branch; a SHA-shaped ref name (manual dispatch on a
-          # pinned commit) falls back to the sha-only query.
-          REF="$GITHUB_REF_NAME"
-          REF_PARAM=""
-          if ! [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then
-            REF_PARAM="&ref=$(jq -rn --arg r "$REF" '$r|@uri')"
-          fi
-
-          # Find the pipeline for this SHA; retry in case the push landed
-          # just before the schedule fired and the pipeline is still being
-          # created.
-          PIPELINE_ID=""
-          for attempt in $(seq 1 36); do
-            # The first half of the window filters by ref (the push pipeline
-            # for the candidate's branch); if the mirror names its refs
-            # differently, the second half falls back to any pipeline for
-            # the SHA instead of burning the whole budget on an empty
-            # ref-filtered result.
-            if [ "$attempt" -gt 18 ]; then REF_PARAM=""; fi
-            # A trigger/child pipeline (e.g. a JDK-integration trigger) can
-            # exist for the same SHA and lack the integration jobs entirely;
-            # certify against the push pipeline that has them. sort=asc puts
-            # the push pipeline first: trigger pipelines are created after
-            # it and would push it off page 1 under sort=desc.
-            PIPELINE_ID=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              "$API/pipelines?sha=$SHA$REF_PARAM&sort=asc&per_page=100" \
-              | jq -r '[.[] | select(.source == "push")][0].id // empty') || true
-            [ -n "$PIPELINE_ID" ] && break
-            echo "attempt $attempt/36: no pipeline for $SHA yet, retrying in 5 min"
-            sleep 300
-          done
-          if [ -z "$PIPELINE_ID" ]; then
-            echo "::error::No GitLab pipeline found for $SHA"
-            exit 1
-          fi
-          echo "GitLab pipeline: $PIPELINE_ID"
-
-          # Wait until every required job exists, then until all of them
-          # reached a terminal state. Cells can be created late: the pipeline
-          # runs many stages before integration-test.
-          declare -A STATUS
-          for job in ${{ env.INTEGRATION_JOBS }}; do STATUS[$job]="unknown"; done
-          # Matrix expansion can push a dd-trace-integration pipeline past 100
-          # jobs; follow GitLab's page links until a short page arrives. Fetch
-          # inside the retry loop: cell statuses must refresh every attempt.
-          fetch_all_jobs() {
-            local jobs_json="" page_json page=1
-            while :; do
-              # A curl failure must abort the fetch (return 1), never
-              # masquerade as an empty-but-complete listing: the caller
-              # retries the whole fetch on the next attempt.
-              page_json=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                "$API/pipelines/$PIPELINE_ID/jobs?per_page=100&page=$page") || return 1
-              if [ -z "$jobs_json" ]; then
-                jobs_json="$page_json"
-              else
-                # Merge through stdin: a full 100-job page as --argjson can
-                # exceed the kernel's per-argument limit and jq would fail
-                # with "Argument list too long". A failed merge aborts the
-                # fetch so the caller retries the whole listing.
-                jobs_json=$(printf '%s\n%s\n' "$jobs_json" "$page_json" | jq -sc 'add') || return 1
-              fi
-              [ "$(echo "$page_json" | jq 'length')" -lt 100 ] && break
-              page=$((page+1))
-            done
-            echo "$jobs_json"
-          }
-          for attempt in $(seq 1 60); do
-            jobs_json=""
-            if ! jobs_json=$(fetch_all_jobs); then
-              echo "attempt $attempt/60: GitLab job fetch failed, retrying"
-              sleep 180
-              continue
-            fi
-            missing=0; pending=0
-            for job in "${REQUIRED_JOBS[@]}"; do
-              # GitLab matrix expansion names cells "name: [hotspot, 8]": match
-              # the exact name or the matrix-suffixed form. Aggregate: every
-              # cell success → success; any terminal non-success (failed,
-              # canceled, skipped, manual) → failed; else pending.
-              st=$(echo "$jobs_json" | jq -r --arg j "$job" \
-                '[.[] | select(.name == $j or (.name | startswith($j + ": ["))) | .status] |
-                 if length == 0 then empty
-                 elif all(. == "success" or . == "failed" or . == "canceled" or . == "skipped" or . == "manual") then
-                   (if all(. == "success") then "success" else "failed" end)
-                 else "pending" end')
-              if [ -z "$st" ]; then missing=$((missing+1));
-              elif [ "$st" != "success" ] && [ "$st" != "failed" ]; then pending=$((pending+1)); fi
-              STATUS[$job]="${st:-pending}"
-            done
-            if [ "$missing" -eq 0 ] && [ "$pending" -eq 0 ]; then break; fi
-            echo "attempt $attempt/60: $(for job in "${REQUIRED_JOBS[@]}"; do echo -n "$job=${STATUS[$job]} "; done)"
-            sleep 180
-          done
-
-          rc=0
-          echo "## dd-trace-integration cells ($SHA)" >> "$GITHUB_STEP_SUMMARY"
-          for job in "${REQUIRED_JOBS[@]}"; do
-            echo "- ${job}: ${STATUS[$job]}" >> "$GITHUB_STEP_SUMMARY"
-            if [ "${STATUS[$job]}" != "success" ]; then rc=1; fi
-          done
-          exit $rc
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/wait_for_integration.py
 
   certify:
     # Scheduled and manual runs certify GITHUB_SHA only when it is main:

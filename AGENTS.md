@@ -129,10 +129,11 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
   extraction and stripping happen unconditionally inside `linkRelease`.
-- Releases are automated: nightly certification marks a commit as
-  release-ready (git notes), the Friday release train cuts a minor from the
-  newest unreleased certified commit, and a dd-trace-java bump PR opens when
-  the Maven Central artifacts are live — see
+- Releases are automated: nightly certification reads the quarantine-aware
+  GitLab verdict through GitHub commit statuses (no GitLab credentials in
+  GitHub) and marks a commit as release-ready with git notes. The Friday train
+  cuts a minor from the newest unreleased certified commit; a dd-trace-java
+  bump PR opens when Maven Central artifacts are live — see
   [doc/building/ReleaseTrain.md](doc/building/ReleaseTrain.md).
 - Code quality: `spotlessApply` before committing (CI fails on `spotlessCheck`),
   `qualityChecks` (source invariants, copyright headers, `CLAUDE.md` and the native-code

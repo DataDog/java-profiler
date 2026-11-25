@@ -16,9 +16,8 @@ runs at 04:00 UTC on the `main` HEAD. Its suite:
 - `testDebug` and `testAsan`, regular and slow, gtests included — the same
   gate `release-validated.yml` runs before a manual release
 - the fuzz job (same as the nightly sanitized run)
-- the `dd-trace-integration` cells (`prepare-patched-agent` and the four
-  `integration-test-*` cells) of the commit's GitLab pipeline; the workflow
-  waits for and reads those cells, it does not re-run them
+- the GitLab integration verdict published to GitHub for the candidate SHA;
+  the workflow reads commit statuses and does not re-run integration tests
 
 When every part passes, the workflow attaches a git note on the certified
 commit under `refs/notes/certification` and pushes the notes ref. The note is
@@ -73,13 +72,29 @@ already pins the new version exits without changes.
 
 | Secret | Used by | Purpose |
 |---|---|---|
-| `GITLAB_API_TOKEN` | certification | read the `dd-trace-integration` cell results from `gitlab.ddbuild.io` |
 | `ATLASSIAN_BASE_URL`, `ATLASSIAN_USER_EMAIL`, `ATLASSIAN_API_TOKEN` | certification | file PROF tickets; missing secrets downgrade the notification to Slack-only with a warning |
 | `SLACK_WEBHOOK` | certification, release train | failure and skip notifications |
 | `DDTRACE_GH_TOKEN` | update assets | open the bump PR on `DataDog/dd-trace-java`; missing secret skips the bump with a warning |
 
-The certification suite cannot certify without the GitLab token: the
-`dd-trace-integration` verdict is a required part of the certification.
+Certification uses the built-in `GITHUB_TOKEN` with `statuses: read` and
+`contents: read` for its integration job. No GitLab credentials are needed
+in GitHub.
+
+The integration gate requires `success` on all three GitHub commit statuses:
+`dd-gitlab/prepare-patched-agent`, `dd-gitlab/validate-dd-trace-quarantine`,
+and `dd-gitlab/post-pr-comment`. It selects the newest update per context
+for the exact candidate SHA. It verifies each publisher's bot account and
+Datadog-owned bridge app through GitHub's API.
+
+The `post-pr-comment` job enforces the [integration quarantine policy](TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
+Approved quarantined validation failures do not block certification.
+Unquarantined failures and incomplete matrix results fail the verdict.
+An overall green pipeline is not a substitute for the three statuses.
+
+Missing or pending statuses and transient API failures trigger another
+snapshot after a pause of up to three minutes. All reads and pauses share
+a six-hour deadline. A failed verdict, invalid evidence, non-retryable API
+error, or timeout blocks certification.
 
 ## Failure handling
 
