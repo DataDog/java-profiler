@@ -9,9 +9,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JavaProfilerTestSupport;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.Platform;
 import java.nio.file.Files;
@@ -31,9 +33,7 @@ import java.util.function.BiConsumer;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
-/**
- * Verifies original custom context on real deferred ASGCT wall samples across owner transitions.
- */
+/** Verifies original custom context on deferred native wall samples across owner transitions. */
 public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   private static final String WORKER = "unowned-origin-context";
   private static final String[] FIELDS = {TAG_1, TAG_2, TAG_3};
@@ -67,10 +67,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     }
   }
 
-  /**
-   * Uses actual suppression and decoded stack/state/weight evidence, not sleeps as an exact-weight
-   * oracle. Native preparation tests independently control the pending-weight decisions.
-   */
+  /** Checks retained fields across dumps with a controlled same-epoch tail in debug builds. */
   @Test
   public void tagOnlyTailKeepsOriginalFieldsAcrossDumps() throws Exception {
     String prefix = Long.toHexString(System.nanoTime());
@@ -89,12 +86,15 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
               try {
                 setTags(tagsA);
                 registerUnownedWorker();
-                ready.countDown();
-                blockedOriginA(releaseA);
-                Instant now = Instant.now();
-                transitionStart.set(now.getEpochSecond() * 1_000_000_000L + now.getNano());
-                setTags(tagsB);
-                readyB.countDown();
+                blockedOriginA(
+                    releaseA,
+                    ready,
+                    () -> {
+                      Instant now = Instant.now();
+                      transitionStart.set(now.getEpochSecond() * 1_000_000_000L + now.getNano());
+                      setTags(tagsB);
+                      readyB.countDown();
+                    });
                 runnableContextB(running);
               } catch (Throwable failure) {
                 workerFailure.set(failure);
@@ -109,7 +109,8 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     worker.start();
     try {
       assertTrue(ready.await(10, TimeUnit.SECONDS), "Worker did not register");
-      System.out.println(awaitWorkerWeightedTailReady(workerFailure));
+      assertNull(workerFailure.get(), "Worker failed before origin setup");
+      if (!controlledTail()) System.out.println(awaitWorkerWeightedTailReady(workerFailure));
       int blockedSamples = 0;
       for (int i = 0; i < snapshots.length; i++) {
         snapshots[i] = Files.createTempFile("unowned-context-dump-" + i, ".jfr");
@@ -138,9 +139,9 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       }
       assertTrue(blockedSamples > 0, "No original worker samples across retained dumps");
       // The dumps closed epochs; wait for a weighted segment in the new one.
-      String readiness = awaitWorkerWeightedTailReady(workerFailure);
+      String readiness = controlledTail() ? null : awaitWorkerWeightedTailReady(workerFailure);
       releaseA.countDown();
-      System.out.println(readiness);
+      if (readiness != null) System.out.println(readiness);
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter B");
       assertNull(workerFailure.get(), "Worker failed during transition");
       Thread.sleep(300);
@@ -209,11 +210,14 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
                 profiler.clearTraceContext();
                 setTags(tagsA);
                 registerUnownedWorker();
-                readyA.countDown();
-                blockedOriginA(releaseA);
-                profiler.setTraceContext(7101, 7102, 0, 7103, -1, null, -1, null);
-                setTags(tagsB);
-                readyB.countDown();
+                blockedOriginA(
+                    releaseA,
+                    readyA,
+                    () -> {
+                      profiler.setTraceContext(7101, 7102, 0, 7103, -1, null, -1, null);
+                      setTags(tagsB);
+                      readyB.countDown();
+                    });
                 runnableTracedContextB(inB);
                 Instant now = Instant.now();
                 clearStart.set(now.getEpochSecond() * 1_000_000_000L + now.getNano());
@@ -238,9 +242,10 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     worker.start();
     try {
       assertTrue(readyA.await(10, TimeUnit.SECONDS), "Worker did not register A");
-      String readiness = awaitWorkerWeightedTailReady(workerFailure);
+      assertNull(workerFailure.get(), "Worker failed before origin setup");
+      String readiness = controlledTail() ? null : awaitWorkerWeightedTailReady(workerFailure);
       releaseA.countDown();
-      System.out.println(readiness);
+      if (readiness != null) System.out.println(readiness);
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter traced B");
       assertNull(workerFailure.get(), "Worker failed before traced B");
       long retainedPending =
@@ -411,6 +416,29 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     assertNull(workerFailure.get(), "Worker failed");
   }
 
+  /** Verifies null rejection and failure propagation through the signal-blocked driver. */
+  @Test
+  public void controlledTailRejectsInvalidCallbacks() {
+    assertThrows(
+        NullPointerException.class, () -> JavaProfilerTestSupport.withUnownedWallTailForTest(null));
+    Assumptions.assumeTrue(controlledTail(), "Requires debug tail driver");
+    registerUnownedWorker();
+    try {
+      IllegalStateException failure = new IllegalStateException("owner transition failed");
+      assertEquals(
+          failure,
+          assertThrows(
+              IllegalStateException.class,
+              () ->
+                  JavaProfilerTestSupport.withUnownedWallTailForTest(
+                      () -> {
+                        throw failure;
+                      })));
+    } finally {
+      profiler.removeThread();
+    }
+  }
+
   /** Small per-recording result, so no recording's MethodSample events are retained. */
   private static final class Samples {
     long count;
@@ -544,6 +572,35 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       Long time = sample.getLong("startTime");
       assertNotNull(time, "Restarted B sample has no capture time");
       acc.timesB.add(time);
+    }
+  }
+
+  private boolean controlledTail() {
+    return isDebugBuild() || isAsan();
+  }
+
+  /** Natural epoch splits need not leave weight > 1; debug drivers seed one retained segment. */
+  private void blockedOriginA(CountDownLatch release, CountDownLatch ready, Runnable transition)
+      throws InterruptedException {
+    if (controlledTail()) {
+      assertTrue(
+          JavaProfilerTestSupport.withUnownedWallTailForTest(
+              () -> {
+                ready.countDown();
+                try {
+                  assertTrue(
+                      release.await(10, TimeUnit.SECONDS), "Controller did not release origin A");
+                } catch (InterruptedException failure) {
+                  Thread.currentThread().interrupt();
+                  throw new AssertionError("Origin A wait interrupted", failure);
+                }
+                transition.run();
+              }),
+          "Controlled origin setup failed");
+    } else {
+      ready.countDown();
+      blockedOriginA(release);
+      transition.run();
     }
   }
 

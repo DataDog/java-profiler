@@ -32,6 +32,9 @@ enum class WallClockCandidateOutcome {
 };
 
 class BaseWallClock : public Engine {
+#ifdef UNIT_TEST
+    friend class WallClockSamplingOpportunityTestAccessor;
+#endif
   private:
     static std::atomic<bool> _enabled;
     std::atomic<bool> _running;
@@ -327,6 +330,8 @@ public:
 #if defined(UNIT_TEST) || defined(DEBUG)
     // Normal-thread drivers wait for the timer's real epoch without publishing one.
     static bool awaitInitialSamplingEpochForTest(u64 timeout_nanos);
+    // Keep the genuine nonempty window stable until the driver publishes its units.
+    static std::unique_lock<std::mutex> samplingOpportunityLockForTest(u64 timeout_nanos);
     static void setForceStartFailureForTest(bool force) {
         _force_start_failure_for_test.store(force, std::memory_order_release);
     }
@@ -346,10 +351,25 @@ public:
 #endif
 #ifdef DEBUG
     // Drives the real precheck/recording path with controlled OS-state inputs
-    // and an intervening JFR dump. Called synchronously from the JNI test hook.
-    static bool recordUnownedWallTailAcrossDumpForTest(
+    // and an intervening JFR dump; returns the failed step, or null. Called
+    // synchronously from the JNI test hook.
+    static const char* recordUnownedWallTailAcrossDumpForTest(
         jthread thread, const char* path, int path_length, bool dump_after_primary,
         bool reset_before_tail);
+    enum class TailDropStep { CAPTURE = 0, WRITE = 1, DEFERRAL = 2 };
+    // Makes the driver's next `drops` passes through `step` fail as a dropped
+    // try-and-drop acquisition; returns the previously unused count.
+    static int exchangeUnownedWallTailAcrossDumpDropsForTest(TailDropStep step, int drops);
+    // Seeds a real cached stack and five same-epoch deferred units; returns the
+    // failed step, or null. The caller blocks profiling signals until the tested
+    // ownership transition finishes.
+    static const char* seedUnownedWallTailForTest(
+        jthread thread, OSThreadState state = OSThreadState::SLEEPING);
+private:
+    static const char* recordUnownedWallTailAcrossDumpOnceForTest(
+        jthread thread, const char* path, int path_length, bool dump_after_primary,
+        bool reset_before_tail);
+    static const char* seedUnownedWallTailOnceForTest(jthread thread, OSThreadState state);
 #endif
 };
 

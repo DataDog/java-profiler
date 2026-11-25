@@ -542,8 +542,10 @@ public:
   // Runs before each stop-time tail flush backoff sleep.
   void (*stopTailBackoffHookForTest)(void*) = nullptr;
   void* stopTailBackoffHookArgForTest = nullptr;
-  RecordingLocks recordingLocksForTest() { return RecordingLocks(this); }
   u32 exchangeNumContextAttributesForTest(u32 count);
+#endif
+#if defined(DEBUG) || defined(UNIT_TEST)
+  RecordingLocks recordingLocksForTest() { return RecordingLocks(this); }
 #endif
 
   // Resolve names of native (non-Java) threads from /proc. Idempotent and
