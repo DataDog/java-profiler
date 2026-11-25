@@ -19,8 +19,10 @@ import com.datadoghq.profiler.Platform;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -38,8 +40,12 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   private static final String WORKER = "unowned-origin-context";
   private static final String[] FIELDS = {TAG_1, TAG_2, TAG_3};
   private static final String METHOD_SAMPLE = "datadog.MethodSample";
+  private static final int SPAN_TRANSITION_ATTEMPTS = 3;
+  private static final String SPAN_PRECONDITION =
+      "Precondition never reached: traced B entered with a pending A segment of weight >= 2";
   private static volatile long spinSink;
   private final AtomicLong workerNativeTid = new AtomicLong(-1);
+  private boolean attemptRecordingActive;
 
   @Override
   protected void withTestAssumptions() {
@@ -188,6 +194,76 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
   /** Keeps an untraced origin through a real active span, dumps, and a later clear. */
   @Test
   public void knownSpanThenClearKeepsOriginalTail() throws Exception {
+    System.out.println("Inconclusive span transitions: " + knownSpanThenClear(0));
+  }
+
+  /** A release attempt whose tail flushed before traced B is retried in a fresh recording. */
+  @Test
+  public void knownSpanThenClearRetriesMissedPrecondition() throws Exception {
+    Assumptions.assumeFalse(controlledTail(), "Debug tail driver has no flush window");
+    List<String> misses = knownSpanThenClear(1);
+    assertFalse(misses.isEmpty(), "The forced miss was not observed");
+    assertTrue(misses.get(0).startsWith("attempt 1: "), "Wrong first miss: " + misses);
+  }
+
+  /** Release attempts that never reach traced B with a weighted A tail fail, not skip. */
+  @Test
+  public void knownSpanThenClearFailsWhenPreconditionNeverHolds() {
+    Assumptions.assumeFalse(controlledTail(), "Debug tail driver has no flush window");
+    AssertionError failure =
+        assertThrows(AssertionError.class, () -> knownSpanThenClear(SPAN_TRANSITION_ATTEMPTS));
+    assertTrue(failure.getMessage().startsWith(SPAN_PRECONDITION), "Wrong failure: " + failure);
+    assertEquals(
+        SPAN_TRANSITION_ATTEMPTS,
+        failure.getMessage().split("attempt ", -1).length - 1,
+        "Every attempt must be reported: " + failure.getMessage());
+  }
+
+  /**
+   * Retries until traced B starts with A still pending: a release signal before the span can flush
+   * A into a dumped chunk, so that attempt's recording is discarded. Returns the misses; the first
+   * forcedMisses attempts force that window.
+   */
+  private List<String> knownSpanThenClear(int forcedMisses) throws Exception {
+    List<String> misses = new ArrayList<>();
+    for (int attempt = 0; attempt < SPAN_TRANSITION_ATTEMPTS; attempt++) {
+      // The first attempt keeps the base recording; retries start their own after its stop.
+      Path recording = null;
+      if (attempt > 0) {
+        recording = Files.createTempFile("unowned-span-context-attempt-" + attempt, ".jfr");
+        System.out.println("===> attribution recording: " + recording);
+        profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + recording);
+        attemptRecordingActive = true;
+      }
+      try {
+        String miss = knownSpanThenClearAttempt(recording, attempt < forcedMisses);
+        if (miss == null) {
+          return misses;
+        }
+        misses.add("attempt " + (attempt + 1) + ": " + miss);
+        System.out.println("Inconclusive span transition, " + misses.get(misses.size() - 1));
+      } finally {
+        stopAttemptRecording(recording);
+        if (recording != null && !Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+          Files.deleteIfExists(recording);
+        }
+      }
+    }
+    throw new AssertionError(SPAN_PRECONDITION + "; observed " + misses);
+  }
+
+  /** Stops one attempt's recording; a null recording is the base class's own. Idempotent. */
+  private void stopAttemptRecording(Path recording) {
+    if (recording == null) {
+      stopProfiler();
+    } else if (attemptRecordingActive) {
+      attemptRecordingActive = false;
+      profiler.stop();
+    }
+  }
+
+  /** Returns null after every assertion passed, or the missed precondition's observation. */
+  private String knownSpanThenClearAttempt(Path recording, boolean forceMiss) throws Exception {
     String prefix = Long.toHexString(System.nanoTime());
     String[] tagsA = {prefix + "-A1", prefix + "-A2", prefix + "-A3"};
     String[] tagsB = {prefix + "-B1", prefix + "-B2", prefix + "-B3"};
@@ -199,6 +275,8 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     AtomicBoolean inB = new AtomicBoolean(true);
     AtomicBoolean running = new AtomicBoolean(true);
     AtomicLong clearStart = new AtomicLong();
+    AtomicLong entryPending = new AtomicLong(-1);
+    AtomicLong entrySegment = new AtomicLong(-1);
     AtomicReference<Throwable> workerFailure = new AtomicReference<>();
     Map<String, Long> before = profiler.getDebugCounters();
     Thread worker =
@@ -214,7 +292,18 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
                     releaseA,
                     readyA,
                     () -> {
+                      if (forceMiss) {
+                        runnableUntilTailFlushed();
+                      }
                       profiler.setTraceContext(7101, 7102, 0, 7103, -1, null, -1, null);
+                      if (!controlledTail()) {
+                        // A known span stops prechecks, so this is the tail traced B retains.
+                        int tid = (int) workerNativeTid.get();
+                        entryPending.set(
+                            WallClockBlockTrackerTestSupport.pendingUnownedWeight(tid));
+                        entrySegment.set(
+                            WallClockBlockTrackerTestSupport.maxPendingUnownedSegmentWeight(tid));
+                      }
                       setTags(tagsB);
                       readyB.countDown();
                     });
@@ -239,6 +328,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     Path[] snapshots = new Path[3];
     Set<Long> tracedTimes = new HashSet<>();
     Set<Long> clearedTimes = new HashSet<>();
+    String miss = null;
     worker.start();
     try {
       assertTrue(readyA.await(10, TimeUnit.SECONDS), "Worker did not register A");
@@ -248,16 +338,20 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       if (readiness != null) System.out.println(readiness);
       assertTrue(readyB.await(10, TimeUnit.SECONDS), "Worker did not enter traced B");
       assertNull(workerFailure.get(), "Worker failed before traced B");
+      // Only a coalesced segment can emit the weight > 1 A tail the final recording needs.
+      if (!controlledTail() && entrySegment.get() < 2) {
+        miss = "pending=" + entryPending.get() + ", segment=" + entrySegment.get();
+      }
       long retainedPending =
           WallClockBlockTrackerTestSupport.pendingUnownedWeight((int) workerNativeTid.get());
       // The timer closes unchanged epochs after one second. Close A before extraction,
       // otherwise its statistics can first appear after the last dump and mask metadata loss.
       long closeDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1200);
-      while (System.nanoTime() < closeDeadline) {
+      while (miss == null && System.nanoTime() < closeDeadline) {
         Thread.sleep(1);
         retainedPending = assertPendingDoesNotGrow(retainedPending);
       }
-      for (int i = 0; i < snapshots.length; i++) {
+      for (int i = 0; miss == null && i < snapshots.length; i++) {
         snapshots[i] = Files.createTempFile("unowned-span-context-dump-" + i, ".jfr");
         System.out.println("===> attribution recording: " + snapshots[i]);
         dump(snapshots[i]);
@@ -274,7 +368,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       inB.set(false);
       assertTrue(readyC.await(10, TimeUnit.SECONDS), "Worker did not clear into C");
       assertNull(workerFailure.get(), "Worker failed during clear");
-      Thread.sleep(300);
+      if (miss == null) Thread.sleep(300);
     } finally {
       releaseA.countDown();
       inB.set(false);
@@ -288,11 +382,18 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     }
     assertFalse(worker.isAlive(), "Worker survived bounded cleanup");
     assertNull(workerFailure.get(), "Worker failed");
+    if (miss != null) {
+      return miss;
+    }
     assertTrue(clearStart.get() > 0, "Clear marker was not published");
     System.out.println("Attribution clear start: " + clearStart.get());
-    stopProfiler();
+    stopAttemptRecording(recording);
     Map<Long, Long> retainedEpochs = new HashMap<>();
-    for (JfrEvent epoch : verifyEvents("datadog.WallClockSamplingEpoch", false)) {
+    String epochType = "datadog.WallClockSamplingEpoch";
+    for (JfrEvent epoch :
+        recording == null
+            ? verifyEvents(epochType, false)
+            : verifyEvents(recording, epochType, false)) {
       assertNotNull(epoch.getLong("startTime"), "Epoch start is required");
       assertNotNull(epoch.getLong("samplePoolSize"), "Epoch population is required");
       assertNotNull(epoch.getLong("numSuccessfulSamples"), "Epoch denominator is required");
@@ -300,7 +401,7 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     }
     Samples last =
         checkSamples(
-            null,
+            recording,
             true,
             (acc, sample) ->
                 checkSpanSample(acc, sample, tagsA, tagsB, tagsC, clearStart, retainedEpochs));
@@ -319,6 +420,19 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     assertEquals(
         before.getOrDefault("wc_unowned_blocked_trace_preservation_failed", 0L),
         after.getOrDefault("wc_unowned_blocked_trace_preservation_failed", 0L));
+    return null;
+  }
+
+  /** Holds the A-to-span window open as a runnable, spanless thread until a signal flushes A. */
+  private void runnableUntilTailFlushed() {
+    int tid = (int) workerNativeTid.get();
+    long value = 1;
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (WallClockBlockTrackerTestSupport.maxPendingUnownedSegmentWeight(tid) >= 2) {
+      assertTrue(System.nanoTime() < deadline, "Forced window never flushed the A tail");
+      value = value * 1664525 + 1013904223;
+      spinSink = value;
+    }
   }
 
   /** Restarts the same native owner without carrying the prior recording's deferred origin. */
