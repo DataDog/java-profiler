@@ -9,7 +9,7 @@ locally.
 ## Overview
 
 Tests are split across four tiers based on what they detect and what infrastructure
-they require:
+they require. The memory overhead check runs next to them:
 
 | Tier | System | When | Sanitizers | Purpose |
 |------|--------|------|-----------|---------|
@@ -17,6 +17,7 @@ they require:
 | **Java functional tests** | GitHub Actions | Every PR/push (debug); nightly (ASan, slow tests) | ASan (nightly or `test:asan` label) | Correctness + memory errors in JVMTI paths |
 | **dd-trace integration** | GitLab | Every branch push (not `release/*`) | None | Compatibility with the tracer agent |
 | **Chaos / reliability** | GitLab | Scheduled pipelines; PRs with `test:reliability` label | None | Long-duration stability and probabilistic crash detection |
+| **Memory overhead check** | GitLab | Every PR pipeline | None | Native-memory budget of the profiler; see [MemoryOverheadCheck](MemoryOverheadCheck.md) |
 
 ---
 

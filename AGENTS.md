@@ -124,6 +124,9 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `post-pr-comment.sh`, and a flaky cell+scenario is quarantined in
   `.gitlab/dd-trace-integration/quarantine.txt` with a PROF ticket and an expiry
   (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md), Tier 3).
+- Native-memory budget: the `memcheck:*` GitLab jobs fail a PR whose profiler memory
+  exceeds `utils/memcheck/budget.txt`; fix the regression or raise the limit with the
+  reason in the PR (see [doc/building/MemoryOverheadCheck.md](doc/building/MemoryOverheadCheck.md)).
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
