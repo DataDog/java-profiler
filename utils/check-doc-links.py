@@ -30,7 +30,7 @@ KNOWN_BROKEN = {
     ("test-validation/README.md", "./.gitlab/dd-trace-integration/.gitlab-ci.yml"),
 }
 
-_INLINE = re.compile(r"!?\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)[^)]*\)")
+_INLINE = re.compile(r"!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(\s*(<[^>]*>|[^()\s]*(?:\([^()]*\)[^()\s]*)*)[^)]*\)")
 _REF_DEF = re.compile(r"^ {0,3}\[[^\]]+\]:\s+(?:<([^>]*)>|(\S+))")
 _HTML = re.compile(r"""(?:href|src)\s*=\s*["']([^"']+)["']""")
 _FENCE = re.compile(r"^ {0,3}(```+|~~~+)")
@@ -40,7 +40,10 @@ _SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
 def targets(text):
     """(line number, link text, raw target) for every link outside code; split on \\n
     only so line numbers match grep and editors. The text is quoted in diagnostics so
-    a rejection names the offending line, not just the target. A fence closes only on
+    a rejection names the offending line, not just the target. Link text may nest one
+    level of brackets and the destination may hold balanced parentheses (CommonMark);
+    a destination spanning lines is not recognized, because targets() is line-based so
+    diagnostics name the offending line. A fence closes only on
     a bare marker line of the same character and at least the opening length
     (CommonMark forbids an info string on a closing fence); lines past an unclosed
     fence are skipped and reported by unbalanced()."""
@@ -98,8 +101,11 @@ def broken_links(docs, paths):
     dirs = set()
     for p in paths:
         while p:
-            p = posixpath.dirname(p)
+            parent = posixpath.dirname(p)
+            p = posixpath.normpath(parent) if parent else "."
             dirs.add(p)
+            if p == ".":
+                break
     out = []
     for doc in sorted(docs):
         for lineno, label, raw in targets(docs[doc]):
@@ -107,6 +113,16 @@ def broken_links(docs, paths):
             if rel is not None and rel not in paths and rel not in dirs:
                 out.append((doc, lineno, label, raw))
     return out
+
+
+def _listed_paths(root, cands, extra):
+    """Repo paths under the literal candidate pathspecs: tracked, or (with the
+    --others extras) untracked and not ignored — the same universe the full
+    `git ls-files --cached --others --exclude-standard` enumeration returns, restricted
+    to the candidate paths. Raises on a git failure."""
+    argv = ["git", "-C", root, "ls-files", "-z"] + extra + ["--"] + [":(literal)" + c for c in cands]
+    res = subprocess.run(argv, stdout=subprocess.PIPE, check=True)
+    return {p.decode("utf-8", "surrogateescape") for p in res.stdout.split(b"\0") if p}
 
 
 def report(broken, known, include_stale=True):
@@ -126,23 +142,27 @@ def report(broken, known, include_stale=True):
 def self_test():
     docs = {
         "doc/A.md": "\n".join([
-            "[ok](B.md) [dir](sub) [anchor](#x) [web](https://example.com/y.md)",
+            "[ok](B.md) [dir](sub) [root](..) [anchor](#x) [web](https://example.com/y.md)",
             "[bad](Missing.md)",                        # EXPECT line 2
+            "[outer [inner] text](Missing2.md)",        # EXPECT line 3: nested text brackets
             "`[code](Nope.md)`",
             "```",
             "[fenced](Nope.md)",
             "```",
-            '<img src="../img/gone.png"> [frag](B.md#sec)',  # EXPECT line 7
+            '<img src="../img/gone.png"> [frag](B.md#sec) [diff](D(2).md) ![lost](../img/lost.png)',  # EXPECT src, lost
             "[ref]: ../top.md",
-            "[known](Old.md) [deep](../deep/x)",
+            "[known](Old.md) [deep](../deep/x) [gone2](absent(2).md)",  # EXPECT absent(2).md
         ]),
         "doc/B.md": "",
     }
-    paths = {"doc/A.md", "doc/B.md", "doc/sub/C.md", "top.md", "deep/x/y/Z.md"}
+    paths = {"doc/A.md", "doc/B.md", "doc/sub/C.md", "top.md", "deep/x/y/Z.md", "doc/D(2).md"}
     known = {("doc/A.md", "Old.md"), ("doc/A.md", "Fixed.md")}
     got = report(broken_links(docs, paths), known)
     want = ["doc/A.md:2: broken link 'Missing.md' (link text 'bad') (no such path in the repository)",
-            "doc/A.md:7: broken link '../img/gone.png' (link text 'src=\"../img/gone.png\"') (no such path in the repository)",
+            "doc/A.md:3: broken link 'Missing2.md' (link text 'outer [inner] text') (no such path in the repository)",
+            "doc/A.md:8: broken link '../img/lost.png' (link text 'lost') (no such path in the repository)",
+            "doc/A.md:8: broken link '../img/gone.png' (link text 'src=\"../img/gone.png\"') (no such path in the repository)",
+            "doc/A.md:10: broken link 'absent(2).md' (link text 'gone2') (no such path in the repository)",
             "doc/A.md: KNOWN_BROKEN entry 'Fixed.md' is no longer broken; remove it"]
     if got != want:
         return False, got
@@ -180,6 +200,36 @@ def main(argv):
     if not ok:
         print("doc links: self-test FAILED, checker drift; got:\n  " + "\n  ".join(got))
         return 2
+    if args.check_file is not None:
+        # A single incoming write: skip stale-KNOWN_BROKEN reporting, or fixing one of
+        # those links in a rewritten file would be blocked as a violation.
+        content = sys.stdin.read()
+        docs = {args.check_file: content}
+        # Only the targets this document names need resolving: query git for exactly
+        # those pathspecs instead of enumerating the whole repository, because the
+        # write guards run this on every markdown write. A target outside the checkout
+        # (leading "..") can never be in paths, so it is skipped and reported broken.
+        cands = {resolve(args.check_file, raw) for _, _, raw in targets(content)}
+        cands.discard(None)
+        inside = {c for c in cands if c != "." and not c.startswith("../")}
+        paths = set()
+        if "." in cands:
+            paths.add(".")  # the repository root itself always resolves
+        try:
+            if inside:
+                for extra in ([], ["--others", "--exclude-standard"]):
+                    paths |= _listed_paths(root, inside, extra)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print("doc links: git ls-files failed: %s" % exc, file=sys.stderr)
+            return 2
+        lines = report(broken_links(docs, paths), KNOWN_BROKEN, include_stale=False)
+        ln = unbalanced(content)
+        if ln is not None:
+            lines.append("%s:%d: unclosed code fence; lines after it are not checked"
+                         % (args.check_file, ln))
+        for line in lines:
+            print(line)
+        return 1 if lines else 0
     try:
         res = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached", "--others",
                               "--exclude-standard"], stdout=subprocess.PIPE, check=True)
@@ -187,18 +237,10 @@ def main(argv):
         print("doc links: git ls-files failed: %s" % exc, file=sys.stderr)
         return 2
     paths = {p.decode("utf-8", "surrogateescape") for p in res.stdout.split(b"\0") if p}
-    if args.check_file is not None:
-        # A single incoming write: skip stale-KNOWN_BROKEN reporting, or fixing one of
-        # those links in a rewritten file would be blocked as a violation.
-        docs = {args.check_file: sys.stdin.read()}
-        lines = report(broken_links(docs, paths), KNOWN_BROKEN, include_stale=False)
-        for line in lines:
-            print(line)
-        return 1 if lines else 0
     docs = {}
     for doc in paths:
         full = os.path.join(root, doc)
-        if doc.endswith(".md") and os.path.isfile(full) and not os.path.islink(full):
+        if doc.endswith(".md") and os.path.isfile(full):
             with open(full, encoding="utf-8", errors="replace") as fh:
                 docs[doc] = fh.read()
     lines = report(broken_links(docs, paths), KNOWN_BROKEN)
