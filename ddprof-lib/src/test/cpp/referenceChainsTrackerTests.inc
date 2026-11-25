@@ -712,6 +712,8 @@ TEST_F(ResolvedChainCacheTest, RebuildOverflowDroppedButEvictOverflowFailsClosed
     const int cap = ReferenceChainsTestAccessor::maxPendingChainInvalidations();
     const long long dropped_before =
         Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED);
+    const long long rebuilds_dropped_before =
+        Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED);
     for (int i = 1; i <= cap; i++) {
         ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(i, makeEvent(i), i, 0));
         ReferenceChainsTestAccessor::queueChainInvalidationForTest(i, /*rebuild=*/true);
@@ -723,11 +725,16 @@ TEST_F(ResolvedChainCacheTest, RebuildOverflowDroppedButEvictOverflowFailsClosed
     ReferenceChainsTestAccessor::queueChainInvalidationForTest(1, /*rebuild=*/true);
     EXPECT_EQ((size_t)cap,
               ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(rebuilds_dropped_before,
+              Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED));
 
-    // REBUILD overflow: dropped, logged, cache and counters untouched.
+    // REBUILD overflow: dropped, logged, counted as a rebuild drop - the cache and the EVICT-side
+    // drop counter stay untouched.
     ReferenceChainsTestAccessor::queueChainInvalidationForTest(cap + 1, /*rebuild=*/true);
     EXPECT_EQ((size_t)cap,
               ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(rebuilds_dropped_before + 1,
+              Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED));
     EXPECT_EQ(dropped_before,
               Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
     EXPECT_EQ(cap, ReferenceChainsTestAccessor::resolvedChainCount());
@@ -736,6 +743,8 @@ TEST_F(ResolvedChainCacheTest, RebuildOverflowDroppedButEvictOverflowFailsClosed
     ReferenceChainsTestAccessor::queueChainInvalidationForTest(cap + 2, /*rebuild=*/false);
     EXPECT_EQ((size_t)cap,
               ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(rebuilds_dropped_before + 1,
+              Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED));
     ReferenceChainsTestAccessor::drainPendingChainInvalidations();
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
     EXPECT_EQ(0u,
