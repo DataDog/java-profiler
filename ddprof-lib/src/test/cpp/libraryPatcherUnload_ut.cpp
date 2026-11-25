@@ -66,6 +66,8 @@ enum ChildExit {
   CHILD_NOT_RECHECKED = 23,     // a pending library was not looked at again
   CHILD_RECHECKED_SETTLED = 24, // a pending entry made a settled one be re-checked
   CHILD_STILL_PENDING = 25,     // an unloaded library's entry stayed pending
+  CHILD_NOT_CAPTURED = 26,      // the pass did not take the profiler's bound PLT slot
+  CHILD_PATCHED_UNAWAITED = 27, // the extra pass ran with no capture awaited
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -236,6 +238,8 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_NOT_RECHECKED) << "a pending library was not looked at again";
   ASSERT_NE(code, CHILD_RECHECKED_SETTLED) << "a pending entry made a settled one be re-checked";
   ASSERT_NE(code, CHILD_STILL_PENDING) << "an unloaded library's entry stayed pending";
+  ASSERT_NE(code, CHILD_NOT_CAPTURED) << "the pass did not take the profiler's bound PLT slot";
+  ASSERT_NE(code, CHILD_PATCHED_UNAWAITED) << "the extra pass ran with no capture awaited";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
   ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "two different builds have the same fingerprint";
   ASSERT_NE(code, CHILD_DEADLOCK) << "patching deadlocked against the loader's dl_load_write_lock";
@@ -798,6 +802,44 @@ TEST_F(LibraryPatcherRecheckTest, FullPassClearsPendingOfUnloadedLibrary) {
     if (!unload(lib.handle, lib.slot)) _exit(CHILD_SKIP);
     PTHREAD_CREATE.patch();  // the unload makes this a full pass
     if (LibraryPatcherTestAccessor::entryPending(cc) != 0) _exit(CHILD_STILL_PENDING);
+  });
+}
+
+// Binds this binary's pthread_create PLT slot. It stands in for the profiler's
+// own: the patcher is linked into the gtest executable.
+static void bindOwnPltSlot() {
+  pthread_t thread;
+  if (pthread_create(&thread, nullptr, foreignWrapper, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
+  pthread_join(thread, nullptr);
+}
+
+// A pass takes the profiler's bound PLT slot before its visits: a library bound
+// to that value, and to neither expected binding, is hooked in the same pass.
+TEST_F(LibraryPatcherRecheckTest, PassCapturesPltBindingBeforeVisits) {
+  runInChild([]() {
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    bindOwnPltSlot();
+    LibraryPatcher::initialize_persistent();
+    LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(&foreignWrapper));
+    LibraryPatcherTestAccessor::setNextPthreadCreate(nullptr);
+    LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
+    LibraryPatcher::patch_libraries();
+    if (LibraryPatcherTestAccessor::nextPthreadCreate() != lib.orig) _exit(CHILD_NOT_CAPTURED);
+    if (*lib.slot == lib.orig) _exit(CHILD_SLOT_NOT_HOOKED);
+  });
+}
+
+// The extra pass of start() runs only while the capture is awaited.
+TEST_F(LibraryPatcherRecheckTest, ExtraPassRunsOnlyWhileCaptureIsAwaited) {
+  runInChild([]() {
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    LibraryPatcher::initialize_persistent();
+    LibraryPatcherTestAccessor::setAwaitingPltBinding(false);
+    LibraryPatcher::patch_libraries_awaiting_plt_binding();
+    if (*lib.slot != lib.orig) _exit(CHILD_PATCHED_UNAWAITED);
+    LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
+    LibraryPatcher::patch_libraries_awaiting_plt_binding();
+    if (*lib.slot == lib.orig) _exit(CHILD_SLOT_NOT_HOOKED);
   });
 }
 

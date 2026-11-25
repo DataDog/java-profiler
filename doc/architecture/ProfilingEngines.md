@@ -210,8 +210,9 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      That lookup skips a preloaded interposer, but PLT slots still bind to it.
      So the first pass that finds the profiler's own PLT slot bound takes that
      slot's value instead (`LibraryPatcher::capture_plt_binding()`). The patcher
-     never hooks that slot. Until glibc binds it lazily on the profiler's first
-     `pthread_create()` call, libraries bound to the interposer stay pending.
+     never hooks that slot. glibc binds it lazily, on the profiler's first
+     `pthread_create()` call, which can follow the first pass. So `start()` runs
+     one more pass after `startRefresher()` while the capture is still awaited.
      An executable that defines its own `pthread_create` is not told apart, and
      is not supported: a library bound past it (`RTLD_DEEPBIND`) would be hooked.
    - Any other value is left alone: another interposer's wrapper, whose threads

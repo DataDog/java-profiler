@@ -81,8 +81,10 @@ private:
   // plt_binding() and capture_plt_binding(), which may replace it under _lock).
   static void*       _loader_pthread_create;
   static void*       _next_pthread_create;
-  // Set under _lock once capture_plt_binding() replaced _next_pthread_create.
-  static bool        _plt_binding_captured;
+  // Whether capture_plt_binding() may still replace _next_pthread_create: set by
+  // initialize_persistent() if the executable owns the global binding, cleared
+  // under _lock by the capture. Read without _lock only to decide on a pass.
+  static std::atomic<bool> _awaiting_plt_binding;
   static bool        _patch_pthread_create;
 
   // Separate tracking for sigaction patches
@@ -150,6 +152,9 @@ public:
   // reach without init(). They survive stop/start cycles and are never unpatched.
   static void initialize_persistent();
   static void patch_libraries();
+  // Runs patch_libraries() again while the capture is awaited. For start(): the
+  // profiler's first pthread_create() call can come after its first patch pass.
+  static void patch_libraries_awaiting_plt_binding();
   static void unpatch_recording_hooks();
   static void patch_sigaction();
   static bool patch_socket_functions();
@@ -169,6 +174,7 @@ class LibraryPatcher {
 public:
   static void initialize_persistent() { }
   static void patch_libraries() { }
+  static void patch_libraries_awaiting_plt_binding() { }
   static void unpatch_recording_hooks() { }
   static void patch_sigaction() { }
   static bool patch_socket_functions() { return false; }

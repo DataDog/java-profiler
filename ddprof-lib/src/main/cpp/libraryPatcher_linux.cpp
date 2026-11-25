@@ -33,7 +33,7 @@ PthreadCreateTable LibraryPatcher::_pthread_create;
 // Stand-ins until initialize_persistent() asks the loader.
 void*      LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
 void*      LibraryPatcher::_next_pthread_create = nullptr;
-bool       LibraryPatcher::_plt_binding_captured = false;
+std::atomic<bool> LibraryPatcher::_awaiting_plt_binding{false};
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
 PatchEntry LibraryPatcher::_socket_entries[4 * MAX_NATIVE_LIBS];
@@ -233,12 +233,12 @@ void* LibraryPatcher::plt_binding(void* global, void* next) {
 }
 
 void LibraryPatcher::capture_plt_binding(CodeCache* lib) {
-  if (_next_pthread_create == nullptr || _plt_binding_captured || !is_profiler_library(lib)) {
+  if (!_awaiting_plt_binding.load(std::memory_order_relaxed) || !is_profiler_library(lib)) {
     return;
   }
   // RTLD_NEXT from here skips a preloaded interposer, which PLT slots still bind
-  // to. This library's PLT slot binds like any other's and is never hooked. Before
-  // it is bound it holds our own stub; the GLOB_DAT slot holds the global binding.
+  // to. This library's PLT slot binds like any other's, and this patcher never
+  // hooks it. Unbound, it holds our own stub; GLOB_DAT holds the global binding.
   for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
     void** slot = lib->peekImport(im_pthread_create, static_cast<ImportType>(ty));
     if (slot == nullptr) {
@@ -247,7 +247,7 @@ void LibraryPatcher::capture_plt_binding(CodeCache* lib) {
     void* bound = __atomic_load_n(slot, __ATOMIC_RELAXED);
     if (bound != nullptr && bound != _loader_pthread_create && !lib->contains(bound)) {
       _next_pthread_create = bound;
-      _plt_binding_captured = true;
+      _awaiting_plt_binding.store(false, std::memory_order_relaxed);
       return;
     }
   }
@@ -260,6 +260,8 @@ void LibraryPatcher::initialize_persistent() {
     // result matches no slot: patch_library_unlocked() never hooks a null slot.
     _loader_pthread_create = dlsym(RTLD_DEFAULT, "pthread_create");
     _next_pthread_create = plt_binding(_loader_pthread_create, dlsym(RTLD_NEXT, "pthread_create"));
+    // Not _next_pthread_create != nullptr: RTLD_NEXT can find nothing on musl.
+    _awaiting_plt_binding.store(in_main_executable(_loader_pthread_create), std::memory_order_relaxed);
     // Release so the reset above is visible to any thread that sees the flag.
     // Once set, pthread_create patches are persistent across stop/start cycles.
     _initialized.store(true, std::memory_order_release);
@@ -672,6 +674,12 @@ void LibraryPatcher::patch_libraries() {
    TEST_LOG("Patching libraries");
    patch_pthread_create();
    TEST_LOG("%d libraries patched", _pthread_create.size);
+}
+
+void LibraryPatcher::patch_libraries_awaiting_plt_binding() {
+  if (_awaiting_plt_binding.load(std::memory_order_relaxed)) {
+    patch_libraries();
+  }
 }
 
 bool LibraryPatcher::excluded_from_pthread_create_patch(CodeCache* lib) {

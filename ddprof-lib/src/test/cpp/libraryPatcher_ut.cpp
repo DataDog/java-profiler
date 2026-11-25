@@ -354,7 +354,7 @@ TEST_F(LibraryPatcherPatching, PatchesSlotHoldingPltBindingOnFirstPatch) {
 
 // A non-PIE executable that takes &pthread_create, with a preloaded interposer:
 // RTLD_NEXT from the profiler finds libc, but PLT slots bind to the interposer.
-// The profiler's own bound PLT slot supplies it, so other libraries' are hooked.
+// The profiler's own PLT slot supplies it once bound, so others' are hooked.
 TEST_F(LibraryPatcherPatching, CapturesPltBindingPastPreloadedInterposer) {
   void* const canonical = reinterpret_cast<void*>(static_cast<uintptr_t>(0x3000));
   void* const interposer = reinterpret_cast<void*>(&fake_original_pthread_create);
@@ -363,13 +363,21 @@ TEST_F(LibraryPatcherPatching, CapturesPltBindingPastPreloadedInterposer) {
   ASSERT_FALSE(self.contains(interposer));
   LibraryPatcherTestAccessor::setLoaderPthreadCreate(canonical);
   LibraryPatcherTestAccessor::setNextPthreadCreate(real_pthread_create());
-  void* glob_dat = canonical;  // added first, so the capture must skip it
-  void* jump_slot = interposer;
-  self.addImport(&glob_dat, "pthread_create");
+  LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
+  // In the order the ELF parser adds them: the lazy JUMP_SLOT, then GLOB_DAT.
+  void* jump_slot = const_cast<void*>(LibraryPatcherTestAccessor::selfAnchor());
+  void* glob_dat = canonical;
   self.addImport(&jump_slot, "pthread_create");
+  self.addImport(&glob_dat, "pthread_create");
 
   LibraryPatcherTestAccessor::capturePltBinding(&self);
+  ASSERT_EQ(real_pthread_create(), LibraryPatcherTestAccessor::nextPthreadCreate());
+  ASSERT_TRUE(LibraryPatcherTestAccessor::awaitingPltBinding());
+
+  jump_slot = interposer;
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
   ASSERT_EQ(interposer, LibraryPatcherTestAccessor::nextPthreadCreate());
+  EXPECT_FALSE(LibraryPatcherTestAccessor::awaitingPltBinding());
 
   void* slot = interposer;
   CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
@@ -379,28 +387,22 @@ TEST_F(LibraryPatcherPatching, CapturesPltBindingPastPreloadedInterposer) {
 
   EXPECT_NE(interposer, slot);
   EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
-  EXPECT_EQ(canonical, glob_dat);
-  EXPECT_EQ(interposer, jump_slot);
 }
 
-// Until the profiler's PLT slot is bound (null, or lazily its own stub) the
-// RTLD_NEXT value stays. The first bound value is kept: a later write to that
-// slot is not the loader's.
+// A null slot is not a binding. The first bound value is kept: a later write to
+// that slot is not the loader's.
 TEST_F(LibraryPatcherPatching, CapturesOnlyFirstBoundPltSlotValue) {
   void* const next = real_pthread_create();
   void* const bound = reinterpret_cast<void*>(&fake_original_pthread_create);
   void* const rewritten = reinterpret_cast<void*>(static_cast<uintptr_t>(0x5000));
   LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(static_cast<uintptr_t>(0x3000)));
   LibraryPatcherTestAccessor::setNextPthreadCreate(next);
+  LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
   void* jump_slot = nullptr;
   CodeCache self(kUnlinkedPath, -1, anchorMin(), anchorMax(), nullptr,
                  /* imports_patchable */ true);
   self.addImport(&jump_slot, "pthread_create");
 
-  LibraryPatcherTestAccessor::capturePltBinding(&self);
-  EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
-
-  jump_slot = const_cast<void*>(LibraryPatcherTestAccessor::selfAnchor());
   LibraryPatcherTestAccessor::capturePltBinding(&self);
   EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
 
@@ -413,12 +415,13 @@ TEST_F(LibraryPatcherPatching, CapturesOnlyFirstBoundPltSlotValue) {
   EXPECT_EQ(bound, LibraryPatcherTestAccessor::nextPthreadCreate());
 }
 
-// Only the profiler's own slot is trusted, and only where the executable owns
-// the global binding: otherwise there is no second binding to replace.
-TEST_F(LibraryPatcherPatching, CapturesPltBindingOnlyFromProfilerWhenExecutableOwnsBinding) {
+// Only the profiler's own slot is trusted, and only while the capture is
+// awaited: where the executable does not own the global binding, it never is.
+TEST_F(LibraryPatcherPatching, CapturesPltBindingOnlyFromProfilerWhileAwaited) {
   void* const next = real_pthread_create();
   void* const bound = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(static_cast<uintptr_t>(0x3000)));
+  LibraryPatcherTestAccessor::setNextPthreadCreate(next);
   void* foreign_slot = bound;
   CodeCache foreign(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
                     /* imports_patchable */ true);
@@ -428,13 +431,13 @@ TEST_F(LibraryPatcherPatching, CapturesPltBindingOnlyFromProfilerWhenExecutableO
                  /* imports_patchable */ true);
   self.addImport(&self_slot, "pthread_create");
 
-  LibraryPatcherTestAccessor::setNextPthreadCreate(next);
+  LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
   LibraryPatcherTestAccessor::capturePltBinding(&foreign);
   EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
 
-  LibraryPatcherTestAccessor::setNextPthreadCreate(nullptr);
+  LibraryPatcherTestAccessor::setAwaitingPltBinding(false);
   LibraryPatcherTestAccessor::capturePltBinding(&self);
-  EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::nextPthreadCreate());
+  EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
 }
 
 // A binding the loader could not resolve is null and must not match a null
@@ -603,20 +606,15 @@ TEST_F(LibraryPatcherRehook, NullSlotStaysUnhookedAndPending) {
   EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
-// forgetPatchTable() resets the whole table, both bindings and the capture, so
-// one test's leftovers cannot reach the next.
+// forgetPatchTable() resets the whole table, both bindings and the awaited
+// capture, so one test's leftovers cannot reach the next.
 TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
   slot = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
   ASSERT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
   LibraryPatcherTestAccessor::setLoaderPthreadCreate(nullptr);
   LibraryPatcherTestAccessor::setNextPthreadCreate(real_pthread_create());
-  void* self_slot = reinterpret_cast<void*>(&fake_original_pthread_create);
-  CodeCache self(kUnlinkedPath, -1, anchorMin(), anchorMax(), nullptr,
-                 /* imports_patchable */ true);
-  self.addImport(&self_slot, "pthread_create");
-  LibraryPatcherTestAccessor::capturePltBinding(&self);
-  ASSERT_EQ(self_slot, LibraryPatcherTestAccessor::nextPthreadCreate());
+  LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
 
   LibraryPatcherTestAccessor::forgetPatchTable();
 
@@ -624,11 +622,7 @@ TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
   EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(&lib));
   EXPECT_EQ(real_pthread_create(), LibraryPatcherTestAccessor::loaderPthreadCreate());
   EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::nextPthreadCreate());
-  // Not captured any more: a new bound value is taken.
-  LibraryPatcherTestAccessor::setNextPthreadCreate(real_pthread_create());
-  self_slot = reinterpret_cast<void*>(static_cast<uintptr_t>(0x5000));
-  LibraryPatcherTestAccessor::capturePltBinding(&self);
-  EXPECT_EQ(self_slot, LibraryPatcherTestAccessor::nextPthreadCreate());
+  EXPECT_FALSE(LibraryPatcherTestAccessor::awaitingPltBinding());
 }
 
 // Both bindings are captured once, at initialization, because dlsym() must not
@@ -652,6 +646,7 @@ TEST_F(LibraryPatcherPatching, InitializeCapturesLoaderBindings) {
   bool owned_by_executable = resolved_info.dli_fbase == test_info.dli_fbase;
   EXPECT_EQ(resolved, LibraryPatcherTestAccessor::loaderPthreadCreate());
   EXPECT_EQ(owned_by_executable ? next : nullptr, LibraryPatcherTestAccessor::nextPthreadCreate());
+  EXPECT_EQ(owned_by_executable, LibraryPatcherTestAccessor::awaitingPltBinding());
 }
 
 // The second binding is accepted only when the global one lies in the main
