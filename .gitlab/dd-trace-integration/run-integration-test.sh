@@ -52,10 +52,24 @@ function log_info() {
 # newest_jfr <dir> — path of the most recently modified .jfr under <dir>, empty
 # when none exists. The debug dump_path holds one snapshot per upload period;
 # the newest covers the whole run window, directory order may not.
+# -nt per file instead of -exec ls -t {} + | head -1: find batches the exec
+# above ARG_MAX and ls -t orders only within a batch, so head -1 could return
+# a first-batch file rather than the globally newest one.
 newest_jfr() {
-  # || true: a missing <dir> makes find exit 1 and pipefail would abort the
-  # caller's assignment under set -e; empty output drives the not-found branch.
-  find "${1}" -name '*.jfr' -type f -exec ls -t {} + 2>/dev/null | head -1 || true
+  local newest="" f
+  # || true is not needed with this shape: the while loop reads find's output
+  # through a process substitution, so a missing <dir> fails only the
+  # substitution's find — the loop reads nothing, the function prints nothing,
+  # and always exits 0, keeping the caller's set -e assignment alive. Empty
+  # output drives the caller's not-found branch.
+  while IFS= read -r -d '' f; do
+    if [ -z "${newest}" ] || [ "${f}" -nt "${newest}" ]; then
+      newest="${f}"
+    fi
+  done < <(find "${1}" -name '*.jfr' -type f -print0 2>/dev/null)
+  if [ -n "${newest}" ]; then
+    printf '%s\n' "${newest}"
+  fi
 }
 
 function log_warn() {

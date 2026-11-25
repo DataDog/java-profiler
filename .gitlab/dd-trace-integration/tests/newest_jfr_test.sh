@@ -74,5 +74,37 @@ touch -t 202601010100 "${N}/sub/deep.jfr"
   || fail "newest_jfr should search subdirectories, got: $(newest_jfr "$N")"
 pass "a snapshot in a subdirectory is found"
 
+# A newer non-.jfr file must not win: the -name filter selects snapshots only.
+F="${WORK}/filtered"
+mkdir -p "${F}"
+echo jfr > "${F}/recording.jfr"
+echo txt > "${F}/newer.log"
+touch -t 202601010000 "${F}/recording.jfr"
+touch -t 202601010900 "${F}/newer.log"
+[ "$(newest_jfr "$F")" = "${F}/recording.jfr" ] \
+  || fail "newest_jfr should ignore newer non-.jfr files, got: $(newest_jfr "$F")"
+pass "a newer non-.jfr file is ignored"
+
+# A newer directory named *.jfr must not win: only regular files count.
+D2="${WORK}/dirjfr"
+mkdir -p "${D2}/plain" "${D2}/fake.jfr"
+echo jfr > "${D2}/plain/recording.jfr"
+touch -t 202601010000 "${D2}/plain/recording.jfr"
+touch -t 202601011000 "${D2}/fake.jfr"
+[ "$(newest_jfr "$D2")" = "${D2}/plain/recording.jfr" ] \
+  || fail "newest_jfr should ignore directories named *.jfr, got: $(newest_jfr "$D2")"
+pass "a directory named *.jfr is ignored"
+
+# The scenario call sites must keep selecting through newest_jfr and keep
+# guarding the empty result: a regression that switches a scenario to
+# directory order or drops the not-found branch must fail here.
+for call in SCENARIO1_JFR SCENARIO2_JFR; do
+  grep -qF "${call}=\$(newest_jfr " "${SCRIPT}" \
+    || fail "${call} must be selected through newest_jfr in run-integration-test.sh"
+  grep -qF "if [ -z \"\${${call}}\" ] || [ ! -f \"\${${call}}\" ]" "${SCRIPT}" \
+    || fail "${call} must keep its empty-or-missing guard in run-integration-test.sh"
+done
+pass "both scenario call sites select through newest_jfr with the not-found guard"
+
 [ "${FAILED}" -eq 0 ] || exit 1
 echo "All newest_jfr tests passed."
