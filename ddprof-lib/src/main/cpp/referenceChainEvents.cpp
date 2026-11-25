@@ -730,36 +730,37 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
     }
     if (deferred > 0) {
       // Lock order: _resolved_chains_lock (held) before the pending lock.
-      _pending_chain_invalidations_lock.lock();
-      for (size_t i = 0; i < deferred; i++) {
-        const jlong pending = _draining_chain_invalidations[i];
-        const jlong tag = pendingChainInvalidationTag(pending);
-        const jlong evict =
-            encodePendingChainInvalidation(tag, ChainInvalidationKind::EVICT);
-        bool queued = false;
-        for (jlong existing : _pending_chain_invalidations) {
-          // A newer EVICT wins; a newer REBUILD for the same tag is a duplicate.
-          if (existing == evict || existing == pending) {
-            queued = true;
-            break;
+      {
+        ExclusiveLockGuard pending_guard(&_pending_chain_invalidations_lock);
+        for (size_t i = 0; i < deferred; i++) {
+          const jlong pending = _draining_chain_invalidations[i];
+          const jlong tag = pendingChainInvalidationTag(pending);
+          const jlong evict =
+              encodePendingChainInvalidation(tag, ChainInvalidationKind::EVICT);
+          bool queued = false;
+          for (jlong existing : _pending_chain_invalidations) {
+            // A newer EVICT wins; a newer REBUILD for the same tag is a duplicate.
+            if (existing == evict || existing == pending) {
+              queued = true;
+              break;
+            }
+          }
+          if (queued) {
+            continue;
+          }
+          if ((int)_pending_chain_invalidations.size() <
+              MAX_PENDING_CHAIN_INVALIDATIONS) {
+            _pending_chain_invalidations.push_back(pending);
+          } else {
+            // REBUILD requeue overflow: dropping is self-healing (see the buffer's overflow
+            // comment); the cached chain is kept and a later correlation or path change re-queues.
+            Counters::increment(REFERENCE_CHAIN_REBUILDS_DROPPED, 1);
+            TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations requeue overflow, "
+                     "keeping cached chain source_tag=%lld",
+                     (long long)tag);
           }
         }
-        if (queued) {
-          continue;
-        }
-        if ((int)_pending_chain_invalidations.size() <
-            MAX_PENDING_CHAIN_INVALIDATIONS) {
-          _pending_chain_invalidations.push_back(pending);
-        } else {
-          // REBUILD requeue overflow: dropping is self-healing (see the buffer's overflow
-          // comment); the cached chain is kept and a later correlation or path change re-queues.
-          Counters::increment(REFERENCE_CHAIN_REBUILDS_DROPPED, 1);
-          TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations requeue overflow, "
-                   "keeping cached chain source_tag=%lld",
-                   (long long)tag);
-        }
       }
-      _pending_chain_invalidations_lock.unlock();
       TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations deferred=%zu rebuilds",
                deferred);
     }
@@ -837,6 +838,18 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
 void ReferenceChainTracker::clearPendingChainInvalidations() {
   ExclusiveLockGuard cache_guard(&_resolved_chains_lock);
   _pending_chain_invalidations_lock.lock();
+  // A pending REBUILD evicts its cached chain: the restart has reset the frontier and the tag
+  // namespace, so the rebuild could never run, and dump() re-emits every cached chain regardless
+  // of generation. EVICT entries stay inert - a restarted search may already have re-cached the
+  // reused tag (RestartDropsPendingTagsBeforeNumericTagReuse).
+  for (jlong pending : _pending_chain_invalidations) {
+    if (isPendingChainRebuild(pending)) {
+      _resolved_chains.erase(pendingChainInvalidationTag(pending));
+      TEST_LOG("ReferenceChainTracker::clearPendingChainInvalidations evicted "
+               "chain of undrained REBUILD source_tag=%lld",
+               (long long)pendingChainInvalidationTag(pending));
+    }
+  }
   _pending_chain_invalidations.clear();
   _draining_chain_invalidations.clear();
   _pending_chain_invalidation_overflow = false;

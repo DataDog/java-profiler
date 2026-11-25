@@ -771,6 +771,41 @@ TEST_F(ResolvedChainCacheTest, RestartDropsPendingTagsBeforeNumericTagReuse) {
     EXPECT_EQ(101u, dump[0]._target_tag);
 }
 
+// A REBUILD still pending at a restart must not survive as a stale cached chain: the restart
+// resets the frontier and the tag namespace, so the deferred rebuild could never run, and dump()
+// re-emits every cached chain regardless of generation. The restart-clear evicts the affected
+// chain; an EVICT entry stays inert (a restarted search may already have re-cached the reused
+// tag - see the test above).
+TEST_F(ResolvedChainCacheTest, RestartEvictsChainOfUndrainedRebuild) {
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(1), 1, 0);
+    ReferenceChainsTestAccessor::cacheChain(2, makeEvent(2), 2, 0);
+    ReferenceChainsTestAccessor::queueChainInvalidationForTest(1, /*rebuild=*/true);
+    ReferenceChainsTestAccessor::queueChainInvalidationForTest(2, /*rebuild=*/false);
+    ASSERT_EQ(2u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    ReferenceChainsTestAccessor::restartSearchForTest();
+    // The undrained REBUILD's chain is gone; the undrained EVICT's chain stays.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    // The restarted search re-caching tag 1 (fresh generation) is not disturbed: the eviction
+    // happened at the restart, so the later drain has nothing left to erase.
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(101), 1, 1);
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainSearchNs(1));
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(2u, dump.size());
+    bool fresh_emitted = false;
+    for (const auto &event : dump) {
+        fresh_emitted = fresh_emitted || event._target_tag == 101u;
+    }
+    EXPECT_TRUE(fresh_emitted)
+        << "the restarted search's chain must be the one re-emitted for tag 1";
+}
+
 // At MAX_RESOLVED_CHAINS a brand-new klass is dropped and counted in
 // REFERENCE_CHAIN_EVENTS_DROPPED rather than evicting a live sample's chain; refreshing an
 // already-cached klass still succeeds.

@@ -1398,10 +1398,10 @@ private:
   // EVICT: the source was rejected (noise eviction) - the cached chain is erased, at dump time or
   // on the next poll, whichever drains first.
   // REBUILD: the source is still live and its frontier entry intact, only its path changed
-  // (improveChain()/reparentToDurableRoot()/root-kind upgrade). Never erased at dump time: only
-  // the BFS-thread poll applies it, rebuilding the chain from the frontier and keeping the old one
-  // if the rebuild fails (restartSearch()'s keep-across-restart contract). EVICT wins over
-  // REBUILD for the same pending tag.
+  // (improveChain()/reparentToDurableRoot()/root-kind upgrade). Applied only by the BFS-thread
+  // poll (keeping the old chain when the rebuild fails), never at dump time - and a REBUILD still
+  // pending at a restart evicts its chain there, because the rebuild could never run against the
+  // reset frontier. EVICT wins over REBUILD for the same pending tag.
   enum class ChainInvalidationKind : u8 { EVICT, REBUILD };
 
   // In-band kind encoding for the pending buffers. Cache keys are frontier tags (>= 0), so the
