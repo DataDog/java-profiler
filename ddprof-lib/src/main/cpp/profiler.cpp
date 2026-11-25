@@ -2098,6 +2098,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   // signal-context branch only marks dirty and relies on the refresher
   // to call refresh() within REFRESH_INTERVAL_NS (500 ms).
   _libs->startRefresher();
+  // The refresher's pthread_create() binds the profiler's own PLT slot, which
+  // updateSymbols() may have found unbound (see capture_plt_binding()).
+  LibraryPatcher::patch_libraries_awaiting_plt_binding();
 
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
