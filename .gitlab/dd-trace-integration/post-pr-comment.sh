@@ -52,7 +52,12 @@ DASHBOARD_URL="https://datadog.github.io/java-profiler/integration/"
 # but are excluded from completeness and pass/fail counts (EXPECTED is counted below).
 PLATFORMS=("${QUARANTINE_PLATFORMS[@]}")
 JDKS=("${QUARANTINE_JDKS[@]}")
-NOT_APPLICABLE_REASON="OpenJ9 requires glibc; upstream publishes no musl runtime."
+NOT_APPLICABLE_PLATFORMS=""
+for platform in "${PLATFORMS[@]}"; do
+  if quarantine_platform_not_applicable "${platform}"; then
+    NOT_APPLICABLE_PLATFORMS="${NOT_APPLICABLE_PLATFORMS:+${NOT_APPLICABLE_PLATFORMS}, }${platform}"
+  fi
+done
 
 log_info "Collecting results for branch: ${DDPROF_COMMIT_BRANCH:-<unset>}"
 
@@ -353,9 +358,11 @@ $(echo -e "${FAILURES}")"
 - :package: Commit: \`${DDPROF_SHA}\`"
 fi
 
-COMMENT_BODY="${COMMENT_BODY}
+if [ "${TOTAL_NOT_APPLICABLE}" -gt 0 ]; then
+  COMMENT_BODY="${COMMENT_BODY}
 
-**${TOTAL_NOT_APPLICABLE} not applicable (not scheduled)**: musl/OpenJ9 on x64 and arm64. ${NOT_APPLICABLE_REASON}"
+**${TOTAL_NOT_APPLICABLE} not applicable (not scheduled)**: ${NOT_APPLICABLE_PLATFORMS}. ${QUARANTINE_NOT_APPLICABLE_REASON}"
+fi
 
 # Post comment via dd-octo-sts (upsert-github-pr-comment.sh handles missing
 # branch/PR/token gracefully, so a comment-posting problem never masks the

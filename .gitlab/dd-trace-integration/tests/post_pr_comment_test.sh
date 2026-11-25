@@ -169,6 +169,7 @@ assert_body_contains "it reports every configuration as passed" "All 30 integrat
 
 assert_body_contains "the skipped configurations are counted separately" "**10 not applicable (not scheduled)**"
 assert_body_contains "the reason names the upstream runtime constraint" "OpenJ9 requires glibc; upstream publishes no musl runtime."
+assert_body_contains "the footer lists the not-applicable platforms from quarantine-lib.sh" "(not scheduled)**: musl-x64-openj9, musl-arm64-openj9. OpenJ9 requires glibc"
 
 # Missing applicable cells still gate, even on musl.
 

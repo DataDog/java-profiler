@@ -337,6 +337,12 @@ class JvmSelectionTest(unittest.TestCase):
                             effective = rule[2] if matches else "on_success"
                             self.assertEqual(effective, "never" if vm == "openj9" and libc == "musl"
                                              else "on_success")
+                            platform = f"{libc}-{arch}-{vm}"
+                            lib = subprocess.run(
+                                ["bash", "-c", '. "$1"; quarantine_platform_not_applicable "$2"', "_",
+                                 str(SCRIPTS / "quarantine-lib.sh"), platform])
+                            self.assertEqual(lib.returncode == 0, effective == "never",
+                                             f"quarantine-lib.sh disagrees with the CI rule for {platform}")
                             skipped += effective == "never"
                             scheduled += effective == "on_success"
         self.assertEqual(skipped, 10)
