@@ -493,7 +493,7 @@ void SafeAccess::countIfLongjmpProtected(SafeAccessKind kind) {
 bool SafeAccess::isReadableCString(const char* s, size_t max_len) {
 #ifdef DEBUG
   // Counted like the other primitives, but not redundant inside a window: the
-  // caller's later strncmp/strlen run in libc, where no window recovers a fault.
+  // caller's later strnlen/strncmp/strlen run in libc, which no window recovers.
   countIfLongjmpProtected(SafeAccessKind::CString);
 #endif
   // A null string is rejected without taking the fault path.

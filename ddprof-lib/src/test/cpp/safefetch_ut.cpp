@@ -449,13 +449,10 @@ TEST_F(SafeFetchTest, isReadableCString_countsCallsInsideAProtectedWindow) {
   EXPECT_TRUE(SafeAccess::isReadableCString("abc", 4));
   EXPECT_EQ(before, Counters::getCounter(SAFECSTRING_WHILE_PROTECTED)) << "outside a window";
   {
+    // No sigsetjmp: this fixture's handler never siglongjmps, so ctx is only a
+    // marker that makes the thread count as protected.
     JmpCtxScope scope(thread);
     sigjmp_buf ctx;
-    if (sigsetjmp(ctx, 1) != 0) {
-      scope.restore();
-      ProfiledThread::release();
-      FAIL() << "unexpected fault inside the protected window";
-    }
     scope.install(&ctx);
     EXPECT_TRUE(SafeAccess::isReadableCString("abc", 4));
   }
