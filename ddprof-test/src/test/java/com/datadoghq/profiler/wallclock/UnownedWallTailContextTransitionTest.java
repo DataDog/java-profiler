@@ -354,7 +354,12 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       for (int i = 0; miss == null && i < snapshots.length; i++) {
         snapshots[i] = Files.createTempFile("unowned-span-context-dump-" + i, ".jfr");
         System.out.println("===> attribution recording: " + snapshots[i]);
-        dump(snapshots[i]);
+        // The base dump() is a no-op once stopProfiler() ran, so retries dump their own recording.
+        if (recording == null) {
+          dump(snapshots[i]);
+        } else {
+          profiler.dump(snapshots[i]);
+        }
         Samples samples =
             checkSamples(
                 snapshots[i],
