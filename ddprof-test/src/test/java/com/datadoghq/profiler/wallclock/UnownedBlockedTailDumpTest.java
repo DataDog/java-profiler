@@ -6,7 +6,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -15,6 +15,7 @@ import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.Platform;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -37,14 +38,16 @@ public class UnownedBlockedTailDumpTest extends AbstractProfilerTest {
       // A reused test thread can retain logical membership after its trace context is cleared.
       profiler.addThread();
       profiler.clearTraceContext();
-      assertFalse(
-          JavaProfilerTestSupport.recordUnownedWallTailAcrossDumpForTest(
-              snapshot.toAbsolutePath().toString(), dumpAfterPrimary, resetBeforeTail),
-          "An active logical context must bypass unowned fallback");
+      assertEquals(
+          "precheck did not select an unowned sample",
+          assertThrows(
+                  IllegalStateException.class,
+                  () -> record(snapshot, dumpAfterPrimary, resetBeforeTail),
+                  "An active logical context must bypass unowned fallback")
+              .getMessage());
       profiler.removeThread();
       assertTrue(
-          JavaProfilerTestSupport.recordUnownedWallTailAcrossDumpForTest(
-              snapshot.toAbsolutePath().toString(), dumpAfterPrimary, resetBeforeTail),
+          record(snapshot, dumpAfterPrimary, resetBeforeTail),
           "Failed to record the primary samples or dump the first chunk");
       stopProfiler();
 
@@ -69,6 +72,61 @@ public class UnownedBlockedTailDumpTest extends AbstractProfilerTest {
         Files.deleteIfExists(snapshot);
       }
     }
+  }
+
+  /**
+   * Forces each try-and-drop step of the driver to drop: one drop is retried away, a persistent one
+   * names the step, and a deterministic failure is reported without retrying.
+   */
+  @ParameterizedTest(name = "step={0}")
+  @CsvSource({
+    "0, JVMTI stack capture dropped",
+    "1, ordinary wall sample dropped",
+    "2, blocked observation was not deferred"
+  })
+  public void droppedDriverStepsRetryThenNameTheStep(int step, String reason) throws Exception {
+    Assumptions.assumeTrue(isDebugBuild(), "Requires the debug-only synchronous sampling driver");
+    profiler.clearTraceContext();
+    Path snapshot = Files.createTempFile("unowned-tail-drop-", ".jfr");
+    try {
+      JavaProfilerTestSupport.exchangeUnownedWallTailAcrossDumpDropsForTest(step, 1);
+      assertTrue(record(snapshot, false, false));
+      assertEquals(
+          0,
+          JavaProfilerTestSupport.exchangeUnownedWallTailAcrossDumpDropsForTest(step, 0),
+          "The forced drop was not reached");
+
+      JavaProfilerTestSupport.exchangeUnownedWallTailAcrossDumpDropsForTest(
+          step, Integer.MAX_VALUE);
+      assertEquals(
+          reason,
+          assertThrows(IllegalStateException.class, () -> record(snapshot, false, false))
+              .getMessage());
+      assertTrue(
+          JavaProfilerTestSupport.exchangeUnownedWallTailAcrossDumpDropsForTest(step, 0)
+              < Integer.MAX_VALUE - 1,
+          "A persistent drop must be retried before it is reported");
+
+      // The retry window is two seconds; a retried deterministic failure would outlast it.
+      profiler.addThread();
+      long start = System.nanoTime();
+      assertEquals(
+          "precheck did not select an unowned sample",
+          assertThrows(IllegalStateException.class, () -> record(snapshot, false, false))
+              .getMessage());
+      assertTrue(
+          System.nanoTime() - start < TimeUnit.SECONDS.toNanos(1),
+          "A non-drop failure must not be retried");
+    } finally {
+      JavaProfilerTestSupport.exchangeUnownedWallTailAcrossDumpDropsForTest(step, 0);
+      profiler.removeThread();
+      Files.deleteIfExists(snapshot);
+    }
+  }
+
+  private static boolean record(Path snapshot, boolean dumpAfterPrimary, boolean resetBeforeTail) {
+    return JavaProfilerTestSupport.recordUnownedWallTailAcrossDumpForTest(
+        snapshot.toAbsolutePath().toString(), dumpAfterPrimary, resetBeforeTail);
   }
 
   /** Checks that the matching weighted sample resolves the Java stack captured by the driver. */
