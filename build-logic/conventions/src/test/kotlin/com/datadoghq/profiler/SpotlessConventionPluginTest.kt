@@ -97,7 +97,9 @@ class SpotlessConventionPluginTest {
     assertEquals(listOf(0xca, 0xfe, 0xba, 0xbe), classfile.take(4).map { it.toInt() and 0xff })
     assertEquals(52, ((classfile[6].toInt() and 0xff) shl 8) or (classfile[7].toInt() and 0xff))
     val firstApply = Files.readAllBytes(root.resolve("src/main/java/Java8Fixture.java"))
-    assertEquals(TaskOutcome.SUCCESS, run("spotlessJavaApply").task(":spotlessJavaApply")?.outcome)
+    // --rerun: unchanged inputs may otherwise leave the task UP_TO_DATE, skipping the formatter.
+    assertEquals(
+      TaskOutcome.SUCCESS, run("spotlessJavaApply", "--rerun").task(":spotlessJavaApply")?.outcome)
     assertArrayEquals(firstApply, Files.readAllBytes(root.resolve("src/main/java/Java8Fixture.java")))
   }
 
