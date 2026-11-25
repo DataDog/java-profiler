@@ -27,6 +27,7 @@
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
 #include "jniHelper.h"
+#include "modifiedUtf8.h"
 #include "jvmSupport.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
