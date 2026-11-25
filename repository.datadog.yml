@@ -1,3 +1,7 @@
 schema-version: v1
 kind: adms
 auto-version-updates-enabled: true
+---
+schema-version: v1
+kind: mergequeue
+merge_method: squash
