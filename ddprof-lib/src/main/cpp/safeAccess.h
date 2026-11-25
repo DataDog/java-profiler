@@ -145,13 +145,8 @@ public:
   }
 
   /**
-   * Returns true when s is readable up to a NUL found within its first max_len
-   * bytes, NUL included. Reads only those bytes, one at a time, so a valid
-   * string just before an unreadable page is accepted.
-   *
-   * <p>A faulting read, including one caused by a concurrent munmap, returns
-   * false through the safecstring_impl stub. Needs the SafeAccess fault
-   * handler installed, like safeCopy().
+   * True when s is readable up to a NUL within its first max_len bytes, NUL
+   * included. A faulting read returns false; needs the SafeAccess fault handler.
    */
   static bool isReadableCString(const char* s, size_t max_len);
 
@@ -164,7 +159,7 @@ private:
   // safeAccess.cpp so this widely-included header need not pull in
   // threadLocalData.h / counters.h -- kind is a self-contained enum rather
   // than a CounterId for the same reason.
-  enum class SafeAccessKind { Fetch, Store, Copy };
+  enum class SafeAccessKind { Fetch, Store, Copy, CString };
   static void countIfLongjmpProtected(SafeAccessKind kind);
 #endif
 };

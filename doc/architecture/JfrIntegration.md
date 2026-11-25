@@ -374,11 +374,11 @@ counter:
 The readability check is `SafeAccess::isReadableCString()`. An assembly stub,
 like the one behind `SafeAccess::safeCopy()`, reads the string one byte at a
 time up to its NUL. A faulting read returns false. A valid name that ends just
-before an unreadable page therefore resolves. These counters count methods,
-once per chunk.
+before an unreadable page therefore resolves. These counters count methods:
+once per chunk in which a frame of the method is written.
 
-`writeStackTraces()` also counts frames through
-`Lookup::countUnresolvedFrame()`: `method_resolve_frames_unloaded` for each
+`Recording::writeStackTrace()`, called by `writeStackTraces()` once per trace,
+also counts frames through `Lookup::countUnresolvedFrame()`: `method_resolve_frames_unloaded` for each
 frame written as an `<unloaded>` row, and `method_resolve_frames_unknown` for
 each frame written as `_unknown_method`. The unit is one frame of one distinct
 stored trace in one dump. The count is not weighted by samples.

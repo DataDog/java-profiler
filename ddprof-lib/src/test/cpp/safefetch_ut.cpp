@@ -12,6 +12,8 @@
 #include <unistd.h>
 
 #include "counters.h"
+#include "guards.h"
+#include "threadLocalData.h"
 #include "safeAccess.h"
 #include "os.h"
 #include "safeAccessTestSupport.h"
@@ -386,7 +388,7 @@ TEST_F(SafeFetchTest, isReadableCString_acceptsNulOnLastReadableByte) {
   GuardedPage region;
   ASSERT_TRUE(region.ok());
   const char* s = region.placeAtEnd("join");
-  // The fixed 256-byte probe this replaces rejected exactly this string.
+  // A 256-byte range from the string is not readable; the string itself is.
   ASSERT_FALSE(SafeAccess::isReadableRange(s, 256));
   long long faults = Counters::getCounter(SAFECSTRING_FAILED);
   EXPECT_TRUE(SafeAccess::isReadableCString(s, kMaxLen));
@@ -437,6 +439,25 @@ TEST_F(SafeFetchTest, isReadableCString_rejectsStringRunningIntoGuardPage) {
   EXPECT_FALSE(SafeAccess::isReadableCString(s, kMaxLen));
   EXPECT_EQ(faults + 1, Counters::getCounter(SAFECSTRING_FAILED)) << "the read of the guard page faults";
 }
+
+#ifdef DEBUG
+// Debug builds count SafeAccess calls made inside a siglongjmp-protected window.
+TEST_F(SafeFetchTest, isReadableCString_countsCallsInsideAProtectedWindow) {
+  ProfiledThread* thread = ProfiledThread::initCurrentThreadSignalSafe();
+  ASSERT_NE(nullptr, thread);
+  long long before = Counters::getCounter(SAFECSTRING_WHILE_PROTECTED);
+  EXPECT_TRUE(SafeAccess::isReadableCString("abc", 4));
+  EXPECT_EQ(before, Counters::getCounter(SAFECSTRING_WHILE_PROTECTED)) << "outside a window";
+  {
+    // The string is valid, so nothing faults and the landing pad is never used.
+    JmpCtxScope scope(thread);
+    sigjmp_buf ctx;
+    scope.install(&ctx);
+    EXPECT_TRUE(SafeAccess::isReadableCString("abc", 4));
+  }
+  EXPECT_EQ(before + 1, Counters::getCounter(SAFECSTRING_WHILE_PROTECTED));
+}
+#endif
 
 TEST_F(SafeFetchTest, isReadableCString_stopsAtMaxLenBeforeTheGuardPage) {
   GuardedPage region;

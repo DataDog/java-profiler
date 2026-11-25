@@ -534,7 +534,7 @@ TEST_F(LookupResolveMethodJavaFrameTest, ValidNameJustBeforeUnreadablePageResolv
     ScopedFakeJvmAndJni fake;
     fake.counters.borrow_method_name = true;
     fake.counters.borrowed_method_name = region.placeAtEnd("sampleMethod");
-    // The fixed 256-byte probe this replaces rejected exactly this name.
+    // A 256-byte range from the name is not readable; the name itself is.
     ASSERT_FALSE(SafeAccess::isReadableRange(fake.counters.borrowed_method_name, 256));
     VMTestAccessor::setJvmti(fake.jvmti());
 

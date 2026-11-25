@@ -656,9 +656,9 @@ public:
         _symbols() {}
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
-  // Counts one written stack frame that resolved to mi, if it is the
-  // "<unloaded>" sentinel or the shared unknown row. Per frame, not weighted
-  // by samples; writeStackTraces() calls it once per frame of each trace.
+  // Counts one written frame that resolved to mi, if it is the "<unloaded>"
+  // sentinel or the shared unknown row; per frame, not weighted by samples.
+  // Recording::writeStackTrace() calls it once per frame of each trace.
   void countUnresolvedFrame(const MethodInfo *mi) const;
   u32 getPackage(const char *class_name);
   u32 getSymbol(const char *name);

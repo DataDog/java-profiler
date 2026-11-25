@@ -46,16 +46,9 @@ extern "C" int safecstring_impl(const char* s, size_t max_len);
 extern "C" int safecstring_cont(const char* s, size_t max_len);
 
 #ifdef DEBUG
-// handle_safefetch protects safeCopy and isReadableCString by treating any
-// fault whose pc lands in [safecopy_impl, safecopy_cont) or
-// [safecstring_impl, safecstring_cont) as a recoverable read fault. Each range
-// is only valid if the assembler/linker keeps its _cont strictly above its
-// _impl (they are emitted adjacently in one asm block). A future
-// toolchain change could in principle reorder them, collapsing the range to
-// empty and silently disabling fault protection. Assert the invariant once at
-// load time so such a regression aborts loudly at startup instead of turning
-// either primitive into an unprotected crash. Debug builds only: this is a
-// toolchain-regression tripwire, not a runtime safety check.
+// handle_safefetch recovers faults only in [safecopy_impl, safecopy_cont) and
+// [safecstring_impl, safecstring_cont), so each _cont must stay above its _impl.
+// Debug builds abort at startup if a toolchain change ever reorders them.
 __attribute__((constructor))
 static void verify_safe_stub_ranges() {
   if ((uintptr_t)safecopy_cont <= (uintptr_t)safecopy_impl) {
@@ -490,6 +483,7 @@ void SafeAccess::countIfLongjmpProtected(SafeAccessKind kind) {
       case SafeAccessKind::Fetch: id = SAFEFETCH_WHILE_PROTECTED; break;
       case SafeAccessKind::Store: id = SAFESTORE_WHILE_PROTECTED; break;
       case SafeAccessKind::Copy:  id = SAFECOPY_WHILE_PROTECTED; break;
+      case SafeAccessKind::CString: id = SAFECSTRING_WHILE_PROTECTED; break;
     }
     Counters::increment(id);
   }
@@ -497,6 +491,9 @@ void SafeAccess::countIfLongjmpProtected(SafeAccessKind kind) {
 #endif
 
 bool SafeAccess::isReadableCString(const char* s, size_t max_len) {
+#ifdef DEBUG
+  countIfLongjmpProtected(SafeAccessKind::CString);
+#endif
   // A null string is rejected without taking the fault path.
   return s != nullptr && safecstring_impl(s, max_len) != 0;
 }
