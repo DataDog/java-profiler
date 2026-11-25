@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk21
 
 ## musl-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-25 08:44:38 EST
+**Date:** 2026-11-25 08:52:59 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 537 |
-| Sample Rate | 8.95/sec |
-| Health Score | 559% |
+| CPU Samples | 117 |
+| Sample Rate | 1.95/sec |
+| Health Score | 122% |
 | Threads | 9 |
-| Allocations | 371 |
+| Allocations | 70 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 672 |
-| Sample Rate | 11.20/sec |
-| Health Score | 700% |
-| Threads | 10 |
-| Allocations | 498 |
+| CPU Samples | 18 |
+| Sample Rate | 0.30/sec |
+| Health Score | 19% |
+| Threads | 9 |
+| Allocations | 9 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 94-96 cores)</summary>
+<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1795614021 96
-1795614026 96
-1795614031 96
-1795614036 96
-1795614041 96
-1795614046 96
-1795614051 96
-1795614056 96
-1795614061 96
-1795614066 96
-1795614071 96
-1795614076 94
-1795614081 94
-1795614086 94
-1795614091 94
-1795614096 94
-1795614101 94
-1795614106 96
-1795614111 96
-1795614116 96
+1795614495 96
+1795614500 96
+1795614505 96
+1795614510 96
+1795614515 96
+1795614520 96
+1795614525 96
+1795614530 96
+1795614535 96
+1795614540 96
+1795614545 96
+1795614550 96
+1795614555 96
+1795614560 96
+1795614565 96
+1795614570 96
+1795614575 96
+1795614580 96
+1795614585 96
+1795614590 96
 ```
 </details>
 
