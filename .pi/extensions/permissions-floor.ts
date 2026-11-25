@@ -9,18 +9,29 @@ const TRUSTED_REF = "refs/remotes/origin/main"; // qualified: a tag named origin
 const DENY_RULE = /^Bash\((.+):\*\)$/;
 const SEGMENT = /[\n;&|()`]+/;
 const ENV_PREFIX = /^(?:\w+=\S*\s+)*/;
+// cwd → origin/main's deny list, read once per cwd. Never keyed on anything else and
+// never populated on failure: a transient git error must disable the floor for one
+// call, not for the session.
+const deniedCommandsCache = new Map<string, string[]>();
 
 function deniedCommands(cwd: string): string[] {
+  const cached = deniedCommandsCache.get(cwd);
+  if (cached !== undefined) return cached;
   // origin/main's floor, never the checkout's: the branch may be untrusted (a fork PR).
   const res = spawnSync("git", ["show", `${TRUSTED_REF}:.claude/settings.json`], {
     cwd,
     encoding: "utf8",
     timeout: 10_000,
   });
-  if (res.status !== 0) return []; // not a checkout of this repo, or no floor on main yet
+  if (res.status !== 0) {
+    console.error(`permissions floor: failed to read ${TRUSTED_REF}:.claude/settings.json; deny rules are inactive`);
+    return [];
+  }
   try {
     const deny: unknown[] = JSON.parse(res.stdout)?.permissions?.deny ?? [];
-    return deny.map((r) => DENY_RULE.exec(String(r))?.[1]).filter((c): c is string => !!c);
+    const rules = deny.map((r) => DENY_RULE.exec(String(r))?.[1]).filter((c): c is string => !!c);
+    deniedCommandsCache.set(cwd, rules);
+    return rules;
   } catch {
     return [];
   }
@@ -32,7 +43,7 @@ export default function (pi: ExtensionAPI) {
     const command = String(event.input.command ?? "");
     const denied = deniedCommands(ctx.cwd);
     for (const segment of command.split(SEGMENT)) {
-      const words = segment.trim().replace(ENV_PREFIX, "");
+      const words = segment.trim().replace(ENV_PREFIX, "").replace(/\s+/g, " ");
       const hit = denied.find((c) => words === c || words.startsWith(c + " "));
       if (hit) {
         return {

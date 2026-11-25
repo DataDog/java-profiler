@@ -74,13 +74,28 @@ expect "floor names the blocked segment" 2 'Blocked `rm -f y`' pi_hook bash 'cd 
 python3 - <<'PY'
 import json
 p = ".claude/settings.json"
-d = json.load(open(p))
+with open(p) as fh:
+    d = json.load(fh)
 d["permissions"]["deny"] = ["Bash(ls:*)"]
-json.dump(d, open(p, "w"))
+with open(p, "w") as fh:
+    json.dump(d, fh)
 PY
 expect "floor ignores a checkout that drops rm" 2 "$BLOCK_MSG" pi_hook bash 'rm y'
 expect "floor ignores a checkout that adds ls" 0 "" pi_hook bash 'ls'
 expect "floor allows everything outside a checkout with origin/main" 0 "" pi_hook bash 'rm y' "$TEMP_DIR/nofloor"
+
+# A failed floor read is never cached: once origin/main becomes readable, the floor
+# applies in the same cwd whose earlier read failed. A transient git error must
+# disable the floor for one call, not for the session.
+mkdir -p "$TEMP_DIR/nofetch/.claude" && cd "$TEMP_DIR/nofetch"
+git init -q -b main
+git config user.email t@example.com && git config user.name t
+cp "$ROOT/.claude/settings.json" .claude/settings.json
+git add .claude/settings.json && git commit -q -m floor
+git remote add origin "$TEMP_DIR/origin.git"
+expect "floor allows while origin/main is unfetched" 0 "" pi_hook bash 'rm y' "$TEMP_DIR/nofetch"
+git fetch -q origin
+expect "floor denies once origin/main is fetched" 2 "$BLOCK_MSG" pi_hook bash 'rm y' "$TEMP_DIR/nofetch"
 
 echo "$TESTS tests, $FAILED failed"
 [ "$FAILED" -eq 0 ]
