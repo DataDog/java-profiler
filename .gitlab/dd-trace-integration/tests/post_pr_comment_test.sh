@@ -265,7 +265,7 @@ run_script "${WORK}/one-quarantined" "${Q}"
 assert_exit "a quarantined scenario failure exits 0" 0
 assert_body_contains "the quarantined cell is counted in the headline" "**1** quarantined"
 assert_body_contains "the headline keeps the expected denominator" "out of **30** expected configurations"
-assert_body_lacks "the terse all-pass line is not used when something failed" "All 39 integration tests passed"
+assert_body_lacks "the terse all-pass line is not used when something failed" "integration tests passed"
 assert_body_contains "the quarantined cell is marked in the matrix" ":shield:"
 assert_body_contains "the quarantined entry names the ticket" "PROF-16618"
 assert_body_contains "the quarantined entry names the review date" "review_by 2027-02-10"
