@@ -295,6 +295,24 @@ TEST(CodeCacheTest, ImportOrderSurvivesDuplicatesAndLateRecording) {
     EXPECT_EQ(&slots[0], cache.findImport(im_dlopen, 2));
 }
 
+// An allocation failure while recording a slot must mark that import incomplete, so
+// that patchers skip it, without affecting imports recorded afterwards.
+TEST(CodeCacheTest, FailedImportGrowthMarksOnlyThatImportIncomplete) {
+    CodeCache cache("import-growth-failure");
+    void** recv_slot = reinterpret_cast<void**>(1);
+    void** read_slot = reinterpret_cast<void**>(2);
+    cache.failImportGrowthForTest(true);
+    cache.addImport(recv_slot, "recv");
+    cache.failImportGrowthForTest(false);
+    cache.addImport(read_slot, "read");
+
+    EXPECT_FALSE(cache.importsComplete(im_recv));
+    EXPECT_EQ(0u, cache.importCount(im_recv));
+    EXPECT_TRUE(cache.importsComplete(im_read));
+    ASSERT_EQ(1u, cache.importCount(im_read));
+    EXPECT_EQ(read_slot, cache.peekImport(im_read));
+}
+
 TEST(CodeCacheTest, PublishedImportsPreserveLookupAndDeduplication) {
     CodeCache cache("published-imports");
     void** read_slot = reinterpret_cast<void**>(1);

@@ -29,7 +29,7 @@ public class TimedNativeWorkerTest {
   @BeforeEach
   public void retainProcessLogs() throws Exception {
     directory =
-        Files.createTempDirectory(
+        NettyEpollJvm.createSharedTempDirectory(
             Files.createDirectories(Paths.get("build", "netty-worker")), "worker-");
   }
 

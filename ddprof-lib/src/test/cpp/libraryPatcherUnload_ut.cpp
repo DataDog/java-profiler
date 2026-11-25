@@ -40,6 +40,7 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 #ifndef MAP_FIXED_NOREPLACE
 #define MAP_FIXED_NOREPLACE 0x100000
@@ -698,6 +699,245 @@ TEST_F(LibraryPatcherLockOrderTest, PatchInsideForeignWalkDoesNotDeadlockWithSto
     pthread_join(stopper, nullptr);
     alarm(0);
   });
+}
+
+namespace {
+
+struct CopyIoState {
+  int read_eintr = 0;
+  size_t max_read = 0;
+  int write_eintr = 0;
+  int read_error = 0;
+  int write_error = 0;
+  int write_error_after_calls = 0;
+  size_t max_write = 0;
+  bool zero_write = false;
+  int read_calls = 0;
+  int write_calls = 0;
+  int read_fd = -1;
+  int write_fd = -1;
+};
+
+CopyIoState g_copy_io;
+
+ssize_t injectedRead(int fd, void* buffer, size_t size) {
+  ++g_copy_io.read_calls;
+  g_copy_io.read_fd = fd;
+  if (g_copy_io.read_eintr > 0) {
+    --g_copy_io.read_eintr;
+    errno = EINTR;
+    return -1;
+  }
+  if (g_copy_io.read_error != 0) {
+    errno = g_copy_io.read_error;
+    return -1;
+  }
+  if (g_copy_io.max_read > 0 && size > g_copy_io.max_read) size = g_copy_io.max_read;
+  return ::read(fd, buffer, size);
+}
+
+ssize_t injectedWrite(int fd, const void* buffer, size_t size) {
+  ++g_copy_io.write_calls;
+  g_copy_io.write_fd = fd;
+  if (g_copy_io.write_eintr > 0) {
+    --g_copy_io.write_eintr;
+    errno = EINTR;
+    return -1;
+  }
+  if (g_copy_io.write_error != 0
+      && g_copy_io.write_calls > g_copy_io.write_error_after_calls) {
+    errno = g_copy_io.write_error;
+    return -1;
+  }
+  if (g_copy_io.zero_write) return 0;
+  if (g_copy_io.max_write > 0 && size > g_copy_io.max_write) size = g_copy_io.max_write;
+  return ::write(fd, buffer, size);
+}
+
+struct RemoveTempFile {
+  explicit RemoveTempFile(char* file_path) : path(file_path) {}
+  RemoveTempFile(const RemoveTempFile&) = delete;
+  RemoveTempFile& operator=(const RemoveTempFile&) = delete;
+
+  char* path;
+  ~RemoveTempFile() {
+    if (path[0] != '\0') unlink(path);
+  }
+};
+
+bool createTempSource(const std::vector<char>& contents, char* path, size_t size) {
+  if (snprintf(path, size, "/tmp/temp-file-copy-XXXXXX") < 0) return false;
+  FdOwner fd(mkstemp(path));
+  if (fd.get() < 0) return false;
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    ssize_t written = ::write(fd.get(), contents.data() + offset, contents.size() - offset);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) return false;
+    offset += static_cast<size_t>(written);
+  }
+  return true;
+}
+
+bool readTempContents(const char* path, std::vector<char>& contents) {
+  FdOwner fd(open(path, O_RDONLY));
+  if (fd.get() < 0) return false;
+  char buffer[8192];
+  while (true) {
+    ssize_t n = ::read(fd.get(), buffer, sizeof(buffer));
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) return false;
+    if (n == 0) return true;
+    contents.insert(contents.end(), buffer, buffer + static_cast<size_t>(n));
+  }
+}
+
+}  // namespace
+
+TEST(TempFileCopyTest, RetriesInterruptedIoAndCompletesPartialWrites) {
+  std::vector<char> expected = {'c', 'o', 'p', 'y', '\0', 't', 'e', 's', 't'};
+  char source[PATH_MAX] = {};
+  RemoveTempFile remove_source{source};
+  ASSERT_TRUE(createTempSource(expected, source, sizeof(source)));
+
+  char output[PATH_MAX] = {};
+  RemoveTempFile remove_output{output};
+  g_copy_io = {};
+  g_copy_io.read_eintr = 1;
+  g_copy_io.write_eintr = 1;
+  g_copy_io.max_write = 3;
+  int copy_result = copyToTempFileWithIO(source, "/tmp", "temp-file-copy-test", output,
+                                         sizeof(output), injectedRead, injectedWrite);
+  errno = 0;
+  int read_fd_status = fcntl(g_copy_io.read_fd, F_GETFD);
+  int read_fd_error = errno;
+  errno = 0;
+  int write_fd_status = fcntl(g_copy_io.write_fd, F_GETFD);
+  int write_fd_error = errno;
+
+  EXPECT_EQ(copy_result, 0);
+  EXPECT_EQ(g_copy_io.read_calls, 3);  // interrupted read, data, then EOF
+  EXPECT_EQ(g_copy_io.write_calls, 4);  // interrupted write and three short writes
+  EXPECT_EQ(read_fd_status, -1);
+  EXPECT_EQ(read_fd_error, EBADF);
+  EXPECT_EQ(write_fd_status, -1);
+  EXPECT_EQ(write_fd_error, EBADF);
+
+  std::vector<char> actual;
+  ASSERT_TRUE(readTempContents(output, actual));
+  EXPECT_EQ(actual, expected);
+}
+
+TEST(TempFileCopyTest, CopiesMultipleBuffersAndTail) {
+  std::vector<char> expected(3 * 8192 + 37);
+  for (size_t i = 0; i < expected.size(); ++i) expected[i] = static_cast<char>((i * 31) & 0xff);
+  char source[PATH_MAX] = {};
+  RemoveTempFile remove_source{source};
+  ASSERT_TRUE(createTempSource(expected, source, sizeof(source)));
+
+  char output[PATH_MAX] = {};
+  RemoveTempFile remove_output{output};
+  ASSERT_EQ(copyToTempFile(source, "/tmp", "temp-file-copy-test", output, sizeof(output)), 0);
+
+  std::vector<char> actual;
+  ASSERT_TRUE(readTempContents(output, actual));
+  EXPECT_EQ(actual, expected);
+}
+
+TEST(TempFileCopyTest, ContinuesAfterPositiveShortReads) {
+  std::vector<char> expected(2 * 8192 + 37);
+  for (size_t i = 0; i < expected.size(); ++i) expected[i] = static_cast<char>((i * 17) & 0xff);
+  char source[PATH_MAX] = {};
+  RemoveTempFile remove_source{source};
+  ASSERT_TRUE(createTempSource(expected, source, sizeof(source)));
+
+  char output[PATH_MAX] = {};
+  RemoveTempFile remove_output{output};
+  g_copy_io = {};
+  g_copy_io.max_read = 4096;
+  ASSERT_EQ(copyToTempFileWithIO(source, "/tmp", "temp-file-copy-test", output,
+                                 sizeof(output), injectedRead, injectedWrite), 0);
+  EXPECT_GT(g_copy_io.read_calls, 2);
+
+  std::vector<char> actual;
+  ASSERT_TRUE(readTempContents(output, actual));
+  EXPECT_EQ(actual, expected);
+}
+
+TEST(TempFileCopyTest, ZeroWriteReturnsEioAndRemovesPartialOutput) {
+  std::vector<char> expected = {'x'};
+  char source[PATH_MAX] = {};
+  RemoveTempFile remove_source{source};
+  ASSERT_TRUE(createTempSource(expected, source, sizeof(source)));
+
+  char output[PATH_MAX] = {};
+  RemoveTempFile remove_output{output};
+  g_copy_io = {};
+  g_copy_io.zero_write = true;
+  EXPECT_EQ(copyToTempFileWithIO(source, "/tmp", "temp-file-copy-test", output,
+                                 sizeof(output), injectedRead, injectedWrite), EIO);
+  errno = 0;
+  int output_status = access(output, F_OK);
+  int output_error = errno;
+  EXPECT_EQ(output_status, -1);
+  EXPECT_EQ(output_error, ENOENT);
+}
+
+TEST(TempFileCopyTest, SourceOpenErrorRemovesCreatedOutput) {
+  char source[] = "/tmp/temp-file-copy-missing-XXXXXX";
+  int source_fd = mkstemp(source);
+  ASSERT_GE(source_fd, 0);
+  close(source_fd);
+  ASSERT_EQ(unlink(source), 0);
+
+  char output[PATH_MAX] = {};
+  RemoveTempFile remove_output{output};
+  EXPECT_EQ(copyToTempFile(source, "/tmp", "temp-file-copy-test", output, sizeof(output)), ENOENT);
+  errno = 0;
+  int output_status = access(output, F_OK);
+  int output_error = errno;
+  EXPECT_EQ(output_status, -1);
+  EXPECT_EQ(output_error, ENOENT);
+}
+
+TEST(TempFileCopyTest, ReadErrorReturnsErrnoAndRemovesOutput) {
+  std::vector<char> expected = {'x'};
+  char source[PATH_MAX] = {};
+  RemoveTempFile remove_source{source};
+  ASSERT_TRUE(createTempSource(expected, source, sizeof(source)));
+
+  char output[PATH_MAX] = {};
+  RemoveTempFile remove_output{output};
+  g_copy_io = {};
+  g_copy_io.read_error = EACCES;
+  EXPECT_EQ(copyToTempFileWithIO(source, "/tmp", "temp-file-copy-test", output,
+                                 sizeof(output), injectedRead, injectedWrite), EACCES);
+  errno = 0;
+  int output_status = access(output, F_OK);
+  int output_error = errno;
+  EXPECT_EQ(output_status, -1);
+  EXPECT_EQ(output_error, ENOENT);
+}
+
+TEST(TempFileCopyTest, WriteErrorReturnsErrnoAndRemovesPartialOutput) {
+  std::vector<char> expected = {'x', 'y'};
+  char source[PATH_MAX] = {};
+  RemoveTempFile remove_source{source};
+  ASSERT_TRUE(createTempSource(expected, source, sizeof(source)));
+
+  char output[PATH_MAX] = {};
+  RemoveTempFile remove_output{output};
+  g_copy_io = {};
+  g_copy_io.max_write = 1;
+  g_copy_io.write_error = EACCES;
+  g_copy_io.write_error_after_calls = 1;
+  EXPECT_EQ(copyToTempFileWithIO(source, "/tmp", "temp-file-copy-test", output,
+                                 sizeof(output), injectedRead, injectedWrite), EACCES);
+  errno = 0;
+  int output_status = access(output, F_OK);
+  int output_error = errno;
+  EXPECT_EQ(output_status, -1);
+  EXPECT_EQ(output_error, ENOENT);
 }
 
 #endif // __linux__

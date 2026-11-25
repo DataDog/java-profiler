@@ -190,6 +190,7 @@ Per buffer:
 
 Total allocation:
 - 16 buffers × 73,728 bytes = 1,179,648 bytes (~1.1 MB)
+- plus one cold-failure holding buffer (73,728 bytes): 17 × 73,728 = 1,253,376 bytes (~1.2 MB)
 ```
 
 **Lifecycle:**

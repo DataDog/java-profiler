@@ -13,6 +13,9 @@ variables:
   RUN_RELIABILITY:
     value: "false"
     description: "Run reliability and chaos tests. Set automatically when the test:reliability label is on the PR."
+  RUN_MEMCHECK_CALIBRATION:
+    value: "false"
+    description: "Run the 5-job memcheck calibration that utils/memcheck/budget.txt is derived from (Evaluate.java --calibrate). Web-started pipelines only."
   MAVEN_REPOSITORY_PROXY: "https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/"
 
 default:
@@ -145,10 +148,10 @@ shell-unit-tests:
     - bash .gitlab/scripts/tests/includes_test.sh
     - bash .gitlab/scripts/tests/test_check_stack_top.sh
     - bash .gitlab/scripts/tests/test_generate_benchmarks.sh
+    - bash ddprof-lib/src/test/resources/native-libs/ddprof-admission/test_makefile_libc_gate.sh
     - bash .gitlab/scripts/tests/test_run_gtest_quarantine.sh
     - bash .gitlab/jdk-integration/tests/select_test_jdk_test.sh
     - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
-    - python3 .gitlab/dd-trace-integration/tests/test_jvm_selection.py
     - bash .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh
 
 # Shared version detection used by benchmarks and reliability pipelines
@@ -261,3 +264,4 @@ include:
   - local: .gitlab/dd-trace-integration/.gitlab-ci.yml
   - local: .gitlab/sanitizer-tests/.gitlab-ci.yml
   - local: .gitlab/fuzzing/.gitlab-ci.yml
+  - local: .gitlab/memcheck/.gitlab-ci.yml

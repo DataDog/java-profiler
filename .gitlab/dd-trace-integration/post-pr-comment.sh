@@ -1,5 +1,4 @@
 #!/bin/bash
-# Copyright 2026, Datadog, Inc.
 
 # post-pr-comment.sh - Post integration test results as PR comment
 #
@@ -47,19 +46,11 @@ quarantine_load "${QUARANTINE_LIST}"
 # Dashboard URL (GitHub Pages)
 DASHBOARD_URL="https://datadog.github.io/java-profiler/integration/"
 
-# The matrix comes from quarantine-lib.sh, which also validates quarantine cell
-# globs against the same set. Not-applicable platforms stay visible in the table
-# but are excluded from completeness and pass/fail counts (EXPECTED is counted below).
+# The matrix and the expected cell count come from quarantine-lib.sh, which
+# also validates quarantine cell globs against the same set.
 PLATFORMS=("${QUARANTINE_PLATFORMS[@]}")
 JDKS=("${QUARANTINE_JDKS[@]}")
-NOT_APPLICABLE_REASON="OpenJ9 requires glibc; upstream publishes no musl runtime."
-
-is_not_applicable() {
-  case "$1" in
-    musl-x64-openj9|musl-arm64-openj9) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+EXPECTED=$(( ${#PLATFORMS[@]} * ${#JDKS[@]} ))
 
 log_info "Collecting results for branch: ${DDPROF_COMMIT_BRANCH:-<unset>}"
 
@@ -128,10 +119,6 @@ scenario_status() {
 for config_dir in "${RESULTS_DIR}"/*; do
   [ -d "${config_dir}" ] || continue
   config_name=$(basename "${config_dir}")
-  # Stale artifacts must not turn a not-scheduled combination into test coverage.
-  if is_not_applicable "${config_name%-jdk*}"; then
-    continue
-  fi
 
   # Check validation logs for pass/fail
   s1_status="unknown"
@@ -199,21 +186,17 @@ done
 # render its quarantine details, not the "no results were produced" branch.
 TOTAL=$((TOTAL_PASS + TOTAL_FAIL + TOTAL_QUARANTINED))
 
-# Missing or unreadable logs for applicable cells must fail, including when
-# setup failure leaves no artifact directory for the collection loop to see.
-EXPECTED=0
-TOTAL_NOT_APPLICABLE=0
+# A configuration that produced no readable validation log is not a pass. Its
+# job may have timed out, lost its runner, or failed in setup before writing
+# one, which leaves its artifact directory empty -- or absent entirely, in
+# which case the collection loop above never sees it. Walk the expected matrix
+# so both shapes are caught, and gate on them: without this, 39 passes and one
+# timed-out cell reports success.
 TOTAL_INCOMPLETE=0
 INCOMPLETE_CONFIGS=""
 for platform in "${PLATFORMS[@]}"; do
   for jdk in "${JDKS[@]}"; do
     config="${platform}-jdk${jdk}"
-    if is_not_applicable "${platform}"; then
-      result_set "${config}" "not-applicable"
-      TOTAL_NOT_APPLICABLE=$((TOTAL_NOT_APPLICABLE + 1))
-      continue
-    fi
-    EXPECTED=$((EXPECTED + 1))
     # No recorded status (empty) falls through to the incomplete branch, like
     # the old "missing" sentinel did.
     case "$(result_get "${config}")" in
@@ -241,7 +224,7 @@ else
   STATUS_EMOJI=":rotating_light:"
 fi
 
-log_info "Results: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed, ${TOTAL_QUARANTINED} quarantined, ${TOTAL_INCOMPLETE} without a result, out of ${EXPECTED} expected configurations; ${TOTAL_NOT_APPLICABLE} not applicable (not scheduled)"
+log_info "Results: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed, ${TOTAL_QUARANTINED} quarantined, ${TOTAL_INCOMPLETE} without a result, out of ${EXPECTED} expected configurations"
 if [ -n "${INCOMPLETE_CONFIGS}" ]; then
   log_warn "No validation log for:${INCOMPLETE_CONFIGS}"
 fi
@@ -272,13 +255,18 @@ elif [ "${TOTAL}" -eq 0 ] && [ -z "${QUARANTINED_ENTRIES}" ]; then
   # not a clean pass/fail outcome.
   COMMENT_BODY=":rotating_light: **Integration tests could not run — no results were produced**
 
-No applicable configuration in \`${RESULTS_DIR}\` produced a pass/fail result.
-Check the pipeline logs for setup or validation failures.
+The test matrix in \`${RESULTS_DIR}\` is empty. This usually means a setup step
+(prerequisite installation, JDK provisioning, etc.) failed before any test could run.
 
 :construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
 else
   # Some failures, unknowns or quarantined results - show full matrix
-  # Use the applicable matrix denominator so missing results cannot shrink it.
+  # Count against the expected matrix, not against the results that turned up:
+  # TOTAL is pass+fail+quarantined, so a 40-cell matrix with one timed-out job
+  # would read "39 passed, 0 failed out of 39" while the pipeline failed and
+  # the section below explained the missing cell. The incomplete clause is
+  # omitted when there is nothing to report so the ordinary failure case
+  # stays terse.
   HEADLINE="${STATUS_EMOJI} **${TOTAL_PASS}** passed, **${TOTAL_FAIL}** failed"
   if [ "${TOTAL_QUARANTINED}" -gt 0 ]; then
     HEADLINE="${HEADLINE}, **${TOTAL_QUARANTINED}** quarantined"
@@ -304,7 +292,6 @@ ${JDK_SEPARATOR}"
       case "${status}" in
         pass) row="${row} :white_check_mark: |" ;;
         fail) row="${row} :x: |" ;;
-        not-applicable) row="${row} N/A |" ;;
         quarantined) row="${row} :shield: |" ;;
         *) row="${row} :grey_question: |" ;;
       esac
@@ -359,10 +346,6 @@ $(echo -e "${FAILURES}")"
 - :construction_worker: [Pipeline](${CI_PIPELINE_URL:-})
 - :package: Commit: \`${DDPROF_SHA}\`"
 fi
-
-COMMENT_BODY="${COMMENT_BODY}
-
-**${TOTAL_NOT_APPLICABLE} not applicable (not scheduled)**: musl/OpenJ9 on x64 and arm64. ${NOT_APPLICABLE_REASON}"
 
 # Post comment via dd-octo-sts (upsert-github-pr-comment.sh handles missing
 # branch/PR/token gracefully, so a comment-posting problem never masks the
