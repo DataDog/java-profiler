@@ -55,12 +55,16 @@ static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 // JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
 // so a well-formed LineNumberTable can never have more entries than that.
 // Used to sanity-bound line_number_table_size before it drives the byte-count
-// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
+// probed with SafeAccess::isReadableRange(): if GetLineNumberTable()
 // returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
 // documented in fillJavaMethodInfo below), the paired out-param size is just
 // as likely to be corrupted, and an implausible size should be rejected
 // before it is trusted to compute a byte range.
 static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
+
+// Bytes, NUL included, that a JVMTI class signature or method name/signature
+// may take: a 65535-byte (u2-length) symbol plus "L" and ";" in a class signature.
+static const size_t MAX_JVMTI_NAME_BYTES = 65535 + 2 + 1;
 
 // Compute a non-negative event duration from TSC timestamps.  Unsigned u64
 // subtraction wraps to a near-2^64 value when end < start, which can happen if
@@ -274,43 +278,43 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
     bool readable = false;
-    const size_t probe_len = 256;
-    if (VMMethod::check_jmethodID(method) &&
-        jvmti->GetMethodDeclaringClass(method, &method_class) == JVMTI_ERROR_NONE &&
-        // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
-        // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
-        // null handles before calling GetClassSignature.
-        method_class != NULL &&
-        // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
-        // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
-        // pointing to corrupt data and the behaviour is undefined.
-        // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
-        // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
-        // The check below mitigates these crashes on J9.
-        (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
-        jvmti->GetClassSignature(method_class, (char**)&class_name, NULL) == JVMTI_ERROR_NONE &&
-        jvmti->GetMethodName(method, (char**)&method_name, (char**)&method_sig, NULL) == JVMTI_ERROR_NONE) {
-      // The JVMTI strings should be non-null and mapped per spec, but crash
-      // telemetry shows both `strncmp` and `jvmti_Deallocate` faulting on them.
-      // Probe each pointer over a range covering the longest prefix
-      // compared below (~50 bytes) plus headroom for strlen, and NULL any that
-      // fails so the unconditional Deallocate block at end of this function
-      // skips it (os::free faults on an unmapped pointer just like strncmp).
-      // Accept a small leak on the corruption path. Probes run independently
-      // so a single bad pointer does not leak its siblings. Best-effort only:
-      // a concurrent munmap between probe and use can still fault; the SIGSEGV
-      // handler is the second line of defence.
+    CounterId skip_reason = METHOD_RESOLVE_SKIPPED_JVMTI_ERROR;
+    if (!VMMethod::check_jmethodID(method)) {
+      skip_reason = METHOD_RESOLVE_SKIPPED_INVALID_ID;
+    } else if (jvmti->GetMethodDeclaringClass(method, &method_class) != JVMTI_ERROR_NONE ||
+               // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
+               // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
+               // null handles before calling GetClassSignature.
+               method_class == NULL) {
+      skip_reason = METHOD_RESOLVE_SKIPPED_JVMTI_ERROR;
+    } else if (VM::isOpenJ9() && method_class == reinterpret_cast<jclass>(-1)) {
+      // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
+      // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
+      // pointing to corrupt data and the behaviour is undefined.
+      // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
+      // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
+      // The check below mitigates these crashes on J9.
+      skip_reason = METHOD_RESOLVE_SKIPPED_INVALID_ID;
+    } else if (jvmti->GetClassSignature(method_class, (char**)&class_name, NULL) != JVMTI_ERROR_NONE ||
+               jvmti->GetMethodName(method, (char**)&method_name, (char**)&method_sig, NULL) != JVMTI_ERROR_NONE) {
+      skip_reason = METHOD_RESOLVE_SKIPPED_JVMTI_ERROR;
+    } else {
+      // Crash telemetry shows strncmp and jvmti_Deallocate faulting on these
+      // strings. NULL any that is not readable up to its NUL so the Deallocate
+      // block at the end of this function skips it, accepting a small leak.
       auto probe = [&](char* volatile & ptr) -> bool {
-        if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
+        if (!SafeAccess::isReadableCString(ptr, MAX_JVMTI_NAME_BYTES)) {
           ptr = nullptr;
           return false;
         }
         return true;
       };
+      // Non-short-circuit &: probe every pointer so that one bad pointer does not leak its siblings.
       readable = probe(class_name) & probe(method_name) & probe(method_sig);
+      skip_reason = METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME;
     }
     if (readable) {
-      const size_t class_name_len = strnlen(class_name, 65536);
+      const size_t class_name_len = strnlen(class_name, MAX_JVMTI_NAME_BYTES);
       const char* normalized_class_name =
           class_name_len >= 2 ? class_name + 1 : "";
       const size_t normalized_class_name_len =
@@ -385,9 +389,11 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                           method_name, method_sig);
     } else {
       Counters::increment(JMETHODID_SKIPPED);
+      Counters::increment(skip_reason);
       mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       mi->_name = _symbols.lookup("<unloaded>");
       mi->_sig = _symbols.lookupSignature("()L;");
+      mi->_unloaded = true;
     }
 
     mi->_type = FRAME_INTERPRETED;
@@ -658,6 +664,14 @@ MethodInfo *Lookup::unknownMethod() {
   return &_unknown_method;
 }
 
+void Lookup::countUnresolvedFrame(const MethodInfo *mi) const {
+  if (mi == &_unknown_method) {
+    Counters::increment(METHOD_RESOLVE_FRAMES_UNKNOWN);
+  } else if (mi->_unloaded) {
+    Counters::increment(METHOD_RESOLVE_FRAMES_UNLOADED);
+  }
+}
+
 unsigned long Lookup::methodKey(const ASGCT_CallFrame &frame,
                                 jmethodID method_id, jint bci,
                                 u32 vtable_class_id) {
@@ -828,6 +842,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   if (!mi->_mark) {
     bool first_time = mi->_key == 0;
     bool filled = true;
+    mi->_unloaded = false;
     if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method_id, nullptr, state);
     } else if (bci == BCI_NATIVE_FRAME) {
@@ -1940,6 +1955,35 @@ void Recording::writeStackTraceHeader(Buffer *buf, const CallTrace *trace,
   buf->putVar64(trace->num_frames);
 }
 
+void Recording::writeStackTrace(Buffer *buf, CallTrace *trace, Lookup *lookup,
+                                FlushFn flush, void *flush_ctx) {
+  MethodInfo *root = nullptr;
+  if (trace->num_frames > 0) {
+    root = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+    root->_referenced = true;
+  }
+  writeStackTraceHeader(buf, trace, root);
+  for (int i = 0; i < trace->num_frames; i++) {
+    MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
+    mi->_referenced = true;  // Mark method as referenced
+    lookup->countUnresolvedFrame(mi);
+    buf->putVar64(mi->_key);
+    jint bci = trace->frames[i].bci;
+    if (mi->_type < FRAME_NATIVE) {
+      FrameTypeId type = FrameType::decode(bci);
+      bci = FrameType::bci(bci);
+      buf->putVar32(mi->getLineNumber(bci));
+      buf->putVar32(bci);
+      buf->put8(type);
+    } else {
+      buf->putVar32(0);
+      buf->putVar32(bci);
+      buf->put8(mi->_type);
+    }
+    flush(flush_ctx, buf);
+  }
+}
+
 int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // Reset all referenced flags before processing
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
@@ -1959,31 +2003,9 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
     buf->putVar64(T_STACK_TRACE);
     buf->putVar64(traces.size());
     for (auto it = traces.begin(); it != traces.end(); ++it) {
-      CallTrace *trace = *it;
-      MethodInfo *root = nullptr;
-      if (trace->num_frames > 0) {
-        root = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
-        root->_referenced = true;
-      }
-      writeStackTraceHeader(buf, trace, root);
-      for (int i = 0; i < trace->num_frames; i++) {
-        MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
-        mi->_referenced = true;  // Mark method as referenced
-        buf->putVar64(mi->_key);
-        jint bci = trace->frames[i].bci;
-        if (mi->_type < FRAME_NATIVE) {
-          FrameTypeId type = FrameType::decode(bci);
-          bci = FrameType::bci(bci);
-          buf->putVar32(mi->getLineNumber(bci));
-          buf->putVar32(bci);
-          buf->put8(type);
-        } else {
-          buf->putVar32(0);
-          buf->putVar32(bci);
-          buf->put8(mi->_type);
-        }
-        flushIfNeeded(buf);
-      }
+      writeStackTrace(buf, *it, lookup,
+                      [](void *rec, Buffer *b) { static_cast<Recording *>(rec)->flushIfNeeded(b); },
+                      this);
       flushIfNeeded(buf);
     }
   });  // End of processCallTraces lambda

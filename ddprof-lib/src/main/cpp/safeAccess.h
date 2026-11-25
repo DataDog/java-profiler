@@ -144,16 +144,19 @@ public:
     return isReadable(end_page);
   }
 
+  /**
+   * True when s is readable up to a NUL within its first max_len bytes, NUL
+   * included. Reads byte by byte and stops at the NUL, so nothing past the string
+   * is touched. A faulting read returns false; needs the SafeAccess fault handler.
+   */
+  static bool isReadableCString(const char* s, size_t max_len);
+
 #ifdef DEBUG
 private:
-  // Debug diagnostic: bump a counter when a SafeAccess read/write/copy is issued
-  // while the current thread is already inside a walkVM siglongjmp-protected
-  // region, where the safefetch/safestore/safecopy overhead is redundant (a
-  // fault there is caught by the siglongjmp anyway). Defined out-of-line in
-  // safeAccess.cpp so this widely-included header need not pull in
-  // threadLocalData.h / counters.h -- kind is a self-contained enum rather
-  // than a CounterId for the same reason.
-  enum class SafeAccessKind { Fetch, Store, Copy };
+  // Debug diagnostic: counts SafeAccess calls made inside a siglongjmp-protected
+  // region. Fetch/store/copy there are redundant; a C-string check is not (see
+  // isReadableCString). Out of line so this header avoids counters.h.
+  enum class SafeAccessKind { Fetch, Store, Copy, CString };
   static void countIfLongjmpProtected(SafeAccessKind kind);
 #endif
 };
