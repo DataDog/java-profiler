@@ -16,9 +16,7 @@
 
 struct dl_phdr_info;
 
-// Patch libraries' imported function relocation slots. pthread_create entries
-// (_patched_entries) use only _lib; _location and _func are meaningful for the
-// other entry tables.
+// A patched sigaction import slot with the function it held.
 typedef struct _patchEntry {
   CodeCache* _lib;
   // Library import location.
@@ -57,6 +55,35 @@ typedef struct _socketSkippedImage {
   const void* _image_base;
   u64 _fingerprint;
 } SocketSkippedImage;
+
+// A library with a pthread_create import the patcher visited, hooked or not. The
+// slots are found again through lib->findImport().
+struct PthreadCreateEntry {
+  CodeCache* lib;
+  // Set by every visit and cleared only by a full pass: false means the last full
+  // pass did not find the library loaded.
+  bool mapped;
+  // Its last visit left a slot unhooked: a GOT not relocated yet, an unresolved
+  // weak import or another interposer's wrapper. Visited on every pass while set.
+  bool pending;
+  // No visit has hooked a slot yet. Unlike pending it survives a full pass, so the
+  // MAX_UNHOOKED_ENTRIES count includes entries of unloaded libraries.
+  bool unhooked;
+};
+
+// Most entries that may be recorded for libraries never hooked, so that they
+// cannot crowd out libraries that are hooked.
+const int MAX_UNHOOKED_ENTRIES = MAX_NATIVE_LIBS / 4;
+
+// The pthread_create entries, guarded by LibraryPatcher::_lock. All-zero is the
+// empty table.
+struct PthreadCreateTable {
+  PthreadCreateEntry entries[MAX_NATIVE_LIBS];
+  // The entries' libraries, sorted, for patch_pthread_create()'s collector.
+  CodeCache* sorted[MAX_NATIVE_LIBS];
+  int size;
+};
+
 // A library to visit with a LibraryPatcher::LiveLibraryWalk
 typedef struct _libraryRef {
   uintptr_t  _base;  // lib->imageBase(), the sort key
@@ -84,8 +111,17 @@ private:
   // pthread_create patching, which is never unpatched. Read by the Libraries
   // refresher thread, hence release/acquire.
   static std::atomic<bool> _initialized;
-  static PatchEntry  _patched_entries[MAX_NATIVE_LIBS];
-  static int         _size;
+  static PthreadCreateTable _pthread_create;
+  // The loader's pthread_create bindings, set by initialize_persistent() as dlsym()
+  // must not run under _lock: the global scope's (a preloaded interposer included)
+  // and, only if the executable owns that address, the one PLT calls bind to (see
+  // plt_binding() and capture_plt_binding(), which may replace it under _lock).
+  static void*       _loader_pthread_create;
+  static void*       _next_pthread_create;
+  // Whether capture_plt_binding() may still replace _next_pthread_create: set by
+  // initialize_persistent() if the executable owns the global binding, cleared
+  // under _lock by the capture. Read without _lock only to decide on a pass.
+  static std::atomic<bool> _awaiting_plt_binding;
   static bool        _patch_pthread_create;
 
   // Separate tracking for sigaction patches
@@ -130,6 +166,13 @@ private:
   static bool excluded_from_pthread_create_patch(CodeCache* lib);
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
+  // `next` when `global` lies in the main executable (a non-PIE executable that
+  // takes &pthread_create; PLT calls then bind past it), otherwise null. An
+  // executable that defines pthread_create itself looks the same: not supported.
+  static void* plt_binding(void* global, void* next);
+  // Once `lib`, the profiler's own library, has a bound pthread_create PLT slot,
+  // replaces _next_pthread_create with its value. Under _lock.
+  static void capture_plt_binding(CodeCache* lib);
   static void patch_pthread_setspecific();
   static void patch_sigaction_in_library(CodeCache* lib);
   // An address known to lie inside this library; how is_profiler_library()
@@ -162,6 +205,9 @@ public:
   // reach without init(). They survive stop/start cycles and are never unpatched.
   static void initialize_persistent();
   static void patch_libraries();
+  // Runs patch_libraries() again while the capture is awaited. For start(): the
+  // profiler's first pthread_create() call can come after its first patch pass.
+  static void patch_libraries_awaiting_plt_binding();
   static void unpatch_recording_hooks();
   static void patch_sigaction();
   // Owner starts reserve a generation and publish activation together under _lock.
@@ -207,6 +253,7 @@ class LibraryPatcher {
 public:
   static void initialize_persistent() { }
   static void patch_libraries() { }
+  static void patch_libraries_awaiting_plt_binding() { }
   static void unpatch_recording_hooks() { }
   static void patch_sigaction() { }
   static bool patch_socket_functions(bool require_active = false,

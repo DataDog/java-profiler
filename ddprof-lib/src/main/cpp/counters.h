@@ -82,6 +82,16 @@
   X(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED, "thread_registry_block_generation_saturated") \
   X(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN, "thread_registry_unregister_active_block_run") \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
+  /* Why a method counted in jmethodid_skipped_count was written as            \
+   * "<unloaded>"; exactly one per skip. */                                    \
+  X(METHOD_RESOLVE_SKIPPED_INVALID_ID, "method_resolve_skipped_invalid_id")    \
+  X(METHOD_RESOLVE_SKIPPED_JVMTI_ERROR, "method_resolve_skipped_jvmti_error")  \
+  X(METHOD_RESOLVE_SKIPPED_UNREADABLE_NAME,                                    \
+    "method_resolve_skipped_unreadable_name")                                  \
+  /* Stack frames written as "<unloaded>" or as the shared "unknown" row,      \
+   * one per frame of each distinct trace a dump writes. */                    \
+  X(METHOD_RESOLVE_FRAMES_UNLOADED, "method_resolve_frames_unloaded")          \
+  X(METHOD_RESOLVE_FRAMES_UNKNOWN, "method_resolve_frames_unknown")            \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
   X(CODECACHE_NATIVE_COUNT, "native_codecache_count")                          \
   X(CODECACHE_RUNTIME_STUBS_SIZE_BYTES, "codecache_runtime_stubs_size_bytes")  \
@@ -209,6 +219,7 @@
    * already inside a CriticalSection (the profiler's own allocation). */     \
   X(MALLOC_SAMPLES_DROPPED, "malloc_samples_dropped")                         \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
+  X(SAFECSTRING_FAILED, "safecstring_failed")                                 \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(SAFESTORE_FAILED, "safestore_failed")                                     \
   X(ANCHOR_RESTORE_FAILED, "anchor_restore_failed")                           \
@@ -424,14 +435,14 @@
 #define DD_COUNTER_TABLE_SAMPLER_PERF(X)
 #endif
 
-// Debug-only counters: SafeAccess reads/copies issued while the thread is
-// already inside a walkVM siglongjmp-protected region (redundant safefetch
-// overhead). Not compiled into release builds at all, so they occupy no enum
-// slot and add no storage there.
+// Debug-only counters: SafeAccess calls issued inside a siglongjmp-protected
+// region. Fetch/copy/store calls there are redundant overhead; C-string checks
+// are not. Not compiled into release builds, so they take no enum slot there.
 #ifdef DEBUG
 #define DD_COUNTER_TABLE_DEBUG(X)                                             \
   X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
   X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")                     \
+  X(SAFECSTRING_WHILE_PROTECTED, "safecstring_while_protected")               \
   X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")                   \
   X(WALL_STOP_WHILE_NOT_ACTIVATED, "wall_stop_while_not_activated")
 #else

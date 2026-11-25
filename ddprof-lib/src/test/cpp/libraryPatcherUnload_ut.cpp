@@ -18,6 +18,7 @@
 #include "codeCache.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
+#include "libraryPatcherTestAccessor.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
 #include "nativeTestResources_linux.h"
@@ -64,6 +65,12 @@ enum ChildExit {
   CHILD_DEADLOCK = 18,          // patching threads still blocked when the alarm fired
   CHILD_THREAD_FAILED = 19,
   CHILD_UNHOOKED_BY_STOP = 21,  // a persistent hook was undone by the recording unpatch
+  CHILD_FOREIGN_TAKEN = 22,     // a slot holding a foreign value was overwritten
+  CHILD_NOT_RECHECKED = 23,     // a pending library was not looked at again
+  CHILD_RECHECKED_SETTLED = 24, // a pending entry made a settled one be re-checked
+  CHILD_STILL_PENDING = 25,     // an unloaded library's entry stayed pending
+  CHILD_NOT_CAPTURED = 26,      // the pass did not take the profiler's bound PLT slot
+  CHILD_PATCHED_UNAWAITED = 27, // the extra pass ran with no capture awaited
 };
 
 const unsigned char SENTINEL = 0xA5;
@@ -237,6 +244,12 @@ void runInChild(Scenario scenario) {
   ASSERT_NE(code, CHILD_NOT_RESTORED) << "DSO is still mapped but its slot was not restored";
   ASSERT_NE(code, CHILD_SLOT_NOT_HOOKED) << "patching did not hook the loaded DSO";
   ASSERT_NE(code, CHILD_UNHOOKED_BY_STOP) << "a persistent hook was undone by the recording unpatch";
+  ASSERT_NE(code, CHILD_FOREIGN_TAKEN) << "a slot holding a foreign value was overwritten";
+  ASSERT_NE(code, CHILD_NOT_RECHECKED) << "a pending library was not looked at again";
+  ASSERT_NE(code, CHILD_RECHECKED_SETTLED) << "a pending entry made a settled one be re-checked";
+  ASSERT_NE(code, CHILD_STILL_PENDING) << "an unloaded library's entry stayed pending";
+  ASSERT_NE(code, CHILD_NOT_CAPTURED) << "the pass did not take the profiler's bound PLT slot";
+  ASSERT_NE(code, CHILD_PATCHED_UNAWAITED) << "the extra pass ran with no capture awaited";
   ASSERT_NE(code, CHILD_NO_FINGERPRINT) << "the test DSO's CodeCache has no image fingerprint";
   ASSERT_NE(code, CHILD_SAME_FINGERPRINT) << "two different builds have the same fingerprint";
   ASSERT_NE(code, CHILD_DEADLOCK) << "patching deadlocked against the loader's dl_load_write_lock";
@@ -253,6 +266,11 @@ class LibraryPatcherUnloadTest : public ::testing::TestWithParam<const PatchKind
 };
 
 class LibraryPatcherIdentityTest : public ::testing::Test {
+ protected:
+  void SetUp() override { resolveLibPath(); }
+};
+
+class LibraryPatcherRecheckTest : public ::testing::Test {
  protected:
   void SetUp() override { resolveLibPath(); }
 };
@@ -464,11 +482,13 @@ static void addCacheAtLibraryBase(CodeCache* real, u64 file_id, u64 fingerprint,
 // fake's slot was written. The real DSO must be hooked either way.
 static bool patchWritesFakeCache(const LoadedLib& lib, u64 file_id, u64 fingerprint) {
   CodeCache* real = Libraries::instance()->findLibraryByName("libpatchtarget");
-  static void* word = (void*)&SENTINEL;
+  // The loader's binding: the patcher leaves any other value (a foreign wrapper) alone.
+  static void* word;
+  word = lib.orig;
   addCacheAtLibraryBase(real, file_id, fingerprint, &word);
   PTHREAD_CREATE.patch();
   if (*lib.slot == lib.orig) _exit(CHILD_SLOT_NOT_HOOKED);
-  return word != (void*)&SENTINEL;
+  return word != lib.orig;
 }
 
 static CodeCache* realCache() {
@@ -698,6 +718,135 @@ TEST_F(LibraryPatcherLockOrderTest, PatchInsideForeignWalkDoesNotDeadlockWithSto
     dl_iterate_phdr(patchInsideForeignWalk, &stopper);
     pthread_join(stopper, nullptr);
     alarm(0);
+  });
+}
+
+namespace {
+void* foreignWrapper(void*) { return nullptr; }
+}  // namespace
+
+// Unloads a test DSO that nothing else holds, so the next pass re-checks every
+// patched library.
+static void bumpLoaderSubs(const char* suffix) {
+  char path[PATH_MAX];
+  testLibPath(path, sizeof(path), suffix);
+  requireUnloadableEnvironment(path);
+}
+
+// A pass that leaves a slot unhooked keeps the entry pending, and later passes
+// visit it even though no library was loaded or unloaded, including after the
+// same value at two passes: that is how a GOT not relocated yet looks.
+TEST_F(LibraryPatcherRecheckTest, PendingSlotIsCheckedAgainWithoutLoaderChange) {
+  runInChild([]() {
+    if (OS::isMusl()) _exit(CHILD_SKIP);  // musl does not report load counts
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    patchAndVerify(PTHREAD_CREATE, lib);
+    void* hooked = *lib.slot;
+
+    void* foreign = reinterpret_cast<void*>(&foreignWrapper);
+    *lib.slot = foreign;
+    bumpLoaderSubs("/libbuildid-a.so");
+    PTHREAD_CREATE.patch();
+    PTHREAD_CREATE.patch();
+    if (*lib.slot != foreign) _exit(CHILD_FOREIGN_TAKEN);
+
+    // The loader's binding arrives. No library was loaded or unloaded since.
+    *lib.slot = reinterpret_cast<void*>(&pthread_create);
+    PTHREAD_CREATE.patch();
+    if (*lib.slot != hooked) _exit(CHILD_NOT_RECHECKED);
+  });
+}
+
+// Only the pending entry is visited on a pass without a load or unload: a settled
+// library is left alone, so a wrapper that stays costs one entry per pass, not a
+// re-walk of every patched library.
+TEST_F(LibraryPatcherRecheckTest, PendingEntryDoesNotForceRecheckOfOthers) {
+  runInChild([]() {
+    if (OS::isMusl()) _exit(CHILD_SKIP);  // musl does not report load counts
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    char settled_path[PATH_MAX];
+    testLibPath(settled_path, sizeof(settled_path), "/libbuildid-a.so");
+    if (dlopen(settled_path, RTLD_NOW) == nullptr) _exit(CHILD_DLOPEN_FAILED);
+    Libraries::instance()->updateSymbols(false);
+    CodeCache* settled = Libraries::instance()->findLibraryByName("libbuildid-a");
+    if (settled == nullptr) _exit(CHILD_LIB_NOT_FOUND);
+    void** settled_slot = settled->findImport(im_pthread_create);
+    if (settled_slot == nullptr) _exit(CHILD_NO_IMPORT);
+    void* settled_orig = *settled_slot;
+    patchAndVerify(PTHREAD_CREATE, lib);
+    if (*settled_slot == settled_orig) _exit(CHILD_SLOT_NOT_HOOKED);
+    void* settled_hooked = *settled_slot;
+
+    void* foreign = reinterpret_cast<void*>(&foreignWrapper);
+    *lib.slot = foreign;
+    bumpLoaderSubs("/libbuildid-b.so");
+    PTHREAD_CREATE.patch();  // re-checks both: one pending, one settled
+    if (*lib.slot != foreign) _exit(CHILD_FOREIGN_TAKEN);
+
+    *settled_slot = reinterpret_cast<void*>(&pthread_create);
+    PTHREAD_CREATE.patch();  // no load or unload since: only the pending entry
+    if (*settled_slot == settled_hooked) _exit(CHILD_RECHECKED_SETTLED);
+  });
+}
+
+// A full pass clears the pending flag of an entry it does not visit, so the
+// entry of an unloaded library is not walked on every later pass.
+TEST_F(LibraryPatcherRecheckTest, FullPassClearsPendingOfUnloadedLibrary) {
+  runInChild([]() {
+    if (OS::isMusl()) _exit(CHILD_SKIP);  // musl never unmaps
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    patchAndVerify(PTHREAD_CREATE, lib);
+    CodeCache* cc = Libraries::instance()->findLibraryByName("libpatchtarget");
+    if (cc == nullptr) _exit(CHILD_LIB_NOT_FOUND);
+    *lib.slot = reinterpret_cast<void*>(&foreignWrapper);
+    bumpLoaderSubs("/libbuildid-a.so");
+    PTHREAD_CREATE.patch();
+    if (LibraryPatcherTestAccessor::entryPending(cc) != 1) _exit(CHILD_NOT_RECHECKED);
+
+    if (!unload(lib.handle, lib.slot)) _exit(CHILD_SKIP);
+    PTHREAD_CREATE.patch();  // the unload makes this a full pass
+    if (LibraryPatcherTestAccessor::entryPending(cc) != 0) _exit(CHILD_STILL_PENDING);
+  });
+}
+
+// Binds this binary's pthread_create PLT slot. It stands in for the profiler's
+// own: the patcher is linked into the gtest executable.
+static void bindOwnPltSlot() {
+  pthread_t thread;
+  if (pthread_create(&thread, nullptr, foreignWrapper, nullptr) != 0) _exit(CHILD_THREAD_FAILED);
+  pthread_join(thread, nullptr);
+}
+
+// A pass takes the profiler's bound PLT slot before its visits: a library bound
+// to that value, and to neither expected binding, is hooked in the same pass.
+TEST_F(LibraryPatcherRecheckTest, PassCapturesPltBindingBeforeVisits) {
+  runInChild([]() {
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    // A statically linked sanitizer runtime defines pthread_create in this binary.
+    CodeCache* self = Libraries::instance()->findLibraryByAddress(LibraryPatcherTestAccessor::selfAnchor());
+    if (self == nullptr || self->peekImport(im_pthread_create) == nullptr) _exit(CHILD_SKIP);
+    bindOwnPltSlot();
+    LibraryPatcher::initialize_persistent();
+    LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(&foreignWrapper));
+    LibraryPatcherTestAccessor::setNextPthreadCreate(nullptr);
+    LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
+    LibraryPatcher::patch_libraries();
+    if (LibraryPatcherTestAccessor::nextPthreadCreate() != lib.orig) _exit(CHILD_NOT_CAPTURED);
+    if (*lib.slot == lib.orig) _exit(CHILD_SLOT_NOT_HOOKED);
+  });
+}
+
+// The extra pass of start() runs only while the capture is awaited.
+TEST_F(LibraryPatcherRecheckTest, ExtraPassRunsOnlyWhileCaptureIsAwaited) {
+  runInChild([]() {
+    LoadedLib lib = loadLib(PTHREAD_CREATE);
+    LibraryPatcher::initialize_persistent();
+    LibraryPatcherTestAccessor::setAwaitingPltBinding(false);
+    LibraryPatcher::patch_libraries_awaiting_plt_binding();
+    if (*lib.slot != lib.orig) _exit(CHILD_PATCHED_UNAWAITED);
+    LibraryPatcherTestAccessor::setAwaitingPltBinding(true);
+    LibraryPatcher::patch_libraries_awaiting_plt_binding();
+    if (*lib.slot == lib.orig) _exit(CHILD_SLOT_NOT_HOOKED);
   });
 }
 
