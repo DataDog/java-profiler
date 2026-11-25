@@ -39,23 +39,30 @@ extern "C" int64_t safestore64_cont(int64_t* adr, int64_t value);
 extern "C" int safecopy_impl(void* dst, const void* src, size_t len);
 extern "C" int safecopy_cont(void* dst, const void* src, size_t len);
 
+// safecstring_impl scans `s` byte by byte: 1 at a NUL within `max_len`, else 0.
+// A fault in [safecstring_impl, safecstring_cont) is redirected to
+// safecstring_cont (returns 0). Frameless leaf routines, like safecopy.
+extern "C" int safecstring_impl(const char* s, size_t max_len);
+extern "C" int safecstring_cont(const char* s, size_t max_len);
+
 #ifdef DEBUG
-// handle_safefetch protects safeCopy by treating any fault whose pc lands in
-// [safecopy_impl, safecopy_cont) as a recoverable read fault. That range is
-// only valid if the assembler/linker keeps safecopy_cont strictly above
-// safecopy_impl (they are emitted adjacently in one asm block). A future
-// toolchain change could in principle reorder them, collapsing the range to
-// empty and silently disabling fault protection. Assert the invariant once at
-// load time so such a regression aborts loudly at startup instead of turning
-// safeCopy into an unprotected crash. Debug builds only: this is a
-// toolchain-regression tripwire, not a runtime safety check.
+// handle_safefetch recovers faults only in [safecopy_impl, safecopy_cont) and
+// [safecstring_impl, safecstring_cont), so each _cont must stay above its _impl.
+// Debug builds abort at startup if a toolchain change ever reorders them.
 __attribute__((constructor))
-static void verify_safecopy_range() {
+static void verify_safe_stub_ranges() {
   if ((uintptr_t)safecopy_cont <= (uintptr_t)safecopy_impl) {
     fprintf(stderr,
             "FATAL: safecopy_cont (%p) is not above safecopy_impl (%p); "
             "safeCopy fault protection would be lost\n",
             (void*)safecopy_cont, (void*)safecopy_impl);
+    abort();
+  }
+  if ((uintptr_t)safecstring_cont <= (uintptr_t)safecstring_impl) {
+    fprintf(stderr,
+            "FATAL: safecstring_cont (%p) is not above safecstring_impl (%p); "
+            "isReadableCString fault protection would be lost\n",
+            (void*)safecstring_cont, (void*)safecstring_impl);
     abort();
   }
 }
@@ -153,6 +160,29 @@ static void verify_safecopy_range() {
         _safecopy_cont:
             xorl %eax, %eax
             ret
+        .globl _safecstring_impl
+        .private_extern _safecstring_impl
+        _safecstring_impl:
+            xorl %ecx, %ecx
+        Lsafecstring_loop:
+            cmpq %rsi, %rcx
+            jae Lsafecstring_none
+            movzbl (%rdi,%rcx,1), %eax
+            testl %eax, %eax
+            je Lsafecstring_found
+            incq %rcx
+            jmp Lsafecstring_loop
+        Lsafecstring_found:
+            movl $1, %eax
+            ret
+        Lsafecstring_none:
+            xorl %eax, %eax
+            ret
+        .globl _safecstring_cont
+        .private_extern _safecstring_cont
+        _safecstring_cont:
+            xorl %eax, %eax
+            ret
     )");
   #else
     asm(R"(
@@ -228,6 +258,31 @@ static void verify_safecopy_range() {
         safecopy_cont:
             xorl %eax, %eax
             ret
+        .globl safecstring_impl
+        .hidden safecstring_impl
+        .type safecstring_impl, %function
+        safecstring_impl:
+            xorl %ecx, %ecx
+        .Lsafecstring_loop:
+            cmpq %rsi, %rcx
+            jae .Lsafecstring_none
+            movzbl (%rdi,%rcx,1), %eax
+            testl %eax, %eax
+            je .Lsafecstring_found
+            incq %rcx
+            jmp .Lsafecstring_loop
+        .Lsafecstring_found:
+            movl $1, %eax
+            ret
+        .Lsafecstring_none:
+            xorl %eax, %eax
+            ret
+        .globl safecstring_cont
+        .hidden safecstring_cont
+        .type safecstring_cont, %function
+        safecstring_cont:
+            xorl %eax, %eax
+            ret
     )");
   #endif // __APPLE__
 #elif defined(__aarch64__)
@@ -292,6 +347,28 @@ static void verify_safecopy_range() {
         .globl _safecopy_cont
         .private_extern _safecopy_cont
         _safecopy_cont:
+            mov      w0, #0
+            ret
+        .globl _safecstring_impl
+        .private_extern _safecstring_impl
+        _safecstring_impl:
+            mov      x3, xzr
+        Lsafecstring_loop:
+            cmp      x3, x1
+            b.hs     Lsafecstring_none
+            ldrb     w4, [x0, x3]
+            cbz      w4, Lsafecstring_found
+            add      x3, x3, #1
+            b        Lsafecstring_loop
+        Lsafecstring_found:
+            mov      w0, #1
+            ret
+        Lsafecstring_none:
+            mov      w0, #0
+            ret
+        .globl _safecstring_cont
+        .private_extern _safecstring_cont
+        _safecstring_cont:
             mov      w0, #0
             ret
     )");
@@ -369,6 +446,30 @@ static void verify_safecopy_range() {
         safecopy_cont:
             mov      w0, #0
             ret
+        .globl safecstring_impl
+        .hidden safecstring_impl
+        .type safecstring_impl, %function
+        safecstring_impl:
+            mov      x3, xzr
+        .Lsafecstring_loop:
+            cmp      x3, x1
+            b.hs     .Lsafecstring_none
+            ldrb     w4, [x0, x3]
+            cbz      w4, .Lsafecstring_found
+            add      x3, x3, #1
+            b        .Lsafecstring_loop
+        .Lsafecstring_found:
+            mov      w0, #1
+            ret
+        .Lsafecstring_none:
+            mov      w0, #0
+            ret
+        .globl safecstring_cont
+        .hidden safecstring_cont
+        .type safecstring_cont, %function
+        safecstring_cont:
+            mov      w0, #0
+            ret
     )");
   #endif
 #endif
@@ -382,11 +483,22 @@ void SafeAccess::countIfLongjmpProtected(SafeAccessKind kind) {
       case SafeAccessKind::Fetch: id = SAFEFETCH_WHILE_PROTECTED; break;
       case SafeAccessKind::Store: id = SAFESTORE_WHILE_PROTECTED; break;
       case SafeAccessKind::Copy:  id = SAFECOPY_WHILE_PROTECTED; break;
+      case SafeAccessKind::CString: id = SAFECSTRING_WHILE_PROTECTED; break;
     }
     Counters::increment(id);
   }
 }
 #endif
+
+bool SafeAccess::isReadableCString(const char* s, size_t max_len) {
+#ifdef DEBUG
+  // Counted like the other primitives, but not redundant inside a window: the
+  // caller's later strnlen/strncmp/strlen run in libc, which no window recovers.
+  countIfLongjmpProtected(SafeAccessKind::CString);
+#endif
+  // A null string is rejected without taking the fault path.
+  return s != nullptr && safecstring_impl(s, max_len) != 0;
+}
 
 bool SafeAccess::safeCopy(void* dst, const void* src, size_t len) {
 #ifdef DEBUG
@@ -430,6 +542,11 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
       // loop, so match the whole [safecopy_impl, safecopy_cont) range.
       uc->current_pc = (uintptr_t)safecopy_cont;
       Counters::increment(SAFECOPY_FAILED);
+      return true;
+    } else if (pc >= (uintptr_t)safecstring_impl && pc < (uintptr_t)safecstring_cont) {
+      // Same as safecopy: the faulting load can be anywhere in the scan loop.
+      uc->current_pc = (uintptr_t)safecstring_cont;
+      Counters::increment(SAFECSTRING_FAILED);
       return true;
     }
   }
