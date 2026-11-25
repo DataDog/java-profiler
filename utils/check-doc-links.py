@@ -192,7 +192,7 @@ def main(argv):
     ap.add_argument("--check-file", metavar="DOC",
                     help="check markdown content from stdin as repo-relative doc DOC against "
                          "the repository's current paths; exit 1 on violations (used by the "
-                         ".pi/extensions/doc-links-guard.ts write guard)")
+                         "doc-links write guards)")
     args = ap.parse_args(argv)
     root = args.root
 
