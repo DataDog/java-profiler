@@ -47,14 +47,29 @@ public final class JavaProfilerTestSupport {
    * @param dumpAfterPrimary whether to dump after the primary recording transaction; otherwise dump
    *     between tail preparation and recording
    * @param resetBeforeTail whether to reset the cached state after tail preparation
-   * @return whether both primary samples were recorded and the dump succeeded; always {@code false}
-   *     outside debug builds
+   * @return {@code true} once both primary samples were recorded and the dump succeeded; always
+   *     {@code false} outside debug builds
+   * @throws IllegalStateException naming the failed step; dropped captures and writes are retried
+   *     for up to two seconds first
    */
   public static boolean recordUnownedWallTailAcrossDumpForTest(
       String snapshot, boolean dumpAfterPrimary, boolean resetBeforeTail) {
     return JavaProfiler.recordUnownedWallTailAcrossDumpForTest0(
         Thread.currentThread(), snapshot, dumpAfterPrimary, resetBeforeTail);
   }
+
+  /**
+   * Makes the next {@code drops} passes of {@link #recordUnownedWallTailAcrossDumpForTest} through
+   * a try-and-drop step fail as dropped. Debug builds only.
+   *
+   * @param step 0 for stack capture, 1 for the ordinary sample write, 2 for the tail deferral
+   * @return the previously unused count; always 0 outside debug builds
+   */
+  public static int exchangeUnownedWallTailAcrossDumpDropsForTest(int step, int drops) {
+    return exchangeUnownedWallTailAcrossDumpDropsForTest0(step, drops);
+  }
+
+  private static native int exchangeUnownedWallTailAcrossDumpDropsForTest0(int step, int drops);
 
   /**
    * Seeds a PARKED stack with five same-epoch units, then runs a bounded owner transition with
