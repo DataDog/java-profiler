@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk17
 
 ## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-11-25 16:28:12 EST
+**Date:** 2026-11-25 16:45:46 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 83 |
-| Sample Rate | 1.38/sec |
-| Health Score | 86% |
-| Threads | 7 |
-| Allocations | 53 |
+| CPU Samples | 73 |
+| Sample Rate | 1.22/sec |
+| Health Score | 76% |
+| Threads | 8 |
+| Allocations | 67 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 13 |
-| Sample Rate | 0.22/sec |
-| Health Score | 14% |
-| Threads | 5 |
-| Allocations | 17 |
+| CPU Samples | 15 |
+| Sample Rate | 0.25/sec |
+| Health Score | 16% |
+| Threads | 6 |
+| Allocations | 23 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 47-47 cores)</summary>
 
 ```
-1795641764 47
-1795641769 47
-1795641774 47
-1795641779 47
-1795641784 47
-1795641789 47
-1795641794 47
-1795641799 47
-1795641804 47
-1795641809 47
-1795641814 47
-1795641819 47
-1795641824 47
-1795641829 47
-1795641834 47
-1795641839 47
-1795641844 47
-1795641849 47
-1795641854 47
-1795641859 47
+1795642903 47
+1795642908 47
+1795642913 47
+1795642918 47
+1795642923 47
+1795642928 47
+1795642933 47
+1795642938 47
+1795642943 47
+1795642948 47
+1795642953 47
+1795642958 47
+1795642963 47
+1795642968 47
+1795642973 47
+1795642978 47
+1795642983 47
+1795642988 47
+1795642993 47
+1795642998 47
 ```
 </details>
 
