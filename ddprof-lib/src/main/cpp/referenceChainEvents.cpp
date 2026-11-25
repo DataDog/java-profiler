@@ -629,6 +629,7 @@ void ReferenceChainTracker::queueChainInvalidation(jlong source_tag,
   } else {
     // A dropped REBUILD is self-healing: it only leaves the stale cached identity until the
     // next path change or correlation re-queues it.
+    Counters::increment(REFERENCE_CHAIN_REBUILDS_DROPPED, 1);
     TEST_LOG("ReferenceChainTracker::queueChainInvalidation dropped REBUILD "
              "source_tag=%lld (buffer full)",
              (long long)source_tag);
@@ -752,6 +753,7 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
         } else {
           // REBUILD requeue overflow: dropping is self-healing (see the buffer's overflow
           // comment); the cached chain is kept and a later correlation or path change re-queues.
+          Counters::increment(REFERENCE_CHAIN_REBUILDS_DROPPED, 1);
           TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations requeue overflow, "
                    "keeping cached chain source_tag=%lld",
                    (long long)tag);
@@ -813,8 +815,9 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
       // A rebuilt leak chain for a discovered instance must keep its candidate marked found:
       // buildDiscoveredInstanceChains() skips already-cached tags, so without this a rebuild
       // after an improvePath would leave popcount(_candidate_found_bits) short and the search
-      // would keep hunting a candidate whose chain is already resolved. BFS thread, like every
-      // other _candidate_* writer.
+      // would keep hunting a candidate whose chain is already resolved. Every _candidate_*
+      // access runs on the single BFS thread (traversal callbacks, runPass()'s terminal branch,
+      // buildDiscoveredInstanceChains(), pollWatchedTargets()); dump threads never read them.
       for (int s = 0; s < _candidate_count; s++) {
         if (_candidate_found_bits & (1ULL << s)) {
           continue;
@@ -1022,7 +1025,9 @@ bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
   // _target_tag is the frontier tag - no allocation-sample correlation. A REBUILD is bounded
   // (deferred to the next poll; this call runs under LivenessTracker's shared _table_lock, so a
   // synchronous heap walk here is not an option) and makes the next rebuild re-bind the cached
-  // chain to the leak tag; until then dumps keep re-emitting the frontier-tagged event.
+  // chain to the leak tag; until then dumps keep re-emitting the frontier-tagged event. A dump
+  // evicting between the presence check and the queue only leaves a no-op REBUILD, which the
+  // apply drops.
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
     if (_resolved_chains.find(frontier_tag) == _resolved_chains.end()) {
