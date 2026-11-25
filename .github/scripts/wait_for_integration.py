@@ -85,9 +85,19 @@ class GitHub:
             with OPENER.open(request, timeout=min(30, remaining)) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
+            # GitHub's secondary limiter may 403 without Retry-After, so the body message
+            # is the fallback signal; read is bounded and best-effort because a failed
+            # body read must not change the retry decision.
+            body = ""
+            if error.code == 403 and error.fp is not None:
+                try:
+                    body = error.read(65536).decode("utf-8", errors="replace")
+                except (OSError, http.client.HTTPException):
+                    pass
             error.close()
             primary_limit = error.headers.get("X-RateLimit-Remaining") == "0"
-            secondary_limit = "Retry-After" in error.headers
+            secondary_limit = ("Retry-After" in error.headers
+                               or "secondary rate limit" in body.lower())
             if (error.code >= 500 or error.code == 429
                     or (error.code == 403 and (primary_limit or secondary_limit))):
                 raise RetryRead("GitHub HTTP " + str(error.code), retry_delay(error.headers)) from error
