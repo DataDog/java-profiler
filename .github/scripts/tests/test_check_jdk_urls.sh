@@ -555,6 +555,33 @@ rc=0
 assert_eq 1 "$rc" "skip files nothing when the dedupe lookup fails"
 assert_not_contains "$(cat "$FAKE_CURL_LOG")" "/rest/api/3/issue " "no issue POST after a failed skip lookup"
 unset FAKE_JIRA_FAIL
+# Skip dedupes only onto an exact summary: the same phrase hole as the resolver.
+printf '%s\n' 'PROF-10|Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check) build-4521' \
+  'PROF-11|Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)' > "$TEMP_DIR/open-long.txt"
+export FAKE_OPEN="$TEMP_DIR/open-long.txt"
+: > "$FAKE_CURL_LOG"
+assert_eq "PROF-11" "$("$FILE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)" --body-file "$TEMP_DIR/body.txt" --on-duplicate skip)" "skip dedupes onto the exact summary"
+assert_not_contains "$(cat "$FAKE_CURL_LOG")" "PROF-10/" "skip does not dedupe onto a longer phrase hit"
+printf 'PROF-10|Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check) build-4521\n' > "$TEMP_DIR/open-only-long.txt"
+export FAKE_OPEN="$TEMP_DIR/open-only-long.txt"
+: > "$FAKE_CURL_LOG"
+assert_eq "PROF-9001" "$("$FILE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)" --body-file "$TEMP_DIR/body.txt" --on-duplicate skip 2>"$TEMP_DIR/skip-long.err")" "skip files new when only longer summaries match"
+assert_contains "$(cat "$TEMP_DIR/skip-long.err")" "none with the exact summary" "filing new over longer matches notices"
+assert_contains "$(cat "$FAKE_CURL_LOG")" "POST https://jira.example.invalid/rest/api/3/issue " "the new ticket is really filed"
+export FAKE_ISSUE_KEYS=1
+: > "$FAKE_CURL_LOG"
+rc=0
+"$FILE_JIRA" --summary fresh --body-file "$TEMP_DIR/body.txt" --on-duplicate skip >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "skip files nothing when the search cannot be verified"
+assert_not_contains "$(cat "$FAKE_CURL_LOG")" "POST https://jira.example.invalid/rest/api/3/issue " "no issue POST on an unverifiable dedupe response"
+unset FAKE_ISSUE_KEYS
+export FAKE_SEARCH_GARBAGE=1
+: > "$FAKE_CURL_LOG"
+rc=0
+"$FILE_JIRA" --summary fresh --body-file "$TEMP_DIR/body.txt" --on-duplicate skip >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "skip files nothing on a non-JSON search response"
+assert_not_contains "$(cat "$FAKE_CURL_LOG")" "POST https://jira.example.invalid/rest/api/3/issue " "no issue POST on a non-JSON search response"
+unset FAKE_SEARCH_GARBAGE FAKE_OPEN
 rc=0
 "$FILE_JIRA" --summary dup --body-file "$TEMP_DIR/body.txt" --on-duplicate bogus >/dev/null 2>&1 || rc=$?
 assert_eq 2 "$rc" "invalid --on-duplicate is a usage error"

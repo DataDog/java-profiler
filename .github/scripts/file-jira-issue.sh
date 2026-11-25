@@ -20,8 +20,10 @@ set -euo pipefail
 #
 # Labels need no setup: Jira creates a label the first time an issue uses it.
 # --on-duplicate skip leaves an existing open issue untouched (no comment),
-# ignores issues in a done status, and files nothing when the dedupe lookup
-# fails. --status-file receives "created" or "existing".
+# ignores issues in a done status, and dedupes only onto an issue whose
+# summary equals the requested one (case-insensitive); it files nothing when
+# the dedupe lookup fails or cannot be verified, and files new when the search
+# matches only longer summaries. --status-file receives "created" or "existing".
 #
 # Dedupe: when an unresolved issue in the project already matches the
 # summary as an exact phrase (unquoted JQL '~' is OR term matching, so any
@@ -97,17 +99,39 @@ JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\\\"\" AND resolution = 
 if [ "$ON_DUPLICATE" = "skip" ]; then
   JQL="$JQL AND statusCategory != Done"
 fi
-EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
-  -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
-  "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
-  # skip callers re-run daily: a duplicate per failed lookup would pile up.
-  if [ "$ON_DUPLICATE" = "skip" ]; then
+if [ "$ON_DUPLICATE" = "skip" ]; then
+  # skip must not dedupe onto a ticket whose summary merely contains the
+  # phrase, so it post-filters to an exact, case-insensitive summary match.
+  # Anything it cannot verify is not a proven duplicate: a failed lookup or an
+  # unsummarized response files nothing, matched-but-not-exact files new.
+  SEARCH=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
+    -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 100, fields: ["key", "summary"]}')" \
+    "$API/search/jql") || {
     echo "ERROR: dedupe lookup failed; not filing a possible duplicate" >&2
     exit 1
+  }
+  jq -e 'type == "object"' >/dev/null <<<"$SEARCH" || {
+    echo "ERROR: dedupe lookup returned an unexpected response; not filing a possible duplicate" >&2
+    exit 1
+  }
+  EXISTING_KEY=$(jq -r --arg s "$SUMMARY" '
+    [.issues[]? | select((.fields.summary // "") | ascii_downcase == ($s | ascii_downcase))][0].key // empty' <<<"$SEARCH")
+  if [ -z "$EXISTING_KEY" ]; then
+    if [ "$(jq '[.issues[]?] | length' <<<"$SEARCH")" != 0 ]; then
+      echo "NOTICE: dedupe search matched issues but none with the exact summary; filing a new issue" >&2
+    elif [ "$(jq '.issueKeys | type == "array" and length > 0' <<<"$SEARCH")" = true ]; then
+      echo "ERROR: dedupe lookup returned issue keys without summaries; not filing a possible duplicate" >&2
+      exit 1
+    fi
   fi
-  echo "WARNING: dedupe lookup failed; creating a new issue" >&2
-  EXISTING_KEY=""
-}
+else
+  EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
+    -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
+    "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
+    echo "WARNING: dedupe lookup failed; creating a new issue" >&2
+    EXISTING_KEY=""
+  }
+fi
 
 BODY=$(cat "$BODY_FILE")
 
