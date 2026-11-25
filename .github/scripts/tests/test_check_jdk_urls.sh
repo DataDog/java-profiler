@@ -80,6 +80,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+[ -n "${FAKE_CURL_DELAY:-}" ] && sleep "$FAKE_CURL_DELAY"
 [ -z "$method" ] && { [ -n "$data" ] && method=POST || method=GET; }
 [ "$head" = 1 ] && method=HEAD
 [ "$range" = 1 ] && method=RANGE
@@ -98,8 +99,12 @@ case "$url" in
       */search/jql)
         [ "${FAKE_SEARCH_FAIL:-0}" = 1 ] && exit 22
         summary=$(jq -r .jql <<<"$data" | sed -E 's/.*summary ~ "\\"(.*)\\"" AND resolution.*/\1/')
-        key=$(awk -F '|' -v s="$summary" '$2 == s { print $1; exit }' "${FAKE_OPEN:-/dev/null}")
-        if [ -n "$key" ]; then echo "{\"issues\":[{\"key\":\"$key\"}]}"; else echo '{"issues":[]}'; fi ;;
+        # Jira phrase matching also hits longer summaries: every open issue
+        # whose summary contains the phrase is returned, with its summary.
+        hits=$(awk -F '|' -v s="$summary" 'index(tolower($2), tolower(s)) { print }' "${FAKE_OPEN:-/dev/null}")
+        printf '%s\n' "$hits" | jq -Rn --arg s "$summary" '[inputs | split("|")
+          | select(length == 2 and (.[1] | ascii_downcase | contains($s | ascii_downcase)))
+          | {key: .[0], fields: {summary: .[1]}}] | {issues: .}' ;;
       */transitions)
         if [ "$method" = GET ]; then
           [ "${FAKE_TRANSITIONS_GET_FAIL:-0}" = 1 ] && exit 22
@@ -162,7 +167,8 @@ unset GITHUB_STEP_SUMMARY SLACK_WEBHOOK ATLASSIAN_BASE_URL ATLASSIAN_USER_EMAIL 
 reset_fakes() {
   : > "$FAKE_CURL_LOG"
   unset FAKE_URLS FAKE_OPEN FAKE_IBM_LISTING FAKE_NO_DONE FAKE_JIRA_FAIL FAKE_SLACK_URL FAKE_SLACK_FAIL \
-    FAKE_TRANSITION_FAIL FAKE_TRANSITIONS_GET_FAIL FAKE_COMMENT_FAIL FAKE_SEARCH_FAIL FAKE_DOWNLOAD FAKE_TAR_RC
+    FAKE_TRANSITION_FAIL FAKE_TRANSITIONS_GET_FAIL FAKE_COMMENT_FAIL FAKE_SEARCH_FAIL FAKE_DOWNLOAD FAKE_TAR_RC \
+    FAKE_CURL_DELAY
 }
 
 with_jira() {
@@ -319,6 +325,27 @@ rc=0
 "$CHECK" check --out "$TEMP_DIR/gone410" --workflow "$TEMP_DIR/gone410.yml" >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "HTTP 410 is stale"
 assert_contains "$(cat "$FAKE_CURL_LOG")" "RANGE https://gone410.example.invalid/jdk.tgz" "HEAD 410 is confirmed with a range GET"
+
+# Probe deadline: pins past the budget are INCONCLUSIVE without a probe, the
+# IBM newer-release check is skipped, and earlier STALE pins still fail.
+reset_fakes
+cat > "$TEMP_DIR/deadline.yml" <<EOF
+env:
+  JAVA_8_IBM_URL: "$IBM_PIN"
+  JAVA_17_MUSL_URL: "https://gone.example.invalid/jdk.tgz"
+  JAVA_11_MUSL_URL: "https://ok.example.invalid/musl11.tar.gz"
+EOF
+export FAKE_URLS="$TEMP_DIR/urls.txt" FAKE_CURL_DELAY=1 PROBE_DEADLINE_SECONDS=2
+rc=0
+output=$("$CHECK" check --out "$TEMP_DIR/deadline" --workflow "$TEMP_DIR/deadline.yml" 2>&1) || rc=$?
+unset FAKE_CURL_DELAY PROBE_DEADLINE_SECONDS
+assert_eq 1 "$rc" "deadline: an earlier STALE pin still fails the check"
+assert_eq "JAVA_8_IBM_URL:OK JAVA_17_MUSL_URL:STALE JAVA_11_MUSL_URL:INCONCLUSIVE " \
+  "$(awk -F '\t' '{ printf "%s:%s ", $1, $3 }' "$TEMP_DIR/deadline/results.tsv")" "deadline: probed pins keep their class, the rest is INCONCLUSIVE"
+assert_eq "000" "$(awk -F '\t' '$1 == "JAVA_11_MUSL_URL" { print $4 }' "$TEMP_DIR/deadline/results.tsv")" "deadline: an unprobed pin reports no HTTP status"
+assert_contains "$output" "::warning::Probe deadline (2s) reached" "deadline expiry warns"
+assert_contains "$output" "::warning::Probe deadline reached; skipping the IBM newer-release check" "deadline skips the IBM check"
+assert_not_contains "$(cat "$FAKE_CURL_LOG")" "GET $IBM_BASE" "deadline: no IBM listing fetch after the deadline"
 
 cat > "$TEMP_DIR/no-ibm.yml" <<EOF
 env:
@@ -566,6 +593,24 @@ key=$("$RESOLVE_JIRA" --summary "open one" --comment-file "$TEMP_DIR/body.txt" 2
 assert_eq "0 PROF-4" "$rc $key" "a failed comment after the transition still reports the resolution"
 assert_contains "$(cat "$TEMP_DIR/resolve.err")" "PROF-4 resolved, but the comment failed" "a failed comment warns"
 unset FAKE_COMMENT_FAIL FAKE_OPEN
+
+# A phrase hit whose summary merely contains the phrase is never closed.
+printf '%s\n' 'PROF-10|Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check) build-4521' \
+  'PROF-11|Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)' > "$TEMP_DIR/open-long.txt"
+export FAKE_OPEN="$TEMP_DIR/open-long.txt"
+assert_eq "PROF-11" "$("$RESOLVE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)" --comment-file "$TEMP_DIR/body.txt")" "the exact summary match is resolved"
+assert_not_contains "$(cat "$FAKE_CURL_LOG")" "PROF-10/" "a longer phrase hit is left open"
+assert_eq "PROF-11" "$("$RESOLVE_JIRA" --summary "stale jdk download url: java_9_musl_url (jdk-url-check)" --comment-file "$TEMP_DIR/body.txt")" "the summary comparison is case-insensitive"
+printf 'PROF-10|Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check) build-4521\n' > "$TEMP_DIR/open-only-long.txt"
+reset_fakes
+with_jira
+export FAKE_OPEN="$TEMP_DIR/open-only-long.txt"
+rc=0
+output=$("$RESOLVE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)" --comment-file "$TEMP_DIR/body.txt" 2>"$TEMP_DIR/resolve-long.err") || rc=$?
+assert_eq 0 "$rc" "a non-exact phrase hit resolves nothing and exits 0"
+assert_contains "$(cat "$TEMP_DIR/resolve-long.err")" "none with the exact summary" "a non-exact phrase hit warns"
+assert_not_contains "$(cat "$FAKE_CURL_LOG")" "/transitions" "no transition without an exact summary match"
+unset FAKE_OPEN
 
 # --- java_setup.sh fetchAndExtract ---------------------------------------------------
 # GitHub's default run shell is bash -e without pipefail; each case runs so.

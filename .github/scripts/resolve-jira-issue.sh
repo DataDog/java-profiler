@@ -67,11 +67,22 @@ jira() {
 }
 
 # The exact-phrase JQL of file-jira-issue.sh --on-duplicate skip, so this
-# finds exactly the issue that script dedupes onto.
+# finds the issue that script dedupes onto. Phrase JQL also matches longer
+# summaries, so the hits are post-filtered below to an exact summary.
 JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\""; "\\\\\"")')
 JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\\\"\" AND resolution = Unresolved AND statusCategory != Done"
-EXISTING_KEY=$(jira 1 -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
-  "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || exit 1
+SEARCH=$(jira 1 -X POST --data "$(jq -n --arg jql "$JQL" \
+  '{jql: $jql, maxResults: 10, fields: ["key", "summary"]}')" "$API/search/jql")
+
+# Closing the first phrase hit could transition an unrelated open ticket
+# whose summary merely contains the phrase, so resolve only an exact,
+# case-insensitive summary match and leave the rest untouched.
+EXISTING_KEY=$(jq -r --arg s "$SUMMARY" '
+  [.issues[] | select((.fields.summary // "") | ascii_downcase == ($s | ascii_downcase))][0].key // empty' <<<"$SEARCH")
+if [ -z "$EXISTING_KEY" ] && [ "$(jq '.issues | length' <<<"$SEARCH")" != 0 ]; then
+  echo "WARNING: Jira phrase search matched issues but none with the exact summary '$SUMMARY'; not resolving" >&2
+  exit 0
+fi
 
 if [ -z "$EXISTING_KEY" ]; then
   exit 0

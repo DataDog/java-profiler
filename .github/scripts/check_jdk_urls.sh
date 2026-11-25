@@ -12,7 +12,10 @@ set -euo pipefail
 #   check_jdk_urls.sh alert --out <dir> [--force-issue] [--dry-run]
 #
 # check: probes every env key JAVA_*_URL and classifies it OK (2xx), STALE
-#   (404/410) or INCONCLUSIVE (anything else; warning only). Writes
+#   (404/410) or INCONCLUSIVE (anything else; warning only). Probes share one
+#   deadline (PROBE_DEADLINE_SECONDS, default 1200): past it, unprobed pins
+#   are INCONCLUSIVE without a probe and the IBM newer-release check is
+#   skipped. Writes
 #   results.tsv, table.md and ibm.txt to <dir> and appends the table to
 #   $GITHUB_STEP_SUMMARY. Exits 1 when a URL is STALE, 2 on usage or parse error.
 # alert: reads <dir> and, per STALE URL, files a PROF Jira ticket; per OK URL,
@@ -31,7 +34,13 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/../.." && pwd)
 IBM_JAVA_INDEX_URL="https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/"
 IBM_URL_VAR="JAVA_8_IBM_URL"
-CURL_OPTS=(-sS -L --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60)
+# retry 1 / max-time 30 keep the worst case (4 curl attempts x 30s per pin)
+# inside the probe deadline; the daily cadence re-checks INCONCLUSIVE pins.
+CURL_OPTS=(-sS -L --retry 1 --retry-all-errors --connect-timeout 15 --max-time 30)
+# Probes share one budget: past it, unprobed pins are INCONCLUSIVE instead of
+# the job being killed at timeout-minutes before any alert. Overridable for
+# the hermetic tests.
+PROBE_DEADLINE_SECONDS="${PROBE_DEADLINE_SECONDS:-1200}"
 JIRA_COMPONENT="library-java"
 JIRA_LABEL="ci"
 
@@ -190,8 +199,17 @@ cmd_check() {
     echo "| --- | --- | --- | --- |"
   } > "$table"
   local var url probe code final class
+  local deadline_start=$SECONDS deadline_hit=0
   while read -r var url; do
-    probe=$(probe_url "$url")
+    if (( SECONDS - deadline_start >= PROBE_DEADLINE_SECONDS )); then
+      if [ "$deadline_hit" = 0 ]; then
+        echo "::warning::Probe deadline (${PROBE_DEADLINE_SECONDS}s) reached; marking the remaining pins INCONCLUSIVE without probing"
+        deadline_hit=1
+      fi
+      probe="000 $url"
+    else
+      probe=$(probe_url "$url")
+    fi
     code=${probe%% *}
     final=${probe#* }
     class=$(classify "$code")
@@ -209,7 +227,12 @@ cmd_check() {
   done <<<"$pins"
 
   if [ -n "$ibm_url" ]; then
-    check_ibm_release "$out" "$ibm_url"
+    if [ "$deadline_hit" = 1 ]; then
+      : > "$out/ibm.txt"
+      echo "::warning::Probe deadline reached; skipping the IBM newer-release check"
+    else
+      check_ibm_release "$out" "$ibm_url"
+    fi
   else
     : > "$out/ibm.txt"
     echo "::warning::$IBM_URL_VAR is not pinned; skipping the IBM newer-release check"

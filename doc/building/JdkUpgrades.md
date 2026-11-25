@@ -130,6 +130,10 @@ every day, on manual dispatch, and on PRs that change `cache_java.yml` or
   `ci`). It posts to Slack when the ticket is new or cannot be filed. A later
   run resolves the ticket when the pin answers 2xx again.
 - Any other result (timeout, 5xx, 429) is inconclusive. It gives a warning only.
+  The probes share one 20-minute budget (`PROBE_DEADLINE_SECONDS` in
+  `check_jdk_urls.sh`): once it expires, pins not yet probed are reported as
+  inconclusive without a probe and the IBM newer-release check is skipped, so a
+  stalled endpoint cannot eat the job's 30-minute timeout before the alert step.
 - IBM keeps only a few SDK 8 releases. When IBM lists a release newer than
   `JAVA_8_IBM_URL` and its archive exists, the run files a PROF ticket and
   posts to Slack in the same cases. The check does not change the pin. A later
