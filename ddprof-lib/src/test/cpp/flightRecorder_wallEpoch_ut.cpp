@@ -301,7 +301,9 @@ void WallEpochRecordingTest::checkOrdinaryAfterEpochRotation(bool fail_deferral)
   }
   ASSERT_EQ(first, request.sampling_epoch_start);
   ASSERT_FALSE(request.force_unowned_ordinary);
-  const u64 second = TSC::ticks();
+  // Consecutive reads can be equal on a coarse tick source; the second epoch must be strictly later.
+  u64 second = TSC::ticks();
+  while (second == first) second = TSC::ticks();
   ASSERT_GT(second, first);
   {
     auto locks = profiler->recordingLocksForTest();
