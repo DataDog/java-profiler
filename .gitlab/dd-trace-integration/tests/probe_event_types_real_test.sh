@@ -3,8 +3,8 @@
 # Copyright 2026, Datadog, Inc
 
 # Executes the real probe-event-types.jfrs through jbang/jfr-shell against a
-# deterministic synthetic recording (probe_event_types_fixture.java): two
-# tracked types present, four absent. This covers what the hermetic
+# deterministic synthetic recording (probe_event_types_fixture.java): three
+# tracked types present, three absent. This covers what the hermetic
 # validate_conformance_probe_test.sh cannot: variable interpolation in the
 # HAS lines, the absent-type line suppression, and PROBE_COMPLETE surviving
 # failed queries. Requires jbang on PATH; the dd-trace-integration CI job
@@ -70,14 +70,14 @@ grep -qF "HAS jdk.ExecutionSample 2" "${WORK}/probe-stdout.log" \
   || fail "expected HAS jdk.ExecutionSample 2 in the probe output"
 grep -qF "HAS datadog.ExecutionSample 3" "${WORK}/probe-stdout.log" \
   || fail "expected HAS datadog.ExecutionSample 3 in the probe output"
-pass "present types report their exact event counts (interpolation works)"
+grep -qF "HAS datadog.Endpoint 2" "${WORK}/probe-stdout.log" \
+  || fail "expected HAS datadog.Endpoint 2 in the probe output"
+pass "present types report their exact event counts (interpolation works, custom types included)"
 
-for t in datadog.ObjectSample datadog.Endpoint; do
-  if grep -qF "HAS ${t} " "${WORK}/probe-stdout.log"; then
-    fail "absent custom type ${t} must not produce a HAS line"
-  fi
-done
-pass "absent custom types produce no HAS line"
+if grep -qF "HAS datadog.ObjectSample " "${WORK}/probe-stdout.log"; then
+  fail "absent custom type datadog.ObjectSample must not produce a HAS line"
+fi
+pass "an absent custom type produces no HAS line"
 
 # JDK built-in types resolve through the engine's schema even when the
 # recording has none of them (observed on JDK 25 recordings): their HAS line
@@ -93,8 +93,8 @@ pass "absent JDK built-in types report count 0"
 # quote-agnostic so a jfr-shell quoting change degrades to substring matches
 # instead of failing spuriously.
 HAS_LINES=$(grep -cE '"?HAS [^ ]+ [0-9]+"?' "${WORK}/probe-stdout.log" || true)
-[ "${HAS_LINES}" -eq 4 ] \
-  || fail "expected 4 HAS lines with numeric counts, got ${HAS_LINES}"
+[ "${HAS_LINES}" -eq 5 ] \
+  || fail "expected 5 HAS lines with numeric counts, got ${HAS_LINES}"
 pass "every HAS line carries a numeric count"
 
 grep -qF "PROBE_COMPLETE" "${WORK}/probe-stdout.log" \
@@ -106,16 +106,23 @@ case "${LAST_EMIT}" in
 esac
 pass "PROBE_COMPLETE is emitted last, after the failed queries"
 
-# Same grep as has_event_type in validate-jfr-conformance.sh: the flags it
-# derives from the real output must agree with the recording's actual content.
-has_event_type() {
-  grep -qF -- "HAS ${1} " "${WORK}/probe-stdout.log" && echo true || echo false
-}
+# Pin the shipped has_event_type: extract it from validate-jfr-conformance.sh
+# and drive it through its EVENT_PROBE contract with the real probe output, so
+# a drift in the shipped grep fails here instead of passing a local copy.
+CONF_SCRIPT="${REPO_ROOT}/test-validation/validate-jfr-conformance.sh"
+HAS_EVENT_TYPE_DEF=$(sed -n '/^has_event_type() {$/,/^}$/p' "${CONF_SCRIPT}")
+[ -n "${HAS_EVENT_TYPE_DEF}" ] \
+  || { fail "has_event_type() definition not found in validate-jfr-conformance.sh"; exit 1; }
+eval "${HAS_EVENT_TYPE_DEF}"
+# shellcheck disable=SC2034  # read by the eval'd has_event_type, invisible to shellcheck
+EVENT_PROBE=$(cat "${WORK}/probe-stdout.log")
 [ "$(has_event_type datadog.ExecutionSample)" = "true" ] \
   || fail "has_event_type semantics must flag a present type true"
-[ "$(has_event_type datadog.Endpoint)" = "false" ] \
+[ "$(has_event_type datadog.Endpoint)" = "true" ] \
+  || fail "has_event_type semantics must flag a custom type with events true"
+[ "$(has_event_type datadog.ObjectSample)" = "false" ] \
   || fail "has_event_type semantics must flag an absent type false"
-pass "has_event_type's grep semantics agree with the real probe output"
+pass "the shipped has_event_type grep semantics agree with the real probe output"
 
 [ "${FAILED}" -eq 0 ] || exit 1
 echo "probe-event-types real-probe tests passed."

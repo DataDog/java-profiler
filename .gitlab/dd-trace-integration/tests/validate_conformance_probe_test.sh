@@ -73,7 +73,10 @@ flag_of() {
   { grep -F "${1}: " "${WORK}/stdout.log" || true; } | tail -1 | sed 's/.*: //'
 }
 
+# SC2030/SC2031: the subshell PATH scope is the mechanism — each run sees
+# only the stub jbang, and the parent shell keeps its real PATH.
 run_validate() {
+  # shellcheck disable=SC2030,SC2031
   ( export PATH="${WORK}/bin:${PATH}"
     bash "${SCRIPT}" "${WORK}/recording.jfr" \
       --ddprof-enabled=true --tracer-enabled=false --test-duration=60 \
@@ -139,6 +142,7 @@ NOPROBE="${WORK}/noprobe"
 mkdir -p "${NOPROBE}"
 cp "${SCRIPT}" "${HERE}/../../../test-validation/validate-jfr.jfrs" "${NOPROBE}/"
 install_stub_jbang 'HAS jdk.ExecutionSample 0\nPROBE_COMPLETE'
+# shellcheck disable=SC2031  # deliberate: the stub PATH must not leak past this run
 ( export PATH="${WORK}/bin:${PATH}"
   bash "${NOPROBE}/validate-jfr-conformance.sh" "${WORK}/recording.jfr" \
     --ddprof-enabled=true --tracer-enabled=false --test-duration=60 \
