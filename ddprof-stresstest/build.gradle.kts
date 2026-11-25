@@ -78,10 +78,12 @@ val verifyJmhJarNativeLibs = tasks.register("verifyJmhJarNativeLibs") {
   val jar = tasks.named<Jar>("jmhJar").flatMap { it.archiveFile }
   inputs.file(jar)
   doLast {
+    // Exact library files only: -Pwith-libs also copies *.debug files and .dSYM bundles next to them.
+    val nativeLib = Regex("META-INF/native-libs/[^/]+/libjavaProfiler\\.(so|dylib)")
     val perDir = ZipFile(jar.get().asFile).use { zip ->
       zip.entries().asSequence()
         .map { it.name }
-        .filter { it.startsWith("META-INF/native-libs/") && it.substringAfterLast('/').startsWith("libjavaProfiler.") }
+        .filter { nativeLib.matches(it) }
         .groupBy { it.substringBeforeLast('/') }
     }
     check(perDir.isNotEmpty()) { "No libjavaProfiler found in ${jar.get().asFile}" }
@@ -92,7 +94,6 @@ val verifyJmhJarNativeLibs = tasks.register("verifyJmhJarNativeLibs") {
 }
 
 tasks.named("jmhJar") { finalizedBy(verifyJmhJarNativeLibs) }
-tasks.named("check") { dependsOn(verifyJmhJarNativeLibs) }
 
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH

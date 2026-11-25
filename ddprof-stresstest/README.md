@@ -15,9 +15,10 @@ All benchmarks require the WhiteboxProfiler to be enabled, which starts/stops th
 
 ### Native library
 
-The JMH jar (`build/libs/stresstests.jar`) bundles the release `libjavaProfiler` only; `verifyJmhJarNativeLibs`
-(run after `jmhJar`, and by `check`) fails the build if a platform directory holds more than one library,
-because a debug build would make overhead numbers meaningless.
+The JMH jar (`build/libs/stresstests.jar`) bundles the release `libjavaProfiler` only. `verifyJmhJarNativeLibs`
+runs after `jmhJar` and before `runStressTests`. It fails if a platform directory holds more than one library
+(`.debug` files and `.dSYM` bundles are ignored) or if the jar holds none, because a debug build would make
+overhead numbers meaningless.
 
 ### Basic JMH Commands
 
