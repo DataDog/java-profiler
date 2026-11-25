@@ -142,192 +142,70 @@ TEST(JniHelperTest, FailedUtfCharsAreNotReleased) {
     EXPECT_EQ(0, released_chars);
 }
 
-std::string encode(const std::u16string &text) {
+std::string convert(const char *name, size_t max_units = 64) {
     std::array<char, 3 * 64> out{};
-    EXPECT_LE(text.size(), 64u);
-    size_t length = utf16ToUtf8(reinterpret_cast<const jchar *>(text.data()),
-                                static_cast<jsize>(text.size()), out.data());
-    return std::string(out.data(), length);
+    EXPECT_LE(max_units, 64u);
+    return std::string(out.data(), modifiedUtf8ToStandard(name, max_units, out.data()));
 }
 
-TEST(Utf16ToUtf8Test, AsciiAndBmpMultibyte) {
-    EXPECT_EQ("vt-1", encode(u"vt-1"));
-    EXPECT_EQ("\xC3\xA9\xE4\xB8\xAD", encode(u"\u00e9\u4e2d"));
+TEST(ModifiedUtf8ToStandardTest, AsciiAndBmpMultibyteAreCopied) {
+    EXPECT_EQ("http-exec-1 [w_2]", convert("http-exec-1 [w_2]"));
+    EXPECT_EQ("\xC3\xA9\xE4\xB8\xAD", convert("\xC3\xA9\xE4\xB8\xAD"));  // é中
+    EXPECT_EQ("a\xED\x9F\xBF", convert("a\xED\x9F\xBF"));  // U+D7FF is ED-led, not a surrogate
+    EXPECT_EQ("", convert(""));
 }
 
-TEST(Utf16ToUtf8Test, SupplementaryIsFourBytesNotSurrogateSix) {
-    EXPECT_EQ("vt-\xF0\x9F\x98\x80", encode(u"vt-\U0001F600"));
+TEST(ModifiedUtf8ToStandardTest, NulIsOneZeroByte) {
+    EXPECT_EQ(std::string("a\0b", 3), convert("a\xC0\x80" "b"));
 }
 
-TEST(Utf16ToUtf8Test, UnpairedSurrogatesBecomeReplacementChar) {
-    EXPECT_EQ("a\xEF\xBF\xBD", encode(std::u16string{u'a', 0xD83D}));
-    EXPECT_EQ("\xEF\xBF\xBD" "a", encode(std::u16string{0xDE00, u'a'}));
-    EXPECT_EQ("\xEF\xBF\xBD\xEF\xBF\xBD", encode(std::u16string{0xD83D, 0xD83D}));
+TEST(ModifiedUtf8ToStandardTest, SurrogatePairBecomesFourBytes) {
+    EXPECT_EQ("vt-\xF0\x9F\x98\x80", convert("vt-\xED\xA0\xBD\xED\xB8\x80"));  // U+1F600
+    EXPECT_EQ("\xF4\x8F\xBF\xBF", convert("\xED\xAF\xBF\xED\xBF\xBF"));       // U+10FFFF
 }
 
-TEST(Utf16ToUtf8Test, NulIsOneZeroByteNotModifiedUtf8) {
-    EXPECT_EQ(std::string("a\0b", 3), encode(std::u16string{u'a', 0, u'b'}));
+TEST(ModifiedUtf8ToStandardTest, LoneSurrogatesBecomeReplacementChar) {
+    EXPECT_EQ("\xEF\xBF\xBD" "a", convert("\xED\xA0\xBD" "a"));    // high without low
+    EXPECT_EQ("a\xEF\xBF\xBD", convert("a\xED\xA0\xBD"));          // high at the end
+    EXPECT_EQ("\xEF\xBF\xBD" "a", convert("\xED\xB8\x80" "a"));    // low without high
+    EXPECT_EQ("\xEF\xBF\xBD\xEF\xBF\xBD", convert("\xED\xA0\xBD\xED\xA0\xBD"));  // two highs
 }
 
-TEST(Utf16ToUtf8Test, EmptyInputEncodesToNothing) {
-    EXPECT_EQ("", encode(u""));
+TEST(ModifiedUtf8ToStandardTest, MalformedBytesBecomeReplacementChar) {
+    const std::string fffd = "\xEF\xBF\xBD";
+    EXPECT_EQ(fffd + "a", convert("\x80" "a"));                 // stray continuation
+    EXPECT_EQ(fffd + fffd, convert("\xE4\xB8"));                // sequence cut by the terminator
+    EXPECT_EQ(fffd + fffd, convert("\xC1\x81"));                // overlong 2-byte
+    EXPECT_EQ(fffd + fffd + fffd, convert("\xE0\x81\x81"));     // overlong 3-byte
+    EXPECT_EQ(fffd + fffd + fffd + fffd, convert("\xF0\x9F\x98\x80"));  // 4-byte form
 }
 
-TEST(Utf16TruncatedLengthTest, DropsHighSurrogateWhoseLowHalfIsCutOff) {
-    const std::u16string text = u"ab\U0001F600";  // a b D83D DE00
-    const jchar *units = reinterpret_cast<const jchar *>(text.data());
-    EXPECT_EQ(2, utf16TruncatedLength(units, 3, 4));
-    EXPECT_EQ(4, utf16TruncatedLength(units, 4, 4));
-    EXPECT_EQ(2, utf16TruncatedLength(units, 2, 4));
+TEST(ModifiedUtf8ToStandardTest, CapCountsUtf16Units) {
+    EXPECT_EQ("abc", convert("abcd", 3));
+    EXPECT_EQ("abcd", convert("abcd", 4));
+    EXPECT_EQ("", convert("abcd", 0));
+    EXPECT_EQ("a\xC3\xA9", convert("a\xC3\xA9\xE4\xB8\xAD", 2));
+    EXPECT_EQ(std::string("a\0", 2), convert("a\xC0\x80" "b", 2));
 }
 
-TEST(Utf16TruncatedLengthTest, KeepsLoneHighSurrogateAtTheEndOfTheString) {
-    const std::u16string text{u'a', 0xD83D};
-    EXPECT_EQ(2, utf16TruncatedLength(reinterpret_cast<const jchar *>(text.data()), 2, 2));
-    EXPECT_EQ(0, utf16TruncatedLength(reinterpret_cast<const jchar *>(text.data()), 0, 2));
+TEST(ModifiedUtf8ToStandardTest, CapNeverSplitsSurrogatePair) {
+    const char *name = "ab\xED\xA0\xBD\xED\xB8\x80";  // a, b, U+1F600 as two units
+    EXPECT_EQ("ab", convert(name, 3));
+    EXPECT_EQ("ab\xF0\x9F\x98\x80", convert(name, 4));
 }
 
-TEST(Utf16ToUtf8Test, AsciiNameIsByteIdenticalToInput) {
-    const std::string name = "http-exec-1 [w_2]";
-    std::u16string wide(name.begin(), name.end());
-    EXPECT_EQ(name, encode(wide));
+TEST(ModifiedUtf8ToStandardTest, OutputFitsThreeBytesPerUnit) {
+    std::array<char, 3 * 4 + 1> out;
+    out.fill('#');
+    // Four lone surrogates produce the worst case: 3 output bytes per unit.
+    EXPECT_EQ(12u, modifiedUtf8ToStandard("\xED\xA0\xBD\xED\xA0\xBD\xED\xA0\xBD\xED\xA0\xBD" "a",
+                                          4, out.data()));
+    EXPECT_EQ('#', out[12]);
 }
 
-TEST(Utf16ToUtf8Test, PlatformThreadNameRoundTripsWithEmbeddedNul) {
+TEST(ModifiedUtf8ToStandardTest, PlatformThreadNameRoundTripsWithEmbeddedNul) {
     EXPECT_EQ(std::string("worker-\xF0\x9F\x98\x80-\xC3\xA9\xE4\xB8\xAD-a\0b", 21),
-              encode(u"worker-\U0001F600-\u00e9\u4e2d-a" + std::u16string(1, u'\0') + u"b"));
-}
-
-TEST(JniHelperTest, ModifiedUtf8WithoutNulOrSurrogatesIsStandard) {
-  EXPECT_TRUE(modifiedUtf8IsStandard(""));
-  EXPECT_TRUE(modifiedUtf8IsStandard("worker-1"));
-  EXPECT_TRUE(modifiedUtf8IsStandard("w-\xC3\xA9\xE4\xB8\xAD"));  // é中
-  EXPECT_FALSE(modifiedUtf8IsStandard("a\xC0\x80" "b"));             // modified-UTF-8 U+0000
-  EXPECT_FALSE(modifiedUtf8IsStandard("\xED\xA0\xBD\xED\xB8\x80")); // surrogate pair for U+1F600
-  EXPECT_FALSE(modifiedUtf8IsStandard("\xED\x9F\xBF"));  // U+D7FF: converted, unchanged
-}
-
-TEST(JniHelperTest, ModifiedUtf8PrefixCountsUtf16UnitsWithoutSplittingCharacters) {
-  EXPECT_EQ(3u, modifiedUtf8PrefixLength("abcd", 3));
-  EXPECT_EQ(4u, modifiedUtf8PrefixLength("abcd", 4));
-  EXPECT_EQ(4u, modifiedUtf8PrefixLength("abcd", 5));
-  EXPECT_EQ(0u, modifiedUtf8PrefixLength("abcd", 0));
-  EXPECT_EQ(3u, modifiedUtf8PrefixLength("a\xC3\xA9\xE4\xB8\xAD", 2));      // a é | 中
-}
-
-TEST(JniHelperTest, ModifiedUtf8PrefixDropsHighSurrogateWhoseLowHalfIsCutOff) {
-  const char *pair = "a\xED\xA0\xBD\xED\xB8\x80";  // a, high half, low half
-  EXPECT_EQ(1u, modifiedUtf8PrefixLength(pair, 2));
-  EXPECT_EQ(7u, modifiedUtf8PrefixLength(pair, 3));
-  EXPECT_EQ(4u, modifiedUtf8PrefixLength("a\xED\x9F\xBF" "b", 2));  // U+D7FF is kept
-  EXPECT_EQ(4u, modifiedUtf8PrefixLength("a\xED\xB8\x80" "b", 2));  // a cut low half is kept
-}
-
-static const char16_t *jvm_units = nullptr;
-static jsize jvm_length = 0;
-static bool region_throws = false;
-static bool pending_exception = false;
-static int new_string_calls = 0;
-
-static jstring JNICALL fakeNewStringUtf(JNIEnv *, const char *) {
-  new_string_calls++;
-  if (jvm_units == nullptr) {
-    pending_exception = true;
-    return nullptr;
-  }
-  return reinterpret_cast<jstring>(0x30);
-}
-
-static jsize JNICALL fakeGetStringLength(JNIEnv *, jstring) { return jvm_length; }
-
-static void JNICALL fakeGetStringRegion(JNIEnv *, jstring, jsize start, jsize len, jchar *buf) {
-  if (region_throws) {
-    pending_exception = true;
-    return;
-  }
-  std::memcpy(buf, jvm_units + start, len * sizeof(jchar));
-}
-
-static jboolean JNICALL fakeExceptionCheck(JNIEnv *) {
-  return pending_exception ? JNI_TRUE : JNI_FALSE;
-}
-
-static void JNICALL fakeExceptionClear(JNIEnv *) { pending_exception = false; }
-
-// Runs modifiedUtf8ToStandard against a JVM that decodes name to `decoded`, or fails to
-// allocate when decoded is null; resets every fake first. *converted reports whether the
-// result points into the output buffer.
-static std::string convert(const char *name, const char16_t *decoded, jsize max_units,
-                           bool *converted = nullptr, bool region_fails = false) {
-  JNINativeInterface_ table{};
-  JNIEnv env = fakeEnv(table);
-  table.NewStringUTF = &fakeNewStringUtf;
-  table.GetStringLength = &fakeGetStringLength;
-  table.GetStringRegion = &fakeGetStringRegion;
-  table.ExceptionCheck = &fakeExceptionCheck;
-  table.ExceptionClear = &fakeExceptionClear;
-  jvm_units = decoded;
-  jvm_length =
-      decoded != nullptr ? static_cast<jsize>(std::char_traits<char16_t>::length(decoded)) : 0;
-  region_throws = region_fails;
-  pending_exception = false;
-  new_string_calls = 0;
-  deleted_refs = 0;
-  std::array<jchar, 16> units{};
-  std::array<char, 3 * 16> out{};
-  EXPECT_LE(max_units, 16);
-  const char *utf8 = nullptr;
-  size_t length = modifiedUtf8ToStandard(&env, name, max_units, units.data(), out.data(), &utf8);
-  if (converted != nullptr) {
-    *converted = utf8 == out.data();
-  }
-  return std::string(utf8, length);
-}
-
-TEST(ModifiedUtf8ToStandardTest, StandardNameIsCappedWithoutJniCall) {
-  bool converted = true;
-  EXPECT_EQ("worker-1", convert("worker-1", nullptr, 16, &converted));
-  EXPECT_FALSE(converted);
-  EXPECT_EQ(0, new_string_calls);
-  EXPECT_EQ("a\xC3\xA9", convert("a\xC3\xA9\xE4\xB8\xAD", nullptr, 2));
-  EXPECT_EQ(0, new_string_calls);
-}
-
-TEST(ModifiedUtf8ToStandardTest, SurrogatePairIsReencodedAndLocalRefDeleted) {
-  bool converted = false;
-  EXPECT_EQ("w\xF0\x9F\x98\x80",
-            convert("w\xED\xA0\xBD\xED\xB8\x80", u"w\U0001F600", 16, &converted));
-  EXPECT_TRUE(converted);
-  EXPECT_EQ(1, deleted_refs);
-}
-
-TEST(ModifiedUtf8ToStandardTest, ConversionCapDropsHighSurrogateOfCutPair) {
-  EXPECT_EQ("ab", convert("ab\xED\xA0\xBD\xED\xB8\x80", u"ab\U0001F600", 3));
-}
-
-TEST(ModifiedUtf8ToStandardTest, ConversionCapKeepsExactlyMaxUnits) {
-  const char *name = "a\xED\x9F\xBF" "b";  // a, U+D7FF, b: ED-led, so it is converted
-  bool converted = false;
-  EXPECT_EQ("a\xED\x9F\xBF", convert(name, u"a\uD7FFb", 2, &converted));
-  EXPECT_TRUE(converted);
-  EXPECT_EQ("a\xED\x9F\xBF" "b", convert(name, u"a\uD7FFb", 3));
-}
-
-TEST(ModifiedUtf8ToStandardTest, FailedAllocationKeepsCappedJvmtiBytes) {
-  bool converted = true;
-  EXPECT_EQ("a\xC0\x80", convert("a\xC0\x80" "bc", nullptr, 2, &converted));
-  EXPECT_FALSE(converted);
-  EXPECT_EQ(1, new_string_calls);
-  EXPECT_FALSE(pending_exception);
-  EXPECT_EQ(0, deleted_refs);
-}
-
-TEST(ModifiedUtf8ToStandardTest, FailedRegionCopyKeepsCappedJvmtiBytesAndDeletesLocalRef) {
-  bool converted = true;
-  EXPECT_EQ("a\xC0\x80", convert("a\xC0\x80" "bc", u"a", 2, &converted, true));
-  EXPECT_FALSE(converted);
-  EXPECT_FALSE(pending_exception);
-  EXPECT_EQ(1, deleted_refs);
+              convert("worker-\xED\xA0\xBD\xED\xB8\x80-\xC3\xA9\xE4\xB8\xAD-a\xC0\x80" "b"));
 }
 
 } // namespace

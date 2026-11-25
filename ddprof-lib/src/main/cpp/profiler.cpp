@@ -1517,14 +1517,11 @@ void Profiler::setupSignalHandlers() {
 
 
 // JVMTI returns modified UTF-8 (surrogate pairs as 6 bytes, U+0000 as C0 80), which JFR readers
-// reject. Let the JVM decode it to UTF-16, then re-encode as standard UTF-8 with an explicit length.
-void Profiler::storeThreadName(JNIEnv *jni, int tid, const char *name, jlong java_thread_id) {
-  jchar units[MAX_THREAD_NAME_UNITS];
+// reject: store it as standard UTF-8 with an explicit length.
+void Profiler::storeThreadName(int tid, const char *name, jlong java_thread_id) {
   char out[3 * MAX_THREAD_NAME_UNITS];
-  const char *utf8;
-  size_t length = modifiedUtf8ToStandard(jni, name != nullptr ? name : "", MAX_THREAD_NAME_UNITS,
-                                         units, out, &utf8);
-  _thread_info.set(tid, utf8, length, java_thread_id);
+  size_t length = modifiedUtf8ToStandard(name != nullptr ? name : "", MAX_THREAD_NAME_UNITS, out);
+  _thread_info.set(tid, out, length, java_thread_id);
 }
 
 /**
@@ -1551,7 +1548,7 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   if (native_thread_id >= 0 &&
     jvmti->GetThreadInfo(thread, &thread_info) == 0) {
     jlong java_thread_id = JVMThread::javaThreadId(jni, thread);
-    storeThreadName(jni, native_thread_id, thread_info.name, java_thread_id);
+    storeThreadName(native_thread_id, thread_info.name, java_thread_id);
     jvmti->Deallocate((unsigned char *)thread_info.name);
   }
 }

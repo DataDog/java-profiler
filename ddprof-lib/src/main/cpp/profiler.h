@@ -275,8 +275,8 @@ private:
   u32 getLockIndex(int tid);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
                      int tid, StackContext *java_ctx, bool *truncated, int lock_index);
-  static constexpr jsize MAX_THREAD_NAME_UNITS = 1024;
-  void storeThreadName(JNIEnv *jni, int tid, const char *name, jlong java_thread_id);
+  static constexpr size_t MAX_THREAD_NAME_UNITS = 1024;
+  void storeThreadName(int tid, const char *name, jlong java_thread_id);
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();

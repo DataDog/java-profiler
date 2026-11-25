@@ -77,102 +77,57 @@ private:
   const char *_chars;
 };
 
-// Encodes UTF-16 as standard UTF-8 into out, which holds at least 3 * n bytes, and returns the
-// byte length. Unlike JNI's modified UTF-8, supplementary chars take 4 bytes and U+0000 one zero
-// byte; unpaired surrogates become U+FFFD. The output is not NUL-terminated.
-inline size_t utf16ToUtf8(const jchar *in, jsize n, char *out) {
+// Returns the length of the well-formed modified-UTF-8 sequence at p (1-3 bytes), or 0.
+inline size_t modifiedUtf8SequenceLength(const unsigned char *p) {
+  auto cont = [](unsigned char b) { return (b & 0xC0) == 0x80; };
+  if (p[0] < 0x80) return 1;
+  if ((p[0] == 0xC0 && p[1] == 0x80) || (p[0] >= 0xC2 && p[0] <= 0xDF && cont(p[1]))) return 2;
+  if ((p[0] & 0xF0) == 0xE0 && cont(p[1]) && cont(p[2]) && (p[0] != 0xE0 || p[1] >= 0xA0)) {
+    return 3;
+  }
+  return 0;
+}
+
+// Re-encodes JVMTI's modified UTF-8 as standard UTF-8 into out (3 * max_units bytes, unterminated),
+// keeping at most max_units UTF-16 units without splitting a surrogate pair; returns the length.
+// Only C0 80 and 6-byte surrogate pairs differ; a lone surrogate or malformed byte becomes U+FFFD.
+inline size_t modifiedUtf8ToStandard(const char *name, size_t max_units, char *out) {
+  const unsigned char *p = reinterpret_cast<const unsigned char *>(name);
+  size_t units = 0;
   size_t length = 0;
-  for (jsize i = 0; i < n; i++) {
-    uint32_t c = in[i];
-    if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n && in[i + 1] >= 0xDC00 && in[i + 1] <= 0xDFFF) {
-      c = 0x10000 + ((c - 0xD800) << 10) + (in[++i] - 0xDC00);
-    } else if (c >= 0xD800 && c <= 0xDFFF) {
-      c = 0xFFFD;
-    }
-    if (c < 0x80) {
-      out[length++] = static_cast<char>(c);
-    } else if (c < 0x800) {
-      out[length++] = static_cast<char>(0xC0 | (c >> 6));
-      out[length++] = static_cast<char>(0x80 | (c & 0x3F));
-    } else if (c < 0x10000) {
-      out[length++] = static_cast<char>(0xE0 | (c >> 12));
-      out[length++] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-      out[length++] = static_cast<char>(0x80 | (c & 0x3F));
-    } else {
+  while (*p != '\0' && units < max_units) {
+    size_t n = modifiedUtf8SequenceLength(p);
+    bool surrogate = n == 3 && p[0] == 0xED && p[1] >= 0xA0;
+    if (surrogate && p[1] <= 0xAF && p[3] == 0xED && p[4] >= 0xB0 && p[4] <= 0xBF &&
+        (p[5] & 0xC0) == 0x80) {
+      if (units + 2 > max_units) {
+        break;
+      }
+      uint32_t c = 0x10000 + ((((p[1] & 0x0F) << 6) | (p[2] & 0x3F)) << 10) +
+                   (((p[4] & 0x0F) << 6) | (p[5] & 0x3F));
       out[length++] = static_cast<char>(0xF0 | (c >> 18));
       out[length++] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
       out[length++] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
       out[length++] = static_cast<char>(0x80 | (c & 0x3F));
+      p += 6;
+      units += 2;
+      continue;
     }
+    if (n == 2 && p[0] == 0xC0) {
+      out[length++] = '\0';
+    } else if (n == 0 || surrogate) {
+      out[length++] = static_cast<char>(0xEF);
+      out[length++] = static_cast<char>(0xBF);
+      out[length++] = static_cast<char>(0xBD);
+      n = n == 0 ? 1 : n;
+    } else {
+      memcpy(out + length, p, n);
+      length += n;
+    }
+    p += n;
+    units++;
   }
   return length;
-}
-
-// Returns how many of the first `read` UTF-16 units of a `total`-unit string to keep: a trailing
-// high surrogate whose low half lies past the truncation point is dropped, not split.
-inline jsize utf16TruncatedLength(const jchar *units, jsize read, jsize total) {
-  if (read > 0 && read < total && units[read - 1] >= 0xD800 && units[read - 1] <= 0xDBFF) {
-    return read - 1;
-  }
-  return read;
-}
-
-// Modified UTF-8 (JNI, JVMTI) differs from standard UTF-8 only in C0 80 (U+0000) and the
-// ED-led surrogate halves of supplementary characters. Without those bytes it is already
-// standard UTF-8. BMP characters U+D000-U+D7FF also start with ED: converting them is correct,
-// only unnecessary.
-inline bool modifiedUtf8IsStandard(const char *s) {
-  for (; *s != '\0'; s++) {
-    unsigned char c = static_cast<unsigned char>(*s);
-    if (c == 0xC0 || c == 0xED) return false;
-  }
-  return true;
-}
-
-// Returns the byte length of the first max_units UTF-16 units of modified UTF-8 s. Each byte
-// sequence encodes one UTF-16 unit; like utf16TruncatedLength, a high surrogate (ED A0-AF)
-// whose low half lies past the cut is dropped.
-inline size_t modifiedUtf8PrefixLength(const char *s, size_t max_units) {
-  size_t units = 0;
-  size_t i = 0;
-  size_t last = 0;
-  for (; s[i] != '\0'; i++) {
-    if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) {
-      if (units++ == max_units) {
-        unsigned char lead = static_cast<unsigned char>(s[last]);
-        unsigned char next = static_cast<unsigned char>(s[last + 1]);
-        return lead == 0xED && next >= 0xA0 && next <= 0xAF ? last : i;
-      }
-      last = i;
-    }
-  }
-  return i;
-}
-
-// Converts JVMTI's modified-UTF-8 name to standard UTF-8 of at most max_units UTF-16 units and
-// returns its byte length; *utf8 is set to name or out. units holds max_units, out 3 * max_units.
-// If the JVM cannot decode the name, the JVMTI bytes are kept under the same cap.
-inline size_t modifiedUtf8ToStandard(JNIEnv *jni, const char *name, jsize max_units,
-                                     jchar *units, char *out, const char **utf8) {
-  *utf8 = name;
-  if (modifiedUtf8IsStandard(name)) {
-    // Most names need no conversion: no JNI call or Java allocation.
-    return modifiedUtf8PrefixLength(name, max_units);
-  }
-  jstring str = jni->NewStringUTF(name);
-  JniLocalRef ref(jni, str);
-  if (str == nullptr) {
-    jniExceptionCheck(jni);
-    return modifiedUtf8PrefixLength(name, max_units);
-  }
-  jsize total = jni->GetStringLength(str);
-  jsize read = total < max_units ? total : max_units;
-  jni->GetStringRegion(str, 0, read, units);
-  if (jniExceptionCheck(jni)) {
-    return modifiedUtf8PrefixLength(name, max_units);
-  }
-  *utf8 = out;
-  return utf16ToUtf8(units, utf16TruncatedLength(units, read, total), out);
 }
 
 #endif
