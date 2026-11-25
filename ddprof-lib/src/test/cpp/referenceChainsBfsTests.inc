@@ -2266,6 +2266,7 @@ TEST_F(ReferenceChainsBfsTest, RequeuedRebuildsKeepOneEntryPerTagAndYieldToEvict
 
 // The REBUILD publish step replaces only: it never inserts (a dump may have evicted the entry since
 // the rebuild scan), never overwrites a chain cached under another search generation, and never
+// erases the entry it declines to replace (RebuildWritebackLeavesOtherGenerationChainAlone).
 
 // A REBUILD queued for a chain cached by an EARLIER search generation must not be rebuilt:
 // restartSearch() reassigns tag numbers, so a same-numbered chain from a previous search
@@ -2365,6 +2366,67 @@ TEST_F(ReferenceChainsBfsTest, RebuildWritebackNeverResurrectsDumpEvictedEntry) 
     std::vector<ReferenceChainEvent> dump;
     ReferenceChainsTestAccessor::drain(&dump);
     EXPECT_EQ(0u, dump.size());
+
+    tracker->stop();
+}
+
+// The write-back's generation guard: a chain re-cached under ANOTHER search generation in the
+// scan-to-writeback window must not be overwritten by the rebuild - the guard declines to replace
+// it and the cached (other-generation) chain survives unchanged.
+TEST_F(ReferenceChainsBfsTest, RebuildWritebackLeavesOtherGenerationChainAlone) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 555, kOtherNs = 777;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    ReferenceChainEvent cached;
+    cached._target_tag = (u64)7;
+    cached._depth = 4;
+    cached._root_kind = (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(7, std::move(cached), 7, kSearchNs));
+    // Frontier entry deep enough that the rebuilt event is not a suppressed shape - the
+    // write-back's generation guard, not suppression, is what must keep the other-generation
+    // chain intact.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 7, 0, 4, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+
+    std::vector<jlong> snapshot = ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(7, snapshot, /*rebuild=*/true);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    static bool s_recached = false;
+    static u64 s_hook_ns = 0;
+    s_recached = false;
+    s_hook_ns = kOtherNs;
+    ReferenceChainsTestAccessor::setBetweenInvalidationScanAndWritebackForTest([] {
+        // Another generation re-caches the tag in the scan-to-writeback window.
+        ReferenceChainEvent other;
+        other._target_tag = (u64)7;
+        other._depth = 2;
+        other._root_kind = (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD;
+        s_recached = ReferenceChainsTestAccessor::cacheChain(
+            7, std::move(other), 7, s_hook_ns);
+    });
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    LivenessTracker::instance()->setGcGenerationsForTest(false);
+    ReferenceChainsTestAccessor::setBetweenInvalidationScanAndWritebackForTest(nullptr);
+    ASSERT_TRUE(s_recached)
+        << "the hook must have re-cached the tag under another generation";
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7));
+    EXPECT_EQ(kOtherNs, ReferenceChainsTestAccessor::resolvedChainSearchNs(7))
+        << "the write-back must not overwrite a chain cached under another generation";
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(1u, dump.size());
+    EXPECT_EQ(2u, dump[0]._depth) << "the other-generation chain must survive unchanged";
 
     tracker->stop();
 }

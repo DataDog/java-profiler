@@ -706,8 +706,9 @@ TEST_F(ResolvedChainCacheTest, DeferredInvalidationOverflowClearsCacheOnNextDrai
 }
 
 // The overflow policy is asymmetric: a REBUILD queued onto a full buffer is dropped (self-healing -
-// the next path change or correlation re-queues it), the cache stays intact, and no drop counter
-// moves; an EVICT queued onto a full buffer still fails closed (clears the cache on the next drain).
+// the next path change or correlation re-queues it), the cache stays intact, and only
+// REFERENCE_CHAIN_REBUILDS_DROPPED moves; an EVICT queued onto a full buffer still fails closed
+// (clears the cache on the next drain).
 TEST_F(ResolvedChainCacheTest, RebuildOverflowDroppedButEvictOverflowFailsClosed) {
     const int cap = ReferenceChainsTestAccessor::maxPendingChainInvalidations();
     const long long dropped_before =
