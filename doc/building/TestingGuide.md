@@ -229,7 +229,7 @@ logs before reporting). A flaky cell+scenario gets an entry in
 added | review_by | reason`, same ticket and expiry discipline as
 `ddprof-test/quarantine.txt` — rendered as quarantined in the PR comment instead of
 turning the pipeline red. `validate-dd-trace-quarantine` validates the list (format,
-ticket, dates, cell globs against the known matrix) in the same pipelines and fails
+ticket, dates, cell globs against scheduled cells only, so musl/OpenJ9 entries fail) in the same pipelines and fails
 them on a malformed, ticketless, or expired entry.
 
 No sanitizers are applied here. The goal is compatibility verification, not crash

@@ -420,6 +420,32 @@ run_script "${WORK}/all-pass" "${Q3}"
 assert_exit "a quarantined-but-passing scenario still exits 0" 0
 assert_body_contains "the quarantine does not colour a passing scenario" "All 30 integration tests passed"
 
+# --- globs that meet only on an unscheduled cell gate disjoint scheduled cells ---
+
+build_matrix "${WORK}/unscheduled-overlap" "fail:glibc-x64-openj9-jdk17" "fail:musl-x64-hotspot-jdk17"
+write_cell "${WORK}/unscheduled-overlap" "glibc-x64-openj9-jdk17" fail pass
+write_cell "${WORK}/unscheduled-overlap" "musl-x64-hotspot-jdk17" fail pass
+write_cell "${WORK}/unscheduled-overlap" "musl-x64-openj9-jdk17" fail pass
+Q_DISJOINT="${WORK}/q-disjoint.txt"
+: > "${Q_DISJOINT}"
+add_quarantine "${Q_DISJOINT}" "*-x64-openj9-jdk17/profiler-only" "PROF-16618" "2027-02-10" "openj9 flake"
+add_quarantine "${Q_DISJOINT}" "musl-x64-*-jdk17/profiler-only" "PROF-16014" "2027-02-10" "musl flake"
+if QUARANTINE_LIST="${Q_DISJOINT}" "${BASH}" "${HERE}/../validate-quarantine.sh" > /dev/null 2>&1; then
+  echo "PASS: the validator accepts globs that meet only on an unscheduled cell"
+else
+  echo "FAIL: the validator rejects globs that meet only on an unscheduled cell"
+  FAILED=1
+fi
+run_script "${WORK}/unscheduled-overlap" "${Q_DISJOINT}"
+assert_exit "disjoint quarantines excuse both scheduled cells" 0
+# shellcheck disable=SC2016
+assert_body_contains "the glibc/OpenJ9 cell takes the first entry" '`glibc-x64-openj9-jdk17/profiler-only` — PROF-16618'
+# shellcheck disable=SC2016
+assert_body_contains "the musl/HotSpot cell takes the second entry" '`musl-x64-hotspot-jdk17/profiler-only` — PROF-16014'
+# shellcheck disable=SC2016
+assert_body_lacks "the stale unscheduled cell is not reported as quarantined" '`musl-x64-openj9-jdk17/'
+assert_body_contains "the stale unscheduled cell stays N/A" "**10 not applicable (not scheduled)**"
+
 # --- quarantined bullets render on separate lines ---
 
 build_matrix "${WORK}/two-quarantined" "fail:glibc-x64-openj9-jdk25" "fail:musl-arm64-hotspot-jdk25"

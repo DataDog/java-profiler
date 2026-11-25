@@ -54,13 +54,6 @@ PLATFORMS=("${QUARANTINE_PLATFORMS[@]}")
 JDKS=("${QUARANTINE_JDKS[@]}")
 NOT_APPLICABLE_REASON="OpenJ9 requires glibc; upstream publishes no musl runtime."
 
-is_not_applicable() {
-  case "$1" in
-    musl-x64-openj9|musl-arm64-openj9) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 log_info "Collecting results for branch: ${DDPROF_COMMIT_BRANCH:-<unset>}"
 
 # Collect test results
@@ -129,7 +122,7 @@ for config_dir in "${RESULTS_DIR}"/*; do
   [ -d "${config_dir}" ] || continue
   config_name=$(basename "${config_dir}")
   # Stale artifacts must not turn a not-scheduled combination into test coverage.
-  if is_not_applicable "${config_name%-jdk*}"; then
+  if quarantine_platform_not_applicable "${config_name%-jdk*}"; then
     continue
   fi
 
@@ -208,7 +201,7 @@ INCOMPLETE_CONFIGS=""
 for platform in "${PLATFORMS[@]}"; do
   for jdk in "${JDKS[@]}"; do
     config="${platform}-jdk${jdk}"
-    if is_not_applicable "${platform}"; then
+    if quarantine_platform_not_applicable "${platform}"; then
       result_set "${config}" "not-applicable"
       TOTAL_NOT_APPLICABLE=$((TOTAL_NOT_APPLICABLE + 1))
       continue

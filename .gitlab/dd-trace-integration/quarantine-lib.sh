@@ -10,7 +10,7 @@
 #
 #   <cell-glob>/<scenario> | PROF-<n> | added | review_by | reason
 #
-#   cell-glob   Bash glob against a known matrix cell <libc>-<arch>-<jvm>-jdk<version>.
+#   cell-glob   Bash glob against a scheduled matrix cell <libc>-<arch>-<jvm>-jdk<version>.
 #   scenario    Exactly "profiler-only" or "tracer-profiler" (the validation-log
 #               filename prefixes post-pr-comment.sh reads).
 #   ticket      PROF-<number>. Required - a quarantine without a ticket is just
@@ -29,14 +29,23 @@
 # expired entry never matches (the failure gates again); the validator is what
 # turns an expired entry into a red job.
 
-# The matrix this pipeline is expected to cover. Declared once: it drives the
-# completeness check in post-pr-comment.sh and the cell-glob validation here,
-# so the two cannot drift.
+# The matrix the gate renders. Declared once: with the not-applicable rule
+# below, it drives the completeness check in post-pr-comment.sh and the
+# cell-glob validation here, so the two cannot drift.
 QUARANTINE_PLATFORMS=(
   glibc-x64-hotspot glibc-x64-openj9 glibc-arm64-hotspot glibc-arm64-openj9
   musl-x64-hotspot musl-x64-openj9 musl-arm64-hotspot musl-arm64-openj9
 )
 QUARANTINE_JDKS=(8 11 17 21 25)
+
+# Platforms the .integration_test_base rules never schedule. The gate renders
+# them as N/A; they are not cells, so no quarantine glob can match them.
+quarantine_platform_not_applicable() {
+  case "$1" in
+    musl-x64-openj9|musl-arm64-openj9) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # Consumed by validate-quarantine.sh, which sources this lib.
 # shellcheck disable=SC2034
@@ -175,10 +184,11 @@ quarantine_date_valid() {
   [ "${day}" -le "${max_day}" ]
 }
 
-# Enumerates the known matrix cells, one per line.
+# Enumerates the scheduled matrix cells, one per line.
 quarantine_known_cells() {
   local platform jdk
   for platform in "${QUARANTINE_PLATFORMS[@]}"; do
+    quarantine_platform_not_applicable "${platform}" && continue
     for jdk in "${QUARANTINE_JDKS[@]}"; do
       printf '%s-jdk%s\n' "${platform}" "${jdk}"
     done
@@ -200,7 +210,7 @@ quarantine_days_since_epoch() {
   printf '%d\n' $(( (yy - 1969) * 365 + (yy / 4 - yy / 100 + yy / 400) - (1969 / 4 - 1969 / 100 + 1969 / 400) + dm + day - 1 ))
 }
 
-# Can one known cell match both globs? Two entries that share a reachable
+# Can one scheduled cell match both globs? Two entries that share a reachable
 # cell shadow each other, since quarantine_find only ever returns the first
 # match.
 globs_overlap() {
@@ -218,7 +228,7 @@ globs_overlap() {
   return 1
 }
 
-# Does the cell glob match at least one known matrix cell?
+# Does the cell glob match at least one scheduled matrix cell?
 quarantine_glob_matches_known_cell() {
   local glob="$1" cell
   while IFS= read -r cell; do

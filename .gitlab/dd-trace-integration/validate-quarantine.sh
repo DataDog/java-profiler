@@ -3,7 +3,7 @@
 #
 # Enforces what the gate (post-pr-comment.sh via quarantine-lib.sh) relies on:
 # format, ticket reference, real calendar dates, an unexpired review_by, a
-# known scenario token, and cell globs that match the known matrix. Fails the
+# known scenario token, and cell globs that match a scheduled matrix cell. Fails the
 # job on any problem - a stale or malformed entry must turn CI red, not
 # silently stop gating. QUARANTINE_LIST overrides the list path (the unit
 # tests use this).
@@ -52,7 +52,7 @@ TICKET_RE='^PROF-[0-9]+$'
 TODAY="$(quarantine_today)"
 
 # Ids are exact per (scenario, cell-glob); two entries whose globs can match
-# the same known cell for the same scenario shadow each other - quarantine_find
+# the same scheduled cell for the same scenario shadow each other - quarantine_find
 # only ever returns the first match, so the second entry's ticket and expiry
 # would silently never take effect.
 # Id -> first line, kept as parallel indexed arrays: macOS /bin/bash is 3.2,
@@ -109,7 +109,7 @@ for i in "${!QUARANTINE_IDS[@]}"; do
   fi
 
   if ! quarantine_glob_matches_known_cell "${glob}"; then
-    error "${line}" "cell glob '${glob}' matches no known matrix cell (<libc>-<arch>-<jvm>-jdk<version>, e.g. glibc-x64-openj9-jdk25); it would quarantine nothing"
+    error "${line}" "cell glob '${glob}' matches no scheduled matrix cell (<libc>-<arch>-<jvm>-jdk<version>, e.g. glibc-x64-openj9-jdk25); it would quarantine nothing"
   fi
 
   seen_line=""
@@ -131,7 +131,7 @@ done
 fi
 
 # Overlap across different globs for the same scenario: two entries whose
-# cell globs both match some common known cell shadow each other the same way.
+# cell globs both match some common scheduled cell shadow each other the same way.
 if [ "${#QUARANTINE_IDS[@]}" -gt 0 ]; then
 for i in "${!QUARANTINE_IDS[@]}"; do
   for j in "${!QUARANTINE_IDS[@]}"; do
@@ -142,7 +142,7 @@ for i in "${!QUARANTINE_IDS[@]}"; do
       continue
     fi
     if globs_overlap "${QUARANTINE_CELL_GLOBS[${i}]}" "${QUARANTINE_CELL_GLOBS[${j}]}"; then
-      error "${QUARANTINE_LINES[${j}]}" "'${QUARANTINE_IDS[${j}]}' overlaps '${QUARANTINE_IDS[${i}]}' (line ${QUARANTINE_LINES[${i}]}) on at least one known cell; only the first entry would ever take effect"
+      error "${QUARANTINE_LINES[${j}]}" "'${QUARANTINE_IDS[${j}]}' overlaps '${QUARANTINE_IDS[${i}]}' (line ${QUARANTINE_LINES[${i}]}) on at least one scheduled cell; only the first entry would ever take effect"
     fi
   done
 done
