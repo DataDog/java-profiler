@@ -33,6 +33,7 @@ PthreadCreateTable LibraryPatcher::_pthread_create;
 // Stand-ins until initialize_persistent() asks the loader.
 void*      LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
 void*      LibraryPatcher::_next_pthread_create = nullptr;
+bool       LibraryPatcher::_plt_binding_captured = false;
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
 PatchEntry LibraryPatcher::_socket_entries[4 * MAX_NATIVE_LIBS];
@@ -229,6 +230,27 @@ void* LibraryPatcher::plt_binding(void* global, void* next) {
   // binds to past a preloaded interposer; hooking it would route its threads
   // through the interposer it bypassed.
   return in_main_executable(global) ? next : nullptr;
+}
+
+void LibraryPatcher::capture_plt_binding(CodeCache* lib) {
+  if (_next_pthread_create == nullptr || _plt_binding_captured || !is_profiler_library(lib)) {
+    return;
+  }
+  // RTLD_NEXT from here skips a preloaded interposer, which PLT slots still bind
+  // to. This library's PLT slot binds like any other's and is never hooked. Before
+  // it is bound it holds our own stub; the GLOB_DAT slot holds the global binding.
+  for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
+    void** slot = lib->peekImport(im_pthread_create, static_cast<ImportType>(ty));
+    if (slot == nullptr) {
+      continue;
+    }
+    void* bound = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    if (bound != nullptr && bound != _loader_pthread_create && !lib->contains(bound)) {
+      _next_pthread_create = bound;
+      _plt_binding_captured = true;
+      return;
+    }
+  }
 }
 
 void LibraryPatcher::initialize_persistent() {
@@ -826,6 +848,7 @@ void LibraryPatcher::patch_pthread_create() {
           int num_of_libs = c.native_libs->count();
           for (int index = 0; index < num_of_libs; index++) {
             CodeCache* lib = c.native_libs->at(index);
+            capture_plt_binding(lib);  // before this pass's visits
             // Filter out everything patch_library_unlocked() would decline, so
             // that libraries never patched are not re-checked for liveness on
             // every pass.

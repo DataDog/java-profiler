@@ -61,6 +61,7 @@ public:
   static void setNextPthreadCreate(void* func) { LibraryPatcher::_next_pthread_create = func; }
 
   static void* pltBinding(void* global, void* next) { return LibraryPatcher::plt_binding(global, next); }
+  static void capturePltBinding(CodeCache* lib) { LibraryPatcher::capture_plt_binding(lib); }
 
   // Drops the patch table without restoring the saved originals: tests patch GOT
   // slots in the test body's frame, dead by the time a fixture could restore them.
@@ -69,6 +70,7 @@ public:
     memset(&LibraryPatcher::_pthread_create, 0, sizeof(LibraryPatcher::_pthread_create));
     LibraryPatcher::_loader_pthread_create = reinterpret_cast<void*>(&pthread_create);
     LibraryPatcher::_next_pthread_create = nullptr;
+    LibraryPatcher::_plt_binding_captured = false;
     LibraryPatcher::_initialized.store(false);
   }
 };

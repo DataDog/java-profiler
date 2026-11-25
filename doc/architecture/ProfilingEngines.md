@@ -205,10 +205,15 @@ Per-thread engines (`CTimer`, `PerfEvents`) learn about threads in three ways:
      loader's bindings, captured by `initialize_persistent()`:
      `dlsym(RTLD_DEFAULT)` (a preloaded interposer included) or the library's
      own lazy-binding stub. Only when that address lies in the main executable (a
-     non-PIE executable that takes `&pthread_create`) is `dlsym(RTLD_NEXT)`
-     accepted too, which PLT calls bind to then. An executable that defines its own
-     `pthread_create` is not told apart, and is not supported: a library bound
-     past it (`RTLD_DEEPBIND`) would be hooked.
+     non-PIE executable that takes `&pthread_create`) is a second binding
+     accepted: the one that PLT calls bind to. It starts as `dlsym(RTLD_NEXT)`.
+     That lookup skips a preloaded interposer, but PLT slots still bind to it.
+     So the first pass that finds the profiler's own PLT slot bound takes that
+     slot's value instead (`LibraryPatcher::capture_plt_binding()`). The patcher
+     never hooks that slot. Until glibc binds it lazily on the profiler's first
+     `pthread_create()` call, libraries bound to the interposer stay pending.
+     An executable that defines its own `pthread_create` is not told apart, and
+     is not supported: a library bound past it (`RTLD_DEEPBIND`) would be hooked.
    - Any other value is left alone: another interposer's wrapper, whose threads
      are then not registered, an unresolved weak import, or a GOT the loader has
      not relocated yet.

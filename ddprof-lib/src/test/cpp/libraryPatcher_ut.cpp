@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <dlfcn.h>
+#include <link.h>
 #include <pthread.h>
 #include <string.h>
 
@@ -351,6 +352,91 @@ TEST_F(LibraryPatcherPatching, PatchesSlotHoldingPltBindingOnFirstPatch) {
   EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
+// A non-PIE executable that takes &pthread_create, with a preloaded interposer:
+// RTLD_NEXT from the profiler finds libc, but PLT slots bind to the interposer.
+// The profiler's own bound PLT slot supplies it, so other libraries' are hooked.
+TEST_F(LibraryPatcherPatching, CapturesPltBindingPastPreloadedInterposer) {
+  void* const canonical = reinterpret_cast<void*>(static_cast<uintptr_t>(0x3000));
+  void* const interposer = reinterpret_cast<void*>(&fake_original_pthread_create);
+  CodeCache self(kUnlinkedPath, -1, anchorMin(), anchorMax(), nullptr,
+                 /* imports_patchable */ true);
+  ASSERT_FALSE(self.contains(interposer));
+  LibraryPatcherTestAccessor::setLoaderPthreadCreate(canonical);
+  LibraryPatcherTestAccessor::setNextPthreadCreate(real_pthread_create());
+  void* glob_dat = canonical;  // added first, so the capture must skip it
+  void* jump_slot = interposer;
+  self.addImport(&glob_dat, "pthread_create");
+  self.addImport(&jump_slot, "pthread_create");
+
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  ASSERT_EQ(interposer, LibraryPatcherTestAccessor::nextPthreadCreate());
+
+  void* slot = interposer;
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(&slot, "pthread_create");
+  LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
+
+  EXPECT_NE(interposer, slot);
+  EXPECT_EQ(0, LibraryPatcherTestAccessor::entryPending(&lib));
+  EXPECT_EQ(canonical, glob_dat);
+  EXPECT_EQ(interposer, jump_slot);
+}
+
+// Until the profiler's PLT slot is bound (null, or lazily its own stub) the
+// RTLD_NEXT value stays. The first bound value is kept: a later write to that
+// slot is not the loader's.
+TEST_F(LibraryPatcherPatching, CapturesOnlyFirstBoundPltSlotValue) {
+  void* const next = real_pthread_create();
+  void* const bound = reinterpret_cast<void*>(&fake_original_pthread_create);
+  void* const rewritten = reinterpret_cast<void*>(static_cast<uintptr_t>(0x5000));
+  LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(static_cast<uintptr_t>(0x3000)));
+  LibraryPatcherTestAccessor::setNextPthreadCreate(next);
+  void* jump_slot = nullptr;
+  CodeCache self(kUnlinkedPath, -1, anchorMin(), anchorMax(), nullptr,
+                 /* imports_patchable */ true);
+  self.addImport(&jump_slot, "pthread_create");
+
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
+
+  jump_slot = const_cast<void*>(LibraryPatcherTestAccessor::selfAnchor());
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
+
+  jump_slot = bound;
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  EXPECT_EQ(bound, LibraryPatcherTestAccessor::nextPthreadCreate());
+
+  jump_slot = rewritten;
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  EXPECT_EQ(bound, LibraryPatcherTestAccessor::nextPthreadCreate());
+}
+
+// Only the profiler's own slot is trusted, and only where the executable owns
+// the global binding: otherwise there is no second binding to replace.
+TEST_F(LibraryPatcherPatching, CapturesPltBindingOnlyFromProfilerWhenExecutableOwnsBinding) {
+  void* const next = real_pthread_create();
+  void* const bound = reinterpret_cast<void*>(&fake_original_pthread_create);
+  LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(static_cast<uintptr_t>(0x3000)));
+  void* foreign_slot = bound;
+  CodeCache foreign(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                    /* imports_patchable */ true);
+  foreign.addImport(&foreign_slot, "pthread_create");
+  void* self_slot = bound;
+  CodeCache self(kUnlinkedPath, -1, anchorMin(), anchorMax(), nullptr,
+                 /* imports_patchable */ true);
+  self.addImport(&self_slot, "pthread_create");
+
+  LibraryPatcherTestAccessor::setNextPthreadCreate(next);
+  LibraryPatcherTestAccessor::capturePltBinding(&foreign);
+  EXPECT_EQ(next, LibraryPatcherTestAccessor::nextPthreadCreate());
+
+  LibraryPatcherTestAccessor::setNextPthreadCreate(nullptr);
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::nextPthreadCreate());
+}
+
 // A binding the loader could not resolve is null and must not match a null
 // slot, an unresolved weak import: hooking it would make it look resolved.
 TEST_F(LibraryPatcherPatching, NeverHooksNullSlotEvenIfABindingIsNull) {
@@ -517,14 +603,20 @@ TEST_F(LibraryPatcherRehook, NullSlotStaysUnhookedAndPending) {
   EXPECT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
 }
 
-// forgetPatchTable() resets the whole table and both bindings, so one test's
-// leftovers cannot reach the next.
+// forgetPatchTable() resets the whole table, both bindings and the capture, so
+// one test's leftovers cannot reach the next.
 TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
   slot = reinterpret_cast<void*>(&fake_original_pthread_create);
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
   ASSERT_EQ(1, LibraryPatcherTestAccessor::entryPending(&lib));
   LibraryPatcherTestAccessor::setLoaderPthreadCreate(nullptr);
   LibraryPatcherTestAccessor::setNextPthreadCreate(real_pthread_create());
+  void* self_slot = reinterpret_cast<void*>(&fake_original_pthread_create);
+  CodeCache self(kUnlinkedPath, -1, anchorMin(), anchorMax(), nullptr,
+                 /* imports_patchable */ true);
+  self.addImport(&self_slot, "pthread_create");
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  ASSERT_EQ(self_slot, LibraryPatcherTestAccessor::nextPthreadCreate());
 
   LibraryPatcherTestAccessor::forgetPatchTable();
 
@@ -532,6 +624,11 @@ TEST_F(LibraryPatcherRehook, ForgetPatchTableResetsEveryField) {
   EXPECT_EQ(-1, LibraryPatcherTestAccessor::entryPending(&lib));
   EXPECT_EQ(real_pthread_create(), LibraryPatcherTestAccessor::loaderPthreadCreate());
   EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::nextPthreadCreate());
+  // Not captured any more: a new bound value is taken.
+  LibraryPatcherTestAccessor::setNextPthreadCreate(real_pthread_create());
+  self_slot = reinterpret_cast<void*>(static_cast<uintptr_t>(0x5000));
+  LibraryPatcherTestAccessor::capturePltBinding(&self);
+  EXPECT_EQ(self_slot, LibraryPatcherTestAccessor::nextPthreadCreate());
 }
 
 // Both bindings are captured once, at initialization, because dlsym() must not
@@ -568,6 +665,30 @@ TEST_F(LibraryPatcherPatching, PltBindingOnlyWhenExecutableOwnsGlobalBinding) {
 
   EXPECT_EQ(next, LibraryPatcherTestAccessor::pltBinding(in_executable, next));
   EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::pltBinding(in_libc, next));
+}
+
+// The main executable's PT_LOAD segments are half-open: the last byte of the
+// last one is inside, the byte after it is not.
+TEST_F(LibraryPatcherPatching, PltBindingStopsAtExecutableSegmentEnd) {
+  struct Span { uintptr_t end; } span = {0};
+  dl_iterate_phdr(
+      [](struct dl_phdr_info* info, size_t, void* data) -> int {
+        Span* s = static_cast<Span*>(data);
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+          const ElfW(Phdr)& phdr = info->dlpi_phdr[i];
+          uintptr_t end = info->dlpi_addr + phdr.p_vaddr + phdr.p_memsz;
+          if (phdr.p_type == PT_LOAD && end > s->end) {
+            s->end = end;
+          }
+        }
+        return 1;  // the main executable only
+      },
+      &span);
+  ASSERT_NE(0u, span.end);
+  void* const next = reinterpret_cast<void*>(static_cast<uintptr_t>(0x5000));
+
+  EXPECT_EQ(next, LibraryPatcherTestAccessor::pltBinding(reinterpret_cast<void*>(span.end - 1), next));
+  EXPECT_EQ(nullptr, LibraryPatcherTestAccessor::pltBinding(reinterpret_cast<void*>(span.end), next));
 }
 
 #endif // __linux__
