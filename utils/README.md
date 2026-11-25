@@ -1,3 +1,5 @@
+# Utility Scripts
+
 Scripts that produce measurements or gate CI fail loud. A failed run, an exit status above 128 (death by signal), a missing expected output line (e.g. `[metrics]`), or a tool path that cannot be resolved is reported on stderr and makes the script exit non-zero, or marks its report INVALID. Never substitute default values such as `0`, discard a child's stderr, or silently fall back to another tool on `PATH`.
 
 <!-- Copyright 2026, Datadog, Inc -->
