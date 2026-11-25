@@ -63,6 +63,7 @@ BLOCK_MSG="denies Bash("
 for c in 'rm -rf build' 'rm' 'sudo ls' 'cd x && rm -f y' 'true; rm y' 'ls | sudo tee f' \
          'FOO=1 rm y' '(rm y)' 'echo $(rm y)' 'echo `rm y`' $'ls\nrm y' 'false || rm y' \
          'env rm y' 'exec rm y' 'nohup rm y' 'command rm y' 'xargs rm < list' \
+         'env -i rm y' 'time -p rm y' 'xargs -0 rm < list' 'nice rm y' 'setsid rm y' \
          'env FOO=1 exec rm y' $'rm \
 -rf y' 'env sudo ls'; do
   expect "floor denies: $c" 2 "$BLOCK_MSG" pi_hook bash "$c"
@@ -72,6 +73,27 @@ for c in 'ls -la' 'rmdir x' 'grep rm file' 'git rm --cached f' 'echo sudo' 'sudo
   expect "floor allows: $c" 0 "" pi_hook bash "$c"
 done
 expect "floor ignores other tools" 0 "" pi_hook read "rm -rf build"
+
+# joinContinuations: quoted arguments keep a literal backslash-newline; outside single
+# quotes (and inside double quotes, as bash does) the pair is a line continuation.
+cat > "$TEMP_DIR/join-driver.mjs" <<'JS'
+const m = await import(process.argv[2]);
+const j = m.joinContinuations;
+const cases = [
+  ["rm \\\n-rf y", "rm -rf y"],             // outside quotes: continuation removed
+  ["printf 'a\\\nb'", "printf 'a\\\nb'"],   // single quotes: literal pair kept
+  ['echo "x\\\ny"', 'echo "xy"'],           // double quotes: bash removes the pair too
+  ["rm -rf y\\", "rm -rf y\\"],             // trailing backslash without newline stays
+];
+for (const [inp, want] of cases) {
+  if (j(inp) !== want) {
+    console.error(`FAIL: ${JSON.stringify(inp)} -> ${JSON.stringify(j(inp))}, want ${JSON.stringify(want)}`);
+    process.exit(1);
+  }
+}
+JS
+expect "joinContinuations quote handling" 0 "" \
+  node --experimental-strip-types --no-warnings "$TEMP_DIR/join-driver.mjs" "$EXT"
 expect "floor names the blocked segment" 2 'Blocked `rm -f y`' pi_hook bash 'cd x && rm -f y'
 
 # The checkout's settings never widen or narrow the floor: origin/main's apply.

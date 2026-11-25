@@ -9,10 +9,11 @@ const TRUSTED_REF = "refs/remotes/origin/main"; // qualified: a tag named origin
 const DENY_RULE = /^Bash\((.+):\*\)$/;
 const SEGMENT = /[\n;&|()`]+/;
 const ENV_PREFIX = /^(?:\w+=\S*\s+)*/;
-// Launchers that exec their arguments keep the denied command as the payload. Options
-// to the launcher itself (e.g. `nice -n 5 rm`) are not stripped — the floor is a
-// hygiene measure, not a sandbox.
-const LAUNCHER = /^(?:env|exec|nohup|command|stdbuf|time|xargs)\s+/;
+// Launchers that exec their arguments keep the denied command as the payload; one
+// option cluster after the launcher is stripped. Not an argv parser: value-taking
+// launchers (e.g. `timeout 5 rm y`) still pass — the floor is a hygiene measure,
+// not a sandbox.
+const LAUNCHER = /^(?:env|exec|nohup|command|stdbuf|time|xargs|nice|setsid|strace|watch)\s+(?:-\S+\s+)?/;
 // cwd → origin/main's deny list, read once per cwd. Never keyed on anything else and
 // never populated on failure: a transient git error must disable the floor for one
 // call, not for the session.
@@ -41,10 +42,40 @@ function deniedCommands(cwd: string): string[] {
   }
 }
 
+// Backslash-newline is a line continuation outside single quotes (bash removes the
+// pair inside double quotes too); inside single quotes both characters are literal,
+// so a quoted argument's text must survive for the deny match on the segment.
+export function joinContinuations(command: string): string {
+  let out = "";
+  let quote: "" | "'" | '"' = "";
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote === "'") {
+      out += ch;
+      if (ch === "'") quote = "";
+      continue;
+    }
+    if (ch === "\\") {
+      if (command[i + 1] === "\n") { i++; continue; } // line continuation: remove the pair
+      out += ch;
+      if (i + 1 < command.length) out += command[++i]!; // escaped character, verbatim
+      continue;
+    }
+    if (quote === '"') {
+      out += ch;
+      if (ch === '"') quote = "";
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    out += ch;
+  }
+  return out;
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
-    const command = String(event.input.command ?? "").replace(/\\\n/g, " ");
+    const command = joinContinuations(String(event.input.command ?? ""));
     const denied = deniedCommands(ctx.cwd);
     for (const segment of command.split(SEGMENT)) {
       // Match the segment as written and after stripping each launcher/assignment
