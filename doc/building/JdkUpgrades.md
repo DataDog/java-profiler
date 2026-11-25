@@ -112,6 +112,38 @@ CI uses the same pattern:
 | `README.md` | Supported runtime versions |
 | `.github/workflows/test_workflow.yml`, `.github/workflows/cache_java.yml`, `.gitlab/build-deploy/.gitlab-ci.yml` (`functional:*-jdk8` jobs) | Remove test JDKs that fall below the new target |
 
+### Pinned JDK download URLs
+
+The `env` keys `JAVA_*_URL` in `.github/workflows/cache_java.yml` pin JDK
+archives that are not installed through SDKMAN! (Oracle 8, IBM SDK 8, Liberica
+musl). `prepareJdk` in `.github/scripts/java_setup.sh` downloads them only on
+a cache miss. A dead pin therefore fails an unrelated PR, and it blocks the
+Linux test matrix.
+
+`.github/workflows/jdk-url-check.yml` runs `.github/scripts/check_jdk_urls.sh`
+every day, on manual dispatch, and on PRs that change `cache_java.yml` or
+`java_setup.sh`. PR runs do not alert; scheduled and manual runs do:
+
+- A pin is stale when it returns HTTP 404 or 410. A HEAD answer of 403, 404,
+  405, 410 or 501 is checked again with a 1-byte GET, and the GET result counts.
+  The check fails. The run files a PROF ticket (component `library-java`, label
+  `ci`). It posts to Slack when the ticket is new or cannot be filed. A later
+  run resolves the ticket when the pin answers 2xx again.
+- Any other result (timeout, 5xx, 429) is inconclusive. It gives a warning only.
+- IBM keeps only a few SDK 8 releases. When IBM lists a release newer than
+  `JAVA_8_IBM_URL` and its archive exists, the run files a PROF ticket and
+  posts to Slack in the same cases. The check does not change the pin. A later
+  run resolves the ticket when the pin reaches that release and IBM still
+  lists it.
+
+To bump a pin, edit its URL in `cache_java.yml`. For `JAVA_8_IBM_URL`, the
+directory and the archive name both carry the version.
+
+A manual run with `force_issue` reports `JAVA_8_IBM_URL` as stale to test the
+alert path. It files a real PROF ticket and posts to the shared Slack webhook,
+unless a stale ticket for that pin is already open. The next scheduled or
+manual run that sees the pin answer 2xx resolves that ticket.
+
 ### Upgrading Gradle
 
 Change `distributionUrl` in `gradle/wrapper/gradle-wrapper.properties`, then

@@ -1,0 +1,65 @@
+# Checks the JDK download URLs pinned in cache_java.yml, and IBM SDK 8 releases
+# newer than the pin (.github/scripts/check_jdk_urls.sh). cache_java.yml downloads
+# only on a cache miss, so a dead pin would otherwise fail an unrelated PR.
+name: JDK download URL check
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force_issue:
+        description: 'Report JAVA_8_IBM_URL as stale to test the Jira and Slack alert path'
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - '.github/workflows/cache_java.yml'
+      - '.github/scripts/java_setup.sh'
+
+concurrency:
+  group: jdk-url-check-${{ github.event.pull_request.number || github.ref }}
+  # A new PR push cancels the stale PR run; scheduled and manual runs never
+  # cancel a run in progress, which would skip its alert step.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check pinned JDK URLs
+        env:
+          OUT_DIR: ${{ runner.temp }}/jdk-url-check
+        run: |
+          yq --version
+          .github/scripts/check_jdk_urls.sh check --out "$OUT_DIR"
+
+      # PR runs only report and fail: a PR must not file tickets, and fork PRs
+      # get no secrets. !cancelled() lets the alert run after a stale result
+      # failed the check step.
+      - name: Alert on stale or outdated pins
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        env:
+          OUT_DIR: ${{ runner.temp }}/jdk-url-check
+          FORCE_ISSUE: ${{ inputs.force_issue }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          ATLASSIAN_BASE_URL: ${{ secrets.ATLASSIAN_BASE_URL }}
+          ATLASSIAN_USER_EMAIL: ${{ secrets.ATLASSIAN_USER_EMAIL }}
+          ATLASSIAN_API_TOKEN: ${{ secrets.ATLASSIAN_API_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          args=(alert --out "$OUT_DIR")
+          if [ "$FORCE_ISSUE" = "true" ]; then
+            args+=(--force-issue)
+          fi
+          .github/scripts/check_jdk_urls.sh "${args[@]}"

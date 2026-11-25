@@ -80,6 +80,10 @@ jobs:
             .gitlab/dd-trace-integration/post-pr-comment.sh \
             .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh \
             .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh \
+            .github/scripts/check_jdk_urls.sh \
+            .github/scripts/resolve-jira-issue.sh \
+            .github/scripts/java_setup.sh \
+            .github/scripts/tests/test_check_jdk_urls.sh \
             .gitlab/dd-trace-integration/tests/newest_jfr_test.sh \
             .gitlab/dd-trace-integration/tests/validate_conformance_probe_test.sh
           shellcheck \
@@ -90,6 +94,9 @@ jobs:
             .gitlab/dd-trace-integration/validate-quarantine.sh \
             .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh \
             .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh \
+            .github/scripts/check_jdk_urls.sh \
+            .github/scripts/resolve-jira-issue.sh \
+            .github/scripts/tests/test_check_jdk_urls.sh \
             .gitlab/dd-trace-integration/tests/newest_jfr_test.sh \
             .gitlab/dd-trace-integration/tests/validate_conformance_probe_test.sh \
             .gitlab/dd-trace-integration/tests/probe_event_types_real_test.sh
@@ -100,6 +107,7 @@ jobs:
           bash .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh
           bash .gitlab/dd-trace-integration/tests/newest_jfr_test.sh
           bash .gitlab/dd-trace-integration/tests/validate_conformance_probe_test.sh
+          bash .github/scripts/tests/test_check_jdk_urls.sh
 
   # Fails when a quarantine entry is malformed, ticketless, or past its
   # review_by date. Without this the list only ever grows, and a quarantine
