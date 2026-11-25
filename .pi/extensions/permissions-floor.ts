@@ -9,6 +9,10 @@ const TRUSTED_REF = "refs/remotes/origin/main"; // qualified: a tag named origin
 const DENY_RULE = /^Bash\((.+):\*\)$/;
 const SEGMENT = /[\n;&|()`]+/;
 const ENV_PREFIX = /^(?:\w+=\S*\s+)*/;
+// Launchers that exec their arguments keep the denied command as the payload. Options
+// to the launcher itself (e.g. `nice -n 5 rm`) are not stripped — the floor is a
+// hygiene measure, not a sandbox.
+const LAUNCHER = /^(?:env|exec|nohup|command|stdbuf|time|xargs)\s+/;
 // cwd → origin/main's deny list, read once per cwd. Never keyed on anything else and
 // never populated on failure: a transient git error must disable the floor for one
 // call, not for the session.
@@ -40,16 +44,24 @@ function deniedCommands(cwd: string): string[] {
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
-    const command = String(event.input.command ?? "");
+    const command = String(event.input.command ?? "").replace(/\\\n/g, " ");
     const denied = deniedCommands(ctx.cwd);
     for (const segment of command.split(SEGMENT)) {
-      const words = segment.trim().replace(ENV_PREFIX, "").replace(/\s+/g, " ");
-      const hit = denied.find((c) => words === c || words.startsWith(c + " "));
-      if (hit) {
-        return {
-          block: true,
-          reason: `Blocked \`${segment.trim()}\`: .claude/settings.json denies Bash(${hit}:*) in agent sessions.`,
-        };
+      // Match the segment as written and after stripping each launcher/assignment
+      // prefix, so neither a deny rule for the bare command nor one for the launcher
+      // form is missed.
+      let words = segment.trim().replace(ENV_PREFIX, "").replace(/\s+/g, " ");
+      for (;;) {
+        const hit = denied.find((c) => words === c || words.startsWith(c + " "));
+        if (hit) {
+          return {
+            block: true,
+            reason: `Blocked \`${segment.trim()}\`: .claude/settings.json denies Bash(${hit}:*) in agent sessions.`,
+          };
+        }
+        const stripped = words.replace(LAUNCHER, "").replace(ENV_PREFIX, "").replace(/\s+/g, " ");
+        if (stripped === words) break;
+        words = stripped;
       }
     }
     return undefined;

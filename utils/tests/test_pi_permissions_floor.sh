@@ -61,10 +61,14 @@ git remote add origin "$TEMP_DIR/origin.git" && git push -q origin main && git f
 
 BLOCK_MSG="denies Bash("
 for c in 'rm -rf build' 'rm' 'sudo ls' 'cd x && rm -f y' 'true; rm y' 'ls | sudo tee f' \
-         'FOO=1 rm y' '(rm y)' 'echo $(rm y)' 'echo `rm y`' $'ls\nrm y' 'false || rm y'; do
+         'FOO=1 rm y' '(rm y)' 'echo $(rm y)' 'echo `rm y`' $'ls\nrm y' 'false || rm y' \
+         'env rm y' 'exec rm y' 'nohup rm y' 'command rm y' 'xargs rm < list' \
+         'env FOO=1 exec rm y' $'rm \
+-rf y' 'env sudo ls'; do
   expect "floor denies: $c" 2 "$BLOCK_MSG" pi_hook bash "$c"
 done
-for c in 'ls -la' 'rmdir x' 'grep rm file' 'git rm --cached f' 'echo sudo' 'sudoedit f' ''; do
+for c in 'ls -la' 'rmdir x' 'grep rm file' 'git rm --cached f' 'echo sudo' 'sudoedit f' '' \
+         'times' 'environ x' 'time ls'; do
   expect "floor allows: $c" 0 "" pi_hook bash "$c"
 done
 expect "floor ignores other tools" 0 "" pi_hook read "rm -rf build"
