@@ -117,4 +117,16 @@ inline jsize utf16TruncatedLength(const jchar *units, jsize read, jsize total) {
   return read;
 }
 
+// Modified UTF-8 (JNI, JVMTI) differs from standard UTF-8 only in C0 80 (U+0000) and the
+// ED-led surrogate halves of supplementary characters. Without those bytes it is already
+// standard UTF-8. BMP characters U+D000-U+D7FF also start with ED: converting them is correct,
+// only unnecessary.
+inline bool modifiedUtf8IsStandard(const char *s) {
+  for (; *s != '\0'; s++) {
+    unsigned char c = static_cast<unsigned char>(*s);
+    if (c == 0xC0 || c == 0xED) return false;
+  }
+  return true;
+}
+
 #endif

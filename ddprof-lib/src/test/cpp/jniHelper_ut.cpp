@@ -198,4 +198,13 @@ TEST(Utf16ToUtf8Test, PlatformThreadNameRoundTripsWithEmbeddedNul) {
               encode(u"worker-\U0001F600-\u00e9\u4e2d-a" + std::u16string(1, u'\0') + u"b"));
 }
 
+TEST(JniHelperTest, ModifiedUtf8WithoutNulOrSurrogatesIsStandard) {
+  EXPECT_TRUE(modifiedUtf8IsStandard(""));
+  EXPECT_TRUE(modifiedUtf8IsStandard("worker-1"));
+  EXPECT_TRUE(modifiedUtf8IsStandard("w-\xC3\xA9\xE4\xB8\xAD"));  // é中
+  EXPECT_FALSE(modifiedUtf8IsStandard("a\xC0\x80" "b"));             // modified-UTF-8 U+0000
+  EXPECT_FALSE(modifiedUtf8IsStandard("\xED\xA0\xBD\xED\xB8\x80")); // surrogate pair for U+1F600
+  EXPECT_FALSE(modifiedUtf8IsStandard("\xED\x9F\xBF"));  // U+D7FF: converted, unchanged
+}
+
 } // namespace

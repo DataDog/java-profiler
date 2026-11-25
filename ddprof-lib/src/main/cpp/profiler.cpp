@@ -1519,10 +1519,16 @@ void Profiler::setupSignalHandlers() {
 // JVMTI returns modified UTF-8 (surrogate pairs as 6 bytes, U+0000 as C0 80), which JFR readers
 // reject. Let the JVM decode it to UTF-16, then re-encode as standard UTF-8 with an explicit length.
 void Profiler::storeThreadName(JNIEnv *jni, int tid, const char *name, jlong java_thread_id) {
-  jstring str = name != nullptr ? jni->NewStringUTF(name) : nullptr;
-  if (str == nullptr) {
-    jniExceptionCheck(jni);
+  if (name == nullptr || modifiedUtf8IsStandard(name)) {
+    // Most names need no conversion: store them without a JNI call or Java allocation.
     _thread_info.set(tid, name != nullptr ? name : "", java_thread_id);
+    return;
+  }
+  jstring str = jni->NewStringUTF(name);
+  if (str == nullptr) {
+    // Allocation failed: keep the JVMTI bytes; readers may show replacement characters.
+    jniExceptionCheck(jni);
+    _thread_info.set(tid, name, java_thread_id);
     return;
   }
   JniLocalRef ref(jni, str);
