@@ -35,6 +35,8 @@ via `.gitlab/scripts/run-gtest-quarantine.sh`, because the Gradle daemon swallow
 child-process output when fd 1/2 are not a terminal.
 
 CI build images are pinned by digest (`BUILD_IMAGE_*` variables). A Dockerfile change takes effect only after a `rebuild-images` pipeline (`REBUILD_IMAGES="<image>"`) has built and pushed the image and the resulting digest has been re-pinned in the same PR. A PR that edits an image Dockerfile while still pinning the old or a placeholder digest is incomplete. Before review, check that the pinned digest comes from a rebuild that includes the change (for example, the build log shows the newly installed package).
+
+**Runs on:** amd64 and aarch64, using the standard `BUILD_IMAGE_X64` / `BUILD_IMAGE_ARM64`
 images, on every branch push. Skipped for GitLab merge-request pipelines and for
 JDK-integration triggers (`JDK_VERSION`/`DEBUG_LEVEL`/`HASH`/`DOWNSTREAM` set).
 
