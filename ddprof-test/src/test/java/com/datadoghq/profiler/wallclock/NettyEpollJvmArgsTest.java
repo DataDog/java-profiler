@@ -6,10 +6,16 @@
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /** Covers which parent JVM flags the isolated child launchers forward. */
 class NettyEpollJvmArgsTest {
@@ -51,5 +57,13 @@ class NettyEpollJvmArgsTest {
     assertEquals(
         Collections.singletonList("-Xmx1536m"),
         NettyEpollJvm.heapLayoutArgs(Collections.singletonList("-Xmx1536m")));
+  }
+
+  @Test
+  void sharedTempDirectoryIsTraversableByOtherUsers(@TempDir Path parent) throws Exception {
+    Path directory = NettyEpollJvm.createSharedTempDirectory(parent, "shared-");
+    Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(directory);
+    assertTrue(permissions.contains(PosixFilePermission.OTHERS_READ), permissions.toString());
+    assertTrue(permissions.contains(PosixFilePermission.OTHERS_EXECUTE), permissions.toString());
   }
 }

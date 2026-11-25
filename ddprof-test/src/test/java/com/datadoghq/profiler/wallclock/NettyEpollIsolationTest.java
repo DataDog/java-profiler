@@ -96,7 +96,7 @@ public class NettyEpollIsolationTest {
     }
     Path directory = Paths.get("build", "netty-epoll");
     Files.createDirectories(directory);
-    Path run = Files.createTempDirectory(directory, method + "-");
+    Path run = NettyEpollJvm.createSharedTempDirectory(directory, method + "-");
     List<String> command = new ArrayList<>();
     command.add(Paths.get(System.getProperty("java.home"), "bin", "java").toString());
     command.addAll(NettyEpollJvm.heapLayoutArgs());

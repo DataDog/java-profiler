@@ -639,6 +639,46 @@ TEST_F(ResolvedChainCacheTest, DeferredInvalidationIsBoundedByCacheAndKeepsCapac
               (size_t)cap);
 }
 
+TEST_F(ResolvedChainCacheTest, DeferredInvalidationOverflowClearsCacheOnNextDrain) {
+    const int cap = ReferenceChainsTestAccessor::maxResolvedChains();
+    const long long dropped_before =
+        Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED);
+    auto stageOverflow = [&]() {
+        for (int i = 1; i <= cap; i++) {
+            ReferenceChainsTestAccessor::cacheChain(i, makeEvent(i), i, 0);
+        }
+        std::vector<jlong> snapshot =
+            ReferenceChainsTestAccessor::snapshotResolvedChainTags();
+        if (snapshot.size() != static_cast<size_t>(cap)) {
+            return ReferenceChainsTestAccessor::pendingChainInvalidationCount();
+        }
+        snapshot.pop_back(); // Leave one cached chain outside the invalidation set.
+        snapshot.push_back(cap + 1);
+        snapshot.push_back(cap + 2); // Simulate a broken snapshot bound.
+        for (jlong tag : snapshot) {
+            ReferenceChainsTestAccessor::deferResolvedChainInvalidation(tag,
+                                                                         snapshot);
+        }
+        return ReferenceChainsTestAccessor::pendingChainInvalidationCount();
+    };
+
+    ASSERT_EQ(static_cast<size_t>(cap), stageOverflow());
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+    EXPECT_EQ(0u,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(dropped_before + cap,
+              Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
+
+    ASSERT_EQ(static_cast<size_t>(cap), stageOverflow());
+    ReferenceChainsTestAccessor::applyPendingChainInvalidationsForTest(0);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+    EXPECT_EQ(0u,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(dropped_before + 2 * cap,
+              Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
+}
+
 TEST_F(ResolvedChainCacheTest, RestartDropsPendingTagsBeforeNumericTagReuse) {
     ReferenceChainsTestAccessor::cacheChain(1, makeEvent(1), 1, 0);
     std::vector<jlong> snapshot =

@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <type_traits>
 
 char *NativeFunc::create(const char *name, short lib_index) {
   size_t size = allocSize(name);
@@ -114,7 +115,7 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _file_id = other._file_id;
   _image_fingerprint = other._image_fingerprint;
 
-  _imports.clear();
+  _imports.truncate(0);
   memset(_import_offsets, 0, sizeof(_import_offsets));
   _import_sequence = 0;
   _incomplete_imports = 0;
@@ -390,12 +391,33 @@ void CodeCache::saveImport(ImportId id, void** entry) {
     if (entry == nullptr || id < 0 || id >= NUM_IMPORTS) {
         return;
     }
-    try {
-        _imports.push_back({id, entry, _import_sequence++});
+    if (_imports.append({id, entry, _import_sequence++})) {
         _imports_finalized = false;
-    } catch (const std::bad_alloc&) {
+    } else {
         _incomplete_imports |= 1ULL << id;
     }
+}
+
+bool CodeCache::ImportTable::append(const ImportLocation &entry) {
+    static_assert(std::is_trivially_copyable<ImportLocation>::value,
+                  "realloc moves import entries bytewise");
+    if (_size == _capacity) {
+        size_t capacity = _capacity == 0 ? 16 : _capacity * 2;
+#ifdef UNIT_TEST
+        void *grown = _fail_growth_for_test
+                          ? nullptr
+                          : realloc(_data, capacity * sizeof(ImportLocation));
+#else
+        void *grown = realloc(_data, capacity * sizeof(ImportLocation));
+#endif
+        if (grown == nullptr) {
+            return false;
+        }
+        _data = static_cast<ImportLocation *>(grown);
+        _capacity = capacity;
+    }
+    _data[_size++] = entry;
+    return true;
 }
 
 void CodeCache::addImport(void **entry, const char *name) {
@@ -510,10 +532,11 @@ void CodeCache::finalizeImports() {
     }
     return a._order < b._order;
   });
-  _imports.erase(std::unique(_imports.begin(), _imports.end(),
+  ImportLocation* unique_end = std::unique(_imports.begin(), _imports.end(),
                              [](const ImportLocation& a, const ImportLocation& b) {
     return a._id == b._id && a._location == b._location;
-  }), _imports.end());
+  });
+  _imports.truncate(unique_end - _imports.begin());
   // Single-slot callers (sigaction, dlopen, pthread_setspecific) use slot 0. ElfParser
   // records .rela.plt before .rela.dyn, so recording order puts the JUMP_SLOT that
   // direct calls go through ahead of a GLOB_DAT, which may sit at a lower address.
@@ -552,9 +575,9 @@ bool CodeCache::prepareImportsForPatch() {
   return makeImportsPatchable();
 }
 
-void **CodeCache::peekImport(ImportId id) {
-  if (importCount(id) == 0) return nullptr;
-  return _imports[_import_offsets[id]]._location;
+void **CodeCache::peekImport(ImportId id, size_t index) {
+  if (index >= importCount(id)) return nullptr;
+  return _imports[_import_offsets[id] + index]._location;
 }
 
 void **CodeCache::findImport(ImportId id, size_t index) {

@@ -178,12 +178,8 @@ Java_com_datadoghq_profiler_wallclock_NativeSocketTaskBlockTest_openPinnedSocket
         pinned_read_failure(env, "socketpair failed");
         return NULL;
     }
-    struct timeval timeout = {5, 0};
-    if (setsockopt(sockets[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
-        close(sockets[0]); close(sockets[1]);
-        pinned_read_failure(env, "socket timeout setup failed");
-        return NULL;
-    }
+    /* No SO_RCVTIMEO: with a receive timeout, Linux fails a read interrupted by the SA_RESTART
+     * wall-clock signal with EINTR. The test closes the peer before joining, which bounds the read. */
     jintArray result = (*env)->NewIntArray(env, 2);
     if (result == NULL) {
         close(sockets[0]); close(sockets[1]);

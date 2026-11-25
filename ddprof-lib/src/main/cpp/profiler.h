@@ -25,6 +25,7 @@
 #include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
+#include "samplerChoice.h"
 #include "spinLock.h"
 #include "threadLocalData.h"
 #include "threadFilter.h"
@@ -333,6 +334,8 @@ private:
   // _sanity_check_message points into SanityChecker's static error buffer.
   // That buffer has process lifetime, so the pointer stays valid.
   const char *_sanity_check_message;
+  // Set by start() before _jfr.start(); read under _state_lock or on the start() thread.
+  bool _j9_asgct_deadlock_risk;
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -392,8 +395,11 @@ private:
   void updateNativeLibMemStats();
   void mangle(const char *name, char *buf, size_t size);
 
-  Engine *selectCpuEngine(Arguments &args);
-  Engine *selectWallEngine(Arguments &args);
+  // choice, when non-null, receives why a JVM-specific ASGCT gate (today only
+  // J9's) picked or rejected ASGCT; it stays NONE where no such gate applies.
+  Engine *selectCpuEngine(Arguments &args, SamplerChoice *choice = nullptr);
+  Engine *selectWallEngine(Arguments &args, SamplerChoice *choice = nullptr);
+  void reportJ9SamplerRisks(SamplerChoice cpu, SamplerChoice wall);
   Engine *selectAllocEngine(Arguments &args);
   Error checkJvmCapabilities();
 
@@ -522,7 +528,8 @@ public:
         _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false), _alloc_stack(ALLOCSTACK_JVMTI),
         _remote_symbolication(false), _sanity_check_failed(false),
-        _sanity_check_message(NULL), _dlopen_entry(NULL) {
+        _sanity_check_message(NULL), _j9_asgct_deadlock_risk(false),
+        _dlopen_entry(NULL) {
 
 #if defined(DEBUG) || defined(UNIT_TEST)
     NativeMem::record(NM_MISC, sizeof(_task_block_diagnostics));
@@ -895,6 +902,7 @@ public:
   bool isRemoteSymbolication() const { return _remote_symbolication; }
   bool sanityCheckFailed() const { return _sanity_check_failed; }
   const char *sanityCheckMessage() const { return _sanity_check_message; }
+  bool j9AsgctDeadlockRisk() const { return _j9_asgct_deadlock_risk; }
 
   const void *resolveSymbol(const char *name);
   const char *getLibraryName(const char *native_symbol);

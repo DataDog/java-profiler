@@ -128,6 +128,27 @@ public:
     // the script - drives runPassManualWalk()'s root_err != JVMTI_ERROR_NONE path.
     jvmtiError ior_error = JVMTI_ERROR_NONE;
 
+    // When set, mock_IterateOverReachableObjects() delivers up to ior_prefix_count root callbacks
+    // and then returns this error (also when the script has fewer roots). A callback abort ends the
+    // walk first with JVMTI_ERROR_NONE, as a real abort does.
+    jvmtiError ior_error_after_prefix = JVMTI_ERROR_NONE;
+    int ior_prefix_count = 0;
+
+    // Same prefix-then-error contract for mock_FollowReferences(); the prefix counts every
+    // heap_reference_callback invocation of one call (holder-walk and script edges alike).
+    jvmtiError follow_error_after_prefix = JVMTI_ERROR_NONE;
+    int follow_prefix_count = 0;
+
+    // Last control value each mock walk saw returned by the production callback (the root
+    // callback's jvmtiIterationControl, the reference callback's jint visit flags); -1 = none yet.
+    int last_ior_control = -1;
+    int last_follow_control = -1;
+
+    // When non-empty, mock_GetObjectsWithTags() reports its resolved objects in this order of
+    // positions within the request-ordered resolved list (out-of-range entries are skipped,
+    // positions not named are dropped) instead of request order.
+    std::vector<size_t> gotw_resolution_order;
+
     // Synthetic frontier-holder arrays for expandFrontier()'s array-holder walk:
     // mock_NewObjectArray() hands back an opaque handle, mock_SetObjectArrayElement() records its
     // elements here, and mock_FollowReferences() treats every recorded element as an expansion seed
@@ -570,9 +591,14 @@ public:
         if (active_fixture->ior_error != JVMTI_ERROR_NONE) {
             return active_fixture->ior_error;
         }
+        int ior_delivered = 0;
         for (auto &e : active_fixture->script) {
             if (e.referrer_idx != -1) {
                 continue;
+            }
+            if (active_fixture->ior_error_after_prefix != JVMTI_ERROR_NONE &&
+                ior_delivered >= active_fixture->ior_prefix_count) {
+                return active_fixture->ior_error_after_prefix;
             }
             jlong class_tag = 0;
             if (e.class_idx >= 0) {
@@ -585,11 +611,13 @@ public:
             if (*tag_ptr != 0) {
                 active_fixture->tags_ever_assigned[e.referee_idx] = *tag_ptr;
             }
+            active_fixture->last_ior_control = (int)ctl;
+            ior_delivered++;
             if (ctl == JVMTI_ITERATION_ABORT) {
-                break;
+                return JVMTI_ERROR_NONE;
             }
         }
-        return JVMTI_ERROR_NONE;
+        return active_fixture->ior_error_after_prefix;
     }
 
     // Resolves each requested tag to its node's synthetic identity (&node_tags[idx]) by scanning
@@ -638,9 +666,19 @@ public:
                 }
             }
         }
-        if (active_fixture->reverse_gotw_results) {
-            // objs and found are index-paired; reverse both together so each
-            // tag still resolves to its own object.
+        if (!active_fixture->gotw_resolution_order.empty()) {
+            std::vector<jobject> ordered_objs;
+            std::vector<jlong> ordered_found;
+            for (size_t pos : active_fixture->gotw_resolution_order) {
+                if (pos < objs.size()) {
+                    ordered_objs.push_back(objs[pos]);
+                    ordered_found.push_back(found[pos]);
+                }
+            }
+            objs.swap(ordered_objs);
+            found.swap(ordered_found);
+        } else if (active_fixture->reverse_gotw_results) {
+            // objs and found are index-paired; reverse both together so each tag still resolves.
             std::reverse(objs.begin(), objs.end());
             std::reverse(found.begin(), found.end());
         }
@@ -678,6 +716,7 @@ public:
         // they build), so every holder->element ARRAY_ELEMENT edge below is replayed with a
         // referrer tag of 0.
         static jlong holder_tag = 0;
+        int follow_delivered = 0;
         if (initial_object != nullptr) {
             auto holder_it = active_fixture->holders.find(initial_object);
             if (holder_it != active_fixture->holders.end()) {
@@ -694,6 +733,10 @@ public:
                     if (idx < 0) {
                         continue;
                     }
+                    if (active_fixture->follow_error_after_prefix != JVMTI_ERROR_NONE &&
+                        follow_delivered >= active_fixture->follow_prefix_count) {
+                        return active_fixture->follow_error_after_prefix;
+                    }
                     jlong *tag_ptr = &active_fixture->node_tags[idx];
                     jint ctl;
                     {
@@ -704,6 +747,8 @@ public:
                                 /*size=*/0, tag_ptr, &holder_tag,
                                 /*length=*/-1, const_cast<void *>(user_data));
                     }
+                    active_fixture->last_follow_control = (int)ctl;
+                    follow_delivered++;
                     if (*tag_ptr != 0) {
                         active_fixture->tags_ever_assigned[idx] = *tag_ptr;
                     }
@@ -725,7 +770,11 @@ public:
                 auto it = expandable.find(e.referrer_idx);
                 if (it == expandable.end() || !it->second) {                    continue;
                 }
-            }            jlong class_tag = 0;
+            }            if (active_fixture->follow_error_after_prefix != JVMTI_ERROR_NONE &&
+                follow_delivered >= active_fixture->follow_prefix_count) {
+                return active_fixture->follow_error_after_prefix;
+            }
+            jlong class_tag = 0;
             if (e.class_idx >= 0) {
                 class_tag = active_fixture->tags[active_fixture->classes[e.class_idx].klass];
             }
@@ -740,6 +789,8 @@ public:
                         /*size=*/0, tag_ptr, referrer_tag_ptr, /*length=*/-1,
                         const_cast<void *>(user_data));
             }
+            active_fixture->last_follow_control = (int)ctl;
+            follow_delivered++;
             if (*tag_ptr != 0) {
                 active_fixture->tags_ever_assigned[e.referee_idx] = *tag_ptr;
             }
@@ -748,7 +799,7 @@ public:
             }
             expandable[e.referee_idx] = (ctl & JVMTI_VISIT_OBJECTS) != 0;
         }
-        return JVMTI_ERROR_NONE;
+        return active_fixture->follow_error_after_prefix;
     }
 
 };

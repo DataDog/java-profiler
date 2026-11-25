@@ -18,7 +18,7 @@ before working on a subsystem.
 | JFR integration (FlightRecorder, metadata, constant pools, buffers; bounded DEBUG TaskBlock transition receipts survive recording teardown; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; stop archives full thread tables before bounded tail-admission retries; output quarantine retains custody and stops producers in non-restartable ERROR) | [doc/architecture/JfrIntegration.md](/doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](/doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](/doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](/doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](/doc/ReferenceChainsCollectionSummary.md) |
 | Native I/O hooks (shared-owner JDK import patches preserve the JDK 8 poll adapter; base/fingerprint-validated Netty epoll images via `SOCKET_PATCH_NETTY_NATIVE_EPOLL`, FD classification, exiting-thread timeout-probe bypass, cancellation-safe cleanup, synchronous physical-thread exit-time IO_WAIT TaskBlocks) | [doc/architecture/NativeIoHooks.md](/doc/architecture/NativeIoHooks.md) |
-| Native memory profiling (malloc interception installed per recording and restored on stop, reuse-aware exit admission, sampling) | [doc/architecture/NativeMemoryProfiling.md](/doc/architecture/NativeMemoryProfiling.md) |
+| Native memory profiling (malloc interception installed per recording and restored on stop; startup admission check for conflicting native-memory profilers; reuse-aware exit admission; sampling) | [doc/architecture/NativeMemoryProfiling.md](/doc/architecture/NativeMemoryProfiling.md) |
 | glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](/doc/architecture/MallocArenaWarning.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](/doc/architecture/SanityChecks.md) |
 | SIGSEGV-safe library patching; crash-handler bootstrap (fault-PC prefilter, raw-identity exit registry, Linux-only fault/profiling-mask fence) | [doc/architecture/SigsegvPatching.md](/doc/architecture/SigsegvPatching.md) |
@@ -236,6 +236,13 @@ applies to Java code on context/sampling paths too: avoid string concatenation, 
 varargs there, including when building error or label strings. O(N)
 linear scans only for small sets (cutoff ~256 elements); larger sets need an index or binary
 search. Do not resolve symbols or line tables eagerly in hot paths.
+
+**C++ exceptions.** Never write `throw`/`try`/`catch`: an uncaught exception escaping
+through a JVMTI callback terminates the JVM, and a try/catch frame on a pthread-cancel or
+forced-unwind path aborts under `-static-libgcc` (`libraryPatcher_linux.cpp`). Bugs are
+`assert` + `abort()`; expected failures are error codes. Enforced in CI: the `qualityChecks`
+task fails on any exception keyword in native sources outside the checker's exception list
+(the rule and its failure-handling convention: root `AGENTS.md`, "C++ exceptions").
 
 **Concurrent data structure iteration.** When iterating a concurrent array (e.g.
 `CodeCacheArray`), NULL-check every slot — a slot may be count-allocated but

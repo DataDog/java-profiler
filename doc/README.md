@@ -23,10 +23,10 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer rotation, recording-scoped tables (release/acquire), isolated liveness collectors, reusable unowned wall-stack roots, exact-copy failure handling and ASan-safe chunk reclamation
 - [DemoJavaLeakApp](architecture/DemoJavaLeakApp.md) - Self-contained leak-demo app (`demo-java-leak`): unbounded strong-ref cache, self-traffic, watermark flush, no profiler dependency
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer and independent DEBUG TaskBlock receipts: wall-window settlement before sealing, stripe-owned deferred tails and originating epoch replay, bounded stop-time thread-table capacity recovery, recordings, buffers, metadata, constant pools, terminal output quarantine and [delivery custody](architecture/JfrIntegration.md#delivery-custody)
-- [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current implementation, including root-anchor indexing and rotation
+- [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation, including root-anchor indexing and rotation, and deferred updates after JVMTI traversal
 - [MallocArenaWarning](architecture/MallocArenaWarning.md) - glibc malloc arena detector: arena walk, rule, and JFR events
 - [Native I/O Hooks](architecture/NativeIoHooks.md) — shared JDK poll-adapter/validated Netty epoll import ownership, alias-safe retention, FD reuse, exiting-thread timeout-probe bypass, cancellation cleanup and synchronous native TaskBlocks.
-- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception (hooks installed per recording, restored on stop), reuse-aware exit admission and allocation sampling
+- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, startup admission, per-recording restoration, reuse-aware exit admission and allocation sampling
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, monotonic wall-clock cadence, allocation, native-memory and liveness engines; gated thread registration; recording-scoped liveness; wall reservoir, retained-weight epoch provenance and retryable/terminal teardown-tail flush; bounded timer TID prechecks; lazy wall-block backing; [TaskBlock producer contract](architecture/ProfilingEngines.md#taskblock-producer-contract); allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
@@ -41,8 +41,10 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [CodeCoverage](building/CodeCoverage.md) - Opt-in C++ (gcovr) and Java (JaCoCo) coverage reports, prerequisites, debug-only scope
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
+- [MemoryOverheadCheck](building/MemoryOverheadCheck.md) - Per-PR native-memory budget check on GitLab and how to recalibrate it
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
-- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, real-VM qualification, integration runtime applicability and JVM identity checks, and local workflows
+- [ReleaseTrain](building/ReleaseTrain.md) - Automated release train: nightly certification, Friday minor release, dd-trace-java bump
+- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, real-VM qualification, and local workflows
 - [Versioning](building/Versioning.md) - Version computation from git tags
   - [Bounded local container runs](building/TestingGuide.md#bounded-local-container-runs) - Exact Git worktrees, offline cache-only execution, worker limits, and retained test artifacts
 
@@ -58,6 +60,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 
 - [BitsReviewMergeGateDesign](BitsReviewMergeGateDesign.md) - Bits PASS merge gate: policy, implementation, trusted status publisher, and enforcement proposal pending separate approval
 - [BitsReviewRedReviewRunbook](BitsReviewRedReviewRunbook.md) - Developer procedure for a red Bits review: what clears FAIL, what does not, and how to get a fresh review
+- [NativeMemoryProfilerExclusionDesign](NativeMemoryProfilerExclusionDesign.md) - Admission check design for conflicting native-memory profilers: decision, rationale and lifecycle limits
 - [ReferenceChainsCollectionSummary](ReferenceChainsCollectionSummary.md) - Short reference-chain overview and limits
 - [ReferenceChainsDesign](ReferenceChainsDesign.md) - Reference-chain design decision and trade-offs
 - [WorkTracking](WorkTracking.md) - Work-tracking phases: Intent, Design, Build and Test, Deploy
