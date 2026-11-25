@@ -44,7 +44,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [MemoryOverheadCheck](building/MemoryOverheadCheck.md) - Per-PR native-memory budget check on GitLab and how to recalibrate it
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
 - [ReleaseTrain](building/ReleaseTrain.md) - Automated release train: nightly certification, Friday minor release, dd-trace-java bump
-- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, real-VM qualification, integration runtime applicability and JVM identity checks, and local workflows
+- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, real-VM qualification, and local workflows
 - [Versioning](building/Versioning.md) - Version computation from git tags
   - [Bounded local container runs](building/TestingGuide.md#bounded-local-container-runs) - Exact Git worktrees, offline cache-only execution, worker limits, and retained test artifacts
 

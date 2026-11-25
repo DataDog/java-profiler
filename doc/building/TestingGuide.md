@@ -1,5 +1,3 @@
-<!-- Copyright 2026, Datadog, Inc. -->
-
 # Testing Guide
 
 <!-- Copyright 2026, Datadog, Inc -->
@@ -268,28 +266,7 @@ The job retains XML, wrapper logs/summaries and JFR recordings even on failure.
 
 **Pipeline:** `.gitlab/dd-trace-integration/.gitlab-ci.yml`
 
-**Runtime matrix:** JDK 8, 11, 17, 21 and 25 on each applicable platform.
-
-| Architecture | libc | HotSpot | OpenJ9 |
-|--------------|------|---------|--------|
-| amd64 | glibc | Scheduled | Scheduled (IBM Semeru) |
-| aarch64 | glibc | Scheduled | Scheduled (IBM Semeru) |
-| amd64 | musl | Scheduled | Not applicable (no upstream runtime) |
-| aarch64 | musl | Scheduled | Not applicable (no upstream runtime) |
-
-[Upstream OpenJ9 platform support](https://github.com/eclipse-openj9/openj9-docs/blob/e2f1f05b69b04b45c262ea9ed3527e1bb861df08/docs/openj9_support.md)
-requires glibc on Linux for all five JDK lines. Upstream publishes no musl runtime.
-
-The CI applicability rule does not schedule the ten musl/OpenJ9 combinations.
-The PR reporter counts them as not applicable, not as passes, failures or missing results.
-The other 30 configurations still require validation logs; missing results fail the report.
-
-OpenJ9 glibc cells install pinned IBM Semeru JDKs, not distro OpenJDK packages.
-Direct musl/OpenJ9 provisioning still fails closed, as do failed downloads and invalid JDK archives.
-
-`verify-jvm.sh` checks `java.vm.name` and the JDK major before prerequisites and tests.
-A mismatch or failed identity query fails the cell. The verified identity is in the job log.
-Selector and identity regression tests run in `shell-unit-tests`.
+**Runs on:** amd64 and aarch64 × glibc and musl × HotSpot + OpenJ9, JDK 8–25
 
 **Triggers:** every branch push; skipped on `release/*` branches, when
 `CI_PIPELINE_SOURCE` is `merge_request_event` (GitLab merge-request pipeline), or when
@@ -301,7 +278,7 @@ replaces the bundled (relocated) profiler classes inside the agent with the vers
 under test, keeping the classloader/relocation path identical to production.
 
 It tests end-to-end agent startup, profiling data collection, and tracer/profiler
-co-existence across the applicable runtime matrix. Failures are posted as PR comments
+co-existence across the full JDK × libc matrix. Failures are posted as PR comments
 and published to GitHub Pages as a compatibility matrix.
 
 **Gating and quarantine.** The integration jobs themselves run with `allow_failure`,
