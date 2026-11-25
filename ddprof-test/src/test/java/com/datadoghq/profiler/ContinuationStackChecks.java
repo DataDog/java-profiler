@@ -98,6 +98,14 @@ public final class ContinuationStackChecks {
     boolean knownCarrier = carrierIds.contains(carrierId(event));
     if (continuationError) continuationErrors++;
     if (trace.isEmpty() && knownCarrier) walkError = "empty stack";
+    // A carrier walk that kept no Java frame and admits truncation failed to reach Java.
+    if (walkError == null
+        && knownCarrier
+        && trace.isTruncated()
+        && trace.frames().stream()
+            .allMatch(frame -> frame.className() == null || frame.className().isEmpty())) {
+      walkError = "truncated native-only stack";
+    }
     boolean failedWalk = walkError != null && (workload || knownCarrier || continuationError);
     // Only a complete idle scheduler chain establishes that no continuation walk was attempted.
     // Ambiguous carrier samples and all other error markers keep consuming the failure budget.

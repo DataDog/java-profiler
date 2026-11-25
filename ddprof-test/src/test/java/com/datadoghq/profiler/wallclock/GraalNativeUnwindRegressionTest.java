@@ -154,7 +154,8 @@ public class GraalNativeUnwindRegressionTest extends CStackAwareAbstractProfiler
       if (!workload) return;
       samples++;
       if (nanoTime) nanoTimeSamples++;
-      if (nanoTime && skipped) {
+      // A gap counts even when the failed unwind also dropped the nanoTime frame itself.
+      if (skipped) {
         nativeGaps++;
         if (firstGap == null) {
           StringBuilder text = new StringBuilder();

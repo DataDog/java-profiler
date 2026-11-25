@@ -391,6 +391,18 @@ public class ContinuationStackChecksTest {
     assertTrue(failure.getMessage().contains("reason=empty stack"));
   }
 
+  /** A truncated carrier stack without any Java frame is a failed walk, not a success. */
+  @Test
+  public void rejectsTruncatedNativeOnlyStacksOnKnownCarriers() {
+    ContinuationStackChecks complete = covered(true, 10);
+    complete.accept(sample(7, false, "#__syscall_cancel_arch_start", "#clock_gettime"));
+    complete.assertValid("cpu");
+    ContinuationStackChecks checks = covered(true, 10);
+    checks.accept(sample(7, true, "#__syscall_cancel_arch_start", "#clock_gettime"));
+    AssertionError failure = assertThrows(AssertionError.class, () -> checks.assertValid("cpu"));
+    assertTrue(failure.getMessage().contains("reason=truncated native-only stack"));
+  }
+
   /** Rare generic stops are bounded by the declared 99% gate, rather than an absolute count. */
   @Test
   public void boundsFailuresRelativeToSuccessfulSamples() {
