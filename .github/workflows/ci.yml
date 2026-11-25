@@ -70,6 +70,7 @@ jobs:
 
       - name: Validate pipeline scripts without network access
         run: |
+          bash -n .gitlab/dd-trace-integration/certify-main.sh
           bash -n \
             .gitlab/scripts/build.sh \
             .gitlab/scripts/check-abi-floor.sh \
@@ -89,6 +90,7 @@ jobs:
             .gitlab/scripts/tests/test_run_gtest_quarantine.sh \
             .gitlab/dd-trace-integration/quarantine-lib.sh \
             .gitlab/dd-trace-integration/validate-quarantine.sh \
+            .gitlab/dd-trace-integration/certify-main.sh \
             .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh \
             .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh \
             .gitlab/dd-trace-integration/tests/newest_jfr_test.sh \

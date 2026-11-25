@@ -9,9 +9,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def job(text, name):
-    """Read a job's indented block without requiring a YAML dependency."""
-    match = re.search(r"^  " + re.escape(name) + r":\n(.*?)(?=^  \S|\Z)",
+def job(text, name, indent="  "):
+    """Read a named job at its caller's indentation without a YAML dependency."""
+    prefix = re.escape(indent)
+    match = re.search(r"^" + prefix + re.escape(name) + r":\n(.*?)(?=^" + prefix + r"\S|\Z)",
                       text, re.MULTILINE | re.DOTALL)
     if match is None:
         raise AssertionError("Missing job " + name)
@@ -51,6 +52,42 @@ class CertificationWorkflowTest(unittest.TestCase):
         self.assertIn("for job in test-debug test-asan slow-test-debug slow-test-asan "
                       "fuzz gitlab-integration certify; do",
                       job(self.workflow, "report-failure"))
+
+    def test_gitlab_execution_gate_cannot_be_a_green_branch_noop(self):
+        text = (ROOT / ".gitlab/dd-trace-integration/.gitlab-ci.yml").read_text()
+        block = job(text, "certify-dd-trace-integration", indent="")
+        self.assertIn("before_script: []", block)
+        self.assertNotIn("allow_failure: true", block)
+        self.assertIn("- bash .gitlab/dd-trace-integration/certify-main.sh", block)
+        rules = re.search(r"^  rules:\n(.*?)(?=^  \S|\Z)", block,
+                          re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(rules)
+        self.assertEqual(rules.group(1).strip(), '''- if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+      when: always
+    - when: never''')
+        needs = set(re.findall(r"^    - job: (.+)$", block, re.MULTILINE))
+        self.assertEqual(needs, {"prepare:start", "prepare-patched-agent",
+                                 "integration-test-x64-glibc", "integration-test-x64-musl",
+                                 "integration-test-arm64-glibc", "integration-test-arm64-musl"})
+        for name in needs:
+            self.assertIn(f"- job: {name}\n      artifacts: true", block)
+        self.assertNotIn("optional: true", block)
+
+    def test_existing_pr_integration_jobs_remain_available(self):
+        text = (ROOT / ".gitlab/dd-trace-integration/.gitlab-ci.yml").read_text()
+        for name in ("prepare-patched-agent", ".integration_test_base", "post-pr-comment"):
+            with self.subTest(name=name):
+                block = job(text, name, indent="")
+                self.assertIn("- when: on_success", block)
+                self.assertNotIn('$CI_COMMIT_BRANCH == "main"', block)
+
+    def test_main_gate_script_is_syntax_checked_and_linted_in_ci(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        block = job(ci, "ci-script-tests")
+        self.assertIn("          bash -n .gitlab/dd-trace-integration/certify-main.sh\n", block)
+        self.assertEqual(block.count(".gitlab/dd-trace-integration/certify-main.sh"), 2)
 
     def test_offline_ci_runs_certification_test_family(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()

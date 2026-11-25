@@ -14,11 +14,7 @@ import urllib.request
 
 API_URL = "https://api.github.com"
 DATADOG_ORG_ID = 365230
-REQUIRED_CONTEXTS = (
-    "dd-gitlab/prepare-patched-agent",
-    "dd-gitlab/validate-dd-trace-quarantine",
-    "dd-gitlab/post-pr-comment",
-)
+REQUIRED_CONTEXTS = ("dd-gitlab/certify-dd-trace-integration",)
 BRIDGE_BOT = re.compile(
     r"(gitsync-ddbuild-stable[0-9]*|dd-ghss-(?:ciux|ciexecution)-[0-9]+)\[bot\]"
 )
@@ -165,7 +161,7 @@ def write_summary(sha, states):
 
 
 def wait_for_integration(api, sha):
-    """Require all three verified verdicts; retries never reuse a previous successful snapshot."""
+    """Require the verified main-execution verdict; retries never reuse an older snapshot."""
     states = dict.fromkeys(REQUIRED_CONTEXTS, "missing")
     try:
         while time.monotonic() < api.deadline:

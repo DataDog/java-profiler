@@ -112,9 +112,9 @@ jobs:
     # a feature-branch dispatch runs no certification jobs. Defense in
     # depth behind the per-ref concurrency group.
     if: github.ref == 'refs/heads/main'
-    # Read the candidate's integration verdict from GitHub commit statuses.
-    # GitLab owns the matrix and quarantine policy; this job needs no GitLab
-    # credentials and must not replace missing evidence with an overall green.
+    # Read the candidate's main-only execution verdict from GitHub commit statuses.
+    # GitLab owns the matrix and quarantine policy; no GitLab credentials belong here.
+    # Successful no-op branch jobs must not substitute for executed main integration.
     runs-on: ubuntu-latest
     permissions:
       contents: read

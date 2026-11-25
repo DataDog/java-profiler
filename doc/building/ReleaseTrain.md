@@ -16,8 +16,9 @@ runs at 04:00 UTC on the `main` HEAD. Its suite:
 - `testDebug` and `testAsan`, regular and slow, gtests included — the same
   gate `release-validated.yml` runs before a manual release
 - the fuzz job (same as the nightly sanitized run)
-- the GitLab integration verdict published to GitHub for the candidate SHA;
-  the workflow reads commit statuses and does not re-run integration tests
+- the `certify-dd-trace-integration` verdict from the candidate's main-push
+  GitLab pipeline, mirrored to GitHub; it reuses the integration artifacts
+  and does not re-run the test matrix
 
 When every part passes, the workflow attaches a git note on the certified
 commit under `refs/notes/certification` and pushes the notes ref. The note is
@@ -80,16 +81,26 @@ Certification uses the built-in `GITHUB_TOKEN` with `statuses: read` and
 `contents: read` for its integration job. No GitLab credentials are needed
 in GitHub.
 
-The integration gate requires `success` on all three GitHub commit statuses:
-`dd-gitlab/prepare-patched-agent`, `dd-gitlab/validate-dd-trace-quarantine`,
-and `dd-gitlab/post-pr-comment`. It selects the newest update per context
-for the exact candidate SHA. It verifies each publisher's bot account and
-Datadog-owned bridge app through GitHub's API on each snapshot.
+The integration gate requires the newest
+`dd-gitlab/certify-dd-trace-integration` status to be `success` for the exact
+candidate SHA. It verifies the publisher's bot account and Datadog-owned
+bridge app through GitHub's API on each snapshot.
 
-The `post-pr-comment` job enforces the [integration quarantine policy](TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
+GitLab creates this job for pushes of `main`, outside custom JDK pipelines.
+The job uses `when: always` and replaces the default green cancellation
+hook with fail-closed checks in `certify-main.sh`.
+
+That script rejects cancelled or non-main execution and a missing or wrong
+prepared-agent SHA. It validates quarantine and runs the existing result
+aggregator over the pipeline's integration artifacts, without rerunning tests.
+
+The aggregator enforces the [integration quarantine policy](TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
 Approved quarantined validation failures do not block certification.
 Unquarantined failures and incomplete matrix results fail the verdict.
-An overall green pipeline is not a substitute for the three statuses.
+
+Ordinary job statuses are not certification evidence: a non-PR branch at the
+same SHA can report green no-op jobs. Neither those statuses nor an overall
+green pipeline can substitute for the main-only execution gate.
 
 The waiter pauses up to three minutes between snapshots. GitHub's
 `Retry-After` or exhausted-quota reset headers can extend that pause.

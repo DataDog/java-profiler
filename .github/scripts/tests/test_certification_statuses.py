@@ -27,11 +27,7 @@ import wait_for_integration as gate  # noqa: E402
 
 REPO = "DataDog/java-profiler"
 SHA = "7a8f24862288f68679caf69ff5a53bfe34ce74b6"
-CONTEXTS = (
-    "dd-gitlab/prepare-patched-agent",
-    "dd-gitlab/validate-dd-trace-quarantine",
-    "dd-gitlab/post-pr-comment",
-)
+CONTEXTS = ("dd-gitlab/certify-dd-trace-integration",)
 BOTS = {
     "gitsync-ddbuild-stable": 29282730,
     "gitsync-ddbuild-stable1": 65570472,
@@ -169,6 +165,22 @@ class CertificationStatusTest(unittest.TestCase):
                     self.assert_rejected(records, "verdict failed")
                     self.assertIn(context + ": " + state, self.output.getvalue())
 
+    def test_noop_branch_successes_cannot_certify_without_main_execution(self):
+        legacy = ("dd-gitlab/prepare-patched-agent", "dd-gitlab/validate-dd-trace-quarantine",
+                  "dd-gitlab/post-pr-comment")
+        self.api.deadline = self.now + 1
+        self.queue(page_path(), [status(context) for context in legacy])
+        with self.assertRaisesRegex(gate.GateError, "Timed out"):
+            self.wait()
+        self.assertIn("dd-gitlab/certify-dd-trace-integration: missing", self.output.getvalue())
+
+    def test_newer_noop_successes_cannot_override_main_gate_failure(self):
+        legacy = ("dd-gitlab/prepare-patched-agent", "dd-gitlab/validate-dd-trace-quarantine",
+                  "dd-gitlab/post-pr-comment")
+        records = ([status(context) for context in legacy]
+                   + [status("dd-gitlab/certify-dd-trace-integration", "failure")])
+        self.assert_rejected(records, "verdict failed")
+
     def test_raw_failed_cells_do_not_override_quarantine_aware_verdict(self):
         self.queue(page_path(), [status("dd-gitlab/integration-test-x64-glibc", "failure")]
                    + green())
@@ -287,27 +299,27 @@ class CertificationStatusTest(unittest.TestCase):
         self.assertIn(page_path(2), self.requests)
 
     def test_full_page_with_missing_context_requires_following_page(self):
-        self.queue(page_path(), green()[:2] + [status("unrelated")] * 98)
+        self.queue(page_path(), [status("unrelated")] * 100)
         self.queue(page_path(2), [])
         records = self.api.statuses(SHA)
         self.assertEqual(len(records), 100)
         self.assertEqual(self.requests[:2], [page_path(), page_path(2)])
 
     def test_complete_verdict_does_not_read_older_pages(self):
-        self.queue(page_path(), green() + [status("unrelated")] * 97)
+        self.queue(page_path(), green() + [status("unrelated")] * 99)
         with patch.object(gate, "MAX_PAGES", 1):
             self.wait()
         self.assertNotIn(page_path(2), self.requests)
 
     def test_complete_verdict_on_last_allowed_full_page_succeeds(self):
         self.queue(page_path(), [status("unrelated")] * 100)
-        self.queue(page_path(2), green() + [status("unrelated")] * 97)
+        self.queue(page_path(2), green() + [status("unrelated")] * 99)
         with patch.object(gate, "MAX_PAGES", 2):
             self.wait()
         self.assertIn(page_path(2), self.requests)
 
     def test_failed_later_page_discards_partial_green_snapshot(self):
-        self.queue(page_path(), green()[:2] + [status("unrelated")] * 98,
+        self.queue(page_path(), [status("unrelated")] * 100,
                    [status(CONTEXTS[0], "failure")] + green())
         self.queue(page_path(2), urllib.error.URLError("offline"))
         with self.assertRaisesRegex(gate.GateError, "verdict failed"):
