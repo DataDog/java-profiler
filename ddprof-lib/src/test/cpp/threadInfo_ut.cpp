@@ -80,3 +80,20 @@ TEST_F(ThreadInfoTest, racingSetDuringResolveWins) {
     EXPECT_EQ(*info.first, "jvmti-name");
     EXPECT_EQ(info.second, 9u);
 }
+
+TEST_F(ThreadInfoTest, explicitLengthKeepsEmbeddedNul) {
+    ThreadInfo ti;
+    const char name[] = "a\0b";
+    ti.set(5, name, 3, 1);
+    auto info = ti.get(5);
+    ASSERT_NE(nullptr, info.first);
+    EXPECT_EQ(std::string(name, 3), *info.first);
+}
+
+TEST_F(ThreadInfoTest, nulTerminatedSetStopsAtNul) {
+    ThreadInfo ti;
+    ti.set(6, "main", 1);
+    auto info = ti.get(6);
+    ASSERT_NE(nullptr, info.first);
+    EXPECT_EQ(std::string("main"), *info.first);
+}

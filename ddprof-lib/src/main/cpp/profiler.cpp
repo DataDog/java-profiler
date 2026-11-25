@@ -1516,6 +1516,28 @@ void Profiler::setupSignalHandlers() {
 }
 
 
+// JVMTI returns modified UTF-8 (surrogate pairs as 6 bytes, U+0000 as C0 80), which JFR readers
+// reject. Let the JVM decode it to UTF-16, then re-encode as standard UTF-8 with an explicit length.
+void Profiler::storeThreadName(JNIEnv *jni, int tid, const char *name, jlong java_thread_id) {
+  jstring str = name != nullptr ? jni->NewStringUTF(name) : nullptr;
+  if (str == nullptr) {
+    jniExceptionCheck(jni);
+    _thread_info.set(tid, name != nullptr ? name : "", java_thread_id);
+    return;
+  }
+  JniLocalRef ref(jni, str);
+  jchar units[MAX_THREAD_NAME_UNITS];
+  char utf8[3 * MAX_THREAD_NAME_UNITS];
+  jsize total = jni->GetStringLength(str);
+  jsize read = total < MAX_THREAD_NAME_UNITS ? total : MAX_THREAD_NAME_UNITS;
+  jni->GetStringRegion(str, 0, read, units);
+  if (jniExceptionCheck(jni)) {
+    return;
+  }
+  read = utf16TruncatedLength(units, read, total);
+  _thread_info.set(tid, utf8, utf16ToUtf8(units, read, utf8), java_thread_id);
+}
+
 /**
  * Update thread name for the given thread
  */
@@ -1540,7 +1562,7 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   if (native_thread_id >= 0 &&
     jvmti->GetThreadInfo(thread, &thread_info) == 0) {
     jlong java_thread_id = JVMThread::javaThreadId(jni, thread);
-    _thread_info.set(native_thread_id, thread_info.name, java_thread_id);
+    storeThreadName(jni, native_thread_id, thread_info.name, java_thread_id);
     jvmti->Deallocate((unsigned char *)thread_info.name);
   }
 }
