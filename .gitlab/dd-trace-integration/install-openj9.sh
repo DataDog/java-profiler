@@ -65,8 +65,23 @@ esac
 export JAVA_HOME="${1:?installation root required}/openj9-${JAVA_VERSION}"
 DOWNLOAD_URL="https://github.com/ibmruntimes/semeru${JAVA_VERSION}-binaries/releases/download/${SEMERU_TAG}/${SEMERU_ARCHIVE}"
 mkdir -p "${JAVA_HOME}"
-curl --fail --location --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" \
-  | tar xzf - -C "${JAVA_HOME}" --strip-components=1
+# curl does not retry a 200 response with a non-gzip body, so check each body
+# before extracting. The subshell keeps the trap and exits out of the caller.
+(
+  archive=$(mktemp)
+  trap 'rm -f "${archive}"' EXIT
+  for attempt in 1 2 3; do
+    curl --fail --location --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" > "${archive}"
+    if tar tzf "${archive}" > /dev/null 2>&1; then
+      tar xzf "${archive}" -C "${JAVA_HOME}" --strip-components=1
+      exit 0
+    fi
+    echo "WARN: Semeru download attempt ${attempt}/3 is not a gzip tar archive: ${DOWNLOAD_URL}" >&2
+    [ "${attempt}" -eq 3 ] || sleep 5
+  done
+  echo "ERROR: Could not download a valid Semeru archive after 3 attempts: ${DOWNLOAD_URL}" >&2
+  exit 1
+)
 
 if [ ! -x "${JAVA_HOME}/bin/java" ] || [ ! -x "${JAVA_HOME}/bin/javac" ]; then
   echo "ERROR: Semeru archive does not contain an executable JDK at ${JAVA_HOME}" >&2

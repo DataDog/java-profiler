@@ -62,12 +62,18 @@ class JvmSelectionTest(unittest.TestCase):
         self.archive = self.path / "jdk.tar.gz"
         with tarfile.open(self.archive, "w:gz") as archive:
             archive.add(self.jdk, arcname="semeru-jdk")
+        # The first BAD_BODIES requests succeed with a non-gzip body, like an egress error page.
         self.executable(
             self.bin / "curl",
             'echo "curl $*" >> "$CALLS"\n'
             '[ "${CURL_EXIT:-0}" = 0 ] || exit "$CURL_EXIT"\n'
+            'served=$(grep -c "^curl " "$CALLS")\n'
+            'if [ "$served" -le "${BAD_BODIES:-0}" ]; then echo "<html>proxy error</html>"; exit 0; fi\n'
             'cat "$ARCHIVE"\n',
         )
+        self.executable(self.bin / "sleep", 'echo "sleep $*" >> "$CALLS"\n')
+        self.tmp = self.path / "tmp"
+        self.tmp.mkdir()
         self.executable(self.bin / "apt-get", 'echo "apt-get $*" >> "$CALLS"\n')
         self.executable(self.bin / "find", 'printf "%s\\n" "$FIXTURE_JDK"\n')
         self.env = dict(
@@ -84,6 +90,7 @@ class JvmSelectionTest(unittest.TestCase):
             ARCH="x64",
             LIBC_VARIANT="glibc",
             INSTALL_ROOT=str(self.path / "installed"),
+            TMPDIR=str(self.tmp),
         )
 
     def executable(self, path, body):
@@ -106,6 +113,9 @@ class JvmSelectionTest(unittest.TestCase):
         prefix = 'source() { builtin source "$1" "$INSTALL_ROOT"; }\n'
         return self.run_bash(prefix + integration_script(), **env)
 
+    def curl_urls(self):
+        return [line.split()[-1] for line in self.calls.read_text().splitlines() if line.startswith("curl ")]
+
     def assert_failed(self, result, message):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(message, result.stdout)
@@ -120,7 +130,7 @@ class JvmSelectionTest(unittest.TestCase):
                     result = self.run_cell(ARCH=arch, JAVA_VERSION=str(major), FIXTURE_JAVA_VERSION=runtime_version)
                     self.assertEqual(result.returncode, 0, result.stdout)
                     calls = self.calls.read_text()
-                    self.assertIn(SEMERU_URLS[major, arch], calls)
+                    self.assertEqual(self.curl_urls(), [SEMERU_URLS[major, arch]])
                     self.assertNotIn("openjdk-", calls)
                     self.assertIn(f"Using JAVA_HOME: {self.path}/installed/openj9-{major}", result.stdout)
                     self.assertIn("Verified integration JVM:", result.stdout)
@@ -162,16 +172,37 @@ class JvmSelectionTest(unittest.TestCase):
                 self.assert_failed(result, message)
                 self.assertNotIn("\ncurl ", self.calls.read_text())
 
-    def test_failed_download_and_corrupt_archive_fail_closed(self):
+    def test_failed_download_fails_closed_without_another_attempt(self):
         result = self.run_cell(CURL_EXIT="22")
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertNotIn("Verified integration JVM:", result.stdout)
         self.assertNotIn("java ", self.calls.read_text())
-        self.archive.write_text("not a gzip archive")
-        result = self.run_cell()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertNotIn("Verified integration JVM:", result.stdout)
+        self.assertEqual(len(self.curl_urls()), 1, "curl handles transport retries itself")
+
+    def test_invalid_archive_body_is_downloaded_again(self):
+        result = self.run_cell(BAD_BODIES="1")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("attempt 1/3 is not a gzip tar archive", result.stdout)
+        self.assertEqual(self.curl_urls(), [SEMERU_URLS[17, "x64"]] * 2)
+        self.assertEqual(self.calls.read_text().count("sleep 5\n"), 1)
+        self.assertIn("Verified integration JVM:", result.stdout)
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_three_invalid_archive_bodies_fail_closed(self):
+        result = self.run_cell(BAD_BODIES="3")
+        self.assert_failed(result, "ERROR: Could not download a valid Semeru archive after 3 attempts")
+        self.assertEqual(len(self.curl_urls()), 3)
+        self.assertEqual(self.calls.read_text().count("sleep 5\n"), 2)
         self.assertNotIn("java ", self.calls.read_text())
+        self.assertFalse((self.path / "installed/openj9-17/bin").exists())
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_sourced_installer_leaves_no_trap_and_keeps_caller_shell(self):
+        prefix = 'source() { builtin source "$1" "$INSTALL_ROOT"; }\n'
+        result = self.run_bash(prefix + "source .gitlab/dd-trace-integration/install-openj9.sh\n"
+                               'echo "after-source JAVA_HOME=$JAVA_HOME trap=[$(trap -p EXIT)]"')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"after-source JAVA_HOME={self.path}/installed/openj9-17 trap=[]", result.stdout)
 
     def test_archive_requires_both_executable_java_and_javac(self):
         for missing in ("java", "javac"):
@@ -203,8 +234,16 @@ class JvmSelectionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("Verified integration JVM:", result.stdout)
 
+    def test_identity_accepts_bare_major_ga_version(self):
+        for major in ("17", "25"):
+            with self.subTest(major=major):
+                result = self.run_bash("bash .gitlab/dd-trace-integration/verify-jvm.sh",
+                                       JAVA_VERSION=major, FIXTURE_JAVA_VERSION=major)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"java.version={major}\n", result.stdout + "\n")
+
     def test_identity_rejects_wrong_major_missing_version_and_failed_query(self):
-        for version in ("11.0.33", "170.0.1", "", "1.8.0_512"):
+        for version in ("11.0.33", "11", "170.0.1", "1", "", "1.8.0_512"):
             with self.subTest(version=version):
                 result = self.run_bash("bash .gitlab/dd-trace-integration/verify-jvm.sh",
                                        FIXTURE_JAVA_VERSION=version)

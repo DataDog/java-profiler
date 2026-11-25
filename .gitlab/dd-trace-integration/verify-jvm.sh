@@ -18,7 +18,7 @@ esac
 
 case "${JAVA_VERSION:?JAVA_VERSION required}:${java_version}" in
   8:1.8.*) ;;
-  "${JAVA_VERSION}:${JAVA_VERSION}."*) ;;
+  "${JAVA_VERSION}:${JAVA_VERSION}"|"${JAVA_VERSION}:${JAVA_VERSION}."*) ;;
   *) echo "ERROR: JDK version mismatch: expected ${JAVA_VERSION}, java.version=${java_version:-<missing>}" >&2; exit 1 ;;
 esac
 

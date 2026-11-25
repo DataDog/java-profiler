@@ -200,9 +200,10 @@ The PR reporter counts them as not applicable, not as passes, failures or missin
 The other 30 configurations still require validation logs; missing results fail the report.
 
 OpenJ9 glibc cells install pinned IBM Semeru JDKs, not distro OpenJDK packages.
+A download whose body is not a gzip tar archive is fetched again, up to three attempts.
 Direct musl/OpenJ9 provisioning still fails closed, as do failed downloads and invalid JDK archives.
 
-`verify-jvm.sh` checks `java.vm.name` and the JDK major before prerequisites and tests.
+`verify-jvm.sh` checks `java.vm.name` and the JDK major (`25` or `25.*`; `1.8.*` for JDK 8) before prerequisites and tests.
 A mismatch or failed identity query fails the cell. The verified identity is in the job log.
 Selector and identity regression tests run in `shell-unit-tests`.
 
