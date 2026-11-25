@@ -818,6 +818,9 @@ static void bindOwnPltSlot() {
 TEST_F(LibraryPatcherRecheckTest, PassCapturesPltBindingBeforeVisits) {
   runInChild([]() {
     LoadedLib lib = loadLib(PTHREAD_CREATE);
+    // A statically linked sanitizer runtime defines pthread_create in this binary.
+    CodeCache* self = Libraries::instance()->findLibraryByAddress(LibraryPatcherTestAccessor::selfAnchor());
+    if (self == nullptr || self->peekImport(im_pthread_create) == nullptr) _exit(CHILD_SKIP);
     bindOwnPltSlot();
     LibraryPatcher::initialize_persistent();
     LibraryPatcherTestAccessor::setLoaderPthreadCreate(reinterpret_cast<void*>(&foreignWrapper));

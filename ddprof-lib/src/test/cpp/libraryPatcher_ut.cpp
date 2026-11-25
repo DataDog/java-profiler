@@ -378,6 +378,8 @@ TEST_F(LibraryPatcherPatching, CapturesPltBindingPastPreloadedInterposer) {
   LibraryPatcherTestAccessor::capturePltBinding(&self);
   ASSERT_EQ(interposer, LibraryPatcherTestAccessor::nextPthreadCreate());
   EXPECT_FALSE(LibraryPatcherTestAccessor::awaitingPltBinding());
+  EXPECT_EQ(interposer, jump_slot);  // the capture reads the profiler's slots only
+  EXPECT_EQ(canonical, glob_dat);
 
   void* slot = interposer;
   CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
