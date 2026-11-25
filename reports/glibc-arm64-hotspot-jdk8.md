@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-25 10:01:35 EST
+**Date:** 2026-11-25 10:02:39 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 107 |
-| Sample Rate | 1.78/sec |
-| Health Score | 111% |
+| CPU Samples | 112 |
+| Sample Rate | 1.87/sec |
+| Health Score | 117% |
 | Threads | 10 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 60 |
-| Sample Rate | 1.00/sec |
-| Health Score | 62% |
-| Threads | 10 |
+| CPU Samples | 83 |
+| Sample Rate | 1.38/sec |
+| Health Score | 86% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 28-33 cores)</summary>
+<summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
 
 ```
-1795618531 33
-1795618536 33
-1795618541 33
-1795618546 28
-1795618551 28
-1795618556 28
-1795618561 28
-1795618566 28
-1795618571 28
-1795618576 28
-1795618581 28
-1795618586 28
-1795618591 28
-1795618596 28
-1795618601 28
-1795618606 28
-1795618611 28
-1795618616 28
-1795618621 28
-1795618626 33
+1795618590 33
+1795618595 33
+1795618600 33
+1795618605 33
+1795618610 33
+1795618615 33
+1795618620 33
+1795618625 33
+1795618630 33
+1795618635 33
+1795618640 33
+1795618645 33
+1795618650 33
+1795618655 33
+1795618660 33
+1795618665 33
+1795618670 33
+1795618675 33
+1795618680 33
+1795618685 33
 ```
 </details>
 
