@@ -110,6 +110,17 @@ TEST_P(FrozenDeoptimizationTest, RejectsNegativeAndUnalignedOffsets) {
     EXPECT_EQ(nullptr, resolve(blob + 256));
 }
 
+TEST_P(FrozenDeoptimizationTest, RejectsJvmciReturnPcAfterHandlerCall) {
+#if defined(__x86_64__)
+    constexpr int call_size = 5;
+#else
+    constexpr int call_size = 4;
+#endif
+    EXPECT_EQ(nullptr, resolve(blob + 256 + call_size));
+    if (GetParam() != 2) EXPECT_EQ(nullptr, resolve(blob + 288 + call_size));
+    EXPECT_EQ(blob + 256 + call_size + 4, resolve(blob + 256 + call_size + 4)) << "only the call's return PC";
+}
+
 TEST_P(FrozenDeoptimizationTest, RejectsInvalidFrameBounds) {
     auto* nm = (VMNMethod*)blob;
     uintptr_t low = (uintptr_t)&stack[0];
