@@ -129,14 +129,21 @@ inline bool modifiedUtf8IsStandard(const char *s) {
   return true;
 }
 
-// Returns the byte length of the first max_units UTF-16 units of modified UTF-8 s. Each
-// modified-UTF-8 byte sequence encodes exactly one UTF-16 unit, so the cut never splits a sequence.
+// Returns the byte length of the first max_units UTF-16 units of modified UTF-8 s. Each byte
+// sequence encodes one UTF-16 unit; like utf16TruncatedLength, a high surrogate (ED A0-AF)
+// whose low half lies past the cut is dropped.
 inline size_t modifiedUtf8PrefixLength(const char *s, size_t max_units) {
   size_t units = 0;
   size_t i = 0;
+  size_t last = 0;
   for (; s[i] != '\0'; i++) {
-    if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80 && units++ == max_units) {
-      break;
+    if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) {
+      if (units++ == max_units) {
+        unsigned char lead = static_cast<unsigned char>(s[last]);
+        unsigned char next = static_cast<unsigned char>(s[last + 1]);
+        return lead == 0xED && next >= 0xA0 && next <= 0xAF ? last : i;
+      }
+      last = i;
     }
   }
   return i;
