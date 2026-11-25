@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 #include <memory>
+#include <signal.h>
 #include <thread>
 #include "counters.h"
 #include "guards.h"
@@ -72,11 +73,26 @@ struct ProfiledThreadOwner {
     ProfiledThreadOwner& operator=(const ProfiledThreadOwner&) = delete;
 };
 
+static void initializePoolOnce() {
+    static const bool initialized = (ThreadLocalDataPool::initialize(), true);
+    (void)initialized;
+}
+
+static void unblockProfilingSignals() {
+    sigset_t profiling;
+    sigemptyset(&profiling);
+    sigaddset(&profiling, SIGPROF);
+    sigaddset(&profiling, SIGVTALRM);
+    ASSERT_EQ(0, pthread_sigmask(SIG_UNBLOCK, &profiling, nullptr));
+}
+
 TEST(MallocTracerAdmissionTest, MarkedThreadWithLiveTlsRejectsTeardownAllocation) {
     std::thread worker([]() {
         ProfiledThreadOwner owner;
         ProfiledThread* tls = ProfiledThread::current();
         ASSERT_NE(nullptr, tls);
+        // Live TLS alone must identify the exiting thread.
+        unblockProfilingSignals();
         MallocTracerTestAccess tracer;
         ThreadExitRegistry::markCurrent();
         ASSERT_TRUE(ThreadExitRegistry::contains(ThreadExitRegistry::currentId()));
@@ -101,18 +117,41 @@ TEST(MallocTracerAdmissionTest, MarkedThreadWithLiveTlsRejectsTeardownAllocation
     worker.join();
 }
 
-TEST(MallocTracerAdmissionTest, MarkedThreadWithoutTlsDoesNotAcquirePoolSlot) {
-    ThreadLocalDataPool::initialize();
+// Mirrors the mark sites: block profiling signals, mark, then release TLS.
+TEST(MallocTracerAdmissionTest, ExitingThreadWithoutTlsDoesNotAcquirePoolSlot) {
+    initializePoolOnce();
     std::thread worker([]() {
         ASSERT_EQ(nullptr, ProfiledThread::current());
         MallocTracerTestAccess tracer;
+        blockProfilingForExit();
         ThreadExitRegistry::markCurrent();
         char allocation;
         MallocTracer::maybeRecord(&allocation, sizeof(allocation));
         EXPECT_EQ(nullptr, ProfiledThread::current());
         EXPECT_EQ(0, acquisitions);
         EXPECT_EQ(0, samples);
+        EXPECT_TRUE(ThreadExitRegistry::contains(ThreadExitRegistry::currentId()));
         ThreadExitRegistry::clearCurrent();
+    });
+    worker.join();
+}
+
+// A stale mark from an earlier thread with the same tid: no TLS, signals unblocked.
+TEST(MallocTracerAdmissionTest, ReusedIdentityClearsStaleMarkAndSamples) {
+    initializePoolOnce();
+    std::thread worker([]() {
+        ASSERT_EQ(nullptr, ProfiledThread::current());
+        unblockProfilingSignals();
+        MallocTracerTestAccess tracer;
+        ThreadExitRegistry::markCurrent();
+        long long before = Counters::getCounter(MALLOC_SAMPLES_DROPPED);
+        char allocation;
+        MallocTracer::maybeRecord(&allocation, sizeof(allocation));
+        EXPECT_FALSE(ThreadExitRegistry::contains(ThreadExitRegistry::currentId()));
+        EXPECT_EQ(1, acquisitions);
+        EXPECT_EQ(1, samples);
+        EXPECT_EQ(before, Counters::getCounter(MALLOC_SAMPLES_DROPPED));
+        ASSERT_NE(nullptr, ProfiledThread::current());
         ProfiledThreadOwner cleanup;
     });
     worker.join();
@@ -182,6 +221,18 @@ TEST(MallocTracerAdmissionTest, SampledReentrantAllocationIsCountedAsDropped) {
         EXPECT_EQ(1, acquisitions);
         EXPECT_EQ(0, samples);
         EXPECT_EQ(before + 1, Counters::getCounter(MALLOC_SAMPLES_DROPPED));
+    });
+    worker.join();
+}
+
+TEST(MallocTracerAdmissionTest, ExitCheckClearsMarkOfReusedIdentity) {
+    std::thread worker([]() {
+        ASSERT_EQ(nullptr, ProfiledThread::current());
+        unblockProfilingSignals();
+        ThreadExitRegistry::markCurrent();
+        EXPECT_FALSE(ThreadExitRegistry::isCurrentExiting());
+        EXPECT_FALSE(ThreadExitRegistry::contains(ThreadExitRegistry::currentId()));
+        EXPECT_EQ(nullptr, ProfiledThread::current());
     });
     worker.join();
 }

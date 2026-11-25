@@ -320,13 +320,29 @@ private:
 
   int _fd;
   RecordingOutput _output;
-  struct OutputFailure {};
+  // Cold sequences (constructor, chunk finish, chunk restart) write only to
+  // _buf[0]. After their first failed flush, _buf[0] serves as scratch and its
+  // bytes at the failure wait in _cold_failure_buf until ColdIoScope ends.
+  // Preallocated: flush() is reachable from signal handlers, so it must not allocate.
   bool _cold_io = true;
+  bool _cold_failed = false;
+  RecordingBuffer _cold_failure_buf;
+  class ColdIoScope {
+    Recording& _rec;
+  public:
+    explicit ColdIoScope(Recording& rec) : _rec(rec) { _rec._cold_io = true; }
+    ~ColdIoScope() { _rec.endColdIo(); }
+    ColdIoScope(const ColdIoScope&) = delete;
+    ColdIoScope& operator=(const ColdIoScope&) = delete;
+  };
+  void holdColdFailure();
+  void endColdIo();
   bool _chunk_open = true;
   u64 _chunk_sequence = 1;
   u64 _first_retained_chunk = 1;
+  // Returns -1 on output failure, before the next step that changes shared state.
   off_t finishChunkContents(bool end_recording, bool do_cleanup);
-  void patch(Buffer* buf, size_t size, off_t offset);
+  bool patch(Buffer* buf, size_t size, off_t offset);
   RecordingOutput::Delivery closeOutput();
   off_t _chunk_start;
   MethodMap _method_map;
@@ -427,7 +443,7 @@ public:
 
   bool parseAgentProperties();
 
-  void flush(Buffer *buf);
+  bool flush(Buffer *buf);
   bool flushIfNeeded(Buffer *buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
   void writeHeader(Buffer *buf);
 
@@ -633,8 +649,7 @@ public:
   //
   // Deliberately NOT a MethodMap entry: resolveMethod()'s siglongjmp landing pad
   // hands this row back with crash protection already disarmed, so it must be
-  // reachable without touching the map, whose operator[] allocates a node and
-  // can throw std::bad_alloc.
+  // reachable without touching the map, whose operator[] allocates a node.
   //
   // Because it is outside the map, the map walk in writeMethods() cannot see it,
   // so writeMethods() emits it separately. It has to reach the method pool:

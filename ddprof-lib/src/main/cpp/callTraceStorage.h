@@ -20,7 +20,8 @@
 #include <thread>
 #include <chrono>
 #ifdef UNIT_TEST
-#include <stdexcept>
+#include <cassert>
+#include <cstdlib>
 #endif
 
 // Forward declarations
@@ -97,15 +98,19 @@ private:
 
     bool allocateTables();
 #ifdef UNIT_TEST
-    bool _fail_allocation_for_test = false;
-    int _unusable_table_for_test = NO_UNUSABLE_TABLE;
+    int _unusable_table_for_test = NO_TABLE_FOR_TEST;
+    int _null_table_for_test = NO_TABLE_FOR_TEST;
 #endif
     // Swaps the three table pointers to nullptr and deletes the tables once
     // drained (a table still guarded after the timeout is leaked).
     void freeTables();
     
-    // Pre-allocated collections for processTraces (single-threaded operation)
-    // These collections are reused to eliminate malloc/free cycles
+    // Per-rotation collections for processTraces (single-threaded operation).
+    // clear() keeps the bucket arrays; node allocation repeats on every
+    // rotation, and the buckets rehash when a rotation holds more traces than
+    // any earlier one. The bucket arrays allocate on first use, not in
+    // acquire(): std containers cannot pre-size without the throwing
+    // allocator contract, and acquire() must fail without exceptions.
     CallTraceSet _traces_buffer;           // All traces for JFR processing
     CallTraceIdSet _preserve_set_buffer;   // Union of roots for the current cycle
     CallTraceIdSet _collector_set_buffer;  // Isolated, reusable checker output
@@ -168,16 +173,27 @@ public:
     bool acquire();
 
 #ifdef UNIT_TEST
-    // Makes allocateTables() fail as if memory ran out.
-    void failAllocationForTest(bool fail) { _fail_allocation_for_test = fail; }
-    static constexpr int NO_UNUSABLE_TABLE = -1;
-    // Makes allocateTables() build table `index` (0 active, 1 standby, 2 scratch)
-    // as if its first allocation failed.
+    static constexpr int NO_TABLE_FOR_TEST = -1;
+    // Both hooks take the table index (0 active, 1 standby, 2 scratch). An
+    // out-of-range index is a test bug: assert in debug, abort in release
+    // builds of the test binary (NDEBUG compiles the assert out).
+    // Makes allocateTables() build table `index` as if its first allocation
+    // failed (the table exists but usable() is false).
     void unusableTableForTest(int index) {
-        if (index < NO_UNUSABLE_TABLE || index > 2) {
-            throw std::out_of_range("unusableTableForTest: index must be -1..2");
+        if (index < NO_TABLE_FOR_TEST || index > 2) {
+            assert(false);
+            abort();
         }
         _unusable_table_for_test = index;
+    }
+    // Makes allocateTables() fail to construct table `index` at all (the
+    // nothrow allocation of the table object itself returns null).
+    void nullTableForTest(int index) {
+        if (index < NO_TABLE_FOR_TEST || index > 2) {
+            assert(false);
+            abort();
+        }
+        _null_table_for_test = index;
     }
 #endif
 };

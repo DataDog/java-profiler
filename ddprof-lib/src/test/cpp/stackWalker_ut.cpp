@@ -3,6 +3,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "profilerRangeTestSupport.h"
 #include "stackWalker.h"
 #include "frame.h"
 #include "gtest_crash_handler.h"
@@ -283,7 +284,7 @@ protected:
         uintptr_t dwarf_pc = reinterpret_cast<uintptr_t>(&StackWalker::walkDwarf);
         _range_lo = std::min(fp_pc, dwarf_pc) - kRangeMargin;
         _range_hi = std::max(fp_pc, dwarf_pc) + kRangeMargin;
-        Profiler::setAddressRangeForTest(_range_lo, _range_hi);
+        setProfilerRangeWithSafeAccessForTest(_range_lo, _range_hi);
     }
 
     void TearDown() override {

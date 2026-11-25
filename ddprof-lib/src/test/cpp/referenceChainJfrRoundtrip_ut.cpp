@@ -165,6 +165,15 @@ public:
         recording.writeSystemProperties(buf);
     }
     static void setColdIo(Recording& recording, bool cold) { recording._cold_io = cold; }
+    // Runs a writer as one cold sequence, like finishChunk() and switchChunk() do.
+    template <typename Writer>
+    static void runCold(Recording& recording, Writer writer) {
+        Recording::ColdIoScope cold(recording);
+        writer();
+    }
+    static void writeThreads(Recording& recording, Buffer* buf) { recording.writeThreads(buf); }
+    static Buffer* cpuMonitorBuffer(Recording& recording) { return &recording._cpu_monitor_buf; }
+    static bool chunkOpen(const Recording& recording) { return recording._chunk_open; }
     static void setAgentProperties(char* properties) { Recording::_agent_properties = properties; }
 };
 
@@ -801,7 +810,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, FailedPreflushAbortsWithoutOverflowingThe
     unlink(path.c_str());
 }
 
-// RED pre-fix: writeJvmInfo returned early (cold paths threw) past its
+// RED pre-fix: writeJvmInfo returned early past its
 // GetSystemProperty allocations, so a failed pre-reservation flush leaked both
 // JVMTI buffers. The owner must release them on every exit path.
 static void assertJvmInfoReleasesPropertyBuffers(jvmtiInterface_1_& jvmti_table, bool cold_path) {
@@ -845,17 +854,16 @@ static void assertJvmInfoReleasesPropertyBuffers(jvmtiInterface_1_& jvmti_table,
     struct rlimit limited = original_limit;
     limited.rlim_cur = 1;
     ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &limited));
-    if (cold_path) RecordingTestAccessor::setColdIo(recording, true);
-    bool threw = false;
-    try {
+    if (cold_path) {
+        RecordingTestAccessor::runCold(recording, [&] {
+            RecordingTestAccessor::writeJvmInfo(recording, buffer);
+        });
+    } else {
         RecordingTestAccessor::writeJvmInfo(recording, buffer);
-    } catch (...) {
-        threw = true;
     }
     ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &original_limit));
     ASSERT_EQ(0, sigaction(SIGXFSZ, &previous, nullptr));
 
-    EXPECT_EQ(cold_path, threw);
     EXPECT_EQ(2, g_jvmti_property_allocations - allocated);
     EXPECT_EQ(g_jvmti_property_allocations - allocated,
               g_jvmti_property_releases - released);
@@ -868,14 +876,14 @@ TEST_F(ReferenceChainJfrRoundtripTest, FailedJvmInfoPreflushAbortReleasesPropert
     assertJvmInfoReleasesPropertyBuffers(jvmti_tbl, false);
 }
 
-TEST_F(ReferenceChainJfrRoundtripTest, FailedJvmInfoColdOutputThrowReleasesPropertyBuffers) {
+TEST_F(ReferenceChainJfrRoundtripTest, FailedJvmInfoColdOutputFailureReleasesPropertyBuffers) {
     assertJvmInfoReleasesPropertyBuffers(jvmti_tbl, true);
 }
 
 // RED on the R3 candidate: a mid-loop exit freed only the visited key and the
 // array shell, leaking every unvisited keys[] element. Every mode below must
 // release the array shell, all keys, and every value read before the exit.
-enum SystemPropertyExit { kPreflushAbort, kColdThrow, kNormal };
+enum SystemPropertyExit { kPreflushAbort, kColdFailure, kNormal };
 
 static void assertSystemPropertiesReleaseAllKeys(jvmtiInterface_1_& jvmti_table,
                                                   SystemPropertyExit exit_mode) {
@@ -919,19 +927,19 @@ static void assertSystemPropertiesReleaseAllKeys(jvmtiInterface_1_& jvmti_table,
         limited.rlim_cur = 1;
         ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &limited));
     }
-    RecordingTestAccessor::setColdIo(recording, exit_mode == kColdThrow);
-    bool threw = false;
-    try {
+    if (exit_mode == kColdFailure) {
+        RecordingTestAccessor::runCold(recording, [&] {
+            RecordingTestAccessor::writeSystemProperties(recording, buffer);
+        });
+    } else {
+        RecordingTestAccessor::setColdIo(recording, false);
         RecordingTestAccessor::writeSystemProperties(recording, buffer);
-    } catch (...) {
-        threw = true;
     }
     if (exit_mode != kNormal) {
         ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &original_limit));
         ASSERT_EQ(0, sigaction(SIGXFSZ, &previous, nullptr));
     }
 
-    EXPECT_EQ(exit_mode == kColdThrow, threw);
     EXPECT_EQ(g_jvmti_property_allocations - allocated,
               g_jvmti_property_releases - released);
     if (exit_mode == kNormal) {
@@ -946,8 +954,165 @@ TEST_F(ReferenceChainJfrRoundtripTest, SystemPropertyPreflushAbortReleasesEveryK
     assertSystemPropertiesReleaseAllKeys(jvmti_tbl, kPreflushAbort);
 }
 
-TEST_F(ReferenceChainJfrRoundtripTest, SystemPropertyColdThrowReleasesEveryKey) {
-    assertSystemPropertiesReleaseAllKeys(jvmti_tbl, kColdThrow);
+TEST_F(ReferenceChainJfrRoundtripTest, SystemPropertyColdFailureReleasesEveryKey) {
+    assertSystemPropertiesReleaseAllKeys(jvmti_tbl, kColdFailure);
+}
+
+namespace {
+// Makes every write past the first byte of a file fail with EFBIG until destroyed.
+class OneByteFileSizeLimit {
+    struct rlimit _original{};
+    struct sigaction _previous{};
+    bool _installed = false;
+
+public:
+    OneByteFileSizeLimit() {
+        struct sigaction ignored{};
+        ignored.sa_handler = SIG_IGN;
+        sigemptyset(&ignored.sa_mask);
+        if (getrlimit(RLIMIT_FSIZE, &_original) != 0 ||
+            sigaction(SIGXFSZ, &ignored, &_previous) != 0) return;
+        struct rlimit limited = _original;
+        limited.rlim_cur = 1;
+        _installed = setrlimit(RLIMIT_FSIZE, &limited) == 0;
+    }
+    ~OneByteFileSizeLimit() { restore(); }
+    bool installed() const { return _installed; }
+    void restore() {
+        if (!_installed) return;
+        EXPECT_EQ(0, setrlimit(RLIMIT_FSIZE, &_original));
+        EXPECT_EQ(0, sigaction(SIGXFSZ, &_previous, nullptr));
+        _installed = false;
+    }
+    OneByteFileSizeLimit(const OneByteFileSizeLimit&) = delete;
+    OneByteFileSizeLimit& operator=(const OneByteFileSizeLimit&) = delete;
+};
+
+Arguments coldFailureArgs() {
+    Arguments args;
+    args._clock = CLK_MONOTONIC;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    return args;
+}
+
+int unlinkedTemporaryFd() {
+    char source[] = "/tmp/ddprof-cold-failure-XXXXXX";
+    int fd = mkstemp(source);
+    if (fd >= 0) unlink(source);
+    return fd;
+}
+} // namespace
+
+// The first finishChunk() step fails. Later steps must not touch shared state,
+// and stripe 0 must again hold exactly the bytes and references it held.
+TEST_F(ReferenceChainJfrRoundtripTest, ColdChunkFailureSkipsLaterStepsAndRestoresTheBuffer) {
+    Arguments args = coldFailureArgs();
+    int source_fd = unlinkedTemporaryFd();
+    ASSERT_GE(source_fd, 0);
+    Recording recording(source_fd, args);
+    ExecutionEvent sample;
+    sample._thread_state = OSThreadState::SLEEPING;
+    sample._weight = 1;
+    ASSERT_TRUE(recording.addThread(0, 656));
+    recording.recordMethodSample(recording.buffer(0), 656, 0, 0, &sample);
+    Buffer* buffer = recording.buffer(0);
+    std::vector<char> original(buffer->data(), buffer->data() + buffer->offset());
+    Buffer* cpu = RecordingTestAccessor::cpuMonitorBuffer(recording);
+    cpu->put8(0);
+    constexpr long long kUnsampled = -4242;
+    Counters::set(NATIVE_MEM_LIVE_BYTES, kUnsampled);
+
+    off_t end;
+    {
+        OneByteFileSizeLimit limit;
+        ASSERT_TRUE(limit.installed());
+        end = recording.finishChunk();
+    }
+
+    EXPECT_LT(end, 0);
+    EXPECT_FALSE(recording.outputGood());
+    EXPECT_TRUE(RecordingTestAccessor::chunkOpen(recording));
+    EXPECT_EQ(kUnsampled, Counters::getCounter(NATIVE_MEM_LIVE_BYTES))
+        << "native-memory sampling runs after the failed cpu-monitor flush";
+    EXPECT_EQ(1, cpu->offset());
+    ASSERT_EQ(static_cast<int>(original.size()), buffer->offset());
+    EXPECT_EQ(0, memcmp(buffer->data(), original.data(), original.size()));
+    std::unordered_set<int> references;
+    RecordingTestAccessor::collectReferences(recording, references);
+    EXPECT_EQ(1U, references.count(656));
+}
+
+// writeThreads() ignores its flush results. Every thread table is full, so
+// after the first failed flush it writes far more than the buffer can hold.
+TEST_F(ReferenceChainJfrRoundtripTest, ColdWriterContinuesPastFailureWithoutOverrunningTheBuffer) {
+    Arguments args = coldFailureArgs();
+    int source_fd = unlinkedTemporaryFd();
+    ASSERT_GE(source_fd, 0);
+    Recording recording(source_fd, args);
+    ExecutionEvent sample;
+    sample._thread_state = OSThreadState::SLEEPING;
+    sample._weight = 1;
+    Buffer* buffer = recording.buffer(0);
+    // recordMethodSample() flushes at the threshold itself; pad to just below it
+    // so writeThreads() flushes before its first entry.
+    while (buffer->offset() < RECORDING_BUFFER_LIMIT - 256) {
+        recording.recordMethodSample(buffer, 657, 0, 0, &sample);
+    }
+    buffer->skip(RECORDING_BUFFER_LIMIT - 1 - buffer->offset());
+    std::vector<char> original(buffer->data(), buffer->data() + buffer->offset());
+    int tid = 100000;
+    for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
+        for (int slot = 0; slot < ThreadIdTable::capacity(); ++slot) {
+            ASSERT_TRUE(recording.addThread(stripe, tid++));
+        }
+    }
+
+    {
+        OneByteFileSizeLimit limit;
+        ASSERT_TRUE(limit.installed());
+        RecordingTestAccessor::runCold(recording, [&] {
+            RecordingTestAccessor::writeThreads(recording, buffer);
+        });
+    }
+
+    EXPECT_FALSE(recording.outputGood());
+    // The failure keeps the pool header written before the first flush:
+    // T_THREAD (1 byte) and the 4097-thread count (2 varint bytes).
+    constexpr int kPoolHeaderBytes = 3;
+    ASSERT_EQ(static_cast<int>(original.size()) + kPoolHeaderBytes, buffer->offset());
+    EXPECT_EQ(0, memcmp(buffer->data(), original.data(), original.size()));
+}
+
+// The constructor's final flush fails: start() must close the descriptor once,
+// publish nothing and leave no recording memory behind.
+TEST_F(ReferenceChainJfrRoundtripTest, StartClosesOutputWhoseInitialFlushFails) {
+    char path[] = "/tmp/ddprof-cold-start-XXXXXX";
+    int temporary = mkstemp(path);
+    ASSERT_GE(temporary, 0);
+    close(temporary);
+    Arguments args;
+    std::string command = std::string("jfr,file=") + path;
+    ASSERT_FALSE(args.parse(command.c_str()));
+    args._clock = CLK_MONOTONIC;
+    args._jfr_options = JFR_SYNC_OPTS;
+    initializeOutputFixtureMetadata(args);
+    FlightRecorder recorder;
+    const long long live_before = NativeMem::live(NM_JFR_BUFFERS);
+
+    Error started = Error::OK;
+    {
+        OneByteFileSizeLimit limit;
+        ASSERT_TRUE(limit.installed());
+        started = recorder.start(args, true);
+    }
+    unlink(path);
+
+    ASSERT_TRUE(started);
+    EXPECT_STREQ("Could not initialize complete Flight Recorder output", started.message());
+    EXPECT_FALSE(recorder.active());
+    EXPECT_FALSE(recorder.outputQuarantined()) << "a second close of the descriptor would fail";
+    EXPECT_EQ(live_before, NativeMem::live(NM_JFR_BUFFERS));
 }
 
 TEST_F(ReferenceChainJfrRoundtripTest, SystemPropertyNormalCompletionReleasesEveryKey) {

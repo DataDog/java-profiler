@@ -417,12 +417,27 @@ Java_com_datadoghq_profiler_JavaProfiler_recordUnownedWallTailAcrossDumpForTest0
     jboolean dump_after_primary, jboolean reset_before_tail) {
 #ifdef DEBUG
   JniString path(env, snapshot);
-  return BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
+  const char* failure = BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
       thread, path.c_str(), path.length(), dump_after_primary == JNI_TRUE,
-      reset_before_tail == JNI_TRUE)
-      ? JNI_TRUE : JNI_FALSE;
+      reset_before_tail == JNI_TRUE);
+  if (failure != nullptr) {
+    throwNew(env, "java/lang/IllegalStateException", failure);
+    return JNI_FALSE;
+  }
+  return JNI_TRUE;
 #else
   return JNI_FALSE;
+#endif
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_exchangeUnownedWallTailAcrossDumpDropsForTest0(
+    JNIEnv *env, jclass unused, jint step, jint drops) {
+#ifdef DEBUG
+  return BaseWallClock::exchangeUnownedWallTailAcrossDumpDropsForTest(
+      static_cast<BaseWallClock::TailDropStep>(step), drops);
+#else
+  return 0;
 #endif
 }
 

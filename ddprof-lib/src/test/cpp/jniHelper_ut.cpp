@@ -41,6 +41,107 @@ TEST(JniHelperTest, OlderRuntimesDoNotReadNewTableSlots) {
     EXPECT_FALSE(jniIsVirtualThread(nullptr, reinterpret_cast<jobject>(1), 21));
 }
 
+static int deleted_refs = 0;
+static jobject last_deleted_ref = nullptr;
+static int released_chars = 0;
+static const char *last_released_chars = nullptr;
+static const char UTF_CHARS[] = "17.0.20+8";
+
+static void JNICALL countDeleteLocalRef(JNIEnv *, jobject ref) {
+    deleted_refs++;
+    last_deleted_ref = ref;
+}
+
+static const char *JNICALL returnUtfChars(JNIEnv *, jstring, jboolean *) {
+    return UTF_CHARS;
+}
+
+static const char *JNICALL returnNullUtfChars(JNIEnv *, jstring, jboolean *) {
+    return nullptr;
+}
+
+static void JNICALL countReleaseUtfChars(JNIEnv *, jstring, const char *chars) {
+    released_chars++;
+    last_released_chars = chars;
+}
+
+static JNIEnv fakeEnv(JNINativeInterface_ &table) {
+    table.DeleteLocalRef = &countDeleteLocalRef;
+    table.ReleaseStringUTFChars = &countReleaseUtfChars;
+    JNIEnv env{};
+    env.functions = &table;
+    return env;
+}
+
+TEST(JniHelperTest, LocalRefIsDeletedAtScopeExit) {
+    JNINativeInterface_ table{};
+    JNIEnv env = fakeEnv(table);
+    jobject ref = reinterpret_cast<jobject>(0x10);
+    deleted_refs = 0;
+    {
+        JniLocalRef owner(&env, ref);
+        EXPECT_EQ(ref, owner.get());
+        EXPECT_EQ(0, deleted_refs);
+    }
+    EXPECT_EQ(1, deleted_refs);
+    EXPECT_EQ(ref, last_deleted_ref);
+}
+
+TEST(JniHelperTest, NullLocalRefIsNotDeleted) {
+    JNINativeInterface_ table{};
+    JNIEnv env = fakeEnv(table);
+    deleted_refs = 0;
+    { JniLocalRef owner(&env, nullptr); }
+    EXPECT_EQ(0, deleted_refs);
+}
+
+TEST(JniHelperTest, UtfCharsAreReleasedAtScopeExit) {
+    JNINativeInterface_ table{};
+    JNIEnv env = fakeEnv(table);
+    table.GetStringUTFChars = &returnUtfChars;
+    released_chars = 0;
+    {
+        JniUtfChars chars(&env, reinterpret_cast<jstring>(0x20));
+        EXPECT_STREQ(UTF_CHARS, chars.get());
+        EXPECT_EQ(0, released_chars);
+    }
+    EXPECT_EQ(1, released_chars);
+    EXPECT_EQ(UTF_CHARS, last_released_chars);
+}
+
+static int utf_char_calls = 0;
+
+static const char *JNICALL countUtfChars(JNIEnv *, jstring, jboolean *) {
+    utf_char_calls++;
+    return UTF_CHARS;
+}
+
+TEST(JniHelperTest, NullStringIsNotCopiedOrReleased) {
+    JNINativeInterface_ table{};
+    JNIEnv env = fakeEnv(table);
+    table.GetStringUTFChars = &countUtfChars;
+    utf_char_calls = 0;
+    released_chars = 0;
+    {
+        JniUtfChars chars(&env, nullptr);
+        EXPECT_EQ(nullptr, chars.get());
+    }
+    EXPECT_EQ(0, utf_char_calls);
+    EXPECT_EQ(0, released_chars);
+}
+
+TEST(JniHelperTest, FailedUtfCharsAreNotReleased) {
+    JNINativeInterface_ table{};
+    JNIEnv env = fakeEnv(table);
+    table.GetStringUTFChars = &returnNullUtfChars;
+    released_chars = 0;
+    {
+        JniUtfChars chars(&env, reinterpret_cast<jstring>(0x20));
+        EXPECT_EQ(nullptr, chars.get());
+    }
+    EXPECT_EQ(0, released_chars);
+}
+
 std::string encode(const std::u16string &text) {
     std::array<char, 3 * 16> out{};
     EXPECT_LE(text.size(), 16u);

@@ -102,17 +102,7 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
     Path jfr = Files.createTempFile("j9", ".jfr");
     jfr.toFile().deleteOnExit();
 
-    // ASGCT re-enabled for versions containing the OpenJ9 0.51 fix (eclipse-openj9/openj9#20577)
-    String sampler = "jvmti";
-    if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 451)) {
-      sampler = "asgct";
-    } else if (Platform.isJavaVersion(11) && Platform.isJavaVersionAtLeast(11, 0, 27)) {
-      sampler = "asgct";
-    } else if (Platform.isJavaVersion(17) && Platform.isJavaVersionAtLeast(17, 0, 15)) {
-      sampler = "asgct";
-    } else if (Platform.isJavaVersion(21) && Platform.isJavaVersionAtLeast(21, 0, 7)) {
-      sampler = "asgct";
-    }
+    String sampler = J9AsgctGate.asgctAllowed() ? "asgct" : "jvmti";
 
     AtomicReference<String> usedSampler = new AtomicReference<>("");
     AtomicBoolean hasWall = new AtomicBoolean(false);

@@ -183,12 +183,17 @@ before the first `start()`); `acquire()` is the only place they are allocated.
 `start()` reallocates them when `_calltrace_buffer[0]` is `NULL`. Every reader takes
 its stripe lock and drops the sample when its buffer is `NULL`.
 
-## Pre-allocated Buffers
+## Reused Collections
 
-`processTraces()` reuses `_traces_buffer` (pre-sized for 2048 traces),
-`_preserve_set_buffer` (pre-sized for 1024 IDs), and `_collector_set_buffer`.
-All use `CountingAllocator`, which charges their allocations to `NM_CALLTRACE`.
-They are pre-sized again by every `acquire()` and freed by `release()`.
+`processTraces()` reuses three member collections instead of allocating per call:
+`_traces_buffer` (`CallTraceSet`), `_preserve_set_buffer` and
+`_collector_set_buffer` (`CallTraceIdSet`). All use `CountingAllocator`, so
+their memory is reported under `NM_CALLTRACE`.
+`clear()` keeps the bucket arrays; node allocation repeats on every rotation,
+and the buckets rehash when a rotation holds more traces than any earlier one.
+The bucket arrays allocate on first use, not in `acquire()`: std containers
+cannot pre-size without the throwing allocator contract, and `acquire()` must
+fail without exceptions. `release()` frees the collections.
 
 ## Liveness Preservation
 
