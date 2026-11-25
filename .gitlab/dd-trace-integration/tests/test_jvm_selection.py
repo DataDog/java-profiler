@@ -301,12 +301,15 @@ class JvmSelectionTest(unittest.TestCase):
         result = self.run_bash("bash .gitlab/dd-trace-integration/verify-jvm.sh", JAVA_EXIT="1")
         self.assert_failed(result, "Could not query integration JVM identity")
 
-    def test_runner_rejects_mislabeled_jvm_before_artifacts_or_prerequisites(self):
-        result = self.run_bash("bash .gitlab/dd-trace-integration/run-integration-test.sh",
-                               FIXTURE_VM_NAME="OpenJDK 64-Bit Server VM", CI_PROJECT_DIR=str(self.path))
+    def test_cell_rejects_mislabeled_jvm_once_before_prerequisites_and_runner(self):
+        result = self.run_cell(FIXTURE_VM_NAME="OpenJDK 64-Bit Server VM")
         self.assert_failed(result, "JVM identity mismatch")
-        self.assertFalse((self.path / "integration-test-results").exists())
-        self.assertNotIn("Installing prerequisites", result.stdout)
+        config = (SCRIPTS / ".gitlab-ci.yml").read_text()
+        verify = config.index("bash .gitlab/dd-trace-integration/verify-jvm.sh")
+        self.assertLess(verify, config.index(".gitlab/dd-trace-integration/install-prerequisites.sh"))
+        self.assertLess(verify, config.index(".gitlab/dd-trace-integration/run-integration-test.sh"))
+        self.assertEqual(config.count("verify-jvm.sh"), 1)
+        self.assertNotIn("verify-jvm.sh", (SCRIPTS / "run-integration-test.sh").read_text())
 
     def test_openj9_musl_cells_are_not_applicable_by_effective_ci_rules(self):
         config = (SCRIPTS / ".gitlab-ci.yml").read_text()

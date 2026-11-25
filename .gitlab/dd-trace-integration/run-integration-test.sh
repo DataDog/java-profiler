@@ -93,9 +93,6 @@ if [ ! -x "${JAVA_HOME}/bin/javac" ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bash "${SCRIPT_DIR}/verify-jvm.sh"
-
 # ========================================
 # System Diagnostics Functions
 # ========================================
@@ -210,6 +207,7 @@ log_info "Java version:"
 echo ""
 log_info "Installing prerequisites (jbang for JFR validation)..."
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${SCRIPT_DIR}/install-prerequisites.sh" ]; then
   source "${SCRIPT_DIR}/install-prerequisites.sh"
 else
