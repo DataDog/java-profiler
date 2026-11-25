@@ -34,9 +34,10 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/../.." && pwd)
 IBM_JAVA_INDEX_URL="https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/"
 IBM_URL_VAR="JAVA_8_IBM_URL"
-# retry 1 / max-time 30 keep the worst case (4 curl attempts x 30s per pin)
-# inside the probe deadline; the daily cadence re-checks INCONCLUSIVE pins.
-CURL_OPTS=(-sS -L --retry 1 --retry-all-errors --connect-timeout 15 --max-time 30)
+# retry 1 / max-time 30 / retry-max-time 30 bound each transfer and the total
+# retry window, so a server-sent Retry-After cannot stall one probe past the
+# deadline; the daily cadence re-checks INCONCLUSIVE pins.
+CURL_OPTS=(-sS -L --retry 1 --retry-all-errors --connect-timeout 15 --max-time 30 --retry-max-time 30)
 # Probes share one budget: past it, unprobed pins are INCONCLUSIVE instead of
 # the job being killed at timeout-minutes before any alert. Overridable for
 # the hermetic tests.

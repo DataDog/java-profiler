@@ -75,7 +75,7 @@ while [ $# -gt 0 ]; do
     -o) out=$2; shift ;;
     -X) method=$2; shift ;;
     --data) data=$2; shift ;;
-    -u|-H|--retry|--connect-timeout|--max-time) shift ;;
+    -u|-H|--retry|--connect-timeout|--max-time|--retry-max-time) shift ;;
     http://*|https://*) url=$1 ;;
   esac
   shift
@@ -208,6 +208,11 @@ deadline_expired "$((SECONDS - 5))" || fail "deadline_expired at the exact bound
 deadline_expired "$SECONDS" && fail "deadline_expired before the boundary" || true
 TESTS=$((TESTS + 2))
 unset PROBE_DEADLINE_SECONDS
+
+# The retry window is bounded, so a server-sent Retry-After cannot stall a
+# probe past the probe deadline.
+assert_contains "${CURL_OPTS[*]}" "--retry-max-time 30" "curl retry window is bounded"
+assert_contains "${CURL_OPTS[*]}" "--max-time 30" "each curl transfer is bounded"
 
 assert_eq 8.0.8.75 "$(pinned_ibm_version "$IBM_PIN")" "pinned_ibm_version"
 assert_eq "" "$(pinned_ibm_version "https://example.invalid/jdk.tgz")" "pinned_ibm_version without a release directory"

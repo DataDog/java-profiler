@@ -143,8 +143,9 @@ every day, on manual dispatch, and on PRs that change `cache_java.yml` or
 To bump a pin, edit its URL in `cache_java.yml`. For `JAVA_8_IBM_URL`, the
 directory and the archive name both carry the version.
 
-A manual run with `force_issue` reports `JAVA_8_IBM_URL` as stale to test the
-alert path. It files a real PROF ticket and posts to the shared Slack webhook,
+A manual run with `force_issue` reports `JAVA_8_IBM_URL` as stale (the first
+pinned URL when the IBM pin is absent) to test the alert path. It files a real
+PROF ticket and posts to the shared Slack webhook,
 unless a stale ticket for that pin is already open. The next scheduled or
 manual run that sees the pin answer 2xx resolves that ticket.
 
