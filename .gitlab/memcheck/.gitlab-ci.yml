@@ -1,0 +1,133 @@
+# Copyright 2026, Datadog, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Calibration run for utils/memcheck/budget.txt on the PR check's runner type;
+# `Evaluate.java --calibrate` derives the limits from the five jobs' artifacts.
+# Runs only in a web-started pipeline with RUN_MEMCHECK_CALIBRATION=true.
+memcheck-calibrate:x64:
+  stage: benchmarks
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RUN_MEMCHECK_CALIBRATION == "true"'
+      when: always
+    - when: never
+  needs: []
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  # A push to the branch must not cancel a 30-minute measurement.
+  interruptible: false
+  timeout: 2h
+  parallel: 5
+  variables:
+    # The CPU count the JVMs are sized for (-XX:ActiveProcessorCount).
+    CPUS: "4"
+    REPS: "3"
+    NOPROF_REPS: "1"
+  script:
+    - utils/memcheck/ci-run.sh "build/memcheck-${CI_NODE_INDEX}"
+  artifacts:
+    when: always
+    paths:
+      - build/memcheck-*/
+    expire_in: 30 days
+
+# Never-conditions of the per-PR memcheck jobs; mirrors .benchmarks-skip-rules.
+# CANCELLED (no open PR) comes from prepare:start's dotenv, which rules cannot
+# see: the jobs need prepare:start, and the default before_script ends them.
+.memcheck-pr-skip:
+  rules:
+    - if: '$CANCELLED == "true"'
+      when: never
+    - !reference [.skip-on-release, rules]
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+
+memcheck:unit-tests:
+  stage: prepare
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
+    - when: on_success
+  needs: []
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  timeout: 10m
+  script:
+    - bash utils/memcheck/test/evaluate_test.sh
+    - bash utils/memcheck/test/run_scenario_test.sh
+
+# Memory overhead check for every PR. Each scenario runs with and without the
+# profiler in the same job, so the NMT overhead is profiled minus no-profiler on
+# one pod. Two jobs keep the wall time near 15 minutes.
+memcheck:x64:
+  stage: benchmarks
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
+    - when: on_success
+  needs:
+    - job: prepare:start
+      artifacts: true
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  timeout: 1h
+  parallel:
+    matrix:
+      - SCENARIOS: ["threads allocs mixed", "traces classesM"]
+  variables:
+    CPUS: "4"
+    ARMS: "nmt"
+    REPS: "3"
+    NOPROF_REPS: "2"
+  script:
+    - utils/memcheck/ci-run.sh "build/memcheck-pr-$(echo "$SCENARIOS" | tr ' ' '-')"
+  artifacts:
+    when: always
+    paths:
+      - build/memcheck-pr-*/
+    expire_in: 30 days
+
+# Checks the memcheck:x64 records against utils/memcheck/budget.txt. Runs when
+# a memcheck:x64 job failed too, so build/memcheck-report.md names the missing
+# records. Fails on an exceeded limit (exit 1) or missing records (exit 2).
+memcheck:report:
+  stage: post-benchmarks
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
+    - when: always
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: memcheck:x64
+      artifacts: true
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64_GLIBC}
+  timeout: 10m
+  script:
+    - java utils/memcheck/src/Evaluate.java utils/memcheck/budget.txt build/memcheck-report.md build/memcheck-pr-*
+  artifacts:
+    when: always
+    paths:
+      - build/memcheck-report.md
+    expire_in: 30 days
+
+memcheck:comment:
+  stage: notify
+  rules:
+    - !reference [.memcheck-pr-skip, rules]
+    - when: always
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: memcheck:report
+      artifacts: true
+  tags: ["arch:arm64"]
+  image: ${DD_OCTO_STS_IMAGE}
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  timeout: 5m
+  allow_failure: true
+  script:
+    - .gitlab/scripts/upsert-github-pr-comment.sh memcheck "${CI_COMMIT_BRANCH:-$CI_COMMIT_REF_NAME}" build/memcheck-report.md

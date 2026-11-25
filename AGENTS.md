@@ -77,7 +77,6 @@ dependency-free leak-demo app; not published).
 
 **Supported JVMs:** HotSpot, J9, Zing — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
-Linux OpenJ9 requires glibc; see the [runtime matrix](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
 
 ## Operating Rules for Agent Sessions
 
@@ -125,10 +124,18 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `post-pr-comment.sh`, and a flaky cell+scenario is quarantined in
   `.gitlab/dd-trace-integration/quarantine.txt` with a PROF ticket and an expiry
   (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md), Tier 3).
+- Native-memory budget: the `memcheck:*` GitLab jobs fail a PR whose profiler memory
+  exceeds `utils/memcheck/budget.txt`; fix the regression or raise the limit with the
+  reason in the PR (see [doc/building/MemoryOverheadCheck.md](doc/building/MemoryOverheadCheck.md)).
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
   extraction and stripping happen unconditionally inside `linkRelease`.
+- Releases are automated: nightly certification marks a commit as
+  release-ready (git notes), the Friday release train cuts a minor from the
+  newest unreleased certified commit, and a dd-trace-java bump PR opens when
+  the Maven Central artifacts are live — see
+  [doc/building/ReleaseTrain.md](doc/building/ReleaseTrain.md).
 - Code quality: `spotlessApply` before committing (CI fails on `spotlessCheck`),
   `qualityChecks` (source invariants, copyright headers, `CLAUDE.md` and the native-code
   stubs), `scanBuild` (Linux only), `:ddprof-stresstest:runStressTests`,
@@ -153,11 +160,6 @@ Resource checks and execution approval remain separate; shared Git metadata is r
 `--mount --artifacts-dir=/absolute/existing/directory` retains per-cell gtest XML and JFRs.
 Use an approved evidence-only root under the selected source's `build/logs/`.
 The TestingGuide defines paths, restrictions and coverage boundaries.
-
-GitLab dd-trace integration selects and verifies the labeled JVM and JDK major;
-OpenJ9 uses Semeru on glibc. Musl/OpenJ9 cells are not scheduled and are reported
-as not applicable because upstream publishes no musl runtime.
-See [TestingGuide](doc/building/TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
 
 Full task reference: [doc/building/GradleTasks.md](doc/building/GradleTasks.md). Native issues:
 debug symbols via `buildDebug`, memory errors via ASan, suppressions in
@@ -227,7 +229,19 @@ C++ engine `ddprof-lib/src/main/cpp/` (implementation-specific code under `hotsp
 - Treat caller contract violations (null arguments, mismatched array lengths, an operation
   that must never fail in a test) as bugs: throw instead of returning false or
   incrementing a failure counter, and do not add validation that duplicates what the loop
-  already checks.
+  already checks. This is the Java API convention; native code does not throw — see the
+  C++ exceptions rule below.
+- **C++ exceptions.** Never write `throw`, `try` or `catch` in
+  `ddprof-lib/src/main/cpp`: an uncaught exception escaping through a JVMTI callback
+  terminates the JVM — like `abort`, but opaque — and a try/catch frame on a path that a
+  pthread cancel or exit forced unwind crosses aborts under `-static-libgcc`
+  (`libraryPatcher_linux.cpp`); glibc's forced unwind cannot be caught in libc++ builds at
+  all (`j9WallClock.cpp`). Programming bugs are `assert` + `abort()`; expected failures
+  (OOM, missing data) are error codes or a `false` return, with `new (std::nothrow)`/mmap
+  allocation where the failure must be survivable. Plain `new` and std containers still
+  terminate the process on OOM — never rely on catching that. Enforced in CI: the
+  `qualityChecks` task fails on any `throw`/`try`/`catch` (or listed throwing std helper)
+  in native sources outside the checker's exception list.
 - Explain in a comment why a non-obvious call, init-order assumption, sentinel return value
   (e.g. 0 meaning miss/full), omitted lock, unsynchronized access or read of a specific
   buffer (e.g. standby) is safe, and why a workaround or test exclusion exists.
