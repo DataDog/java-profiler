@@ -41,6 +41,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [CodeCoverage](building/CodeCoverage.md) - Opt-in C++ (gcovr) and Java (JaCoCo) coverage reports, prerequisites, debug-only scope
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
+- [MemoryOverheadCheck](building/MemoryOverheadCheck.md) - Per-PR native-memory budget check on GitLab and how to recalibrate it
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
 - [ReleaseTrain](building/ReleaseTrain.md) - Automated release train: nightly certification, Friday minor release, dd-trace-java bump
 - [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, real-VM qualification, integration runtime applicability and JVM identity checks, and local workflows
