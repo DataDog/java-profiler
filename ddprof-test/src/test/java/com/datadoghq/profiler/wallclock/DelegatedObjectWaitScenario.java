@@ -13,6 +13,7 @@ import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -28,7 +29,12 @@ public final class DelegatedObjectWaitScenario extends AbstractProcessProfilerTe
   }
 
   private void verify(String command) throws Exception {
-    Path recording = Files.createTempFile("delegated-object-wait-", ".jfr");
+    // Under /tmp/recordings so CI collects it when ddprof_test.keep_jfrs is set.
+    Path recording =
+        Files.createTempFile(
+            Files.createDirectories(Paths.get("/tmp/recordings")),
+            "delegated-object-wait-",
+            ".jfr");
     try {
       AtomicReference<String> identity = new AtomicReference<>();
       LaunchResult result =
@@ -68,12 +74,15 @@ public final class DelegatedObjectWaitScenario extends AbstractProcessProfilerTe
         assertFalse(event.getStackTrace().isEmpty());
         assertTrue(
             event.getStackTraceString().contains("delegatedWaitWorkload"),
-            "Stack must identify the real Java wait workload");
+            "Stack must identify the real Java wait workload: <"
+                + event.getStackTraceString()
+                + "> in "
+                + recording.toAbsolutePath());
       }
       assertEquals(
           1, count, "Java hooks and native callbacks must not duplicate the delegated wait");
     } finally {
-      Files.deleteIfExists(recording);
+      if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(recording);
     }
   }
 
