@@ -201,6 +201,7 @@ The other 30 configurations still require validation logs; missing results fail 
 
 OpenJ9 glibc cells install pinned IBM Semeru JDKs, not distro OpenJDK packages.
 A download whose body is not a gzip tar archive is fetched again, up to three attempts.
+Each archive must match the SHA-256 that upstream publishes for it; a mismatch fails the cell without a retry.
 Direct musl/OpenJ9 provisioning still fails closed, as do failed downloads and invalid JDK archives.
 
 `verify-jvm.sh` checks `java.vm.name` and the JDK major (`25` or `25.*`; `1.8.*` for JDK 8) before prerequisites and tests.

@@ -2,6 +2,7 @@
 # Copyright 2026, Datadog, Inc.
 """Exercise the GitLab integration selector without installing packages or JDKs."""
 
+import hashlib
 import io
 import os
 from pathlib import Path
@@ -29,6 +30,20 @@ SEMERU_URLS = {
     (21, "arm64"): "https://github.com/ibmruntimes/semeru21-binaries/releases/download/jdk-21.0.13.0/ibm-semeru-open-jdk_aarch64_linux_21.0.13.0.tar.gz",
     (25, "x64"): "https://github.com/ibmruntimes/semeru25-binaries/releases/download/jdk-25.0.5.0/ibm-semeru-open-jdk_x64_linux_25.0.5.0.tar.gz",
     (25, "arm64"): "https://github.com/ibmruntimes/semeru25-binaries/releases/download/jdk-25.0.5.0/ibm-semeru-open-jdk_aarch64_linux_25.0.5.0.tar.gz",
+}
+
+# Upstream <archive>.sha256.txt for each asset above.
+SEMERU_SHA256 = {
+    (8, "x64"): "bd45587130f56feb746056e30d1fa1ebe5dd0ef44ec7b496e8aa072201981f8e",
+    (8, "arm64"): "2090ee80f0a05889c62dae44c0479687bff9ad606ead0e367cde496c9ffcadb2",
+    (11, "x64"): "dc4c3d88a1e2d64152e5c14109b5fbf35a1654d45b92b3419a2325c91ab15013",
+    (11, "arm64"): "25947aef6c52a1ada2f53d73d8e71ee2e79398977f2f6f46e9f95886a917b085",
+    (17, "x64"): "854268feba1ebddcad42cf97915b3c48e44a543bbbe8f43e587a722921a16c42",
+    (17, "arm64"): "9e92ab55b5088d6f8f9170b4f4e70baff7d39416e454583306e6b576c2262e67",
+    (21, "x64"): "0c92b61ea02efe73a7b6d346f1d8324efd50fe1fb848bf3a031a577dc1181d45",
+    (21, "arm64"): "c8730b3746f3c2e5eb5ce7cc4415d4b86260cf7e9b12de469607c0c9c3c32dfb",
+    (25, "x64"): "cb52686cd841bb76b55b66dabcbf890a303169158aa4bb10fa61040bf462f9b1",
+    (25, "arm64"): "0d011789093c1e5e4da6843a8f40947a36c2f0af0199e6be64590d279e37e7cc",
 }
 
 
@@ -72,6 +87,14 @@ class JvmSelectionTest(unittest.TestCase):
             'cat "$ARCHIVE"\n',
         )
         self.executable(self.bin / "sleep", 'echo "sleep $*" >> "$CALLS"\n')
+        # The fixture archive cannot match a pinned digest: record the digest checked, exit SHA_EXIT.
+        self.executable(
+            self.bin / "sha256sum",
+            'read -r digest file\n'
+            'echo "sha256sum $* $digest" >> "$CALLS"\n'
+            '[ -f "$file" ] || exit 1\n'
+            'exit "${SHA_EXIT:-0}"\n',
+        )
         self.tmp = self.path / "tmp"
         self.tmp.mkdir()
         self.executable(self.bin / "apt-get", 'echo "apt-get $*" >> "$CALLS"\n')
@@ -113,6 +136,9 @@ class JvmSelectionTest(unittest.TestCase):
         prefix = 'source() { builtin source "$1" "$INSTALL_ROOT"; }\n'
         return self.run_bash(prefix + integration_script(), **env)
 
+    def checked_digests(self):
+        return [line.split()[-1] for line in self.calls.read_text().splitlines() if line.startswith("sha256sum ")]
+
     def curl_urls(self):
         return [line.split()[-1] for line in self.calls.read_text().splitlines() if line.startswith("curl ")]
 
@@ -131,6 +157,7 @@ class JvmSelectionTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout)
                     calls = self.calls.read_text()
                     self.assertEqual(self.curl_urls(), [SEMERU_URLS[major, arch]])
+                    self.assertEqual(self.checked_digests(), [SEMERU_SHA256[major, arch]])
                     self.assertNotIn("openjdk-", calls)
                     self.assertIn(f"Using JAVA_HOME: {self.path}/installed/openj9-{major}", result.stdout)
                     self.assertIn("Verified integration JVM:", result.stdout)
@@ -187,6 +214,29 @@ class JvmSelectionTest(unittest.TestCase):
         self.assertEqual(self.calls.read_text().count("sleep 5\n"), 1)
         self.assertIn("Verified integration JVM:", result.stdout)
         self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_digest_mismatch_fails_closed_without_retry_or_extraction(self):
+        result = self.run_cell(SHA_EXIT="1")
+        self.assert_failed(result, "ERROR: Semeru archive SHA-256 does not match the pinned "
+                           + SEMERU_SHA256[17, "x64"])
+        self.assertEqual(len(self.curl_urls()), 1, "a wrong digest is not retried")
+        self.assertNotIn("sleep ", self.calls.read_text())
+        self.assertNotIn("java ", self.calls.read_text())
+        self.assertFalse((self.path / "installed/openj9-17/bin").exists())
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_installer_digest_check_line_accepts_match_and_rejects_mismatch(self):
+        # Runs the installer's own check line with the real sha256sum, not the stub.
+        line = next(l.strip() for l in (SCRIPTS / "install-openj9.sh").read_text().splitlines()
+                    if "sha256sum -c" in l)
+        check = re.fullmatch(r"if ! (.+); then", line)
+        self.assertIsNotNone(check, line)
+        digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        env = dict(os.environ, archive=str(self.archive))
+        for pinned, expected in ((digest, 0), ("0" * 64, 1)):
+            with self.subTest(pinned=pinned):
+                result = subprocess.run(["bash", "-c", check[1]], env=dict(env, SEMERU_SHA256=pinned))
+                self.assertEqual(result.returncode, expected)
 
     def test_three_invalid_archive_bodies_fail_closed(self):
         result = self.run_cell(BAD_BODIES="3")
