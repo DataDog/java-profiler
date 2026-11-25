@@ -33,6 +33,7 @@ CONTEXTS = (
     "dd-gitlab/post-pr-comment",
 )
 BOTS = {
+    "gitsync-ddbuild-stable": 29282730,
     "gitsync-ddbuild-stable1": 65570472,
     "gitsync-ddbuild-stable9": 107991031,
     "dd-ghss-ciux-19": 266815189,
@@ -195,9 +196,20 @@ class CertificationStatusTest(unittest.TestCase):
                 self.assertIn("/apps/" + slug, self.requests)
                 self.assertIn("/users/" + slug + "%5Bbot%5D", self.requests)
 
+    def test_unnumbered_pending_bridge_status_waits_for_verified_success(self):
+        slug = "gitsync-ddbuild-stable"
+        self.queue(page_path(), [status(context, "pending", slug=slug) for context in CONTEXTS],
+                   [status(context, slug=slug) for context in CONTEXTS])
+        self.wait()
+        self.assertEqual(self.sleeps, [180])
+        self.assertEqual(self.requests.count("/apps/gitsync-ddbuild-stable"), 2)
+        self.assertEqual(self.requests.count("/users/gitsync-ddbuild-stable%5Bbot%5D"), 2)
+
     def test_invalid_publisher_shapes_and_families_are_rejected(self):
         for creator in (None, [], {}, {"login": 1},
                         {"login": "unrelated[bot]", "id": 1, "type": "Bot"},
+                        {"login": "gitsync-ddbuild-stable-other[bot]", "id": 1, "type": "Bot"},
+                        {"login": "gitsync-ddbuild-stablex[bot]", "id": 1, "type": "Bot"},
                         {"login": "gitsync-ddbuild-stable1[bot]evil", "id": 1, "type": "Bot"},
                         {"login": "gitsync-ddbuild-stable1[bot]", "id": True, "type": "Bot"},
                         {"login": "gitsync-ddbuild-stable1[bot]", "id": 0, "type": "Bot"},

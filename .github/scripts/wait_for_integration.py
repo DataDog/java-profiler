@@ -20,7 +20,7 @@ REQUIRED_CONTEXTS = (
     "dd-gitlab/post-pr-comment",
 )
 BRIDGE_BOT = re.compile(
-    r"(gitsync-ddbuild-stable[0-9]+|dd-ghss-(?:ciux|ciexecution)-[0-9]+)\[bot\]"
+    r"(gitsync-ddbuild-stable[0-9]*|dd-ghss-(?:ciux|ciexecution)-[0-9]+)\[bot\]"
 )
 WAIT_SECONDS = 6 * 60 * 60
 POLL_SECONDS = 180
