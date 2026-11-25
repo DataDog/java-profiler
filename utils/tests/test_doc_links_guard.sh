@@ -56,6 +56,12 @@ claude() {
   local payload=$1
   printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$ROOT" python3 "$ROOT/.claude/hooks/doc-links-guard.py"
 }
+# Same adapter against the throwaway repo: CLAUDE_PROJECT_DIR must name it, or the
+# hook's outside-the-checkout guard returns 0 before any checking happens.
+claude_repo() {
+  local payload=$1
+  printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$TEMP_REPO" python3 "$ROOT/.claude/hooks/doc-links-guard.py"
+}
 
 expect "claude: write with broken link is blocked" 2 "broken link" \
   claude '{"tool_name":"Write","tool_input":{"file_path":"'"$ROOT"'/README.md","content":"[x](docs/absent.md)\n"}}'
@@ -78,11 +84,18 @@ expect "claude: malformed payload is allowed" 0 "" \
 # edited: the resulting document keeps the fence, so the link is inside code and the
 # write must not be blocked (fragment-only checking false-blocks this).
 expect "claude: edit inside an existing fenced block is allowed" 0 "" \
-  claude '{"tool_name":"Edit","tool_input":{"file_path":"'"$TEMP_REPO"'/guide.md","old_string":"print(1)","new_string":"print(1)\n# see [x](docs/absent.md)"}}'
+  claude_repo '{"tool_name":"Edit","tool_input":{"file_path":"'"$TEMP_REPO"'/guide.md","old_string":"print(1)","new_string":"print(1)\n# see [x](docs/absent.md)"}}'
 # A fragment that only opens a fence (the file already closes it) must not be reported
 # as an unclosed fence by fragment-only checking.
 expect "claude: edit whose fragment is balanced by the file is allowed" 0 "" \
-  claude '{"tool_name":"Edit","tool_input":{"file_path":"'"$TEMP_REPO"'/guide.md","old_string":"print(1)","new_string":"```python\nprint(1)"}}'
+  claude_repo '{"tool_name":"Edit","tool_input":{"file_path":"'"$TEMP_REPO"'/guide.md","old_string":"print(1)","new_string":"```python\nprint(1)"}}'
+
+# Claude Code's Edit replaces every occurrence under replace_all: the guard must
+# reconstruct that result, or a broken link introduced by a later occurrence (here:
+# the one outside the fence) escapes the check.
+printf '```python\nprint(1)\n```\nprint(1)\n' > "$TEMP_REPO/dup.md"
+expect "claude: edit replace_all introducing a broken link outside the fence is blocked" 2 "broken link" \
+  claude_repo '{"tool_name":"Edit","tool_input":{"file_path":"'"$TEMP_REPO"'/dup.md","old_string":"print(1)","new_string":"[x](docs/absent.md)","replace_all":true}}'
 
 # A write that FIXES a known-broken link must not be blocked by a stale KNOWN_BROKEN entry.
 expect "claude: fixing a known-broken link is allowed" 0 "" \

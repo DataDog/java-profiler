@@ -36,7 +36,10 @@ def _resulting_content(tool_name, tool_input, incoming_path):
         old = edit.get("old_string")
         if not isinstance(old, str) or old not in content:
             return None  # cannot reconstruct the result: allow, the edit call will fail
-        content = content.replace(old, edit.get("new_string", ""), 1)
+        # Claude Code's Edit replaces every occurrence under replace_all; otherwise
+        # only the first (the tool contracts require a unique match).
+        count = content.count(old) if edit.get("replace_all") else 1
+        content = content.replace(old, edit.get("new_string", ""), count)
     return content
 
 
