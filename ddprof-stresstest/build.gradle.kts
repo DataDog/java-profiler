@@ -71,17 +71,20 @@ tasks.named<Jar>("jmhJar") {
 }
 
 // Fails if the jmh jar carries more than one libjavaProfiler per platform directory, because the
-// JVM would load an arbitrary one. Every task that runs the jar depends on it: a finalizer of
-// jmhJar is not guaranteed to run before them.
+// JVM would load an arbitrary one. jmh and runStressTests depend on it, because a finalizer is not
+// ordered before them; the finalizer covers a jmhJar build run on its own before `java -jar`.
 val verifyJmhJarNativeLibs = tasks.register("verifyJmhJarNativeLibs") {
   group = "verification"
   description = "Verify the JMH jar contains exactly one libjavaProfiler per platform"
   val jar = tasks.named<Jar>("jmhJar").flatMap { it.archiveFile }
   inputs.file(jar)
+  // A finalizer also runs after jmhJar fails; skip it then instead of reporting a missing jar.
+  onlyIf { jar.get().asFile.exists() }
   doLast { NativeLibJarCheck.verifyOneLibPerPlatform(jar.get().asFile) }
 }
 
 tasks.named("jmh") { dependsOn(verifyJmhJarNativeLibs) }
+tasks.named("jmhJar") { finalizedBy(verifyJmhJarNativeLibs) }
 
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH

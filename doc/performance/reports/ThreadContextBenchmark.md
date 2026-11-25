@@ -249,9 +249,17 @@ ran against both historical implementations.
    ```bash
    ./.claude/commands/build-and-summarize :ddprof-stresstest:jmhJar -Pskip-tests -Pskip-gtest
    ```
-3. Make sure that the jar contains only the release build of the native library.
-   `stresstests.jar` contains two `libjavaProfiler` entries with the same name: the debug
-   build and the release build. Remove both entries, then add the release build:
+3. Make sure that the jar contains only the release build of the native library. On the
+   current tree, the jar holds only the release build, and the build fails if it holds more
+   than one `libjavaProfiler` per platform. Copy it:
+
+   ```bash
+   cp ddprof-stresstest/build/libs/stresstests.jar bench.jar
+   ```
+
+   At `8c44a91e7` and `86367c704`, `stresstests.jar` contains two `libjavaProfiler` entries
+   with the same name: the debug build and the release build. Remove both entries, then add
+   the release build:
 
    ```bash
    cp ddprof-stresstest/build/libs/stresstests.jar bench.jar
