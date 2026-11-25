@@ -194,7 +194,7 @@ Caveats:
   (`hotspot/hotspotStackFrame.h:125-131`).
 - **Stub unwind tables.** `StubUnwindInfo` exists only on aarch64. On x64,
   `unwindStub()` ignores the `info` argument (`hotspot/hotspotStackFrame.h`,
-  comment on `unwindStub`).
+  comment on `unwindStub`). The analyzer derives an exact rule only for code whose entry state it has proven: straight-line code from the stub entry, the return point of an in-stub call, or code after a `br` in a blob flagged `multi_entry` (I2C/C2I adapters). Code reached through an unproven edge, such as code after a `br` in any other blob or an `ADR` target, falls back instead of guessing.
 - **`klassRegistry` is not signal-safe.** Every operation takes an internal
   mutex and calls JNI (`hotspot/klassRegistry.h`, class comment). It is used
   from the redefinition hooks and at dump time, never from a signal handler.
@@ -325,7 +325,9 @@ inline functions in `jvmSupport.inline.h` do.
 2. Branch on `VM::isHotspot()` / `VM::isOpenJ9()` / `VM::isZing()`. Call the
    implementation class and return a safe default for VMs that lack the feature.
 3. Put the implementation in `hotspot/`, `j9/`, or `zing/`. If an
-   implementation function must stay private, declare `JVMSupport` as a friend,
+   implementation function must stay private, declare `JVMSupport` as a friend
+   (a HotSpot-only method that shared code must not call, e.g. `VMThread::nativeThreadId()`,
+   is private or asserts `VM::isHotspot()`; shared code calls `JVMThread`/`JVMSupport`),
    as `HotspotSupport` does.
 4. Shared callers include `jvmSupport.h` (or `jvmSupport.inline.h`), not the
    implementation header.

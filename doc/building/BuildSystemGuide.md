@@ -371,6 +371,10 @@ if (tasks.names.contains("linkRelease")) {
 dependsOn(tasks.getByName("linkRelease"))
 ```
 
+### Decide From the Task Graph, Order With Finalizers
+
+Decide whether a task will run with `gradle.taskGraph.hasTask(":project:task")` inside `gradle.taskGraph.whenReady`, never from `gradle.startParameter.taskNames`: abbreviations (`covRep`) and tasks pulled in as dependencies are missing there. Order work across tasks or projects with a dedicated task wired by `finalizedBy`/`mustRunAfter` (e.g. `coverageReport` → `:ddprof-test:checkCoverageTestFailures`), never by the order of `doLast` actions added from different build scripts.
+
 ## Testing Build Changes
 
 After modifying build-logic:

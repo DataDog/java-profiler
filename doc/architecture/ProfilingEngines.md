@@ -138,7 +138,10 @@ Profiler::start()
    `malloc_tracer.stop()`, the socket sampler, `_wall_engine->stop()`,
    `_cpu_engine->stop()`.
 
-`Profiler::check()` runs the same selection and calls each engine's `check()`
+`Profiler::check()` accepts exactly the configurations `start()` accepts: it selects engines only
+after `checkJvmCapabilities()` passes (engine `check()` probes can touch process state such as
+`ITIMER_PROF`), applies the same argument validation, and skips a mode wherever `start()` would skip
+it, failing only when `start()` would fail. It runs the same selection and calls each engine's `check()`
 without starting anything. It runs only while the profiler is `IDLE`
 (`checkState()` rejects a `RUNNING` profiler) and selects into locals, so it
 never replaces the engine slots that thread exits still route to.

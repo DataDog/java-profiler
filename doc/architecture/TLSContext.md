@@ -280,6 +280,12 @@ as 1.
 
 ### Reader: External OTEP Profiler
 
+The supported external reader is an eBPF probe running on the owning thread (same
+CPU, thread not executing user code). Reading `otel_thread_ctx_v1` from another
+thread is unsupported, so reads and thread teardown never race. The pointer is still
+nulled on thread exit: a probe that interrupts teardown must see null, not a record
+the pool hands to a different thread.
+
 External profilers follow the OTEP #4947 protocol:
 
 1. Discover `otel_thread_ctx_v1` via ELF `dlsym`.

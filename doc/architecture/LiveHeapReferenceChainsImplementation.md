@@ -154,6 +154,13 @@ The tracker places resolved objects in one JNI object array and calls `FollowRef
 with that array as its initial object. Callback filtering normally admits one hop from
 selected boundary objects. Priority and ordinary queues alternate batches when both have work.
 
+Take JVMTI heap-walk semantics from the JVMTI spec and HotSpot `jvmtiTagMap.cpp`, never from
+observed callback order. `FollowReferences()` reports all element references of an array before
+it descends into any of them, so a referrer counts as completed only after its own child edges
+were reported. The base of `jvmtiHeapReferenceInfoField.index` counts the fields of every
+interface the class implements, including interfaces declared on its superclasses and their
+superinterfaces, each interface counted once.
+
 The adaptive resolution-batch target is between 8 and 512, using proportional feedback
 from measured call time. Queue length and remaining budget can make an actual batch smaller.
 
