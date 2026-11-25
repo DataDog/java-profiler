@@ -92,8 +92,9 @@ TEST_F(ThreadInfoTest, explicitLengthKeepsEmbeddedNul) {
 
 TEST_F(ThreadInfoTest, nulTerminatedSetStopsAtNul) {
     ThreadInfo ti;
-    ti.set(6, "main", 1);
+    const char name[] = "ma\0in";
+    ti.set(6, name, 1);
     auto info = ti.get(6);
     ASSERT_NE(nullptr, info.first);
-    EXPECT_EQ(std::string("main"), *info.first);
+    EXPECT_EQ(std::string("ma"), *info.first);
 }

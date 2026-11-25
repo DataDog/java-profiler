@@ -129,4 +129,43 @@ inline bool modifiedUtf8IsStandard(const char *s) {
   return true;
 }
 
+// Returns the byte length of the first max_units UTF-16 units of modified UTF-8 s. Each
+// modified-UTF-8 byte sequence encodes exactly one UTF-16 unit, so the cut never splits a sequence.
+inline size_t modifiedUtf8PrefixLength(const char *s, size_t max_units) {
+  size_t units = 0;
+  size_t i = 0;
+  for (; s[i] != '\0'; i++) {
+    if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80 && units++ == max_units) {
+      break;
+    }
+  }
+  return i;
+}
+
+// Converts JVMTI's modified-UTF-8 name to standard UTF-8 of at most max_units UTF-16 units and
+// returns its byte length; *utf8 is set to name or out. units holds max_units, out 3 * max_units.
+// If the JVM cannot decode the name, the JVMTI bytes are kept under the same cap.
+inline size_t modifiedUtf8ToStandard(JNIEnv *jni, const char *name, jsize max_units,
+                                     jchar *units, char *out, const char **utf8) {
+  *utf8 = name;
+  if (modifiedUtf8IsStandard(name)) {
+    // Most names need no conversion: no JNI call or Java allocation.
+    return modifiedUtf8PrefixLength(name, max_units);
+  }
+  jstring str = jni->NewStringUTF(name);
+  JniLocalRef ref(jni, str);
+  if (str == nullptr) {
+    jniExceptionCheck(jni);
+    return modifiedUtf8PrefixLength(name, max_units);
+  }
+  jsize total = jni->GetStringLength(str);
+  jsize read = total < max_units ? total : max_units;
+  jni->GetStringRegion(str, 0, read, units);
+  if (jniExceptionCheck(jni)) {
+    return modifiedUtf8PrefixLength(name, max_units);
+  }
+  *utf8 = out;
+  return utf16ToUtf8(units, utf16TruncatedLength(units, read, total), out);
+}
+
 #endif

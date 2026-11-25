@@ -29,12 +29,8 @@ public class ThreadNameEncodingTest extends AbstractProfilerTest {
         new Thread(
             () -> {
               registerCurrentThreadForWallClockProfiling();
-              long x = 0;
               while (!stop.get()) {
-                x += System.nanoTime() & 1;
-              }
-              if (x == -1) {
-                System.out.println(x);
+                // Spin on the volatile read so wall-clock samples see a running thread.
               }
             },
             NAME);
