@@ -2077,6 +2077,49 @@ TEST_F(ReferenceChainsBfsTest, CorrelationRebuildYieldsToEvictAndSkipsUncached) 
     tracker->stop();
 }
 
+// A rebuilt leak chain whose tag is one of a candidate's discovered instances must mark that
+// candidate found: buildDiscoveredInstanceChains() skips already-cached tags, so without the
+// repair a rebuild after an improvePath leaves popcount(_candidate_found_bits) short and the
+// search keeps hunting a candidate whose chain is already resolved.
+TEST_F(ReferenceChainsBfsTest, CorrelationRebuildMarksCandidateFound) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const u64 kSearchNs = 4246;
+    ReferenceChainsTestAccessor::setSearchStartNsForTest(kSearchNs);
+    const jlong kLeakTag = ReferenceChainsTestAccessor::leakTagBase() + 13;
+
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 108, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainEvent resolved;
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, 108, &resolved));
+    ASSERT_EQ((u64)108, resolved._target_tag);
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(108, std::move(resolved), 108,
+                                                        kSearchNs));
+
+    // Candidate slot 0 has discovered the cached chain's tag but is not yet marked found. The
+    // poll's candidate loop below applyPendingChainInvalidations() is a no-op: the population
+    // table is empty (pollOnceForTest() resets it), so selectLeakCandidates() returns 0 and the
+    // slot state survives for the assertion.
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    ReferenceChainsTestAccessor::setCandidateKlassIdForTest(0, 42);
+    ReferenceChainsTestAccessor::setCandidateDiscoveredTagsForTest(0, {108});
+    ReferenceChainsTestAccessor::setCandidateFoundBitsForTest(0);
+
+    ASSERT_TRUE(ReferenceChainsTestAccessor::correlateAdmittedLeakTag(108, kLeakTag, 42));
+    pollOnceForTest(tracker, &mock_jvmti, &mock_jni);
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::candidateFoundBitsForTest() & 1ULL)
+        << "the rebuilt leak chain must mark its candidate found";
+    EXPECT_EQ(108, ReferenceChainsTestAccessor::candidateFrontierTagForTest(0));
+
+    tracker->stop();
+}
+
 // Per-poll rebuild budget: one poll performs at most MAX_CHAIN_REBUILDS_PER_POLL buildChainEvent()
 // heap walks; eligible REBUILD entries over the budget stay pending for later polls instead of being
 // dropped, and neither the requeue nor the swap reallocates the reserved buffers.

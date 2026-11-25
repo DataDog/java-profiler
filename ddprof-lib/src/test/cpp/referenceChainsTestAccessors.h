@@ -545,6 +545,21 @@ public:
         return ReferenceChainTracker::instance()->_candidate_frontier_tags[slot];
     }
 
+    // Overwrites slot's discovered-instance tags; count becomes tags.size() (clamped to
+    // MAX_DISCOVERED_INSTANCES_PER_CLASS). Bypasses the walk's discovery path.
+    static void setCandidateDiscoveredTagsForTest(int slot,
+                                                  const std::vector<jlong> &tags) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        int n = (int)tags.size();
+        if (n > ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS) {
+            n = ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS;
+        }
+        for (int i = 0; i < n; i++) {
+            t->_candidate_discovered_tags[slot][i] = tags[i];
+        }
+        t->_candidate_discovered_count[slot] = n;
+    }
+
     static void buildDiscoveredInstanceChainsForTest(u32 klass_id,
                                                        u64 current_search_ns) {
         // jvmti/jni null is safe: resolveHopEdgeLabel() null-guards and degrades hop labels to kind
