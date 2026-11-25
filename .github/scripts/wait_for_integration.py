@@ -86,8 +86,8 @@ class GitHub:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # GitHub's secondary limiter may 403 without Retry-After, so the body message
-            # is the fallback signal; read is bounded and best-effort because a failed
-            # body read must not change the retry decision.
+            # is the fallback signal; the read is bounded and best-effort: a read failure
+            # degrades to header-only classification and never raises from the read itself.
             body = ""
             if error.code == 403 and error.fp is not None:
                 try:

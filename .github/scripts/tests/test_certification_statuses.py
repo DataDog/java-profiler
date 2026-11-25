@@ -368,15 +368,24 @@ class CertificationStatusTest(unittest.TestCase):
                 self.assertEqual(len(self.sleeps), before + int(retry))
 
     def test_secondary_rate_limit_without_retry_after_is_recognized_from_body(self):
+        class BrokenBody:
+            def read(self, limit=-1):
+                raise http.client.IncompleteRead(b'{"message"', 64)
+
+            def close(self):
+                pass
+
         cases = (
             (b"You have exceeded a secondary rate limit (REST). Please retry your request.", True),
             (b"Some other forbidden response body", False),
+            (BrokenBody(), False),
         )
         for body, retry in cases:
             with self.subTest(retry=retry):
                 error = urllib.error.HTTPError(
                     "https://api.github.com", 403, "Forbidden",
-                    {"X-RateLimit-Remaining": "4999"}, io.BytesIO(body))
+                    {"X-RateLimit-Remaining": "4999"},
+                    io.BytesIO(body) if isinstance(body, bytes) else body)
                 self.queue(page_path(), error, green())
                 self.api.deadline = self.now + 600
                 before = len(self.sleeps)
