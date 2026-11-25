@@ -32,7 +32,27 @@ class GateError(Exception):
 
 
 class RetryRead(Exception):
-    """A transient read failure requires a fresh snapshot, not cached success."""
+    """A transient read failure carries its minimum pause before a fresh snapshot."""
+
+    def __init__(self, message, delay=POLL_SECONDS):
+        super().__init__(message)
+        self.delay = delay
+
+
+def retry_delay(headers):
+    """Honor GitHub's Retry-After seconds, or the exhausted primary quota's reset epoch."""
+    try:
+        seconds = int(headers.get("Retry-After", ""))
+        if seconds >= 0:
+            return max(POLL_SECONDS, seconds)
+    except ValueError:
+        pass
+    if headers.get("X-RateLimit-Remaining") == "0":
+        try:
+            return max(POLL_SECONDS, int(headers.get("X-RateLimit-Reset", "")) - time.time())
+        except ValueError:
+            pass
+    return POLL_SECONDS
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -70,22 +90,26 @@ class GitHub:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             error.close()
+            primary_limit = error.headers.get("X-RateLimit-Remaining") == "0"
+            secondary_limit = "Retry-After" in error.headers
             if (error.code >= 500 or error.code == 429
-                    or (error.code == 403 and error.headers.get("X-RateLimit-Remaining") == "0")):
-                raise RetryRead("GitHub HTTP " + str(error.code)) from error
+                    or (error.code == 403 and (primary_limit or secondary_limit))):
+                raise RetryRead("GitHub HTTP " + str(error.code), retry_delay(error.headers)) from error
             raise GateError("GitHub HTTP " + str(error.code) + " reading " + path) from error
         except (OSError, ValueError, http.client.HTTPException) as error:
             raise RetryRead("GitHub transport or JSON read failed") from error
 
     def statuses(self, sha):
-        """Read the full newest-first history; a failed later page invalidates the snapshot."""
+        """Stop when every newest verdict is found; incomplete snapshots require older pages."""
         records = []
+        found = set()
         for page in range(1, MAX_PAGES + 1):
             batch = self.get(f"/repos/{self.repo}/commits/{sha}/statuses?per_page=100&page={page}")
             if not isinstance(batch, list):
                 raise GateError("GitHub statuses response is not an array")
             records.extend(batch)
-            if len(batch) < 100:
+            found.update(latest_statuses(batch))
+            if len(found) == len(REQUIRED_CONTEXTS) or len(batch) < 100:
                 return records
         raise GateError("GitHub status history exceeds the pagination limit")
 
@@ -146,6 +170,10 @@ def wait_for_integration(api, sha):
     try:
         while time.monotonic() < api.deadline:
             states = dict.fromkeys(REQUIRED_CONTEXTS, "missing")
+            delay = POLL_SECONDS
+            # Ownership can change while a pending verdict is polled.
+            # Cache identities within this snapshot, not across the six-hour wait.
+            api.trusted_bots.clear()
             try:
                 latest = latest_statuses(api.statuses(sha))
                 for context, status in latest.items():
@@ -167,10 +195,11 @@ def wait_for_integration(api, sha):
                       flush=True)
             except RetryRead as error:
                 states = dict.fromkeys(REQUIRED_CONTEXTS, "unavailable")
+                delay = error.delay
                 print(str(error) + "; retrying the complete snapshot", flush=True)
             remaining = api.deadline - time.monotonic()
             if remaining > 0:
-                time.sleep(min(POLL_SECONDS, remaining))
+                time.sleep(min(delay, remaining))
         raise GateError("Timed out waiting for GitHub integration evidence")
     finally:
         write_summary(sha, states)

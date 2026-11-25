@@ -7,6 +7,7 @@ They cannot prove the permissions of the live Actions GITHUB_TOKEN.
 
 from collections import deque
 from contextlib import ExitStack
+from email.message import Message
 import http.client
 import io
 import json
@@ -156,7 +157,7 @@ class CertificationStatusTest(unittest.TestCase):
         self.wait()
         self.assertEqual(self.sleeps, [180, 180])
         self.assertEqual(self.requests.count(page_path()), 3)
-        self.assertEqual(self.requests.count("/apps/gitsync-ddbuild-stable1"), 1)
+        self.assertEqual(self.requests.count("/apps/gitsync-ddbuild-stable1"), 2)
 
     def test_failure_and_error_in_each_context_block_without_waiting(self):
         for context in CONTEXTS:
@@ -216,6 +217,17 @@ class CertificationStatusTest(unittest.TestCase):
         self.assertEqual(self.requests.count("/apps/gitsync-ddbuild-stable1"), 2)
         self.assertEqual(self.sleeps, [180])
 
+    def test_publisher_ownership_is_rechecked_between_snapshots(self):
+        pending = green()
+        pending[-1]["state"] = "pending"
+        self.queue(page_path(), pending, green())
+        self.queue("/apps/gitsync-ddbuild-stable1",
+                   {"slug": "gitsync-ddbuild-stable1", "owner": {"id": 365230, "type": "Organization"}},
+                   {"slug": "gitsync-ddbuild-stable1", "owner": {"id": 42, "type": "Organization"}})
+        with self.assertRaisesRegex(gate.GateError, "not a Datadog bridge app"):
+            self.wait()
+        self.assertEqual(self.requests.count("/apps/gitsync-ddbuild-stable1"), 2)
+
     def test_app_metadata_must_identify_a_datadog_owned_bridge(self):
         for app in ([], {}, {"slug": "other"},
                     {"slug": "gitsync-ddbuild-stable1", "owner": []},
@@ -262,14 +274,28 @@ class CertificationStatusTest(unittest.TestCase):
         self.wait()
         self.assertIn(page_path(2), self.requests)
 
-    def test_exactly_full_last_page_requires_empty_following_page(self):
-        self.queue(page_path(), green() + [status("unrelated")] * 97)
+    def test_full_page_with_missing_context_requires_following_page(self):
+        self.queue(page_path(), green()[:2] + [status("unrelated")] * 98)
         self.queue(page_path(2), [])
-        self.wait()
+        records = self.api.statuses(SHA)
+        self.assertEqual(len(records), 100)
         self.assertEqual(self.requests[:2], [page_path(), page_path(2)])
 
+    def test_complete_verdict_does_not_read_older_pages(self):
+        self.queue(page_path(), green() + [status("unrelated")] * 97)
+        with patch.object(gate, "MAX_PAGES", 1):
+            self.wait()
+        self.assertNotIn(page_path(2), self.requests)
+
+    def test_complete_verdict_on_last_allowed_full_page_succeeds(self):
+        self.queue(page_path(), [status("unrelated")] * 100)
+        self.queue(page_path(2), green() + [status("unrelated")] * 97)
+        with patch.object(gate, "MAX_PAGES", 2):
+            self.wait()
+        self.assertIn(page_path(2), self.requests)
+
     def test_failed_later_page_discards_partial_green_snapshot(self):
-        self.queue(page_path(), green() + [status("unrelated")] * 97,
+        self.queue(page_path(), green()[:2] + [status("unrelated")] * 98,
                    [status(CONTEXTS[0], "failure")] + green())
         self.queue(page_path(2), urllib.error.URLError("offline"))
         with self.assertRaisesRegex(gate.GateError, "verdict failed"):
@@ -299,8 +325,9 @@ class CertificationStatusTest(unittest.TestCase):
                 self.assertEqual(len(self.sleeps), before + 1)
 
     def test_transient_http_errors_retry_but_auth_and_redirects_do_not(self):
-        for code, headers, retry in ((502, {}, True), (429, {}, True),
+        for code, headers, retry in ((500, {}, True), (502, {}, True), (429, {}, True),
                                      (403, {"X-RateLimit-Remaining": "0"}, True),
+                                     (403, {"Retry-After": "180"}, True),
                                      (401, {}, False), (403, {}, False),
                                      (404, {}, False), (302, {}, False)):
             with self.subTest(code=code, headers=headers):
@@ -315,6 +342,60 @@ class CertificationStatusTest(unittest.TestCase):
                     with self.assertRaisesRegex(gate.GateError, "GitHub HTTP " + str(code)):
                         self.wait()
                 self.assertEqual(len(self.sleeps), before + int(retry))
+
+    def test_retry_headers_extend_pause_and_invalid_values_fall_back(self):
+        cases = (
+            (403, {"Retry-After": "240"}, 240),
+            (429, {"Retry-After": "240"}, 240),
+            (503, {"Retry-After": "240"}, 240),
+            (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1240"}, 240),
+            (429, {"Retry-After": "240", "X-RateLimit-Remaining": "0",
+                   "X-RateLimit-Reset": "1500"}, 240),
+            (429, {"Retry-After": "invalid", "X-RateLimit-Remaining": "0",
+                   "X-RateLimit-Reset": "1240"}, 240),
+            (429, {"Retry-After": "-1"}, 180),
+            (429, {"Retry-After": "-1", "X-RateLimit-Remaining": "0",
+                   "X-RateLimit-Reset": "1240"}, 240),
+            (429, {"Retry-After": "NaN"}, 180),
+            (429, {"Retry-After": "Infinity"}, 180),
+            (429, {"Retry-After": "invalid"}, 180),
+            (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "invalid"}, 180),
+            (403, {"X-RateLimit-Remaining": "0"}, 180),
+            (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "999"}, 180),
+            (503, {"X-RateLimit-Remaining": "10", "X-RateLimit-Reset": "1500"}, 180),
+        )
+        for code, headers, expected in cases:
+            with self.subTest(code=code, headers=headers):
+                self.api.deadline = self.now + 600
+                error = urllib.error.HTTPError("https://api.github.com", code, "retry", headers, None)
+                self.queue(page_path(), error, green())
+                with patch.object(gate.time, "time", return_value=1000):
+                    self.wait()
+                self.assertEqual(self.sleeps[-1], expected)
+
+    def test_rate_limit_header_names_are_case_insensitive(self):
+        for fields in ({"retry-after": "240"},
+                       {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1240"}):
+            with self.subTest(fields=fields):
+                self.api.deadline = self.now + 600
+                headers = Message()
+                for key, value in fields.items():
+                    headers[key] = value
+                error = urllib.error.HTTPError("https://api.github.com", 403, "retry", headers, None)
+                self.queue(page_path(), error, green())
+                with patch.object(gate.time, "time", return_value=1000):
+                    self.wait()
+                self.assertEqual(self.sleeps[-1], 240)
+
+    def test_retry_after_larger_than_remaining_budget_stops_at_deadline(self):
+        self.api.deadline = self.now + 17
+        error = urllib.error.HTTPError("https://api.github.com", 429, "retry",
+                                       {"Retry-After": "3600"}, None)
+        self.queue(page_path(), error)
+        with self.assertRaisesRegex(gate.GateError, "Timed out"):
+            self.wait()
+        self.assertEqual(self.sleeps, [17])
+        self.assertEqual(self.requests, [page_path()])
 
     def test_transient_identity_read_failure_retries_complete_snapshot(self):
         self.queue(page_path(), green(), green())

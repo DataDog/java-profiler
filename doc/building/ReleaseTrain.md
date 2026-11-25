@@ -84,17 +84,19 @@ The integration gate requires `success` on all three GitHub commit statuses:
 `dd-gitlab/prepare-patched-agent`, `dd-gitlab/validate-dd-trace-quarantine`,
 and `dd-gitlab/post-pr-comment`. It selects the newest update per context
 for the exact candidate SHA. It verifies each publisher's bot account and
-Datadog-owned bridge app through GitHub's API.
+Datadog-owned bridge app through GitHub's API on each snapshot.
 
 The `post-pr-comment` job enforces the [integration quarantine policy](TestingGuide.md#tier-3--dd-trace-integration-tests-gitlab-every-push).
 Approved quarantined validation failures do not block certification.
 Unquarantined failures and incomplete matrix results fail the verdict.
 An overall green pipeline is not a substitute for the three statuses.
 
-Missing or pending statuses and transient API failures trigger another
-snapshot after a pause of up to three minutes. All reads and pauses share
-a six-hour deadline. A failed verdict, invalid evidence, non-retryable API
-error, or timeout blocks certification.
+The waiter pauses up to three minutes between snapshots. GitHub's
+`Retry-After` or exhausted-quota reset headers can extend that pause.
+All reads and pauses share a six-hour deadline.
+
+A failed verdict, invalid evidence, non-retryable API error, or timeout
+blocks certification.
 
 ## Failure handling
 
