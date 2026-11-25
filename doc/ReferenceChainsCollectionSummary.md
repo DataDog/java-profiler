@@ -105,30 +105,25 @@ the tracking table. The expensive class-history fold is kept off that callback p
 
 ## Mutable-container coverage
 
-A long-lived collection can receive references after its first expansion.
-Bounded rotation revisits leak-accumulating parents and stale expanded entries.
-It also revisits transient roots and anchor holders.
+A one-time breadth-first walk cannot observe references that appear after the first expansion of an object. This matters for a long-lived collection that receives new elements.
 
-These bounded walks improve mutation coverage. They do not guarantee every changed reference
-is observed.
+The tracker addresses this case with bounded rotation:
 
-The index stores holders seen through static-field/JNI-global edges.
-It also indexes tagged stack/JNI-local roots whose shape is unknown or container-like.
+- Leak-accumulation rotation selects parent objects that receive instances of watched classes.
+- Stale-entry rotation revisits older expanded entries.
+- Root-kind rotation revisits entries with transient root attribution.
+- Anchor rotation descends from selected objects held by static fields or JNI globals, and from a capped set of confirmed collection/map holders first seen as stack or JNI locals.
 
-An indexed `CONTAINER` holder can remain eligible after reparenting.
-Unknown or `NON_CONTAINER` local-root entries are not persistently selected while they
-remain transient.
+Heap callbacks record anchor-index effects in a bounded journal. The traversal caller replays accepted observations after the JVMTI call returns. Rotation improves coverage, but it does not guarantee that the tracker observes every mutation.
 
 When rotation reaches anchor selection, it takes up to 32 indexed anchors and drains up to
 16 at-risk FIFO entries, skipping duplicates. The FIFO offers a best-effort first look to
 reparented durable holders and chain-attached holders seen through static-field edges.
 
-Admission is globally and per-class capped.
-Drained entries can be lost if rotation has no budget, object resolution fails, or a
-frontier lookup fails during the walk or requeue.
-
-Budget, deadline, and frontier-cap stops return resolved-but-unwalked FIFO entries to the
-front when their frontier entries still exist. These walks share rotation's edge budget.
+Admission is globally and per-class capped. Drained entries can be lost if rotation has no
+budget, object resolution fails, or a frontier lookup fails during the walk or requeue.
+Budget, deadline, and frontier-cap stops return resolved-but-unwalked FIFO entries and fresh
+picks to the front of their queues when their frontier entries still exist.
 
 ## Cost controls
 

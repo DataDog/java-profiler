@@ -1266,13 +1266,9 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     Log::warn("native I/O hooks disabled: cannot locate the JDK native library directory");
     return disable_and_unpatch();
   }
+  // At most `capped` candidates, so emplace_back() below never reallocates.
   std::vector<SocketPatchCandidate> candidates;
-  try {
-    candidates.reserve(capped);
-  } catch (const std::bad_alloc&) {
-    Log::warn("native I/O hooks disabled: unable to allocate DSO candidate table");
-    return disable_and_unpatch();
-  }
+  candidates.reserve(capped);
 
   for (int index = 0; index < capped; index++) {
     CodeCache* lib = native_libs.at(index);
@@ -1370,13 +1366,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     }
     if (patch_count == 0) continue;
 
-    try {
-      candidates.emplace_back(lib, std::move(protection), patch_count, target);
-    } catch (const std::bad_alloc&) {
-      Log::warn("native I/O hooks disabled: unable to retain DSO candidate %s",
-                lib->name());
-      return disable_and_unpatch();
-    }
+    candidates.emplace_back(lib, std::move(protection), patch_count, target);
   }
 
 #ifdef UNIT_TEST
@@ -1429,16 +1419,11 @@ bool LibraryPatcher::patch_socket_functions(bool require_active,
     }
 
     if (success) {
-      try {
-        _socket_entries.reserve(_socket_entries.size() + additional_patches);
-        _socket_libraries.reserve(_socket_libraries.size() + additional_libraries);
-      } catch (const std::bad_alloc&) {
-        Log::warn("native I/O hooks disabled: unable to reserve patch transaction");
-        success = false;
-      }
-    }
+      // Reserved before the first GOT write so that the push_back()s below never
+      // allocate: every slot written is recorded for restoration.
+      _socket_entries.reserve(_socket_entries.size() + additional_patches);
+      _socket_libraries.reserve(_socket_libraries.size() + additional_libraries);
 
-    if (success) {
       for (SocketPatchCandidate& candidate : candidates) {
         CodeCache* lib = candidate._lib;
         if (skipped(candidate) || socket_library_patched_unlocked(lib->imageBase())) {
@@ -1561,13 +1546,9 @@ int LibraryPatcher::patch_socket_import_for_test(CodeCache* lib, ImportId import
   }
   size_t count = lib->importCount(import_id);
   size_t initial_size = _socket_entries.size();
-  try {
-    _socket_entries.reserve(initial_size + count);
-    if (retain_library) {
-      _socket_libraries.reserve(_socket_libraries.size() + 1);
-    }
-  } catch (const std::bad_alloc&) {
-    return -1;
+  _socket_entries.reserve(initial_size + count);
+  if (retain_library) {
+    _socket_libraries.reserve(_socket_libraries.size() + 1);
   }
   for (size_t index = 0; index < count; index++) {
     void** location = lib->findImport(import_id, index);

@@ -523,8 +523,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, ResolvedMethod &resolved) {
   // from the first fill as on the jmethodID path.
   if (resolved.lineNumberTable() != nullptr) {
     int size = resolved.lineNumberTableSize();
-    // Built before ownership moves, so a std::bad_alloc here leaves the table
-    // with `resolved`, which frees it.
+    // Built before ownership moves: `resolved` keeps the table until the
+    // shared_ptr owns it, so no exit path leaves it unowned.
     auto table = std::make_shared<SharedLineNumberTable>(
         size, const_cast<jvmtiLineNumberEntry *>(resolved.lineNumberTable()),
         false /* malloc'd */);
@@ -781,9 +781,8 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
 
   assert(prof_thread != nullptr);
   assert(method_id != nullptr && "Already filtered by caller");
-  // Reinstates the thread's previous landing pad on every exit from this frame,
-  // including a std::bad_alloc thrown by one of the map or dictionary inserts
-  // underneath. Leaving ours installed past the end of this frame would leave
+  // Reinstates the thread's previous landing pad on every exit from this
+  // frame. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
   JmpCtxScope jmp_scope(prof_thread);
   ResolveMethodState state;
@@ -956,7 +955,11 @@ Recording::Recording(int fd, Arguments &args)
       _has_malloc_free_held(false), _malloc_free_held(0),
       _has_post_flush(false) {
 
-  if (!_output.good()) throw OutputFailure{};
+  // A failed constructor owns no descriptor: newRecording() closes fd itself.
+  if (!_output.good()) {
+    _fd = -1;
+    return;
+  }
 
   memset(_post_flush_live, 0, sizeof(_post_flush_live));
   memset(_post_flush_max, 0, sizeof(_post_flush_max));
@@ -994,7 +997,10 @@ Recording::Recording(int fd, Arguments &args)
   } else {
     _recorded_lib_count = -1;
   }
-  flush(_buf);
+  if (!flush(_buf)) {
+    _fd = -1;
+    return;
+  }
 
   _cold_io = false;
   _cpu_monitor_enabled = !args.hasOption(NO_CPU_LOAD);
@@ -1029,16 +1035,10 @@ off_t Recording::finishChunk() { return finishChunk(false); }
 off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   if (!_output.good()) return -1;
   if (!_chunk_open) return static_cast<off_t>(_output.size());
-  _cold_io = true;
-  try {
-    off_t end = finishChunkContents(end_recording, do_cleanup);
-    _chunk_open = false;
-    _cold_io = false;
-    return end;
-  } catch (const OutputFailure&) {
-    _cold_io = false;
-    return -1;
-  }
+  ColdIoScope cold(*this);
+  off_t end = finishChunkContents(end_recording, do_cleanup);
+  if (end >= 0) _chunk_open = false;
+  return end;
 }
 
 off_t Recording::finishChunkContents(bool end_recording, bool do_cleanup) {
@@ -1064,7 +1064,7 @@ off_t Recording::finishChunkContents(bool end_recording, bool do_cleanup) {
   // fjmethodid=lazy resolves raw frames only of these classes: they stay
   // pinned until the local references are deleted below. Always called, so a
   // failed GetLoadedClasses() leaves no list at all rather than a stale one,
-  // and ended on every exit from this function, including a std::bad_alloc.
+  // and ended on every exit from this function.
   JVMSupport::beginDump(env, err ? nullptr : classes, err ? 0 : count);
   struct DumpScope {
     ~DumpScope() { JVMSupport::endDump(); }
@@ -1112,6 +1112,7 @@ off_t Recording::finishChunkContents(bool end_recording, bool do_cleanup) {
   // dictionary) will reflect the previous serialization. That is, some level of
   // familiarity with the code base will be required to use this diagnostic
   // information for now.
+  if (!_output.good()) return -1;
   updateNativeMemStats();
   writeCounters(_buf);
   writeNativeMem(_buf);
@@ -1120,28 +1121,30 @@ off_t Recording::finishChunkContents(bool end_recording, bool do_cleanup) {
   // Keep a simple stats for where we failed to unwind
   // For the sakes of simplicity we are not keeping the count of failed unwinds which would also be
   // just 'eventually consistent' because we do not want to block the unwinding while writing out the stats.
+  if (!_output.good()) return -1;
   writeUnwindFailures(_buf);
 
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     flush(&_buf[i]);
   }
+  if (!_output.good()) return -1;
 
   off_t cpool_offset = static_cast<off_t>(_output.size());
   int count_offset_in_cpool = 0;
   int pool_count = writeCpool(_buf, &count_offset_in_cpool);
-  flush(_buf);
+  if (!flush(_buf)) return -1;
 
   off_t cpool_end = static_cast<off_t>(_output.size());
 
   // Patch cpool size field
   _buf->putVar32(0, cpool_end - cpool_offset);
-  patch(_buf, 5, cpool_offset);
+  if (!patch(_buf, 5, cpool_offset)) return -1;
 
   // Patch the constant pool count placeholder (written as a 1-byte put8 in
   // writeCpool). Done flush-safe via pwrite to the FILE offset, mirroring the
   // size patch above: _buf has been flushed/reset, so _buf->data() is scratch.
   _buf->put8(0, (char)pool_count);
-  patch(_buf, 1, cpool_offset + count_offset_in_cpool);
+  if (!patch(_buf, 1, cpool_offset + count_offset_in_cpool)) return -1;
 
   off_t chunk_end = static_cast<off_t>(_output.size());
 
@@ -1161,7 +1164,7 @@ off_t Recording::finishChunkContents(bool end_recording, bool do_cleanup) {
   _buf->put64((_stop_time - _start_time) * 1000);
   _buf->put64(_start_ticks);
   _buf->put64(tsc_frequency);
-  patch(_buf, 56, _chunk_start + 8);
+  if (!patch(_buf, 56, _chunk_start + 8)) return -1;
 
   OS::freePageCache(_fd, _chunk_start);
 
@@ -1242,8 +1245,9 @@ RecordingOutput::Delivery Recording::switchChunk(int fd) {
     pruneWallEpochs(pending);
   }
 
-  _cold_io = true;
-  try {
+  {
+    // Past a failure these writers touch only this dead recording and lazy caches.
+    ColdIoScope cold(*this);
     writeHeader(_buf);
     writeMetadata(_buf);
     writeSettings(_buf, _args);
@@ -1262,10 +1266,9 @@ RecordingOutput::Delivery Recording::switchChunk(int fd) {
       recordWallClockEpoch(_buf, &entry.second);
     }
     flush(_buf);
-  } catch (const OutputFailure&) {
-    delivery.continuation_failed = static_cast<bool>(delivery);
   }
-  _cold_io = false;
+  // The output was good on entry, so a bad output means this block failed.
+  if (!_output.good()) delivery.continuation_failed = static_cast<bool>(delivery);
   return delivery;
 }
 
@@ -1434,30 +1437,47 @@ bool Recording::parseAgentProperties() {
   return true;
 }
 
-void Recording::flush(Buffer *buf) {
+bool Recording::flush(Buffer *buf) {
   size_t bytes = buf->offset();
   if (!_output.append(buf->data(), bytes)) {
-    if (_cold_io) throw OutputFailure{};
-    return;  // Keep the original buffer and all dictionaries owned on failure.
+    // Failed bytes stay owned with every dictionary they reference; only a
+    // cold sequence moves _buf[0]'s bytes aside so it can keep writing.
+    if (_cold_io) holdColdFailure();
+    return false;
   }
   atomicInc(_bytes_written, bytes);
   buf->reset();
-}
-
-void Recording::patch(Buffer* buf, size_t size, off_t offset) {
-  if (!_output.patch(buf->data(), size, offset)) throw OutputFailure{};
-}
-
-// True when it is safe to append to buf: a needed flush either succeeded or
-// threw (cold paths). False only when the flush failed with bytes retained:
-// pre-reservation callers must abort their serializer, not append past the
-// preserved range.
-bool Recording::flushIfNeeded(Buffer *buf, int limit) {
-  if (buf->offset() >= limit) {
-    flush(buf);
-    if (buf->offset() != 0 && !outputGood()) return false;
-  }
   return true;
+}
+
+// Cold writers keep appending to _buf[0] until their sequence checks the
+// output, so every failed cold flush empties it; the first one saves its bytes.
+void Recording::holdColdFailure() {
+  if (!_cold_failed) {
+    _cold_failed = true;
+    _cold_failure_buf.reset();
+    _cold_failure_buf.put(_buf->data(), static_cast<u32>(_buf->offset()));
+  }
+  _buf->reset();
+}
+
+void Recording::endColdIo() {
+  _cold_io = false;
+  if (!_cold_failed) return;
+  _cold_failed = false;
+  _buf->reset();
+  _buf->put(_cold_failure_buf.data(), static_cast<u32>(_cold_failure_buf.offset()));
+  _cold_failure_buf.reset();
+}
+
+bool Recording::patch(Buffer* buf, size_t size, off_t offset) {
+  return _output.patch(buf->data(), size, offset);
+}
+
+// False when a needed flush failed. Hot callers then still hold the bytes and
+// pre-reservation callers must abort their serializer, not append past them.
+bool Recording::flushIfNeeded(Buffer *buf, int limit) {
+  return buf->offset() < limit || flush(buf);
 }
 
 void Recording::writeMetadata(Buffer *buf) {
@@ -1582,6 +1602,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Log::LEVEL_NAME[Log::level()]);
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
+  writeBoolSetting(buf, T_ACTIVE_RECORDING, "j9AsgctDeadlockRisk",
+                   Profiler::instance()->j9AsgctDeadlockRisk());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "sanityCheckFailed",
                    Profiler::instance()->sanityCheckFailed());
   if (Profiler::instance()->sanityCheckFailed()) {
@@ -1770,7 +1792,7 @@ void Recording::writeJvmInfo(Buffer *buf) {
   jvmti->GetSystemProperty("java.vm.name", &jvm_name);
   jvmti->GetSystemProperty("java.vm.version", &jvm_version);
   // Both strings are JVMTI-allocated on every path below; this owner releases
-  // them on every exit, including the preflush abort and a cold OutputFailure.
+  // them on every exit, including the preflush abort and a cold output failure.
   struct OwnedProperties {
     jvmtiEnv *env;
     char *name;
@@ -1808,7 +1830,7 @@ void Recording::writeSystemProperties(Buffer *buf) {
 
   // Every keys[] element is separately JVMTI-allocated: Deallocate(keys)
   // frees only the array. This owner releases every key and the array on
-  // every exit, including a mid-iteration abort and a cold OutputFailure.
+  // every exit, including a mid-iteration abort and a cold output failure.
   struct OwnedKeys {
     jvmtiEnv *env;
     jint count;
@@ -1914,6 +1936,8 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   writeLogLevels(buf);
   writeThreads(buf);
   int pool_count = 5;
+  // processCallTraces() rotates the shared call-trace storage; a failed output skips it.
+  if (!_output.good()) return pool_count;
   // VARIABLE pools: each returns 1 if emitted, 0 if empty (and thus skipped).
   pool_count += writeStackTraces(buf, &lookup);
   pool_count += writeMethods(buf, &lookup);
@@ -3105,12 +3129,13 @@ Error FlightRecorder::newRecording(bool reset) {
     return Error("Could not open Flight Recorder output file");
   }
 
-  try {
-    _rec = new Recording(fd, _args);
-  } catch (const Recording::OutputFailure&) {
+  Recording* rec = new Recording(fd, _args);
+  if (!rec->outputGood()) {
+    delete rec;
     if (close(fd) != 0) _uncertain_create_fd = fd;
     return Error("Could not initialize complete Flight Recorder output");
   }
+  _rec = rec;
   // The Recording embeds the JFR RecordingBuffer array and the cpu-monitor
   // buffer, so its allocation size is the profiler's JFR buffer footprint.
   NativeMem::record(NM_JFR_BUFFERS, (long long)sizeof(Recording));

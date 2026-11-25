@@ -5,10 +5,12 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -19,6 +21,17 @@ import java.util.concurrent.TimeUnit;
 /** Outer owner of one test JVM, with output retained even if a JNI worker never returns. */
 public final class NettyEpollJvm {
   private NettyEpollJvm() {}
+
+  /**
+   * Temp directory under the workspace that other users can traverse: the musl CI job runs tests as
+   * root in a container, and the default 0700 mode makes the runner's post-job hashFiles() fail.
+   */
+  static Path createSharedTempDirectory(Path parent, String prefix) throws IOException {
+    return Files.createTempDirectory(
+        parent,
+        prefix,
+        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwxr-xr-x")));
+  }
 
   /** Child heap when the parent JVM was started without -Xmx. */
   static final String DEFAULT_CHILD_HEAP = "-Xmx512m";
