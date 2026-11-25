@@ -1,0 +1,66 @@
+#!/bin/bash
+# Copyright 2026, Datadog, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runs the memcheck scenarios on a CI runner: records the runner's shape in
+# OUT/runner.txt, builds the release library from the checked-out tree, then
+# runs run_all.sh. The JSON records land in OUT/runs.
+#
+# It cannot pin cores: a shared GitLab amd64 pod's CPU set differs between
+# jobs and changes during a job, and taskset made the JVM pick Serial GC.
+# run_scenario.sh sets -XX:ActiveProcessorCount=$CPUS and G1 instead.
+#
+# Usage: ci-run.sh [OUT]   (default OUT: build/memcheck)
+#   CPUS (4), ARMS, REPS, NOPROF_REPS, SCENARIOS, STEADY_MS, DUMP_AFTER_MS, SAMPLE_DELAY_S
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+OUT="$(mkdir -p "${1:-$ROOT/build/memcheck}" && cd "${1:-$ROOT/build/memcheck}" && pwd)"
+export CPUS="${CPUS:-4}"
+
+# Best effort: a missing file must not fail the job.
+{
+  echo "ci_job: ${CI_JOB_ID:-} node ${CI_NODE_INDEX:-}/${CI_NODE_TOTAL:-}"
+  echo "ci_runner: ${CI_RUNNER_ID:-} ${CI_RUNNER_DESCRIPTION:-}"
+  echo "hostname: $(hostname)"
+  echo "kernel: $(uname -r)"
+  echo "nproc: $(nproc)"
+  echo "cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null \
+    || echo "v1 $(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null) $(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null)")"
+  echo "cpu_model: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
+  echo "mem_total: $(grep MemTotal /proc/meminfo | awk '{print $2, $3}')"
+  echo "memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null \
+    || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)"
+  echo "pid_max: $(cat /proc/sys/kernel/pid_max)"
+  echo "perf_event_paranoid: $(cat /proc/sys/kernel/perf_event_paranoid)"
+  # CI's JAVA_TOOL_OPTIONS (proxy settings, internal host lists) stays out.
+  java -XshowSettings:system -version 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS'
+} > "$OUT/runner.txt" 2>&1 || true
+
+git -C "$ROOT" rev-parse HEAD > "$OUT/profiler-commit.txt"
+# grep, not head -1: CI sets JAVA_TOOL_OPTIONS, which java reports first.
+java -version 2>&1 | grep -m1 ' version ' > "$OUT/jdk.txt"
+# The CPU count the JVMs are sized for (-XX:ActiveProcessorCount).
+echo "$CPUS" > "$OUT/cpus.txt"
+
+cd "$ROOT"
+./gradlew -q --console=plain --no-daemon :ddprof-lib:assembleReleaseJar \
+  -Pskip-tests -Pskip-gtest > "$OUT/build.log" 2>&1 \
+  || { echo "build failed, see $OUT/build.log"; tail -50 "$OUT/build.log"; exit 1; }
+
+export DDPROF_LIB
+DDPROF_LIB="$(find "$ROOT/ddprof-lib/build/lib/main/release" -name libjavaProfiler.so | head -1)"
+export DDPROF_CLASSES="$ROOT/ddprof-lib/build/classes/java/main"
+# Scratch space (generated classes, JFR files) outside the job's artifact
+# paths, which match build/memcheck-*.
+export MEMCHECK_CLASSES="$ROOT/build/mc-scratch/classes"
+export WORKDIR="$ROOT/build/mc-scratch"
+export OUTDIR="$OUT/runs"
+if ! "$HERE/run_all.sh" 2>&1 | tee "$OUT/run_all.log"; then
+  # The failure messages point into the scratch space, which is not an artifact.
+  mkdir -p "$OUT/diagnostics"
+  (cd "$WORKDIR/runs" && find . -type f \( -name '*.log' -o -name '*.txt' \) \
+    -exec cp --parents -- {} "$OUT/diagnostics/" \;) || true
+  exit 1
+fi
