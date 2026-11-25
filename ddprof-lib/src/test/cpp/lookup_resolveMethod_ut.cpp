@@ -926,6 +926,39 @@ TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterCountsEachUnresolvedFra
     EXPECT_EQ(2, header2[0]);
     EXPECT_EQ(1, header2[1]) << "trace 2's root is the <unloaded> Java row";
     EXPECT_EQ(2, header2[2]);
+    // Every written row is marked referenced, so method-map ageing keeps it.
+    // resolveMethod() returns the already-filled row and leaves the flag alone.
+    EXPECT_TRUE(lookup.resolveMethod(unloaded)->_referenced);
+    EXPECT_TRUE(lookup.resolveMethod(unknown)->_referenced);
+    EXPECT_TRUE(lookup.resolveMethod(resolved)->_referenced);
+}
+
+// A one-frame trace: its only frame is also its root, resolved for the header.
+TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterResolvesTheRootOfAOneFrameTrace) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.declaring_class_error = JVMTI_ERROR_INVALID_METHODID;  // -> <unloaded>
+    VMTestAccessor::setJvmti(fake.jvmti());
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+    int fake_method_storage = 0;
+    ASGCT_CallFrame unloaded{};
+    unloaded.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    unloaded.method_id = reinterpret_cast<jmethodID>(&fake_method_storage);
+    OwnedTrace single(4, {unloaded});
+    FrameCounters before;
+    Buffer buffer;
+    int flushes = 0;
+
+    RecordingTestAccessor::writeStackTrace(&buffer, single.get(), &lookup, countFlush, &flushes);
+
+    EXPECT_EQ(before.unloaded + 1, Counters::getCounter(METHOD_RESOLVE_FRAMES_UNLOADED));
+    EXPECT_EQ(1, flushes);
+    // Header: trace id, truncated flag (set: the root is a non-entry Java row), frame count.
+    const unsigned char* header = reinterpret_cast<const unsigned char*>(buffer.data());
+    EXPECT_EQ(4, header[0]);
+    EXPECT_EQ(1, header[1]) << "the single frame must be resolved as the root";
+    EXPECT_EQ(1, header[2]);
 }
 
 // A trace with no frames writes only its header and resolves nothing.
