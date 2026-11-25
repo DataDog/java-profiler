@@ -797,8 +797,9 @@ VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     return nm;
 }
 
-// nmethod::is_deopt_pc also accepts the return address after a JVMCI handler's call,
-// NativeCall::instruction_size bytes past the handler.
+// On JDK 21-25, nmethod::is_deopt_pc also accepts the return address after a JVMCI
+// handler's call, NativeCall::instruction_size bytes past the handler; rejecting it on
+// other JDKs only leaves the frame unrecovered.
 #if defined(__x86_64__)
 static constexpr uintptr_t DEOPT_HANDLER_CALL_SIZE = 5;
 #else
