@@ -405,6 +405,29 @@ Java_com_datadoghq_profiler_JavaProfiler_recordUnownedWallTailAcrossDumpForTest0
 #endif
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_withUnownedWallTailForTest0(
+    JNIEnv *env, jclass unused, jthread thread, jobject transition) {
+#ifdef DEBUG
+  SignalBlocker blocker;
+  const char* failure = BaseWallClock::seedUnownedWallTailForTest(thread, OSThreadState::CONDVAR_WAIT);
+  if (failure != nullptr) {
+    throwNew(env, "java/lang/IllegalStateException", failure);
+    return JNI_FALSE;
+  }
+  jclass runnable = env->GetObjectClass(transition);
+  if (runnable == nullptr) return JNI_FALSE;
+  jmethodID run = env->GetMethodID(runnable, "run", "()V");
+  env->DeleteLocalRef(runnable);
+  if (run == nullptr) return JNI_FALSE;
+  // Seeding released every stripe before Java can wait for a controller's dump.
+  env->CallVoidMethod(transition, run);
+  return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
