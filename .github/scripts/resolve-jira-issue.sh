@@ -73,6 +73,11 @@ JQL_SUMMARY=$(jq -rn --arg s "$SUMMARY" '$s | gsub("\\\\"; "\\\\\\\\") | gsub("\
 JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\\\"\" AND resolution = Unresolved AND statusCategory != Done"
 SEARCH=$(jira 1 -X POST --data "$(jq -n --arg jql "$JQL" \
   '{jql: $jql, maxResults: 100, fields: ["key", "summary"]}')" "$API/search/jql") || exit 1
+# A response that is not a JSON object is an API failure, not "nothing open".
+jq -e 'type == "object"' >/dev/null <<<"$SEARCH" || {
+  echo "ERROR: Jira search returned an unexpected response" >&2
+  exit 1
+}
 
 # Closing the first phrase hit could transition an unrelated open ticket
 # whose summary merely contains the phrase, so resolve only an exact,
@@ -82,7 +87,7 @@ EXISTING_KEY=$(jq -r --arg s "$SUMMARY" '
 if [ -z "$EXISTING_KEY" ]; then
   if [ "$(jq '[.issues[]?] | length' <<<"$SEARCH")" != 0 ]; then
     echo "WARNING: Jira phrase search matched issues but none with the exact summary '$SUMMARY'; not resolving" >&2
-  elif [ "$(jq '.issueKeys | length' <<<"$SEARCH")" != 0 ]; then
+  elif [ "$(jq '.issueKeys | type == "array" and length > 0' <<<"$SEARCH")" = true ]; then
     echo "WARNING: Jira search returned issue keys without summaries; not resolving" >&2
   fi
   exit 0

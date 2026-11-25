@@ -98,6 +98,7 @@ case "$url" in
     case "$url" in
       */search/jql)
         [ "${FAKE_SEARCH_FAIL:-0}" = 1 ] && exit 22
+        [ "${FAKE_SEARCH_GARBAGE:-0}" = 1 ] && { echo '<html>gateway timeout</html>'; exit 0; }
         [ "${FAKE_ISSUE_KEYS:-0}" = 1 ] && { echo '{"issueKeys":["PROF-12"]}'; exit 0; }
         summary=$(jq -r .jql <<<"$data" | sed -E 's/.*summary ~ "\\"(.*)\\"" AND resolution.*/\1/')
         # Jira phrase matching also hits longer summaries: every open issue
@@ -169,7 +170,7 @@ reset_fakes() {
   : > "$FAKE_CURL_LOG"
   unset FAKE_URLS FAKE_OPEN FAKE_IBM_LISTING FAKE_NO_DONE FAKE_JIRA_FAIL FAKE_SLACK_URL FAKE_SLACK_FAIL \
     FAKE_TRANSITION_FAIL FAKE_TRANSITIONS_GET_FAIL FAKE_COMMENT_FAIL FAKE_SEARCH_FAIL FAKE_DOWNLOAD FAKE_TAR_RC \
-    FAKE_CURL_DELAY FAKE_ISSUE_KEYS
+    FAKE_CURL_DELAY FAKE_ISSUE_KEYS FAKE_SEARCH_GARBAGE
 }
 
 with_jira() {
@@ -625,7 +626,14 @@ output=$("$RESOLVE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk
 assert_eq 0 "$rc" "an issueKeys response resolves nothing and exits 0"
 assert_contains "$(cat "$TEMP_DIR/resolve-keys.err")" "issue keys without summaries" "an issueKeys response warns"
 assert_not_contains "$(cat "$FAKE_CURL_LOG")" "/transitions" "no transition on an issueKeys response"
-unset FAKE_ISSUE_KEYS FAKE_OPEN
+unset FAKE_ISSUE_KEYS
+# A non-JSON search response is an API failure, not a silent nothing-to-do.
+export FAKE_SEARCH_GARBAGE=1
+rc=0
+output=$("$RESOLVE_JIRA" --summary "Stale JDK download URL: JAVA_9_MUSL_URL (jdk-url-check)" --comment-file "$TEMP_DIR/body.txt" 2>"$TEMP_DIR/resolve-garbage.err") || rc=$?
+assert_eq 1 "$rc" "a non-JSON search response exits 1"
+assert_contains "$(cat "$TEMP_DIR/resolve-garbage.err")" "unexpected response" "a non-JSON search response errors"
+unset FAKE_SEARCH_GARBAGE FAKE_OPEN
 
 # --- java_setup.sh fetchAndExtract ---------------------------------------------------
 # GitHub's default run shell is bash -e without pipefail; each case runs so.
