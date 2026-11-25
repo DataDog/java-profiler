@@ -367,6 +367,27 @@ public:
         return ReferenceChainTracker::MAX_RESOLVED_CHAINS;
     }
 
+    static int maxPendingChainInvalidations() {
+        return ReferenceChainTracker::MAX_PENDING_CHAIN_INVALIDATIONS;
+    }
+
+    static int maxChainRebuildsPerPoll() {
+        return ReferenceChainTracker::MAX_CHAIN_REBUILDS_PER_POLL;
+    }
+
+    // The leak-tag binding step of tagLeakInstances() (correlation of a frontier entry).
+    static bool correlateAdmittedLeakTag(jlong frontier_tag, jlong leak_tag, u32 klass_id) {
+        return ReferenceChainTracker::instance()->correlateAdmittedLeakTag(
+            frontier_tag, leak_tag, klass_id);
+    }
+
+    // Search generation the cached chain for tag was stored under, 0 when absent.
+    static u64 resolvedChainSearchNs(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        auto it = t->_resolved_chains.find(tag);
+        return it == t->_resolved_chains.end() ? 0u : it->second.source_search_ns;
+    }
+
     static std::vector<jlong> snapshotResolvedChainTags() {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
         jlong tags[ReferenceChainTracker::MAX_RESOLVED_CHAINS];
@@ -406,6 +427,14 @@ public:
 
     static void drainPendingChainInvalidations() {
         ReferenceChainTracker::instance()->drainPendingChainInvalidations();
+    }
+
+    // Bypasses deferResolvedChainInvalidation()'s snapshot filter, so tests can fill the buffer
+    // and exercise the asymmetric overflow policy directly.
+    static void queueChainInvalidationForTest(jlong tag, bool rebuild) {
+        ReferenceChainTracker::instance()->queueChainInvalidation(
+            tag, rebuild ? ReferenceChainTracker::ChainInvalidationKind::REBUILD
+                         : ReferenceChainTracker::ChainInvalidationKind::EVICT);
     }
 
     static void applyPendingChainInvalidationsForTest(u64 search_ns) {
