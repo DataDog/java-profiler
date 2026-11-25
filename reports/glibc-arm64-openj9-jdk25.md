@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-11-25 14:23:09 EST
+**Date:** 2026-11-25 14:53:11 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 76 |
-| Sample Rate | 1.27/sec |
-| Health Score | 79% |
+| CPU Samples | 74 |
+| Sample Rate | 1.23/sec |
+| Health Score | 77% |
 | Threads | 8 |
-| Allocations | 64 |
+| Allocations | 61 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 16 |
-| Sample Rate | 0.27/sec |
-| Health Score | 17% |
-| Threads | 8 |
-| Allocations | 12 |
+| CPU Samples | 17 |
+| Sample Rate | 0.28/sec |
+| Health Score | 18% |
+| Threads | 9 |
+| Allocations | 15 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1795634360 34
-1795634365 34
-1795634370 34
-1795634375 34
-1795634380 34
-1795634385 34
-1795634390 34
-1795634395 34
-1795634400 34
-1795634405 34
-1795634410 34
-1795634415 34
-1795634420 34
-1795634425 34
-1795634430 34
-1795634435 34
-1795634440 34
-1795634445 34
-1795634450 34
-1795634455 34
+1795636172 34
+1795636177 34
+1795636182 34
+1795636187 34
+1795636192 34
+1795636197 34
+1795636202 34
+1795636207 34
+1795636212 34
+1795636217 34
+1795636222 34
+1795636227 34
+1795636232 34
+1795636237 34
+1795636242 34
+1795636247 34
+1795636252 34
+1795636257 34
+1795636262 34
+1795636267 34
 ```
 </details>
 
