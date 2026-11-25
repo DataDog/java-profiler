@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk21
 
 ## musl-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-11-25 16:21:57 EST
+**Date:** 2026-11-25 16:22:55 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 18 |
-| CPU Cores (end) | 18 |
+| CPU Cores (start) | 28 |
+| CPU Cores (end) | 29 |
 | Throttling | 0% |
 
 ### Test Results
@@ -32,7 +32,7 @@ title: musl-arm64-hotspot-jdk21
 | Sample Rate | 1.33/sec |
 | Health Score | 83% |
 | Threads | 10 |
-| Allocations | 74 |
+| Allocations | 72 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
@@ -42,32 +42,32 @@ title: musl-arm64-hotspot-jdk21
 | Sample Rate | 0.30/sec |
 | Health Score | 19% |
 | Threads | 8 |
-| Allocations | 15 |
+| Allocations | 14 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
+<summary>CPU Timeline (3 unique values: 28-34 cores)</summary>
 
 ```
-1795641270 18
-1795641275 18
-1795641280 18
-1795641285 18
-1795641290 18
-1795641295 18
-1795641300 18
-1795641305 18
-1795641310 18
-1795641316 18
-1795641321 18
-1795641326 18
-1795641331 18
-1795641336 18
-1795641341 18
-1795641346 18
-1795641351 18
-1795641356 18
-1795641361 18
-1795641366 18
+1795641295 28
+1795641300 28
+1795641305 28
+1795641310 28
+1795641315 28
+1795641320 28
+1795641325 28
+1795641331 28
+1795641336 28
+1795641341 28
+1795641346 28
+1795641351 28
+1795641356 28
+1795641361 28
+1795641366 28
+1795641371 28
+1795641376 28
+1795641381 28
+1795641386 34
+1795641391 34
 ```
 </details>
 
