@@ -38,6 +38,7 @@ datadog/maven/resources
 # cursor AI history
 .history
 .claude/settings.local.json
+.claude/worktrees/
 /jmh-*
 
 # Temporary documentation and work state

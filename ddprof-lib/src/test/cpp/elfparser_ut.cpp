@@ -17,6 +17,7 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
@@ -24,6 +25,7 @@
 #include <elf.h>
 #include <chrono>
 #include <thread>
+#include <utility>
 
 #include <dlfcn.h>
 #include <link.h>
@@ -380,6 +382,15 @@ INSTANTIATE_TEST_SUITE_P(
 
 #else
 TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
+#ifdef TSAN_ENABLED
+    // TSan aborts the whole binary (halt_on_error) on the uninstrumented-libc
+    // window this test exists to exercise: dlclose on the unmap thread frees
+    // loader structures while the main thread's dlinfo/dladdr reads run. The
+    // race is a TSan-visibility artifact, not a product defect,
+    // and an abort skips XML writing, so quarantine cannot express it - skip
+    // at runtime instead.
+    GTEST_SKIP() << "TSan flags the intentional dlclose-vs-parseLibraries race";
+#endif
     char path[PATH_MAX];
     if (!findTestResource("native-libs/small-lib/libsmall-lib.so", path, sizeof(path))) {
         GTEST_SKIP() << "Missing test resource native-libs/small-lib/libsmall-lib.so";
@@ -583,21 +594,25 @@ TEST_F(ElfTest, programHeaderOffsetOutOfBounds) {
     parseElfBytes(bytes);  // must not crash
 }
 
-// strAt() bounds check: a symbol whose st_name equals strtab_size (one past
-// the end) must be skipped without reading out of bounds.
+// strAt() bounds check: symbols whose st_name is strtab_size (one past the end) or
+// beyond must be skipped without reading out of bounds; an in-bounds name still loads.
 TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     const uint16_t NSEC = 4;
     const uint64_t shoff = sizeof(Elf64_Ehdr);
     const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
     const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
     const uint64_t sym_off = shstr_off + sizeof(shstrtab);
-    Elf64_Sym sym;
-    memset(&sym, 0, sizeof(sym));
-    sym.st_name = 6;  // == sizeof(strtab) below: one past the end
-    sym.st_value = 0x1000;
-    sym.st_size = 4;
+    const char strtab[] = "\0main";  // sizeof includes the literal's terminating NUL
+    Elf64_Sym sym[3];
+    memset(sym, 0, sizeof(sym));
+    const uint32_t names[] = {1, sizeof(strtab), sizeof(strtab) + 1};  // "main", one past, beyond
+    for (int i = 0; i < 3; i++) {
+        sym[i].st_name = names[i];
+        sym[i].st_value = 0x1000 * (i + 1);
+        sym[i].st_size = 4;
+        sym[i].st_shndx = 1;  // defined, so the filter does not drop it before strAt()
+    }
     const uint64_t str_off = sym_off + sizeof(sym);
-    const char strtab[] = "\0main\0";  // 6 bytes; index 6 is out of bounds
 
     Elf64_Ehdr e = validEhdr();
     e.e_shoff = shoff;
@@ -610,7 +625,7 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     sh[1].sh_name = 1;   // ".symtab"
     sh[1].sh_type = SHT_SYMTAB;
     sh[1].sh_offset = sym_off;
-    sh[1].sh_size = sizeof(sym);  // exactly one entry, within image
+    sh[1].sh_size = sizeof(sym);  // within image
     sh[1].sh_link = 2;
     sh[1].sh_entsize = sizeof(Elf64_Sym);
     sh[2].sh_name = 9;   // ".strtab"
@@ -630,10 +645,13 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     app(&e, sizeof(e));
     app(sh, sizeof(sh));
     app(shstrtab, sizeof(shstrtab));
-    app(&sym, sizeof(sym));
+    app(sym, sizeof(sym));
     app(strtab, sizeof(strtab));
     // strtab ends at image_size: also exercises inImage() equality case.
-    parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
+    CodeCache cc("regress");
+    ASSERT_NO_FATAL_FAILURE(parseElfBytes(b, &cc, /*use_debug=*/true));
+    EXPECT_EQ(cc.findSymbol("main"), reinterpret_cast<const void*>(0x1000));  // table was read
+    EXPECT_EQ(cc.count(), 1);  // strAt() rejected both out-of-bounds names
 }
 
 // Misaligned .symtab and .rela.plt must still resolve symbols and the PLT name.
@@ -652,9 +670,11 @@ TEST_F(ElfTest, symbolTableMisalignedEntries) {
     sym[0].st_name = 1;   // "mis_main"
     sym[0].st_value = 0x20000;
     sym[0].st_size = 4;
+    sym[0].st_shndx = 1;  // defined, so the filter does not drop it
     sym[1].st_name = 10;  // "mis_helper"
     sym[1].st_value = 0x21000;
     sym[1].st_size = 4;
+    sym[1].st_shndx = 1;
     const uint64_t str_off = sym_off + sizeof(sym);
     const char strtab[] = "\0mis_main\0mis_helper\0";  // 22 bytes: names at 1 and 10
     // 4 pad bytes push .rela.plt off its natural alignment too, so the
@@ -772,6 +792,9 @@ TEST_F(ElfTest, dynamicSectionMisalignedEntries) {
     ph[0].p_type = PT_LOAD;
     ph[0].p_filesz = IMAGE_SIZE;
     ph[0].p_memsz = IMAGE_SIZE;
+    // A loaded image's PT_LOAD is always readable (the loader maps it R+X);
+    // Symbols::imageFingerprint() only hashes readable segments.
+    ph[0].p_flags = PF_R | PF_X;
     ph[1].p_type = PT_DYNAMIC;
     ph[1].p_vaddr = dyn_off;
     ph[1].p_offset = dyn_off;
@@ -895,6 +918,9 @@ TEST_F(ElfTest, dynamicSectionInvalidRelocationEntrySize) {
     ph[0].p_type = PT_LOAD;
     ph[0].p_filesz = IMAGE_SIZE;
     ph[0].p_memsz = IMAGE_SIZE;
+    // A loaded image's PT_LOAD is always readable (the loader maps it R+X);
+    // Symbols::imageFingerprint() only hashes readable segments.
+    ph[0].p_flags = PF_R | PF_X;
     ph[1].p_type = PT_DYNAMIC;
     ph[1].p_vaddr = dyn_off;
     ph[1].p_offset = dyn_off;
@@ -969,6 +995,486 @@ TEST_F(ElfTest, dynamicSectionInvalidRelocationEntrySize) {
         ElfParser::parseProgramHeaders(&cc, image, image + IMAGE_SIZE, /*relocate_dyn=*/false);
         EXPECT_EQ(cc.peekImport(im_pthread_create), nullptr);
     }
+}
+
+// gABI "Symbol Values": TLS offsets, absolute/common values, section and file
+// entries and undefined symbols are not in-image definitions and must not become
+// code-cache entries. The last regular index and SHN_XINDEX are kept.
+TEST_F(ElfTest, symbolTableSkipsNonAddressSymbols) {
+    const uint16_t NSEC = 4;
+    const uint64_t shoff = sizeof(Elf64_Ehdr);
+    const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
+    const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
+    const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    const char strtab[] = "\0good_func\0tls_var\0abs_sym\0undef_stub\0common_sym\0sect_sym\0file_sym\0"
+                          "last_regular\0xindex_sym\0loreserve_sym\0";
+    enum { GOOD = 1, TLS = 11, ABS = 19, UNDEF = 27, COMMON = 38, SECT = 49, FILE_SYM = 58,
+           LAST_REGULAR = 67, XINDEX = 80, LORESERVE = 91 };
+
+    Elf64_Sym sym[10];
+    memset(sym, 0, sizeof(sym));
+    auto set = [&](int i, uint32_t name, unsigned char type, uint16_t shndx, uint64_t value) {
+        sym[i].st_name = name;
+        sym[i].st_info = ELF64_ST_INFO(STB_GLOBAL, type);
+        sym[i].st_shndx = shndx;
+        sym[i].st_value = value;
+        sym[i].st_size = 4;
+    };
+    set(0, GOOD, STT_FUNC, 1, 0x20000);
+    set(1, TLS, STT_TLS, 1, 0x8);
+    set(2, ABS, STT_NOTYPE, SHN_ABS, 0x30000);
+    set(3, UNDEF, STT_FUNC, SHN_UNDEF, 0x40000);
+    set(4, COMMON, STT_OBJECT, SHN_COMMON, 0x10);
+    set(5, SECT, STT_SECTION, 1, 0x50000);
+    set(6, FILE_SYM, STT_FILE, 1, 0x60000);
+    set(7, LAST_REGULAR, STT_FUNC, SHN_LORESERVE - 1, 0x70000);
+    set(8, XINDEX, STT_FUNC, SHN_XINDEX, 0x80000);
+    set(9, LORESERVE, STT_FUNC, SHN_LORESERVE, 0x90000);
+    const uint64_t str_off = sym_off + sizeof(sym);
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = shoff;
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = NSEC;
+    e.e_shstrndx = 3;
+
+    Elf64_Shdr sh[4];
+    memset(sh, 0, sizeof(sh));
+    sh[1].sh_name = 1;   // ".symtab"
+    sh[1].sh_type = SHT_SYMTAB;
+    sh[1].sh_offset = sym_off;
+    sh[1].sh_size = sizeof(sym);
+    sh[1].sh_link = 2;
+    sh[1].sh_entsize = sizeof(Elf64_Sym);
+    sh[2].sh_name = 9;   // ".strtab"
+    sh[2].sh_type = SHT_STRTAB;
+    sh[2].sh_offset = str_off;
+    sh[2].sh_size = sizeof(strtab);
+    sh[3].sh_name = 17;  // ".shstrtab"
+    sh[3].sh_type = SHT_STRTAB;
+    sh[3].sh_offset = shstr_off;
+    sh[3].sh_size = sizeof(shstrtab);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(sh, sizeof(sh));
+    app(shstrtab, sizeof(shstrtab));
+    app(sym, sizeof(sym));
+    app(strtab, sizeof(strtab));
+
+    CodeCache cc("regress");
+    ASSERT_NO_FATAL_FAILURE(parseElfBytes(b, &cc, /*use_debug=*/true));
+    EXPECT_EQ(cc.findSymbol("good_func"), reinterpret_cast<const void*>(0x20000));
+    EXPECT_EQ(cc.findSymbol("last_regular"), reinterpret_cast<const void*>(0x70000));
+    EXPECT_EQ(cc.findSymbol("xindex_sym"), reinterpret_cast<const void*>(0x80000));
+    for (const char* name : {"tls_var", "abs_sym", "undef_stub", "common_sym", "sect_sym", "file_sym",
+                             "loreserve_sym"}) {
+        EXPECT_EQ(cc.findSymbol(name), nullptr) << name;
+    }
+}
+
+namespace {
+
+// An in-memory image whose PT_DYNAMIC holds exactly `dyn` (caller adds DT_NULL) and
+// whose .rela.plt imports pthread_create into GOT slot PLT_SLOT; null on failure.
+constexpr uint64_t PLT_SLOT = 0x800;
+constexpr size_t DYN_IMAGE_SIZE = 4096;
+constexpr int DYN_NPH = 2;
+constexpr uint64_t DYN_OFF = sizeof(Elf64_Ehdr) + DYN_NPH * sizeof(Elf64_Phdr);
+constexpr uint64_t DYN_MAX = 16;
+constexpr uint64_t DYN_STR_OFF = DYN_OFF + DYN_MAX * sizeof(Elf64_Dyn);
+constexpr uint64_t DYN_SYM_OFF = (DYN_STR_OFF + 32 + 7) & ~uint64_t(7);
+constexpr uint64_t DYN_JMPREL_OFF = DYN_SYM_OFF + 2 * sizeof(Elf64_Sym);
+
+std::unique_ptr<void, decltype(&free)> buildPltImage(const std::vector<Elf64_Dyn>& dyn) {
+    std::unique_ptr<void, decltype(&free)> mem(aligned_alloc(DYN_IMAGE_SIZE, DYN_IMAGE_SIZE), &free);
+    if (!mem || dyn.size() > DYN_MAX) return std::unique_ptr<void, decltype(&free)>(nullptr, &free);
+    char* image = static_cast<char*>(mem.get());
+    memset(image, 0, DYN_IMAGE_SIZE);
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = DYN_NPH;
+    memcpy(image, &e, sizeof(e));
+
+    Elf64_Phdr ph[DYN_NPH];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_filesz = DYN_IMAGE_SIZE;
+    ph[0].p_memsz = DYN_IMAGE_SIZE;
+    ph[0].p_flags = PF_R;  // Symbols::imageFingerprint() only hashes readable segments
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = DYN_OFF;
+    ph[1].p_offset = DYN_OFF;
+    ph[1].p_filesz = dyn.size() * sizeof(Elf64_Dyn);
+    ph[1].p_memsz = dyn.size() * sizeof(Elf64_Dyn);
+    memcpy(image + sizeof(Elf64_Ehdr), ph, sizeof(ph));
+
+    memcpy(image + DYN_OFF, dyn.data(), dyn.size() * sizeof(Elf64_Dyn));
+    const char strtab[] = "\0pthread_create";
+    memcpy(image + DYN_STR_OFF, strtab, sizeof(strtab));
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));
+    sym[1].st_name = 1;  // "pthread_create"
+    memcpy(image + DYN_SYM_OFF, sym, sizeof(sym));
+
+    Elf64_Rela rela;
+    memset(&rela, 0, sizeof(rela));
+    rela.r_offset = PLT_SLOT;
+    rela.r_info = ELF64_R_INFO(1, 0);  // .rela.plt entries are not type-checked
+    memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+    return mem;
+}
+
+// The dynamic tags every PLT image needs, without any relocation entry-size tag.
+std::vector<Elf64_Dyn> pltDyn() {
+    return {
+        {DT_SYMTAB, {DYN_SYM_OFF}},
+        {DT_STRTAB, {DYN_STR_OFF}},
+        {DT_SYMENT, {sizeof(Elf64_Sym)}},
+        {DT_STRSZ, {sizeof("\0pthread_create")}},
+        {DT_JMPREL, {DYN_JMPREL_OFF}},
+        {DT_PLTRELSZ, {sizeof(Elf64_Rela)}},
+        {DT_PLTREL, {DT_RELA}},
+    };
+}
+
+// Fingerprints the image, moves the GOT slot of its one relocation entry, and
+// fingerprints it again. Returns {before, after}.
+std::pair<u64, u64> fingerprintAroundSlotMove(char* image) {
+    const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+    Elf64_Rela rela;
+    memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
+    rela.r_offset = PLT_SLOT + 2 * sizeof(void*);
+    memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+    return {before, Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image))};
+}
+
+void** parsedPthreadCreateImport(char* image) {
+    CodeCache cc("inmem");
+    ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+    return cc.peekImport(im_pthread_create);
+}
+
+#if defined(__x86_64__)
+constexpr uint32_t GLOB_DAT_TYPE = R_X86_64_GLOB_DAT;
+#elif defined(__aarch64__)
+constexpr uint32_t GLOB_DAT_TYPE = R_AARCH64_GLOB_DAT;
+#else
+constexpr uint32_t GLOB_DAT_TYPE = 0;  // tests using it skip
+#endif
+
+// An image whose only relocation table is the given .rela.dyn / .rel.dyn: one
+// GLOB_DAT entry importing pthread_create (the buildPltImage() entry, whose leading
+// r_offset and r_info read the same as an Elf64_Rel).
+std::unique_ptr<void, decltype(&free)> buildGotImage(int64_t tag, int64_t size_tag, uint64_t size,
+                                                     int64_t ent_tag, uint64_t ent,
+                                                     int64_t count_tag, uint64_t count) {
+    auto mem = buildPltImage({
+        {DT_SYMTAB, {DYN_SYM_OFF}},
+        {DT_STRTAB, {DYN_STR_OFF}},
+        {DT_SYMENT, {sizeof(Elf64_Sym)}},
+        {DT_STRSZ, {sizeof("\0pthread_create")}},
+        {tag, {DYN_JMPREL_OFF}},
+        {size_tag, {size}},
+        {ent_tag, {ent}},
+        {count_tag, {count}},
+        {DT_NULL, {0}},
+    });
+    if (mem) {
+        char* image = static_cast<char*>(mem.get());
+        Elf64_Rela rela;
+        memcpy(&rela, image + DYN_JMPREL_OFF, sizeof(rela));
+        rela.r_info = ELF64_R_INFO(1, GLOB_DAT_TYPE);
+        memcpy(image + DYN_JMPREL_OFF, &rela, sizeof(rela));
+    }
+    return mem;
+}
+
+}  // namespace
+
+// gABI: a library with only PLT relocations has no DT_RELENT/DT_RELAENT; the
+// DT_JMPREL entry size comes from DT_PLTREL. Its imports must still be recorded
+// and be part of the image fingerprint.
+TEST_F(ElfTest, pltOnlyImportsWithoutRelent) {
+    auto mem = buildPltImage([] { auto d = pltDyn(); d.push_back({DT_NULL, {0}}); return d; }());
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+
+    EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
+    auto fp = fingerprintAroundSlotMove(image);
+    EXPECT_NE(fp.first, 0u);
+    EXPECT_NE(fp.second, fp.first);  // the PLT table is hashed
+}
+
+// DT_PLTREL fixes the DT_JMPREL stride: a conflicting DT_RELAENT too small for an
+// entry (which would skip the table) must not override it, in the parse or the fingerprint.
+TEST_F(ElfTest, pltRelOverridesRelaent) {
+    auto dyn = pltDyn();
+    dyn.push_back({DT_RELAENT, {8}});
+    dyn.push_back({DT_NULL, {0}});
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+
+    EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
+    auto fp = fingerprintAroundSlotMove(image);
+    EXPECT_NE(fp.first, 0u);
+    EXPECT_NE(fp.second, fp.first);
+}
+
+namespace {
+
+// The .rela.dyn and .rel.dyn tags; wrapping_count makes count * ent wrap size_t to 0.
+struct RelocTable {
+    const char* name;
+    int64_t tag, size_tag, ent_tag, count_tag;
+    uint64_t ent, wrapping_count;
+};
+const RelocTable RELOC_TABLES[] = {
+    {"rela", DT_RELA, DT_RELASZ, DT_RELAENT, DT_RELACOUNT, sizeof(Elf64_Rela), uint64_t(1) << 61},
+    {"rel", DT_REL, DT_RELSZ, DT_RELENT, DT_RELCOUNT, sizeof(Elf64_Rel), uint64_t(1) << 60},
+};
+
+}  // namespace
+
+// A relative-relocation count whose byte count wraps size_t (2^61 * 24 and
+// 2^60 * 16 are 0 mod 2^64) must skip the whole .rela.dyn / .rel.dyn, not a
+// wrapped-to-zero prefix, in the parse and the fingerprint.
+TEST_F(ElfTest, relativeCountOverflowSkipsWholeTable) {
+    if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
+    for (const RelocTable& t : RELOC_TABLES) {
+        SCOPED_TRACE(t.name);
+        // No relative prefix: the entry is an import.
+        auto control = buildGotImage(t.tag, t.size_tag, t.ent, t.ent_tag, t.ent, t.count_tag, 0);
+        ASSERT_THAT(control.get(), ::testing::NotNull());
+        char* image = static_cast<char*>(control.get());
+        EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
+        auto fp = fingerprintAroundSlotMove(image);
+        EXPECT_NE(fp.first, 0u);
+        EXPECT_NE(fp.second, fp.first);
+
+        auto wrapped = buildGotImage(t.tag, t.size_tag, t.ent, t.ent_tag, t.ent, t.count_tag, t.wrapping_count);
+        ASSERT_THAT(wrapped.get(), ::testing::NotNull());
+        image = static_cast<char*>(wrapped.get());
+        EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
+        fp = fingerprintAroundSlotMove(image);
+        EXPECT_NE(fp.first, 0u);
+        EXPECT_EQ(fp.second, fp.first);  // the skipped entry is not hashed
+    }
+}
+
+// DT_RELACOUNT/DT_RELCOUNT = 1 skips only the leading relative relocation: the second
+// entry is still imported and fingerprinted, the first is neither (both GLOB_DAT-typed,
+// so only the count excludes it).
+TEST_F(ElfTest, relativeCountSkipsOnlyLeadingEntries) {
+    if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
+    for (const RelocTable& t : RELOC_TABLES) {
+        SCOPED_TRACE(t.name);
+        auto mem = buildGotImage(t.tag, t.size_tag, 2 * t.ent, t.ent_tag, t.ent, t.count_tag, 1);
+        ASSERT_THAT(mem.get(), ::testing::NotNull());
+        char* image = static_cast<char*>(mem.get());
+        auto setOffset = [&](int entry, uint64_t r_offset) {
+            Elf64_Rela e;
+            memset(&e, 0, sizeof(e));
+            e.r_offset = r_offset;
+            e.r_info = ELF64_R_INFO(1, GLOB_DAT_TYPE);
+            memcpy(image + DYN_JMPREL_OFF + entry * t.ent, &e, t.ent);
+        };
+        setOffset(0, PLT_SLOT + 2 * sizeof(void*));
+        setOffset(1, PLT_SLOT);
+        // CodeCache keeps the first import of a name, so this fails if entry 0 is not skipped.
+        EXPECT_EQ(parsedPthreadCreateImport(image), reinterpret_cast<void**>(image + PLT_SLOT));
+
+        const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+        auto fingerprint = [&] {
+            return Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+        };
+        const u64 base = fingerprint();
+        EXPECT_NE(base, 0u);
+        setOffset(0, PLT_SLOT + 4 * sizeof(void*));
+        EXPECT_EQ(fingerprint(), base);  // the skipped relative entry is not hashed
+        setOffset(1, PLT_SLOT + 6 * sizeof(void*));
+        EXPECT_NE(fingerprint(), base);  // the entry after the prefix is
+    }
+}
+
+// A DT_RELAENT smaller than an Elf64_Rela on a DT_RELA table is invalid: the table
+// is skipped in the parse and the fingerprint instead of walked at the wrong stride.
+// sizeof(Elf64_Rela) itself is accepted (relativeCountOverflowSkipsWholeTable).
+TEST_F(ElfTest, relaEntrySizeBelowElf64RelaSkipsTable) {
+    if (GLOB_DAT_TYPE == 0) GTEST_SKIP() << "no GLOB_DAT relocation type for this architecture";
+    for (uint64_t relaent : {sizeof(Elf64_Rel), sizeof(Elf64_Rela) - 1}) {
+        SCOPED_TRACE(relaent);
+        auto mem = buildGotImage(DT_RELA, DT_RELASZ, sizeof(Elf64_Rela), DT_RELAENT, relaent,
+                                 DT_RELACOUNT, 0);
+        ASSERT_THAT(mem.get(), ::testing::NotNull());
+        char* image = static_cast<char*>(mem.get());
+        EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
+        auto fp = fingerprintAroundSlotMove(image);
+        EXPECT_NE(fp.first, 0u);
+        EXPECT_EQ(fp.second, fp.first);
+    }
+}
+
+// Without DT_PLTREL, an invalid DT_RELAENT skips the PLT table rather than falling
+// back to DT_RELENT, which would walk 24-byte RELA entries at a 16-byte stride.
+TEST_F(ElfTest, pltFallbackRejectsInvalidRelaent) {
+    auto dyn = pltDyn();
+    dyn.pop_back();  // drop DT_PLTREL
+    dyn.push_back({DT_RELAENT, {sizeof(Elf64_Rel)}});
+    dyn.push_back({DT_RELENT, {sizeof(Elf64_Rel)}});
+    dyn.push_back({DT_NULL, {0}});
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    EXPECT_EQ(parsedPthreadCreateImport(image), nullptr);
+    auto fp = fingerprintAroundSlotMove(image);
+    EXPECT_NE(fp.first, 0u);
+    EXPECT_EQ(fp.second, fp.first);
+}
+
+// Replaces the value of `tag` in `dyn`, or drops it when `value` is 0.
+void setTag(std::vector<Elf64_Dyn>& dyn, int64_t tag, uint64_t value) {
+    dyn.erase(std::remove_if(dyn.begin(), dyn.end(), [&](const Elf64_Dyn& d) { return d.d_tag == tag; }),
+              dyn.end());
+    if (value != 0) dyn.push_back({tag, {value}});
+}
+
+// Replaces `dyn`'s DT_PLTRELSZ with room for two entries `stride` bytes apart (the
+// first without an import) and ends it with DT_NULL; `dyn` must not have one already.
+// With `found`, the parse imports pthread_create from the second entry and the fingerprint
+// follows its r_offset; otherwise the table is walked at another stride and neither does.
+// Call through ASSERT_NO_FATAL_FAILURE: the fatal ASSERT_THAT only leaves this helper.
+void expectPltStride(std::vector<Elf64_Dyn> dyn, uint64_t stride, bool found) {
+    setTag(dyn, DT_PLTRELSZ, 2 * stride);
+    dyn.push_back({DT_NULL, {0}});
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    Elf64_Rela second;
+    memset(&second, 0, sizeof(second));
+    second.r_offset = PLT_SLOT;
+    second.r_info = ELF64_R_INFO(1, 0);
+    memset(image + DYN_JMPREL_OFF, 0, stride);
+    memcpy(image + DYN_JMPREL_OFF + stride, &second, std::min<size_t>(stride, sizeof(second)));
+
+    EXPECT_EQ(parsedPthreadCreateImport(image),
+              found ? reinterpret_cast<void**>(image + PLT_SLOT) : nullptr);
+    const Elf64_Phdr* phdrs = reinterpret_cast<const Elf64_Phdr*>(image + sizeof(Elf64_Ehdr));
+    const u64 before = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+    second.r_offset = PLT_SLOT + 2 * sizeof(void*);
+    memcpy(image + DYN_JMPREL_OFF + stride, &second, std::min<size_t>(stride, sizeof(second)));
+    const u64 after = Symbols::imageFingerprint(phdrs, DYN_NPH, reinterpret_cast<uintptr_t>(image));
+    EXPECT_NE(before, 0u);
+    if (found) EXPECT_NE(after, before);
+    else EXPECT_EQ(after, before);
+}
+
+// DT_PLTREL fixes the DT_JMPREL stride: DT_REL is 16-byte Elf64_Rel, DT_RELA 24-byte.
+// The positive rows prove the selected stride; the others prove a different one misses.
+TEST_F(ElfTest, pltRelSelectsEntryStride) {
+    struct Case { uint64_t pltrel, stride; bool found; };
+    const Case cases[] = {
+        {DT_REL, sizeof(Elf64_Rel), true},
+        {DT_REL, sizeof(Elf64_Rela), false},
+        {DT_RELA, sizeof(Elf64_Rela), true},
+        {DT_RELA, sizeof(Elf64_Rel), false},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(::testing::Message() << "pltrel=" << c.pltrel << " stride=" << c.stride);
+        auto dyn = pltDyn();
+        setTag(dyn, DT_PLTREL, c.pltrel);
+        ASSERT_NO_FATAL_FAILURE(expectPltStride(dyn, c.stride, c.found));
+    }
+}
+
+// A DT_PLTREL that is neither DT_REL nor DT_RELA declares an unknown entry type: the
+// PLT table is skipped, not walked at the DT_RELAENT/DT_RELENT stride.
+TEST_F(ElfTest, pltRelUnknownSkipsTable) {
+    auto dyn = pltDyn();
+    setTag(dyn, DT_PLTREL, 0x1234);
+    setTag(dyn, DT_RELAENT, sizeof(Elf64_Rela));
+    ASSERT_NO_FATAL_FAILURE(expectPltStride(dyn, sizeof(Elf64_Rela), false));
+}
+
+// Without DT_PLTREL the stride is a valid DT_RELAENT (>= sizeof(Elf64_Rela)), else
+// DT_RELENT. 32 differs from every struct size; an invalid DT_RELAENT is covered by
+// pltFallbackRejectsInvalidRelaent.
+TEST_F(ElfTest, pltFallbackStride) {
+    constexpr uint64_t BIG = 32;
+    struct Case { uint64_t relaent, relent, stride; bool found; };
+    const Case cases[] = {
+        {0, BIG, BIG, true},                                   // DT_RELENT alone
+        {0, sizeof(Elf64_Rela), sizeof(Elf64_Rela), true},
+        {0, sizeof(Elf64_Rela), BIG, false},                   // wrong stride misses the entry
+        {BIG, 0, BIG, true},                                   // DT_RELAENT alone
+        {BIG, sizeof(Elf64_Rela), BIG, true},                  // a valid DT_RELAENT wins
+        {sizeof(Elf64_Rela), BIG, sizeof(Elf64_Rela), true},   // DT_RELAENT smaller than DT_RELENT wins
+        {0, sizeof(Elf64_Rel), sizeof(Elf64_Rel), true},       // DT_RELENT alone may be an Elf64_Rel stride
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(::testing::Message() << "relaent=" << c.relaent << " relent=" << c.relent
+                                          << " stride=" << c.stride);
+        auto dyn = pltDyn();
+        setTag(dyn, DT_PLTREL, 0);
+        setTag(dyn, DT_RELAENT, c.relaent);
+        setTag(dyn, DT_RELENT, c.relent);
+        ASSERT_NO_FATAL_FAILURE(expectPltStride(dyn, c.stride, c.found));
+    }
+}
+
+// .dynsym loads without any relocation table or entry-size tag, as in the vDSO.
+TEST_F(ElfTest, dynamicSymbolsWithoutRelocationTags) {
+    constexpr uint64_t HASH_OFF = 0xc00;
+    constexpr uint64_t SYM_VALUE = 0x100;
+    const uint32_t hash[] = {1, 2, 0, 0, 0};  // nbucket, nchain (= symbol count), bucket, chain
+    static_assert(HASH_OFF >= DYN_JMPREL_OFF + sizeof(Elf64_Rela), "hash table overlaps the image data");
+    static_assert(HASH_OFF + sizeof(hash) <= DYN_IMAGE_SIZE, "hash table outside the image");
+    auto mem = buildPltImage({
+        {DT_SYMTAB, {DYN_SYM_OFF}},
+        {DT_STRTAB, {DYN_STR_OFF}},
+        {DT_SYMENT, {sizeof(Elf64_Sym)}},
+        {DT_STRSZ, {sizeof("\0pthread_create")}},
+        {DT_HASH, {HASH_OFF}},
+        {DT_NULL, {0}},
+    });
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+    memcpy(image + HASH_OFF, hash, sizeof(hash));
+    Elf64_Sym sym;
+    memcpy(&sym, image + DYN_SYM_OFF + sizeof(Elf64_Sym), sizeof(sym));
+    sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
+    sym.st_shndx = 1;
+    sym.st_value = SYM_VALUE;
+    sym.st_size = 4;
+    memcpy(image + DYN_SYM_OFF + sizeof(Elf64_Sym), &sym, sizeof(sym));
+
+    CodeCache cc("inmem");
+    ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+    EXPECT_EQ(cc.findSymbol("pthread_create"), static_cast<const void*>(image + SYM_VALUE));
+}
+
+// gABI: the dynamic array ends at the first DT_NULL. Slots after it (patchelf and
+// prelink leave stale ones) must not override real tags.
+TEST_F(ElfTest, dynamicSectionStopsAtDtNull) {
+    auto dyn = pltDyn();
+    dyn.push_back({DT_NULL, {0}});
+    dyn.push_back({DT_PLTRELSZ, {0}});  // stale slot: would disable the PLT table
+    auto mem = buildPltImage(dyn);
+    ASSERT_THAT(mem.get(), ::testing::NotNull());
+    char* image = static_cast<char*>(mem.get());
+
+    CodeCache cc("inmem");
+    ElfParser::parseProgramHeaders(&cc, image, image + DYN_IMAGE_SIZE, /*relocate_dyn=*/false);
+    EXPECT_EQ(cc.peekImport(im_pthread_create), reinterpret_cast<void**>(image + PLT_SLOT));
 }
 
 #endif //__linux__
