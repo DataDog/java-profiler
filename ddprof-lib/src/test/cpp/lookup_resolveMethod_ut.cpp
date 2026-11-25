@@ -926,7 +926,7 @@ TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterCountsEachUnresolvedFra
     EXPECT_EQ(2, header2[0]);
     EXPECT_EQ(1, header2[1]) << "trace 2's root is the <unloaded> Java row";
     EXPECT_EQ(2, header2[2]);
-    // Every written row is marked referenced, so method-map ageing keeps it.
+    // Every written row is marked referenced, so ageing keeps the map rows.
     // resolveMethod() returns the already-filled row and leaves the flag alone.
     EXPECT_TRUE(lookup.resolveMethod(unloaded)->_referenced);
     EXPECT_TRUE(lookup.resolveMethod(unknown)->_referenced);
@@ -953,11 +953,14 @@ TEST_F(LookupResolveMethodJavaFrameTest, StackTraceWriterResolvesTheRootOfAOneFr
     RecordingTestAccessor::writeStackTrace(&buffer, single.get(), &lookup, countFlush, &flushes);
 
     EXPECT_EQ(before.unloaded + 1, Counters::getCounter(METHOD_RESOLVE_FRAMES_UNLOADED));
+    EXPECT_EQ(before.unknown, Counters::getCounter(METHOD_RESOLVE_FRAMES_UNKNOWN));
     EXPECT_EQ(1, flushes);
-    // Header: trace id, truncated flag (set: the root is a non-entry Java row), frame count.
+    // 3 header bytes (trace id, truncated flag, frame count) + 4 frame bytes (key,
+    // line, bci, type), each one byte here; without a resolved root the flag is absent.
+    ASSERT_EQ(7, buffer.offset()) << "the single frame must be resolved as the root";
     const unsigned char* header = reinterpret_cast<const unsigned char*>(buffer.data());
     EXPECT_EQ(4, header[0]);
-    EXPECT_EQ(1, header[1]) << "the single frame must be resolved as the root";
+    EXPECT_EQ(1, header[1]) << "truncated: the root is a non-entry Java row";
     EXPECT_EQ(1, header[2]);
 }
 
