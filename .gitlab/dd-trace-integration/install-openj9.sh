@@ -76,9 +76,9 @@ esac
 export JAVA_HOME="${1:?installation root required}/openj9-${JAVA_VERSION}"
 DOWNLOAD_URL="https://github.com/ibmruntimes/semeru${JAVA_VERSION}-binaries/releases/download/${SEMERU_TAG}/${SEMERU_ARCHIVE}"
 mkdir -p "${JAVA_HOME}"
-# curl --retry skips a body cut off mid-transfer (exit 18, 56) and a 200 with a
-# non-gzip body, so this loop retries both; an HTTP error (22) is final. The
-# subshell keeps the trap and exits out of the caller.
+# curl --retry covers timeouts and HTTP 408/429/5xx, not a body cut off mid-transfer
+# (exit 18, 56) or a 200 with a non-gzip body: retry every outcome but HTTP errors (22).
+# The subshell keeps the trap and exits out of the caller.
 (
   archive=$(mktemp)
   trap 'rm -f "${archive}"' EXIT
