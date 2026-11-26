@@ -431,8 +431,8 @@ void VMStructs::resolveOffsets() {
     if (_cont_entry_return_pc == nullptr && VM::hotspot_version() >= 21) {
         const void** sym = (const void**)_libjvm->findSymbol("_ZN17ContinuationEntry10_return_pcE");
         if (sym != nullptr) {
-            _cont_entry_return_pc_addr = sym;
             _cont_entry_return_pc = *sym;
+            __atomic_store_n(&_cont_entry_return_pc_addr, (address)sym, __ATOMIC_RELEASE);
         }
     }
 
