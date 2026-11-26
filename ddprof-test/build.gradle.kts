@@ -82,10 +82,33 @@ tasks.register("checkCoverageTestFailures") {
   group = "verification"
   description = "Fails if a coverage test task deferred its failures to :ddprof-lib:coverageReport"
   val markers = deferredFailuresDir
+  val resultsDir = layout.buildDirectory.dir("test-results")
+  val filtered = project.hasProperty("tests")
+  val testsPattern = project.findProperty("tests")
+  val coverageTestTasks = tasks.matching { it.name in coverageTaskNames }
   doLast {
     val failed = markers.get().asFile.list()?.sorted().orEmpty()
     if (failed.isNotEmpty()) {
       throw GradleException("Coverage report generated, but tests failed in: ${failed.joinToString()}")
+    }
+    // -Ptests lets either coverage task match nothing, but not both: a typo'd pattern
+    // would otherwise end in a green run with no Java coverage. Skipped tests still count:
+    // a valid pattern whose tests are all gated off on this JVM is not a typo, and a pattern
+    // matching nothing produces no testsuite at all. Counted from the result XML, since jacocoTestReport is skipped (not failed) when no .exec file exists.
+    // Skipped when no coverage test task ran at all (the build died earlier, e.g. in
+    // gtestCoverage): the real error is already reported and "no tests" would mask it.
+    if (filtered && coverageTestTasks.any { it.state.executed && it.state.failure == null }) {
+      fun attr(xml: String, name: String) = Regex("""<testsuite [^>]*\b$name="(\d+)"""").find(xml)?.groupValues?.get(1)?.toInt() ?: 0
+      val ran = coverageTaskNames.sumOf { task ->
+        resultsDir.get().dir(task).asFile.listFiles { f -> f.name.startsWith("TEST-") && f.name.endsWith(".xml") }
+          .orEmpty().sumOf { f ->
+            // The first <testsuite> header sits in the file's first bytes; the rest is captured output.
+            attr(f.inputStream().use { String(it.readNBytes(8192), Charsets.UTF_8) }, "tests")
+          }
+      }
+      if (ran == 0) {
+        throw GradleException("-Ptests=$testsPattern ran no tests in testCoverage or testSlowCoverage")
+      }
     }
   }
 }
@@ -148,6 +171,11 @@ tasks.withType<Test>().named { it in coverageTaskNames }.configureEach {
     environment("JACOCO_CHILD_DIR", childJacocoDir.get().asFile.absolutePath)
     environment("JACOCO_INCLUDES", jacocoIncludes)
   }
+  // -Ptests filters both coverage tasks, and a pattern usually matches tests of only one
+  // (slow or not); an empty match must not stop the build before the reports.
+  if (project.hasProperty("tests")) {
+    filter.isFailOnNoMatchingTests = false
+  }
 }
 
 // On musl the profiler-test plugin creates the test tasks as Exec tasks (running its own
@@ -184,6 +212,8 @@ val cleanLibCoverageData = tasks.register<Delete>("cleanLibCoverageData") {
   // Also clear child JVM JaCoCo data and deferred-failure markers from the previous run.
   delete(fileTree(childJacocoDir) { include("*.exec") })
   delete(deferredFailuresDir)
+  // The musl runner never removes old result XML, which checkCoverageTestFailures counts.
+  coverageTaskNames.forEach { delete(fileTree(layout.buildDirectory.dir("test-results/$it")) { include("TEST-*.xml") }) }
   // Fail on missing coverage tools before wiping the previous run's counts.
   if (enableCoverage) {
     dependsOn(":ddprof-lib:checkCoverageTools")
