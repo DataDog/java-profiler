@@ -76,7 +76,7 @@ esac
 export JAVA_HOME="${1:?installation root required}/openj9-${JAVA_VERSION}"
 DOWNLOAD_URL="https://github.com/ibmruntimes/semeru${JAVA_VERSION}-binaries/releases/download/${SEMERU_TAG}/${SEMERU_ARCHIVE}"
 mkdir -p "${JAVA_HOME}"
-# curl --retry covers timeouts and HTTP 408/429/5xx, not a body cut off mid-transfer
+# curl --retry covers timeouts and HTTP 408/429/500/502-504, not a body cut off mid-transfer
 # (exit 18, 56) or a 200 with a non-gzip body: retry every outcome but HTTP errors (22).
 # The subshell keeps the trap and exits out of the caller.
 (
