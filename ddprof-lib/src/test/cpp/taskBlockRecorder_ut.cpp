@@ -84,6 +84,9 @@ public:
   }
   static FlightRecorder& recorder() { return Profiler::instance()->_jfr; }
   static SpinLock& lock(int stripe) { return Profiler::instance()->_locks[stripe]; }
+  static u64 putTrace(int num_frames, ASGCT_CallFrame* frames) {
+    return Profiler::instance()->_call_trace_storage.put(num_frames, frames, false, 1);
+  }
 };
 
 class FlightRecorderTestAccessor {
@@ -1626,4 +1629,106 @@ TEST_F(TaskBlockRecorderTest, StoppedRegistryFallbackReceiptSurvivesRestart) {
   auto replacement = diagnosticSince(cursor, TaskBlockStage::ENTER_TOKEN_PUBLISHED);
   EXPECT_NE(fresh.words[TaskBlockDiagnosticRecord::LIFECYCLE], replacement.words[TaskBlockDiagnosticRecord::LIFECYCLE]);
   EXPECT_EQ(fresh.words[TaskBlockDiagnosticRecord::TID], replacement.words[TaskBlockDiagnosticRecord::TID]);
+}
+
+namespace {
+int entry_stack_calls = 0;
+jvmtiError JNICALL entryStackTrace(jvmtiEnv*, jthread, jint, jint, jvmtiFrameInfo* frames, jint* count) {
+  entry_stack_calls++;
+  frames[0] = {reinterpret_cast<jmethodID>(0x77), 5};
+  *count = 1;
+  return JVMTI_ERROR_NONE;
+}
+}
+
+// Runs the real recorder so an entry lease replaces, or falls back to, the exit capture.
+class MonitorEntryStackRecordTest : public TaskBlockRecorderOverflowTest {
+protected:
+  static constexpr int kDepth = 4;
+  std::vector<CallTraceBuffer> buffer = std::vector<CallTraceBuffer>(CallTraceBuffer::capacity(kDepth, ALLOCSTACK_JVMTI));
+  jvmtiInterface_1_ table{};
+  jvmtiEnv jvmti{&table};
+  std::unique_ptr<TaskBlockStackState> state;
+  MonitorEntryStacks* stacks = Profiler::instance()->monitorEntryStacks();
+
+  void SetUp() override {
+    TaskBlockRecorderOverflowTest::SetUp();
+    table.GetStackTrace = entryStackTrace;
+    entry_stack_calls = 0;
+    state = std::make_unique<TaskBlockStackState>(&jvmti);
+    ProfilerTestAccessor::exchangeDepth(kDepth);
+    for (int i = 0; i < CONCURRENCY_LEVEL; ++i) ProfilerTestAccessor::exchangeBuffer(i, buffer.data());
+    ASSERT_TRUE(stacks->allocate(kDepth));
+  }
+
+  void TearDown() override {
+    stacks->release();
+    state.reset();
+    TaskBlockRecorderOverflowTest::TearDown();
+  }
+
+  u64 captureAtEntry() {
+    TaskBlockActivity activity;
+    return activity.active() ? Profiler::instance()->captureMonitorEntryStack(nullptr) : 0;
+  }
+
+  bool recordAtExit(const MonitorEntryStackLease* lease) {
+    Context context{};
+    return recordTaskBlockIfEligible(4242, nullptr, 0, 1, minEligibleEndTicks(1), context, 9, 0,
+                                     OSThreadState::MONITOR_WAIT, false, lease);
+  }
+};
+
+TEST_F(MonitorEntryStackRecordTest, EntryFramesReplaceExitCapture) {
+  MonitorEntryStackLease lease(stacks, captureAtEntry());
+  ASSERT_NE(0u, lease.lease());
+  ASSERT_EQ(1, entry_stack_calls);
+  EXPECT_TRUE(recordAtExit(&lease));
+  EXPECT_EQ(1, entry_stack_calls) << "the exit must reuse the entry stack";
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+  auto ready = diagnosticSince(diagnostic_cursor, TaskBlockStage::STACK_READY);
+  // The storage dedups by content, so the same frames resolve to the reused trace id.
+  ASGCT_CallFrame expected{};
+  expected.bci = 5;
+  expected.method_id = reinterpret_cast<jmethodID>(0x77);
+  EXPECT_EQ(ready.words[TaskBlockDiagnosticRecord::DETAIL],
+            ProfilerTestAccessor::putTrace(1, &expected));
+}
+
+TEST_F(MonitorEntryStackRecordTest, ExhaustedPoolFallsBackToExitCaptureAndCounts) {
+  std::vector<u64> held;
+  for (int i = 0; i < MonitorEntryStacks::SLOTS; ++i) held.push_back(stacks->claim(kDepth));
+  MonitorEntryStackLease lease(stacks, captureAtEntry());
+  EXPECT_EQ(0u, lease.lease());
+  EXPECT_EQ(0, entry_stack_calls) << "no slot, no entry walk";
+  EXPECT_TRUE(recordAtExit(&lease));
+  EXPECT_EQ(1, entry_stack_calls);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK));
+  for (u64 h : held) stacks->unclaim(h);
+}
+
+TEST_F(MonitorEntryStackRecordTest, LeaseFromPreviousRecordingFallsBack) {
+  u64 reclaimed = 0;
+  {
+    MonitorEntryStackLease lease(stacks, captureAtEntry());
+    ASSERT_NE(0u, lease.lease());
+    stacks->release();
+    ASSERT_TRUE(stacks->allocate(kDepth));
+    reclaimed = stacks->claim(kDepth);
+    ASSERT_NE(0u, reclaimed);
+    EXPECT_TRUE(recordAtExit(&lease));
+    EXPECT_EQ(2, entry_stack_calls) << "a stale lease must not supply frames";
+    EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK));
+  }
+  EXPECT_EQ(1, stacks->claimedForTest()) << "the stale release must not free the new claim";
+  stacks->unclaim(reclaimed);
+}
+
+TEST_F(MonitorEntryStackRecordTest, UnexpectedProducerDoesNotCountFallback) {
+  MonitorEntryStackLease none(stacks, 0, false);
+  EXPECT_TRUE(recordAtExit(&none));
+  EXPECT_TRUE(recordAtExit(nullptr));
+  EXPECT_EQ(2, entry_stack_calls);
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_MONITOR_ENTRY_CAPTURE_FALLBACK));
 }

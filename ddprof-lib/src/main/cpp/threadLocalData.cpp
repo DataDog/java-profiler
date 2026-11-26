@@ -184,6 +184,8 @@ void ProfiledThread::unclaimAndReset() {
   _task_block_slot = {};
   _monitor_slot = {};
   _block_recording_epoch = 0;
+  // A dropped lease stays claimed until stop() releases the entry stacks.
+  _monitor_entry_stack_lease = 0;
 #if defined(DEBUG) || defined(UNIT_TEST)
   _task_block_diagnostic_origin = {};
 #endif
