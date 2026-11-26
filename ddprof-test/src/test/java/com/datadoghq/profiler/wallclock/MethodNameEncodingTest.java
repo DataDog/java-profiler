@@ -21,7 +21,10 @@ import org.junit.jupiter.api.Test;
  * non-ASCII class file name when the platform file-name encoding is not UTF-8.
  */
 public class MethodNameEncodingTest extends AbstractProfilerTest {
-  private static final String METHOD = "burn𝒜é";
+  // Built from code points: a misread source then fails to compile or fails the frame assertion
+  // below, instead of garbling this constant and the identifier alike and still matching.
+  private static final String METHOD =
+      "burn" + new String(Character.toChars(0x1D49C)) + new String(Character.toChars(0xE9));
   private static final String CLASS = MethodNameEncodingTest.class.getName() + "$Spinner";
 
   static volatile long sink;
