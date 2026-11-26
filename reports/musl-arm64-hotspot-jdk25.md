@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-hotspot-jdk25
 ---
 
-## musl-arm64-hotspot-jdk25 - ✅ PASS
+## musl-arm64-hotspot-jdk25 - ❌ FAIL
 
-**Date:** 2026-11-26 08:19:30 EST
+**Date:** 2026-11-26 08:20:29 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 75 |
-| Sample Rate | 1.25/sec |
-| Health Score | 78% |
-| Threads | 9 |
-| Allocations | 57 |
+| CPU Samples | 249 |
+| Sample Rate | 4.15/sec |
+| Health Score | 259% |
+| Threads | 10 |
+| Allocations | 136 |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 86 |
-| Sample Rate | 1.43/sec |
-| Health Score | 89% |
-| Threads | 14 |
-| Allocations | 74 |
+| Status | FAIL |
+| CPU Samples | 0 |
+| Sample Rate | 0.00/sec |
+| Health Score | 0% |
+| Threads | 0 |
+| Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 28-33 cores)</summary>
+<summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
 
 ```
-1795698880 33
-1795698885 33
-1795698890 33
-1795698895 33
-1795698900 33
-1795698905 33
-1795698910 33
-1795698915 33
-1795698920 33
-1795698925 28
-1795698930 28
-1795698935 28
-1795698940 28
-1795698945 28
-1795698950 28
-1795698955 28
-1795698960 28
-1795698965 28
-1795698970 28
-1795698975 28
+1795698921 33
+1795698926 33
+1795698931 33
+1795698936 33
+1795698941 33
+1795698946 33
+1795698951 33
+1795698956 33
+1795698961 33
+1795698966 33
+1795698971 33
+1795698976 33
+1795698981 33
+1795698986 33
+1795698991 33
+1795698996 33
+1795699001 33
+1795699006 33
+1795699011 33
+1795699016 33
 ```
 </details>
 
