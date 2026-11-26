@@ -67,12 +67,12 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
               Arrays.asList(
                   "-agentpath:"
                       + agentLib.toAbsolutePath()
-                      + "=start,cpu=10ms,jfr,file="
+                      + "=start,cpu=10ms,wall=10ms,filter,jfr,file="
                       + jfr.toAbsolutePath(),
                   "-javaagent:" + javaAgent.toAbsolutePath()),
               agentLib.toAbsolutePath().toString(),
               Collections.emptyMap(),
-              // Startup, the reload, a 500 ms spin and the JFR dump at exit, with a debug library.
+              // Startup, the reload, a spin of up to 10 s and the JFR dump at exit, debug library.
               childTimeoutSeconds(30),
               l -> {
                 if (l.contains("[retransform-done]")) {
@@ -114,7 +114,8 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
       AtomicBoolean sampledAfterReload = new AtomicBoolean();
       JfrEvents.load(
           jfr,
-          "datadog.ExecutionSample"::equals,
+          // CPU or wall-clock samples; a bare filter lets the wall clock sample the main thread.
+          type -> type.equals("datadog.ExecutionSample") || type.equals("datadog.MethodSample"),
           e -> {
             if (e.getStackTraceString().contains("spinAfterReload")) {
               sampledAfterReload.set(true);

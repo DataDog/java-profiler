@@ -402,11 +402,23 @@ public class ExternalLauncher {
     }
   }
 
-  /** Burns CPU for 500 ms; its frame marks samples taken after the reload. */
+  /**
+   * Burns 500 ms of thread CPU time, so a throttled container still gets CPU samples, or 500 ms of
+   * wall time without thread CPU time; 10 s of wall time at most. Its frame marks post-reload
+   * samples.
+   */
   static long spinAfterReload() {
-    long deadline = System.nanoTime() + 500_000_000L;
+    ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+    boolean cpuTime = threads.isCurrentThreadCpuTimeSupported() && threads.isThreadCpuTimeEnabled();
+    long cpuStart = cpuTime ? threads.getCurrentThreadCpuTime() : 0;
+    long start = System.nanoTime();
     long acc = 0;
-    while (System.nanoTime() < deadline) {
+    while (System.nanoTime() - start < 10_000_000_000L) {
+      long spent =
+          cpuTime ? threads.getCurrentThreadCpuTime() - cpuStart : System.nanoTime() - start;
+      if (spent >= 500_000_000L) {
+        break;
+      }
       acc = acc * 31 + System.nanoTime();
     }
     return acc;
