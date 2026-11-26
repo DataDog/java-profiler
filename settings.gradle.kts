@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+
 pluginManagement {
   includeBuild("build-logic")
   val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull

@@ -610,6 +610,12 @@ Java_com_datadoghq_profiler_JavaProfiler_taskBlockSupportedForTest0(
   return Profiler::instance()->taskBlockSupportedForTest(env, thread) ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_platformThreadForTest0(
+    JNIEnv* env, jclass unused, jthread thread) {
+  return JVMSupport::isPlatformThread(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
@@ -624,6 +630,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   u64 span_id = 0, root_span_id = 0;
   ContextApi::get(span_id, root_span_id);
   if (span_id != 0) {
+    Counters::increment(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
   Profiler *profiler = Profiler::instance();
@@ -686,10 +693,17 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
 
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
+    // A traced nested begin must preserve the pending interval for its end.
+    // An abandoned interval is indistinguishable here, so recovery also waits.
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
+
   WallClockBlockTracker *tracker = profiler->blockTracker();
+  // Supersede pending TLS state only after the admission checks above.
+  // Slot/generation checks keep recovery from closing a different run.
+  recoverAbandonedTaskBlock(current, tracker, slot_id);
+
 #if defined(DEBUG) || defined(UNIT_TEST)
   TaskBlockDiagnosticRecord diagnostic{};
   TaskBlockDiagnosticRecord* diagnostic_ptr = &diagnostic;

@@ -16,6 +16,8 @@ or suggested edits on memory files.
 
 # AGENTS.md
 
+<!-- Copyright 2026, Datadog, Inc. -->
+
 This file provides guidance to AI coding assistants when working with code in this
 repository. It is deliberately a thin index: rules that must always be in context live
 here; subsystem details live in `doc/` (start at the [doc/README.md](doc/README.md)
