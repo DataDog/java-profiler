@@ -453,14 +453,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     //     Java callers may remain frozen in a heap StackChunk and be skipped by
     //     this walker, so the sample is marked truncated. That covers Frozen
     //     (return barrier) and Unverified (speculative unknown-nmethod crossing).
-    //   Layout: without exported ContinuationEntry metadata, known boundaries
-    //     use SP, stack arguments and the generated enterSpecial frame size.
-    //     If that metadata is unavailable, Thawed/Unverified use fp as a
-    //     best-effort guess; Frozen fails rather than following an FP link
-    //     that fast thaw does not repair.
+    //   Layout: exported ContinuationEntry metadata is followed when present. Without it,
+    //     known boundaries use SP, stack arguments and enterSpecial's frame size, Frozen
+    //     ones may use the thread's entry, and only unknown Thawed/Unverified guess from fp.
     //
-    // Returns true to continue the walk, false to break.
-    // Interior return-barrier PCs use the thread's entry: thaw has changed SP.
+    // Returns true to continue the walk, false to break. Interior return-barrier
+    // PCs (use_thread_entry) read the thread's entry, because thaw has changed SP.
     auto walkThroughContinuation = [&](ContBoundary kind, bool use_thread_entry = false) -> bool {
         // Crossing the continuation consumes its Java anchor. Replaying that
         // anchor would append frames from below the boundary a second time.
@@ -799,10 +797,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
                 break;
             } else if (nm->isNMethod()) {
-                // enterSpecial is a generated native nmethod that acts as the
-                // continuation entry stub on JDK 27+. It has no JavaCallWrapper, so
-                // isEntryFrame() will not fire for it. Detect it by identity
-                // and navigate to the carrier thread via ContinuationEntry.
+                // enterSpecial is the generated native nmethod that enters a
+                // continuation (JDK 21+). It has no JavaCallWrapper, so isEntryFrame()
+                // misses it: detect it by identity and cross to the carrier.
                 if (!CONT_UNWIND_DISABLED && nm == continuation_entry_nm) {
                     Counters::increment(WALKVM_ENTER_SPECIAL_HIT);
                     if (walkThroughContinuation(CONT_BOUNDARY_AT_ENTER_SPECIAL_NM)) continue;

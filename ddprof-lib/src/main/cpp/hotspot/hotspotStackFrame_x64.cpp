@@ -187,11 +187,9 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
         return ip >= entry + allocated ? words : -1;
     }
 
-    // gen_continuation_enter emits its exception section after the normal
-    // add rsp; pop rbp; ret. That section restores FP, spills the exception
-    // around a resolver call, then moves the return PC into RDX. Its register
-    // sources cannot be represented by this saved-FP/stack-PC layout helper.
-    // Reject it instead of applying the complete frame size to its changing SP.
+    // The exception section after the normal add rsp; pop rbp; ret restores FP and
+    // moves the return PC into RDX around a resolver call. This saved-FP/stack-PC
+    // layout cannot describe it, so reject it rather than apply the full frame size.
     size_t completed = ip - entry;
     if (completed > 1024) return -1;
     unsigned int storage = (words - 2) * sizeof(uintptr_t);
