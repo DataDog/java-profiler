@@ -67,6 +67,15 @@ TEST_F(ContinuationEntryAarch64Test, DecodesProloguePhases) {
     EXPECT_EQ(10, wordsAt(3)); // storage allocated
 }
 
+TEST_F(ContinuationEntryAarch64Test, AcceptsTheLargestFrameSize) {
+    method.words = 256;
+    setup(0);
+    EXPECT_EQ(256, wordsAt(3));
+    method.words = 258;
+    setup(0); // matching storage: only the size bound rejects it
+    EXPECT_EQ(-1, wordsAt(3));
+}
+
 TEST_F(ContinuationEntryAarch64Test, RejectsAPrologueWindowCutOffByTheBlobEnd) {
     cutAfter(27); // four padding words plus stp/mov/sub need 28 bytes from the entry
     EXPECT_EQ(-1, wordsAt(0));

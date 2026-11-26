@@ -112,6 +112,13 @@ TEST_F(ContinuationCarrierFrameTest, RejectsInvalidEntryFrameSizes) {
     }
 }
 
+TEST_F(ContinuationCarrierFrameTest, AcceptsTheLargestEntryFrameSize) {
+    _frame_size = 256;
+    EXPECT_EQ((uintptr_t)&_stack[254], entryMethod()->continuationEntryFP((uintptr_t)_stack, 0));
+    _frame_size = 258;
+    EXPECT_EQ(0u, entryMethod()->continuationEntryFP((uintptr_t)_stack, 0));
+}
+
 TEST_F(ContinuationCarrierFrameTest, RejectsMisalignmentAndAddressOverflow) {
     EXPECT_EQ(0u, entryMethod()->continuationEntryFP((uintptr_t)_stack + sizeof(uintptr_t), 0));
     EXPECT_EQ(0u, entryMethod()->continuationEntryFP(UINTPTR_MAX & ~(uintptr_t)15, 0));

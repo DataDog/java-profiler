@@ -216,7 +216,7 @@ protected:
         BeforeSave, AfterSave, BeforeAllocation, Complete, BeforeSpRestore, AfterDeallocation, AfterRestore, AfterAllocation
     };
     enum class EntryCase {
-        Native, CompiledNonPointerFp, NativeNonPointerFp, BlobNonPointerFp,
+        Native, CompiledNonPointerFp, NativeNonPointerFp, BlobNonPointerFp, SavedFpDiffersFromSampled, NullTruncated,
         InvalidPc, MisalignedSp, OutOfBoundsSp, InvalidFrameSize, ReturnPc, UnsupportedPrologue, ExportedParentEntry, PointerAuthentication,
         ExceptionMove, ExceptionBranch, AuthenticatedExceptionMove, AuthenticatedExceptionBranch,
         ExceptionMoveWithoutBranch, ExceptionBranchWithoutMove, InterpretedEntry, UnsupportedInterpretedEntry,
@@ -557,6 +557,8 @@ protected:
 #endif
         uintptr_t sampled_fp = (uintptr_t)&stack[8];
         if (phase == EntryPhase::AfterSave) sampled_fp = saved_fp;
+        // Two or more words: the carrier FP comes from the saved slot, not the sampled register.
+        if (test_case == EntryCase::SavedFpDiffersFromSampled) sampled_fp = 1;
         if (phase == EntryPhase::BeforeSave || phase == EntryPhase::AfterRestore) {
             sampled_fp = saved_fp;
             stack[8] = 0; // Below sampled SP; may be overwritten by signal delivery.
@@ -660,7 +662,8 @@ protected:
         features.carrier_frames = test_case != EntryCase::BarrierInteriorRoot &&
                 test_case != EntryCase::SampledEntryWithoutCarrierFrames;
         bool truncated = false;
-        int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, &truncated);
+        bool* truncated_out = test_case == EntryCase::NullTruncated ? nullptr : &truncated;
+        int depth = HotspotSupportTestAccessor::walk(&context, frames, features, MAX_DEPTH, truncated_out);
         // A wrapper generated after initialization is published for later walks.
         if (lazy_entry_nm) EXPECT_EQ(reinterpret_cast<VMNMethod*>(&blob.nm), _enter_special_nm);
         if (test_case == EntryCase::SampledEntryWithoutCarrierFrames) {
@@ -745,7 +748,7 @@ protected:
             ASSERT_EQ(BCI_NATIVE_FRAME, frames[0].bci)
                     << (frames[0].bci == BCI_ERROR ? (const char*)frames[0].method_id : "unexpected frame type");
             EXPECT_STREQ("continuation_carrier", (const char*)frames[0].method_id);
-            EXPECT_TRUE(truncated); // a sampled enterSpecial PC may precede thaw
+            if (truncated_out != nullptr) EXPECT_TRUE(truncated); // a sampled enterSpecial PC may precede thaw
         }
     }
 
@@ -1242,6 +1245,14 @@ TEST_F(ContinuationWalkTest, ReturnBarrierDecoderRejectsTruncatedOrUnknownInstru
     EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(code.data(), code.size()));
 }
 
+TEST_F(ContinuationWalkTest, TwoWordEntryPhaseUsesTheSavedFpSlot) {
+    assertCarrierFromEntry(EntryPhase::AfterSave, EntryCase::SavedFpDiffersFromSampled);
+}
+
+TEST_F(ContinuationWalkTest, SampledEntryWalksWithoutATruncationFlag) {
+    assertCarrierFromEntry(EntryPhase::AfterSave, EntryCase::NullTruncated);
+}
+
 TEST_F(ContinuationWalkTest, ReturnBarrierDiscoveryRejectsMissingOrOutOfRangeMetadata) {
     auto code = barrierInstructions();
     EXPECT_EQ(0, discoverBarrierOffset(code.data(), code.size(), sizeof(ThreadLayout)));
@@ -1261,6 +1272,16 @@ TEST_F(ContinuationWalkTest, ReturnBarrierDiscoveryRejectsMissingOrOutOfRangeMet
     code = barrierInstructions();
     EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), sizeof(ThreadLayout)));
 }
+
+#ifdef __x86_64__
+TEST_F(ContinuationWalkTest, ReturnBarrierDiscoveryRejectsAMisalignedOffset) {
+    auto code = barrierInstructions();
+    code[3] = 12; // in range, but not a word-aligned JavaThread field
+    EXPECT_EQ(-1, discoverBarrierOffset(code.data(), code.size(), 32 * sizeof(void*)));
+    code[3] = 16;
+    EXPECT_EQ(16, discoverBarrierOffset(code.data(), code.size(), 32 * sizeof(void*)));
+}
+#endif
 
 TEST_F(ContinuationWalkTest, SampledReturnBarrierRejectsInvalidEntryAndCarrierMetadata) {
     for (BarrierEntryCase test_case : {
