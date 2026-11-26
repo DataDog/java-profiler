@@ -340,6 +340,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     JmpCtxScope jmp_scope(prof_thread);
     // Should be preserved across sigsetjmp/siglongjmp
     volatile int depth = 0;
+    // Set around FrozenStackWalker::append so a fault it recovers still counts as failed.
+    volatile bool frozen_append_active = false;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
     if (sigsetjmp(crash_protection_ctx, 1) != 0) {
@@ -352,6 +354,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (!seeded_from_anchor && depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
         }
+        if (frozen_append_active) Counters::increment(WALKVM_FROZEN_FAILED);
 #ifdef DEBUG
         if (unwindFailures) {
             UnwindStats::recordFailures(unwindFailures);
@@ -491,7 +494,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 const void* frozen_origin =
                         cont_runtime_seen || native_prefix_skipped || !VM::contRuntimeClassifiable()
                                 || java_origin_pc == NULL ? entry_pc : java_origin_pc;
-                if (FrozenStackWalker::append(vm_thread, frozen_origin, continuation_depth, frames, depth, actual_max_depth, details)) {
+                frozen_append_active = true;
+                // Keep append's plain loads between the flag stores, also if it gets inlined.
+                __atomic_signal_fence(__ATOMIC_SEQ_CST);
+                bool appended = FrozenStackWalker::append(vm_thread, frozen_origin, continuation_depth, frames, depth, actual_max_depth, details);
+                __atomic_signal_fence(__ATOMIC_SEQ_CST);
+                frozen_append_active = false;
+                if (appended) {
                     Counters::increment(WALKVM_FROZEN_RECOVERED);
                     if (truncated != nullptr) *truncated = was_truncated;
                 } else {

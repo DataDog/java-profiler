@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 #include <cstddef>
+#include <csetjmp>
+#include <csignal>
 #include <cstring>
 #include <memory>
 #include <sys/mman.h>
@@ -740,6 +742,70 @@ protected:
         EXPECT_LE(depth, CAPACITY);
     }
 
+    // Stands in for the profiler's SIGSEGV handler: it opens the signal scope the
+    // landing pad unwinds, then siglongjmps as Profiler::checkFault does.
+    static void recoverWalkFault(int, siginfo_t*, void*) {
+        ProfiledThread* thread = ProfiledThread::current();
+        if (thread == nullptr || !thread->isProtected()) _exit(3);
+        thread->enterSignalScope();
+        thread->resetCrashHandler();
+        siglongjmp(*thread->getJmpCtx(), 1);
+    }
+
+    // Java leaf and middle frames returning to the barrier, as JavaOriginA, over an
+    // unreadable chunk: append faults after the walk has accepted the boundary.
+    void faultInAppend() {
+        alignas(16) uintptr_t stack[40]{};
+        stack[16 + InterpreterFrame::method_offset] = reinterpret_cast<uintptr_t>(&methods[0]);
+        stack[16 + InterpreterFrame::bcp_offset()] = reinterpret_cast<uintptr_t>(constants[0].bytecode + LEAF_BCI);
+        stack[16] = reinterpret_cast<uintptr_t>(&stack[32]);
+        stack[16 + InterpreterFrame::sender_sp_offset] = reinterpret_cast<uintptr_t>(&stack[20]);
+        stack[16 + FRAME_PC_SLOT] = reinterpret_cast<uintptr_t>(pc(0));
+        stack[32 + InterpreterFrame::method_offset] = reinterpret_cast<uintptr_t>(&methods[1]);
+        stack[32 + InterpreterFrame::bcp_offset()] = reinterpret_cast<uintptr_t>(constants[1].bytecode + MIDDLE_BCI);
+        stack[32 + InterpreterFrame::sender_sp_offset] = reinterpret_cast<uintptr_t>(&stack[36]);
+        stack[32 + FRAME_PC_SLOT] = reinterpret_cast<uintptr_t>(pc(1));
+        thread.entry = &stack[20];
+        thread.anchor = {reinterpret_cast<uintptr_t>(&stack[2]), reinterpret_cast<uintptr_t>(&stack[16]), pc(0)};
+        void* unreadable = mmap(nullptr, 0x1000, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        ASSERT_NE(MAP_FAILED, unreadable);
+        continuation.tail = static_cast<Chunk*>(unreadable);
+        struct sigaction action{}, saved_segv{}, saved_bus{};
+        action.sa_sigaction = recoverWalkFault;
+        action.sa_flags = SA_SIGINFO | SA_NODEFER;
+        sigemptyset(&action.sa_mask);
+        ASSERT_EQ(0, sigaction(SIGSEGV, &action, &saved_segv));
+        ASSERT_EQ(0, sigaction(SIGBUS, &action, &saved_bus));
+
+        ucontext_t context{};
+#ifdef __APPLE__
+        _STRUCT_MCONTEXT64 machine_context{};
+        context.uc_mcontext = &machine_context;
+#endif
+        StackFrame frame(&context);
+        frame.pc() = reinterpret_cast<uintptr_t>(pc(0));
+        frame.sp() = reinterpret_cast<uintptr_t>(&stack[2]);
+        frame.fp() = reinterpret_cast<uintptr_t>(&stack[16]);
+        ASGCT_CallFrame frames[CAPACITY + 1]{};
+        auto recovered = Counters::getCounter(WALKVM_FROZEN_RECOVERED);
+        auto failed = Counters::getCounter(WALKVM_FROZEN_FAILED);
+        auto barrier = Counters::getCounter(WALKVM_CONT_BARRIER_HIT);
+        bool truncated = false;
+        int depth = HotspotSupportTestAccessor::walk(&context, frames, CAPACITY, &truncated);
+        sigaction(SIGSEGV, &saved_segv, nullptr);
+        sigaction(SIGBUS, &saved_bus, nullptr);
+        continuation.tail = chunk.get();
+        munmap(unreadable, 0x1000);
+
+        EXPECT_EQ(barrier + 1, Counters::getCounter(WALKVM_CONT_BARRIER_HIT));
+        EXPECT_EQ(recovered, Counters::getCounter(WALKVM_FROZEN_RECOVERED));
+        EXPECT_EQ(failed + 1, Counters::getCounter(WALKVM_FROZEN_FAILED));
+        EXPECT_TRUE(truncated);
+        ASSERT_GT(depth, 0);
+        EXPECT_EQ(BCI_ERROR, frames[depth - 1].bci);
+        EXPECT_STREQ("break_not_walkable", reinterpret_cast<const char*>(frames[depth - 1].method_id));
+    }
+
 };
 
 // Drives append directly over the configured one-frame chunk: each guard must
@@ -818,6 +884,15 @@ TEST_F(OriginAnchorFrozenTest, AppendGuardsRejectUnsafeStatesAndBoundChunkChains
         EXPECT_TRUE(append(pc(0), 0, CAPACITY));
         EXPECT_EQ(2, depth);
         chunk->parent = nullptr;
+        _exit(::testing::Test::HasFailure() ? 1 : 0);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(OriginAnchorFrozenTest, RecoveredFaultInAppendCountsAsFailed) {
+    ASSERT_EXIT({
+        configure();
+        if (::testing::Test::HasFailure()) _exit(1);
+        faultInAppend();
         _exit(::testing::Test::HasFailure() ? 1 : 0);
     }, ::testing::ExitedWithCode(0), "");
 }

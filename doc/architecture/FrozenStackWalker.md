@@ -87,7 +87,8 @@ trace stays truncated. Carrier recovery has its own validation and can still fai
 after complete Java caller recovery.
 
 Debug counters report successful and failed recovery attempts, interpreted and
-compiled frames, and parent chunks. `walkvm_cont_barrier_hit` establishes that the
+compiled frames, and parent chunks. A fault inside `append` that crash protection
+recovers counts as a failed attempt. `walkvm_cont_barrier_hit` establishes that the
 workload exercised a frozen continuation boundary independently of whether its
 older callers were recovered.
 
@@ -108,7 +109,8 @@ older callers were recovered.
   frozen callers, a freeze/thaw-runtime origin or an anchor-replaced compiled
   frame keeps the rejection, and without an anchor no Java frames are
   manufactured. It also drives `append` directly through its state, origin,
-  nesting, geometry, depth and chunk-chain guards.
+  nesting, geometry, depth and chunk-chain guards, and checks that a fault inside
+  `append` is recovered and counted as a failed attempt.
 - `walkVmAttribution_ut.cpp` checks that freeze/thaw-marked frames keep their
   symbols in walkVM and in the FP/DWARF native-trace conversion.
 - `NestedContinuationTransitionTest` holds real child-publication and child-return
