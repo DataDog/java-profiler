@@ -65,6 +65,55 @@ selinux_enforcing() {
     fi
 }
 
+# Shallow-clone the committed HEAD of PROJECT_ROOT into SOURCE_CLONE_DIR, a self-contained
+# repo the container clones from. A worktree's .git file points at the main repository,
+# which is not mounted in the container.
+clone_source_for_container() {
+    local commit
+    mkdir -p "$PROJECT_ROOT/build"
+    SOURCE_CLONE_DIR=$(mktemp -d "$PROJECT_ROOT/build/container-source.XXXXXX")
+    # mktemp creates 0700 and the umask may be 077, but a container user that is not
+    # the host owner must still read the clone.
+    chmod 755 "$SOURCE_CLONE_DIR"
+    # The container's git (2.34 in the glibc image) cannot read reftable repositories.
+    if ! (umask 022 && env -u GIT_DIR -u GIT_WORK_TREE git -c init.defaultRefFormat=files \
+        -c core.hooksPath=/dev/null clone --quiet --no-checkout --depth 1 "file://$PROJECT_ROOT" "$SOURCE_CLONE_DIR"); then
+        echo "Error: could not clone $PROJECT_ROOT for the container (see git's error above). Clone mode needs a git checkout; use --mount otherwise."
+        exit 1
+    fi
+    if ! commit=$(git -C "$SOURCE_CLONE_DIR" rev-parse --verify --quiet HEAD); then
+        echo "Error: $PROJECT_ROOT has no commit to clone. Commit first, or use --mount."
+        exit 1
+    fi
+    echo ">>> Source commit: $commit"
+}
+
+# Fail early when the runtime cannot show host_dir inside the container: a macOS VM
+# (podman machine, colima) that does not share the path either fails the mount or
+# mounts its own directory of the same name.
+probe_source_mount() {
+    local host_dir=$1 marker=$2 volume_options=$3 output status=0
+    output=$("$CONTAINER_RUNTIME" run --rm $CONTAINER_PLATFORM -v "$host_dir:/probe$volume_options" \
+        "$IMAGE_NAME" test -e "/probe/$marker" 2>&1) || status=$?
+    if [[ $status -eq 0 ]]; then
+        return 0
+    fi
+    if [[ -n "$output" ]]; then
+        echo "$output"
+    fi
+    # test exits 1 when the marker is missing; other codes come from the runtime itself.
+    if [[ $status -eq 1 ]]; then
+        echo "Error: $host_dir is not visible or not readable inside the container ($marker not found)."
+    else
+        echo "Error: $CONTAINER_RUNTIME could not start the probe container for $host_dir (exit $status)."
+    fi
+    echo "On macOS, podman machine and colima share only some host directories with their VM; a checkout outside them must move under a shared directory or get a VM mount."
+    if [[ "${CONTAINER_RUNTIME##*/}" != "podman" ]] && selinux_enforcing; then
+        echo "On this SELinux-enforcing host, the script relabels mounts only for podman; use --container=podman."
+    fi
+    exit 1
+}
+
 # Auto-detect architecture
 detect_arch() {
     local machine
@@ -997,9 +1046,21 @@ echo "Base Image: $BASE_IMAGE_NAME"
 echo "Image:      $IMAGE_NAME"
 echo "=========================="
 
+# Temporary directories, removed on exit. SOURCE_CLONE_DIR is set only in clone mode.
+DOCKERFILE_DIR=""
+SOURCE_CLONE_DIR=""
+cleanup() {
+    rm -rf ${DOCKERFILE_DIR:+"$DOCKERFILE_DIR"} ${SOURCE_CLONE_DIR:+"$SOURCE_CLONE_DIR"}
+}
+trap cleanup EXIT
+
 # Create temporary Dockerfile directory
 DOCKERFILE_DIR=$(mktemp -d)
-trap "rm -rf $DOCKERFILE_DIR" EXIT
+
+# Clone before the image build, so that a checkout clone mode cannot use fails fast.
+if ! $MOUNT_MODE; then
+    clone_source_for_container
+fi
 
 # Copy gradle wrapper for caching
 cp "$PROJECT_ROOT/gradlew" "$DOCKERFILE_DIR/"
@@ -1244,7 +1305,9 @@ if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "gli
 fi
 
 # Build container run command base
-CONTAINER_CMD="$CONTAINER_RUNTIME run --rm"
+# --pids-limit=-1: podman's default of 2048 processes makes the thread-heavy stress tests
+# fail pthread_create with EAGAIN, which aborts the Java suite.
+CONTAINER_CMD="$CONTAINER_RUNTIME run --rm --pids-limit=-1"
 CONTAINER_VOLUME_RW_OPTIONS=""
 CONTAINER_VOLUME_RO_OPTIONS=":ro"
 if [[ "${CONTAINER_RUNTIME##*/}" == "podman" ]] && selinux_enforcing; then
@@ -1265,6 +1328,7 @@ CONTAINER_CMD="$CONTAINER_CMD -e GRADLE_USER_HOME=/gradle-cache"
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
+    probe_source_mount "$PROJECT_ROOT" gradlew "$CONTAINER_VOLUME_RW_OPTIONS"
     CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/workspace${CONTAINER_VOLUME_RW_OPTIONS}"
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
@@ -1279,9 +1343,10 @@ if $MOUNT_MODE; then
     echo ">>> Command: $SHELL_CMD"
     eval "$CONTAINER_CMD /bin/bash -c '$SHELL_CMD'"
 else
-    # Clone mode: shallow clone from mounted local repo for clean builds (default)
-    # Mount the local repo as source, then clone from it to /workspace
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
+    # Clone mode: shallow clone for clean builds (default)
+    # Mount the host-side clone of HEAD as source, then clone from it to /workspace
+    probe_source_mount "$SOURCE_CLONE_DIR" .git/HEAD "$CONTAINER_VOLUME_RO_OPTIONS"
+    CONTAINER_CMD="$CONTAINER_CMD -v \"$SOURCE_CLONE_DIR\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     # Build clone and test command - clone from local mounted source.
@@ -1299,6 +1364,6 @@ else
 
     echo ""
     echo ">>> Running in container (clone mode)..."
-    echo ">>> Cloning from local source to /workspace"
+    echo ">>> Cloning from $SOURCE_CLONE_DIR to /workspace"
     eval "$CONTAINER_CMD /bin/bash -c '$CLONE_CMD'"
 fi
