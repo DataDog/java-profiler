@@ -77,8 +77,8 @@ class JvmSelectionTest(unittest.TestCase):
         self.archive = self.path / "jdk.tar.gz"
         with tarfile.open(self.archive, "w:gz") as archive:
             archive.add(self.jdk, arcname="semeru-jdk")
-        # Requests in order: CURL_FAILURES exit CURL_FAILURE_EXIT (a transfer cut off or stalled),
-        # HTTP_ERRORS answer HTTP_ERROR_CODE, BAD_BODIES answer 200 with an egress error page.
+        # Requests in order: CURL_FAILURES exit CURL_FAILURE_EXIT after CURL_FAILURE_SECONDS (a cut-off
+        # or stalled transfer), HTTP_ERRORS answer HTTP_ERROR_CODE, BAD_BODIES answer a 200 error page.
         self.executable(
             self.bin / "curl",
             'echo "curl $*" >> "$CALLS"\n'
@@ -86,7 +86,9 @@ class JvmSelectionTest(unittest.TestCase):
             'for arg in "$@"; do [ "$prev" = --output ] && out="$arg"; prev="$arg"; done\n'
             '[ -n "$out" ] || { echo "curl stub: --output required" >&2; exit 2; }\n'
             'served=$(grep -c "^curl " "$CALLS")\n'
-            'if [ "$served" -le "${CURL_FAILURES:-0}" ]; then exit "$CURL_FAILURE_EXIT"; fi\n'
+            'if [ "$served" -le "${CURL_FAILURES:-0}" ]; then\n'
+            '  /bin/sleep "${CURL_FAILURE_SECONDS:-0}"; exit "$CURL_FAILURE_EXIT"\n'
+            'fi\n'
             'served=$((served - ${CURL_FAILURES:-0}))\n'
             'if [ "$served" -le "${HTTP_ERRORS:-0}" ]; then\n'
             '  echo "error page" > "$out"; printf %s "$HTTP_ERROR_CODE"; exit 0\n'
@@ -265,6 +267,19 @@ class JvmSelectionTest(unittest.TestCase):
         self.assertEqual(self.curl_urls(), [])
         self.assertFalse((self.path / "installed/openj9-17/bin").exists())
         self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_attempts_share_one_deadline(self):
+        # Each real 2 s stall advances SECONDS by at least 2, so a 7 s budget stops retries before
+        # the fifth attempt; a second attempt runs while the first stall counts under 7 s.
+        result = self.run_cell(SEMERU_DOWNLOAD_BUDGET_SECONDS="7", CURL_FAILURES="5",
+                               CURL_FAILURE_EXIT="28", CURL_FAILURE_SECONDS="2")
+        self.assert_failed(result, "ERROR: Semeru download did not finish within 7 s")
+        max_times = [int(line.split()[line.split().index("--max-time") + 1])
+                     for line in self.calls.read_text().splitlines() if line.startswith("curl ")]
+        self.assertTrue(2 <= len(max_times) < 5, max_times)
+        # A whole-second tick between setting the deadline and the first check makes it 6.
+        self.assertTrue(0 < max_times[0] <= 7, max_times)
+        self.assertTrue(all(later < earlier for earlier, later in zip(max_times, max_times[1:])), max_times)
 
     def test_five_failed_transfers_fail_closed(self):
         result = self.run_cell(CURL_FAILURES="5", CURL_FAILURE_EXIT="28")
