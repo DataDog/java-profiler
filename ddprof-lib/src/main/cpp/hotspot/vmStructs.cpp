@@ -417,7 +417,7 @@ void VMStructs::resolveOffsets() {
         _cont_return_barrier = *(const void**)_cont_return_barrier_addr;
     }
     if (_cont_entry_return_pc_addr != NULL) {
-        _cont_entry_return_pc = *(const void**)_cont_entry_return_pc_addr;
+        __atomic_store_n(&_cont_entry_return_pc, *(const void**)_cont_entry_return_pc_addr, __ATOMIC_RELEASE);
     }
     // Fallback for JDK 21-26: StubRoutines::_cont_returnBarrier and
     // ContinuationEntry::_return_pc are absent from gHotSpotVMStructs before
@@ -431,7 +431,7 @@ void VMStructs::resolveOffsets() {
     if (_cont_entry_return_pc == nullptr && VM::hotspot_version() >= 21) {
         const void** sym = (const void**)_libjvm->findSymbol("_ZN17ContinuationEntry10_return_pcE");
         if (sym != nullptr) {
-            _cont_entry_return_pc = *sym;
+            __atomic_store_n(&_cont_entry_return_pc, *sym, __ATOMIC_RELEASE);
             __atomic_store_n(&_cont_entry_return_pc_addr, (address)sym, __ATOMIC_RELEASE);
         }
     }

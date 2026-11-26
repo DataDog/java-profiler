@@ -613,10 +613,11 @@ class VMStructs {
 
     // Re-reads the JVM's static: the enterSpecial wrapper can be generated after init.
     static const void* contEntryReturnPc() {
-        // Pairs with resolveOffsets()'s release store of a late symbol lookup, which can
-        // run while signals sample.
+        // Acquire loads pair with resolveOffsets()'s release stores: VM::ready can run
+        // it again while an existing profiler instance is active.
         const void** addr = (const void**)__atomic_load_n(&_cont_entry_return_pc_addr, __ATOMIC_ACQUIRE);
-        return addr != nullptr ? __atomic_load_n(addr, __ATOMIC_ACQUIRE) : _cont_entry_return_pc;
+        return addr != nullptr ? __atomic_load_n(addr, __ATOMIC_ACQUIRE)
+                : __atomic_load_n(&_cont_entry_return_pc, __ATOMIC_ACQUIRE);
     }
 
     // True when the bottom VT frame's return PC is cont_entry_return_pc, meaning all
