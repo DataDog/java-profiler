@@ -173,14 +173,9 @@ static bool pc_in_range(uintptr_t pc, const Range* r) {
     return range_valid(r) && pc >= r->start && pc < r->end;
 }
 
-#ifdef __x86_64__
-
-#include <poll.h>
-#include "vmEntry.h"
-
 // Workaround for JDK-8312065 on JDK 8:
 // replace poll() implementation with ppoll() which is restartable
-static int poll_hook(struct pollfd* fds, nfds_t nfds, int timeout) {
+int Symbols::restartablePoll(struct pollfd* fds, nfds_t nfds, int timeout) {
     if (timeout >= 0) {
         struct timespec ts;
         ts.tv_sec = timeout / 1000;
@@ -191,6 +186,10 @@ static int poll_hook(struct pollfd* fds, nfds_t nfds, int timeout) {
     }
 }
 
+#ifdef __x86_64__
+
+#include "vmEntry.h"
+
 static void applyPatch(CodeCache* cc) {
     static bool patch_libnet = VM::hotspot_version() == 8;
 
@@ -199,7 +198,7 @@ static void applyPatch(CodeCache* cc) {
         if (len >= 10 && strcmp(cc->name() + len - 10, "/libnet.so") == 0) {
             UnloadProtection handle(cc);
             if (handle.isValid()) {
-                cc->patchImport(im_poll, (void*)poll_hook);
+                cc->patchImport(im_poll, reinterpret_cast<void*>(Symbols::restartablePoll));
                 patch_libnet = false;
             }
         }
@@ -349,7 +348,7 @@ class ElfParser {
     bool _relocate_dyn;
     ElfHeader* _header;
     const char* _sections;
-    const char* _vaddr_diff;
+    uintptr_t _load_bias;
     const char* _image_end;  // one-past-the-end of the mapped ELF image; bounds file-relative reads
 
     ElfParser(CodeCache* cc, const char* base, const void* addr, size_t image_size, const char* file_name, bool relocate_dyn) {
@@ -358,6 +357,7 @@ class ElfParser {
         _file_name = file_name;
         _relocate_dyn = relocate_dyn;
         _header = (ElfHeader*)addr;
+        _load_bias = 0;
         _image_end = (const char*)addr + image_size;
         // e_shoff sits at a fixed offset inside the header; only compute the pointer
         // when the image is at least header-sized AND e_shoff is within the image,
@@ -451,25 +451,34 @@ class ElfParser {
         return inImage(ph, sizeof(ElfProgramHeader)) ? ph : NULL;
     }
 
-    const char* at(ElfProgramHeader* pheader) {
-        if (_header->e_type == ET_EXEC) {
-            return (const char*)pheader->p_vaddr;
+    const char* addressAt(uint64_t virtual_address, size_t extra_offset = 0) const {
+        if (virtual_address > UINTPTR_MAX) {
+            return NULL;
         }
-        return _vaddr_diff == NULL ? (const char*)pheader->p_vaddr : _vaddr_diff + pheader->p_vaddr;
+        uintptr_t offset = (uintptr_t)virtual_address;
+        if (extra_offset > UINTPTR_MAX - offset) {
+            return NULL;
+        }
+        offset += extra_offset;
+
+        uintptr_t load_bias = _header->e_type == ET_EXEC ? 0 : _load_bias;
+        if (load_bias > UINTPTR_MAX - offset) {
+            return NULL;
+        }
+        return (const char*)(load_bias + offset);
     }
 
-    const char* base() {
-        return _header->e_type == ET_EXEC ? NULL : _vaddr_diff;
+    const char* at(ElfProgramHeader* pheader) {
+        return addressAt(pheader->p_vaddr);
     }
 
     char* dyn_ptr(const ElfDyn* dyn) {
         // GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
         // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
-        if (_relocate_dyn || (_base != NULL && (char*)dyn->d_un.d_ptr < _base)) {
-            return _vaddr_diff == NULL ? (char*)dyn->d_un.d_ptr : (char*)_vaddr_diff + dyn->d_un.d_ptr;
-        } else {
-            return (char*)dyn->d_un.d_ptr;
+        if (_relocate_dyn || (_base != NULL && dyn->d_un.d_ptr < (uintptr_t)_base)) {
+            return (char*)addressAt(dyn->d_un.d_ptr);
         }
+        return dyn->d_un.d_ptr <= UINTPTR_MAX ? (char*)(uintptr_t)dyn->d_un.d_ptr : NULL;
     }
 
     ElfSection* findSection(uint32_t type, const char* name);
@@ -588,25 +597,18 @@ void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char*
 void ElfParser::calcVirtualLoadAddress() {
     // Find a difference between the virtual load address (often zero) and the actual DSO base
     if (_base == NULL) {
-        _vaddr_diff = NULL;
+        _load_bias = 0;
         return;
     }
     for (int i = 0; i < _header->e_phnum; i++) {
         ElfProgramHeader* pheader = phdrAt(i);
         if (pheader != NULL && pheader->p_type == PT_LOAD) {
-            // p_vaddr is an unrelated virtual address, not an offset within the
-            // _base allocation - subtracting it via pointer arithmetic can wrap
-            // to (or through) a null representation, which UBSan flags even
-            // though the resulting bit pattern is only ever used as an offset
-            // to add back later (at()/base()/dyn_ptr() above). Do the
-            // subtraction in integer space and reinterpret, matching this
-            // file's existing "validate in integer space before forming a
-            // pointer" pattern (see phdrAt() above).
-            _vaddr_diff = (const char*)((uintptr_t)_base - (uintptr_t)pheader->p_vaddr);
+            // p_vaddr is an ELF integer address, not an offset into the C++ object at _base.
+            _load_bias = (uintptr_t)_base - (uintptr_t)pheader->p_vaddr;
             return;
         }
     }
-    _vaddr_diff = _base;
+    _load_bias = (uintptr_t)_base;
 }
 
 // DT_RELAENT, or 0 (skip the table) when smaller than an Elf64_Rela: a shorter
@@ -733,11 +735,6 @@ void ElfParser::parseDynamicSection() {
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
-        // base() is NULL for ET_EXEC (non-PIE) images - adding r.r_offset to it
-        // via pointer arithmetic is UB (base + r.r_offset on a null base), even
-        // though the intent is just "sym addresses are already absolute". Do the
-        // addition in integer space, same fix as the .plt case above.
-        uintptr_t base_addr = (uintptr_t)this->base();
         // Records one table's imports after its leading `skip` bytes of relative relocations.
         // The skip guard (callers pass skip <= size) and walking only while a whole entry
         // fits keep offs within the table. only_got_slots keeps GLOB_DAT/ABS64 entries.
@@ -752,13 +749,17 @@ void ElfParser::parseDynamicSection() {
                 if (st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, st_name);
                     if (sym_name != NULL) {
-                        _cc->addImport(reinterpret_cast<void**>(base_addr + r.r_offset), sym_name);
+                        const char* location = addressAt(r.r_offset);
+                        if (location != NULL) {
+                            _cc->addImport(reinterpret_cast<void**>(const_cast<char*>(location)), sym_name);
+                        }
                     }
                 }
             }
         };
 
-        // .rela.plt / .rel.plt
+        // .rela.plt / .rel.plt first: findImport(id) returns the first recorded
+        // slot, which must be the JUMP_SLOT direct calls use.
         addImports(jmprel, pltrelsz, pltEntrySize(pltrel, relent, relaent), 0, false);
         // Imports can also be in .rela.dyn / .rel.dyn, for example if a shared
         // library is built without PLT (-fno-plt). If both tables exist,
@@ -863,12 +864,10 @@ void ElfParser::loadSymbols(bool use_debug) {
             _cc->setPlt(plt->sh_addr, plt->sh_size);
             ElfSection* reltab = findSection(SHT_RELA, ".rela.plt");
             if (reltab != NULL || (reltab = findSection(SHT_REL, ".rel.plt")) != NULL) {
-                // base() is NULL for ET_EXEC (non-PIE) images - adding a non-zero
-                // offset to it via pointer arithmetic is UB even though the intent
-                // is just "no adjustment needed, sh_addr is already absolute".
-                // Compute in integer space and cast once, same fix as
-                // calcVirtualLoadAddress()'s _vaddr_diff computation above.
-                addRelocationSymbols(reltab, (const char*)((uintptr_t)base() + (uintptr_t)plt->sh_addr + PLT_HEADER_SIZE));
+                const char* plt_address = addressAt(plt->sh_addr, PLT_HEADER_SIZE);
+                if (plt_address != NULL) {
+                    addRelocationSymbols(reltab, plt_address);
+                }
             }
         }
     }
@@ -1035,49 +1034,31 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     if (ent_size < sizeof(ElfSymbol)) {
         return;
     }
-    const char* base = this->base();
     // Iterate by a size_t offset rather than incrementing the pointer: a huge
     // attacker-controlled ent_size would otherwise overflow `symbols + ent_size`
     // to a small pointer that still compares <= end, walking off the image. The
     // `ent_size <= total_size - off` form keeps off <= total_size with no overflow.
     for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
-        // The section can start at any crafted file offset, so the entry address
-        // may violate Elf64_Sym's 8-byte alignment; copy the entry instead of
-        // aliasing mapped bytes through a typed pointer.
-        ElfSymbol entry;
-        memcpy(&entry, symbols + off, sizeof(entry));
-        if (entry.st_name != 0 && entry.st_value != 0 && isDefinedInImageSymbol(entry)) {
+        // Section contents are byte-addressed and a malformed sh_offset need not
+        // satisfy ElfSymbol alignment. Copying also keeps every field read within
+        // the sizeof(ElfSymbol) range validated by the loop condition.
+        ElfSymbol sym;
+        memcpy(&sym, symbols + off, sizeof(sym));
+        if (sym.st_name != 0 && sym.st_value != 0 && isDefinedInImageSymbol(sym)) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
             // out of bounds.
-            const char* sym_name = strAt(strings, strings_size, entry.st_name);
+            const char* sym_name = strAt(strings, strings_size, sym.st_name);
             if (sym_name == NULL) {
                 continue;
             }
             // Skip special AArch64 mapping symbols: $x and $d
-            if (entry.st_size != 0 || entry.st_info != 0 || sym_name[0] != '$') {
-                const char* addr;
-                if (base != NULL) {
-                    // Check for overflow when adding entry.st_value to base
-                    uintptr_t base_addr = (uintptr_t)base;
-                    uint64_t symbol_value = entry.st_value;
-                    
-                    // Skip this symbol if addition would overflow
-                    // First check if symbol_value exceeds the address space
-                    if (symbol_value > UINTPTR_MAX) {
-                        continue;
-                    }
-                    // Then check if addition would overflow
-                    if (base_addr > UINTPTR_MAX - (uintptr_t)symbol_value) {
-                        continue;
-                    }
-                    
-                    // Perform addition using integer arithmetic to avoid pointer overflow
-                    addr = (const char*)(base_addr + (uintptr_t)symbol_value);
-                } else {
-                    addr = (const char*)entry.st_value;
+            if (sym.st_size != 0 || sym.st_info != 0 || sym_name[0] != '$') {
+                const char* addr = addressAt(sym.st_value);
+                if (addr == NULL) {
+                    continue;
                 }
-                _cc->add(addr, (int)entry.st_size, sym_name);
+                _cc->add(addr, (int)sym.st_size, sym_name);
             }
         }
     }
@@ -1281,7 +1262,12 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
         if (strchr(lib.file, ':') != NULL) {
             // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
         } else if (strcmp(lib.file, "[vdso]") == 0) {
+            // A sanitizer build can place the VDSO outside its instrumented
+            // application range. Reading that mapping then faults in the
+            // compiler-generated shadow-memory check before the ELF parser runs.
+#if !defined(ASAN_ENABLED) && !defined(TSAN_ENABLED)
             ElfParser::parseProgramHeaders(cc, lib.map_start, lib.map_end, true);
+#endif
         } else if (lib.image_base == NULL) {
             // Unlikely case when image base has not been found: not safe to access program headers.
             // Be careful: executable file is not always ELF, e.g. classes.jsa
@@ -1377,6 +1363,32 @@ UnloadProtection::~UnloadProtection() {
     if (_lib_handle != NULL) {
         dlclose(_lib_handle);
     }
+}
+
+UnloadProtection::UnloadProtection(UnloadProtection&& other) noexcept
+    : _lib_handle(other._lib_handle), _valid(other._valid) {
+    other._lib_handle = NULL;
+    other._valid = false;
+}
+
+UnloadProtection& UnloadProtection::operator=(UnloadProtection&& other) noexcept {
+    if (this != &other) {
+        if (_lib_handle != NULL) {
+            dlclose(_lib_handle);
+        }
+        _lib_handle = other._lib_handle;
+        _valid = other._valid;
+        other._lib_handle = NULL;
+        other._valid = false;
+    }
+    return *this;
+}
+
+void* UnloadProtection::release() {
+    void* handle = _lib_handle;
+    _lib_handle = NULL;
+    _valid = false;
+    return handle;
 }
 
 static u64 fnv1a(const void* data, size_t size, u64 hash) {

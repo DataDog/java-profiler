@@ -11,6 +11,9 @@
 #include "mutex.h"
 
 #include <stdint.h>
+#ifdef __linux__
+#include <poll.h>
+#endif
 
 
 class Symbols {
@@ -32,6 +35,9 @@ class Symbols {
     // Fast range check: does this PC lie in libc or libpthread?
     static bool isLibcOrPthreadAddress(uintptr_t pc);
 #ifdef __linux__
+    // JDK 8 libnet uses ppoll to retain restartable waits under profiling signals.
+    static int restartablePoll(struct pollfd* fds, nfds_t nfds, int timeout);
+
     // Fingerprint of a loaded ELF image: its program header table, its PT_NOTE
     // segments (which carry the GNU build-id, if any) and its import layout,
     // i.e. every dynamic relocation that names a symbol, with the symbol's
@@ -58,9 +64,13 @@ class UnloadProtection {
     UnloadProtection(const CodeCache *cc);
     ~UnloadProtection();
 
+    UnloadProtection(const UnloadProtection& other) = delete;
     UnloadProtection& operator=(const UnloadProtection& other) = delete;
+    UnloadProtection(UnloadProtection&& other) noexcept;
+    UnloadProtection& operator=(UnloadProtection&& other) noexcept;
 
     bool isValid() const { return _valid; }
+    void* release();
 };
 
 #endif // _SYMBOLS_H

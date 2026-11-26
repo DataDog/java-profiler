@@ -18,6 +18,7 @@ package com.datadoghq.profiler.context;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.datadoghq.profiler.CarrierThreadTestSupport;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.Platform;
 import java.io.IOException;
@@ -392,13 +393,7 @@ public class AllNativeContextTest {
         0x2L, 0x1L, 0L, 0x1L, -5, null, -1, null); // negative slots: skip, no throw
   }
 
-  /**
-   * Native writes issued from many mounted virtual threads land on a coherent per-carrier record.
-   * Each vthread writes a unique span and reads it back with no blocking point in between, so it
-   * stays mounted on one carrier for the write+read and must observe exactly its own value. This is
-   * the migration-safe write path: it resolves the current carrier inside the JNI call rather than
-   * caching a carrier-bound buffer.
-   */
+  /** JNI pinning keeps each worker's write, readback and cleanup on the same carrier. */
   @Test
   public void nativeWritesFromVirtualThreadsAreCoherent() throws Exception {
     assumeTrue(Platform.isJavaVersionAtLeast(21), "virtual threads require JDK 21+");
@@ -414,16 +409,19 @@ public class AllNativeContextTest {
       startVirtualThread(
           () -> {
             try {
-              // Write and read back with no yield point in between, so this vthread stays
-              // mounted on one carrier for the whole write+read.
-              profiler.setTraceContext(root, span, 0L, span, SLOT_OP, "vt", -1, null);
-              long got = testGetSpanId();
-              if (got != span) {
-                failures.add("expected span " + span + " but read " + got);
-              }
-              if (!"vt".equals(testReadContextAttribute(SLOT_OP))) {
-                failures.add("attribute mismatch for span " + span);
-              }
+              CarrierThreadTestSupport.runPinned(
+                  () -> {
+                    try {
+                      profiler.setTraceContext(root, span, 0L, span, SLOT_OP, "vt", -1, null);
+                      assertEquals(span, testGetSpanId());
+                      assertEquals(root, testGetRootSpanId());
+                      assertEquals("vt", testReadContextAttribute(SLOT_OP));
+                    } catch (Exception e) {
+                      throw new AssertionError(e);
+                    } finally {
+                      profiler.clearTraceContext();
+                    }
+                  });
             } catch (Throwable t) {
               failures.add("exception: " + t);
             } finally {

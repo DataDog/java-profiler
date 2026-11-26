@@ -214,7 +214,9 @@ Error MallocHooker::initialize() {
             return Error(MallocAdmission::errorMessage(result.verdict.outcome));
         }
         MallocAdmissionInput in;
-        MallocAdmission::readImports(lib, in.current);
+        if (!MallocAdmission::readImports(lib, in.current)) {
+            return Error(MallocAdmission::errorMessage(INDETERMINATE));
+        }
         in.forwarding[0] = (const void*)_orig_malloc;
         in.forwarding[1] = (const void*)_orig_calloc;
         in.forwarding[2] = (const void*)_orig_realloc;
@@ -242,7 +244,7 @@ Error MallocHooker::initialize() {
     // Capture the current slot values read-only: candidate[op] is exactly
     // what the removed SAVE_IMPORT stored, without making the GOT writable.
     const void* current[5][NUM_IMPORT_TYPES];
-    MallocAdmission::readImports(lib, current);
+    bool slots_complete = MallocAdmission::readImports(lib, current);
     const void* candidate[5];
     for (int op = 0; op < 5; op++) candidate[op] = current[op][PRIMARY];
 
@@ -261,6 +263,9 @@ Error MallocHooker::initialize() {
 
     // Admission runs before any _orig_* write: a rejected start leaves every
     // resolver field, the marks and the seed untouched.
+    if (!slots_complete) {
+        return Error(MallocAdmission::errorMessage(INDETERMINATE));
+    }
     MallocAdmissionInput in;
     for (int op = 0; op < 5; op++) {
         for (int type = 0; type < NUM_IMPORT_TYPES; type++) in.current[op][type] = current[op][type];
@@ -353,11 +358,12 @@ void MallocHooker::installHooks() {
     patchLibraries();
 }
 
-// Patch every relocation slot the library has for the import (PRIMARY and
-// SECONDARY), like CodeCache::patchImport(), recording each for restoration.
+// Patch every relocation slot the library has for the import (e.g. a JUMP_SLOT
+// and a GLOB_DAT), like CodeCache::patchImport(), recording each for restoration.
 void MallocHooker::patchImport(CodeCache* cc, ImportId id, void* hook_fn, void* orig_fn) {
-    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
-        patchSlot(cc, cc->findImport(id, static_cast<ImportType>(ty)), hook_fn, orig_fn);
+    size_t count = cc->importCount(id);
+    for (size_t index = 0; index < count; index++) {
+        patchSlot(cc, cc->findImport(id, index), hook_fn, orig_fn);
     }
 }
 

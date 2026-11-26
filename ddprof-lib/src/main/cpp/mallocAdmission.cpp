@@ -76,14 +76,16 @@ const char* outcomeName(AdmissionOutcome outcome) {
 
 } // namespace
 
-void MallocAdmission::readImports(const CodeCache* own, const void* current[5][NUM_IMPORT_TYPES]) {
+bool MallocAdmission::readImports(CodeCache* own, const void* current[5][NUM_IMPORT_TYPES]) {
+    bool complete = true;
     for (int op = 0; op < 5; op++) {
+        if (own->importCount(OPERATION_IMPORTS[op]) > static_cast<size_t>(NUM_IMPORT_TYPES)) complete = false;
         for (int type = 0; type < NUM_IMPORT_TYPES; type++) {
             // Read-only slot access: peekImport never makes the GOT writable
             // and never changes page protection. A missing slot stores NULL;
             // an existing slot is read atomically, since a concurrent start
             // of another engine could still patch it.
-            void** slot = own->peekImport(OPERATION_IMPORTS[op], (ImportType)type);
+            void** slot = own->peekImport(OPERATION_IMPORTS[op], static_cast<size_t>(type));
             if (slot == NULL) {
                 current[op][type] = NULL;
             } else {
@@ -91,6 +93,7 @@ void MallocAdmission::readImports(const CodeCache* own, const void* current[5][N
             }
         }
     }
+    return complete;
 }
 
 void MallocAdmission::missingOwnLibrary(MallocAdmissionResult& out) {

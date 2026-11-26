@@ -10,6 +10,7 @@
 #include "codeCache.h"
 #include "libraryPatcher.h"
 #include "libraryPatcherTestAccessor.h"
+#include "os.h"
 
 #include <memory>
 #include <vector>
@@ -175,7 +176,7 @@ TEST_F(LibraryPatcherPatching, PatchesBothPthreadCreateSlots) {
                 /* imports_patchable */ true);
   lib.addImport(&jump_slot, "pthread_create");
   lib.addImport(&glob_dat, "pthread_create");
-  ASSERT_EQ(&glob_dat, lib.findImport(im_pthread_create, SECONDARY));
+  ASSERT_EQ(2u, lib.importCount(im_pthread_create));
 
   int before = LibraryPatcherTestAccessor::patchedCount();
   LibraryPatcherTestAccessor::patchLibraryUnlocked(&lib);
@@ -183,6 +184,33 @@ TEST_F(LibraryPatcherPatching, PatchesBothPthreadCreateSlots) {
   EXPECT_NE(original, jump_slot);
   EXPECT_EQ(jump_slot, glob_dat);
   EXPECT_EQ(before + 1, LibraryPatcherTestAccessor::patchedCount());
+}
+
+// The persistent sigaction hook patches one slot. With the GLOB_DAT at a lower
+// address than the JUMP_SLOT, it must still take the JUMP_SLOT, or the library's
+// direct sigaction() calls bypass the hook and can displace our SIGSEGV handler.
+TEST_F(LibraryPatcherPatching, SigactionHookPatchesJumpSlotBelowGlobDat) {
+  void* const original = (void*)&fake_original_pthread_create;  // any non-hook value
+  void* slots[2] = {original, original};
+  void** glob_dat = &slots[0];
+  void** jump_slot = &slots[1];
+  CodeCache lib(kUnlinkedPath, -1, kForeignMin, kForeignMax, nullptr,
+                /* imports_patchable */ true);
+  lib.addImport(jump_slot, "sigaction");
+  lib.addImport(glob_dat, "sigaction");
+  const bool was_initialized = LibraryPatcherTestAccessor::initialized();
+  const int before = LibraryPatcherTestAccessor::sigactionCount();
+  LibraryPatcherTestAccessor::setInitialized(true);
+
+  LibraryPatcherTestAccessor::patchSigactionInLibrary(&lib);
+  const int after = LibraryPatcherTestAccessor::sigactionCount();
+  // The slots live in this frame: drop the entry so no later restore reaches them.
+  LibraryPatcherTestAccessor::setSigactionCount(before);
+  LibraryPatcherTestAccessor::setInitialized(was_initialized);
+
+  EXPECT_EQ(before + 1, after);
+  EXPECT_EQ(OS::getSigactionHook(), *jump_slot);
+  EXPECT_EQ(original, *glob_dat);
 }
 
 // With the entry table full, a further library is not recorded, so it is left

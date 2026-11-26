@@ -26,6 +26,10 @@
  */
 
 // Whether an inspected allocation target set admits the start.
+// Import slots admission reads per operation, in CodeCache::peekImport(id, index)
+// order: PRIMARY is the JUMP_SLOT when the library has one.
+enum AdmissionSlot { PRIMARY, SECONDARY, NUM_IMPORT_TYPES };
+
 enum AdmissionOutcome {
     NOT_RECOGNIZED, // no target belongs to a known ddprof image: admit
     DDPROF,         // a target belongs to a recognized ddprof image: reject
@@ -96,10 +100,10 @@ struct MallocAdmissionResult {
 // works on caller-provided arrays.
 class MallocAdmission {
   public:
-    // Fills current[][] from the own library's import slots: _imports[id][type]
-    // for each of the five allocation operations, read-only (no GOT write, no
-    // page-protection change). A missing slot or NULL value stores NULL.
-    static void readImports(const CodeCache* own, const void* current[5][NUM_IMPORT_TYPES]);
+    // Fills current[][] from the own library's first NUM_IMPORT_TYPES import slots
+    // per allocation operation, read-only. A missing slot or NULL value stores NULL.
+    // Returns false when an operation has more slots: callers must reject as INDETERMINATE.
+    static bool readImports(CodeCache* own, const void* current[5][NUM_IMPORT_TYPES]);
 
     // Sets INDETERMINATE/NO_OWN_LIBRARY and clears the target and image counts.
     static void missingOwnLibrary(MallocAdmissionResult& out);

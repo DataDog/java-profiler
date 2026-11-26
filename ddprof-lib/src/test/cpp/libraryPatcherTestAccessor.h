@@ -51,6 +51,14 @@ public:
     }
   }
 
+  static void patchSigactionInLibrary(CodeCache* lib) {
+    LibraryPatcher::patch_sigaction_in_library(lib);
+  }
+  static int sigactionCount() { return LibraryPatcher::_sigaction_size; }
+  static void setSigactionCount(int count) { LibraryPatcher::_sigaction_size = count; }
+  static bool initialized() { return LibraryPatcher::_initialized.load(); }
+  static void setInitialized(bool value) { LibraryPatcher::_initialized.store(value); }
+
   static int maxUnhookedEntries() { return MAX_UNHOOKED_ENTRIES; }
 
   static void* loaderPthreadCreate() { return LibraryPatcher::_loader_pthread_create; }

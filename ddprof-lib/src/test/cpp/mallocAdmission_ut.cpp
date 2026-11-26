@@ -109,6 +109,26 @@ TEST_F(AdmissionsTest, ReadImportsMirrorsCellsAndAbsentSlotsAreNull) {
     EXPECT_EQ(current[4][PRIMARY], nullptr);
 }
 
+TEST_F(AdmissionsTest, ReadImportsReportsSlotsBeyondTheInspectedOnes) {
+    static const char* names[5] = {"malloc", "calloc", "realloc", "posix_memalign", "aligned_alloc"};
+    const void* current[5][NUM_IMPORT_TYPES];
+
+    CodeCache two_slots = makeCache(names, 5);
+    two_slots.addImport(&_cells[0][SECONDARY], "malloc");
+    EXPECT_TRUE(MallocAdmission::readImports(&two_slots, current))
+        << "PRIMARY and SECONDARY cover every malloc slot";
+
+    // A third slot is never read, so a hook stored there would escape the target set.
+    CodeCache three_slots = makeCache(names, 5);
+    three_slots.addImport(&_cells[0][SECONDARY], "malloc");
+    void* third_cell = (void*)&foreignTarget2;
+    three_slots.addImport(&third_cell, "malloc");
+    ASSERT_EQ(three_slots.importCount(im_malloc), 3u);
+    EXPECT_FALSE(MallocAdmission::readImports(&three_slots, current));
+    EXPECT_EQ(current[0][PRIMARY], nullptr);
+    EXPECT_EQ(current[0][SECONDARY], nullptr);
+}
+
 TEST_F(AdmissionsTest, ForeignTargetsAdmitWithPerTargetVerdicts) {
     static const char* names[5] = {"malloc", "calloc", "realloc", "posix_memalign", "aligned_alloc"};
     CodeCache lib = makeCache(names, 2);

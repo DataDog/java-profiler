@@ -102,9 +102,9 @@ On the fresh path (`_initialized == false`), initialization:
    malloc-symbol resolution error.
 2. Calls `resolveMallocSymbols()` so the profiler's own allocator imports are resolved.
    Resolution can call allocation functions; startup is not allocation-free.
-3. Reads the profiler's five allocation imports in PRIMARY and SECONDARY slots with
-   the read-only `CodeCache::peekImport(id, type)` accessor. Missing slots and NULL
-   values remain absent. The candidate forwarding values are the PRIMARY slot values.
+3. Reads the first two slots (PRIMARY, SECONDARY) of the profiler's five allocation
+   imports with the read-only `CodeCache::peekImport(id, index)` accessor. Missing slots
+   and NULL values remain absent; an import with more slots rejects as `INDETERMINATE`. The candidate forwarding values are the PRIMARY slot values.
 4. If the required malloc candidate is NULL, caches `_initialized = true` and returns
    the existing resolution error. This path returns before saving pointers, probing
    nested allocators, marking hooks, seeding the PRNG, or running admission.
@@ -165,8 +165,8 @@ After admission, `MallocTracer::start()` sets `_running = true` **before** patch
 the new library itself.
 
 **`MallocHooker::patchLibraries()`** — writes the hook addresses into the GOT of
-   every native library from index `_patched_libs` on, covering both relocation slots
-   a symbol can have (`findImport(id, PRIMARY/SECONDARY)`), and records each written
+   every native library from index `_patched_libs` on, covering every relocation slot
+   a symbol has (`findImport(id, index)` for each of `importCount(id)`), and records each written
    slot (library, slot address, hook, original pointer) in `_entries` so `stop()` can
    restore it. A slot that cannot be recorded (table full) is left unhooked rather than
    hooked for good. On Linux the patching runs inside a

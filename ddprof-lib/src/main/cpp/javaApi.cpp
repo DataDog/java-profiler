@@ -611,6 +611,10 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
     return JNI_FALSE;
   }
   Profiler *profiler = Profiler::instance();
+  if (JVMSupport::isJvmInternalThread(current, env)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
+    return 0;
+  }
   ThreadFilter *tf = profiler->threadFilter();
   Context context = ContextApi::snapshot();
   ThreadFilter::SlotID slot_id = tf->registryActive() && context.spanId == 0
@@ -712,6 +716,10 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (current == nullptr) {
     return 0;
   }
+  if (JVMSupport::isJvmInternalThread(current, env)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
+    return 0;
+  }
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
     Counters::increment(BLOCK_ENTER_SKIPPED_TRACE_CONTEXT);
@@ -784,6 +792,10 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   Profiler *profiler = Profiler::instance();
   if (current == nullptr || !profiler->isRunning() ||
       !profiler->taskBlockEnabled()) {
+    return 0;
+  }
+  if (JVMSupport::isJvmInternalThread(current, env)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
     return 0;
   }
   ThreadFilter *tf = profiler->threadFilter();
@@ -1573,6 +1585,36 @@ Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_maxPendin
     JNIEnv* env, jclass unused, jint tid) {
   return static_cast<jlong>(pendingUnownedWeightForTest(tid).max_segment);
 }
+
+#ifdef DEBUG
+static WallClockBlockTracker::BlockState* existingWallBlockStateForTest(jint tid) {
+  if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return nullptr;
+  Profiler* profiler = Profiler::instance();
+  ThreadFilter* registry = profiler->threadFilter();
+  ThreadEntry entry{};
+  entry.tid = tid;
+  if (!registry->lookupThreadEntry(entry, registry->recordingEpoch())) return nullptr;
+  return profiler->blockTracker()->slotForId(entry.slot_id);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_hasRegistryEntry0(
+    JNIEnv* env, jclass unused, jint tid) {
+  if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return JNI_FALSE;
+  ThreadFilter* registry = Profiler::instance()->threadFilter();
+  ThreadEntry entry{};
+  entry.tid = tid;
+  return registry->lookupThreadEntry(entry, registry->recordingEpoch()) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_hasActiveOwnedBlock0(
+    JNIEnv* env, jclass unused, jint tid) {
+  WallClockBlockTracker::BlockState* state = existingWallBlockStateForTest(tid);
+  return state != nullptr && state->activeBlockOwner() != BlockRunOwner::NONE
+      ? JNI_TRUE : JNI_FALSE;
+}
+#endif // DEBUG
 
 // LivenessTracker/ReferenceChainTracker test seams. They mutate real tracker
 // state, so they are only implemented in DEBUG builds; release builds get the

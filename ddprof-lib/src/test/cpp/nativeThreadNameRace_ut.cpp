@@ -84,7 +84,7 @@ struct EphemeralThread {
 
     void join() {
         stop.store(true, std::memory_order_release);
-        pthread_join(handle, nullptr);
+        ASSERT_EQ(0, pthread_join(handle, nullptr));
     }
 };
 
