@@ -13,6 +13,14 @@ This module contains JMH-based performance benchmarks for the Java Profiler. The
 
 All benchmarks require the WhiteboxProfiler to be enabled, which starts/stops the profiler between iterations and collects internal metrics.
 
+### Native library
+
+The JMH jar (`build/libs/stresstests.jar`) bundles the release `libjavaProfiler`, through the `release`
+configuration of `:ddprof-lib`. `verifyJmhJarNativeLibs` runs after `jmhJar` and before `jmh` and `runStressTests`. It fails if
+the host platform's directory holds no library, or any platform directory holds more than one, because the
+JVM would then fail to load the profiler or load an arbitrary one. `.debug` files and `.dSYM` bundles are ignored. It counts libraries only, so it does not detect a single
+debug build.
+
 ### Basic JMH Commands
 
 **Run all benchmarks:**
