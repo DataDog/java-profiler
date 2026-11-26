@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-26 10:49:38 EST
+**Date:** 2026-11-26 11:54:35 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 107 |
-| Sample Rate | 1.78/sec |
-| Health Score | 111% |
-| Threads | 11 |
-| Allocations | 65 |
+| CPU Samples | 90 |
+| Sample Rate | 1.50/sec |
+| Health Score | 94% |
+| Threads | 8 |
+| Allocations | 59 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 34 |
-| Sample Rate | 0.57/sec |
-| Health Score | 36% |
-| Threads | 11 |
-| Allocations | 14 |
+| CPU Samples | 20 |
+| Sample Rate | 0.33/sec |
+| Health Score | 21% |
+| Threads | 6 |
+| Allocations | 17 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
+<summary>CPU Timeline (2 unique values: 33-64 cores)</summary>
 
 ```
-1795707873 33
-1795707878 33
-1795707883 33
-1795707888 33
-1795707893 33
-1795707898 33
-1795707903 33
-1795707908 33
-1795707913 33
-1795707918 33
-1795707923 33
-1795707928 33
-1795707933 33
-1795707938 33
-1795707943 33
-1795707948 33
-1795707953 33
-1795707958 33
-1795707963 33
-1795707968 33
+1795711847 33
+1795711852 33
+1795711858 33
+1795711863 33
+1795711868 33
+1795711873 33
+1795711878 33
+1795711883 33
+1795711888 33
+1795711893 33
+1795711898 33
+1795711903 33
+1795711908 33
+1795711913 33
+1795711918 33
+1795711923 33
+1795711928 64
+1795711933 64
+1795711938 33
+1795711943 33
 ```
 </details>
 
