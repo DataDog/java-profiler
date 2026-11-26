@@ -30,6 +30,20 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
   private static final Pattern SHIFT =
       Pattern.compile("VMStructs::resolveOffsets shift entry=(-?\\d+) exit=(-?\\d+)");
 
+  /**
+   * True if entry equals exit and lies in 0..16. An int overflow counts as unstable instead of
+   * killing the stdout reader thread.
+   */
+  private static boolean isStableShift(String entry, String exit) {
+    try {
+      int entryShift = Integer.parseInt(entry);
+      int exitShift = Integer.parseInt(exit);
+      return entryShift == exitShift && exitShift >= 0 && exitShift <= 16;
+    } catch (NumberFormatException e) {
+      return false;
+    }
+  }
+
   @Test
   void reloadWhileSamplingKeepsSegmentShift() throws Exception {
     assumeTrue(
@@ -65,9 +79,7 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
                   Matcher m = SHIFT.matcher(l);
                   if (m.find()) {
                     resolves.incrementAndGet();
-                    int entry = Integer.parseInt(m.group(1));
-                    int exit = Integer.parseInt(m.group(2));
-                    if (entry != exit || exit < 0 || exit > 16) {
+                    if (!isStableShift(m.group(1), m.group(2))) {
                       unstable.add(l);
                     }
                   }
