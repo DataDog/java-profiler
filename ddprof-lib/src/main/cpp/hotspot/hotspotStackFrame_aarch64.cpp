@@ -183,6 +183,7 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
     if (words < 4 || words > 256 || (words & 1) != 0) return -1;
+    if (!nm->contains(pc) || !nm->contains(entry)) return -1;
     if (ip < entry) {
         // The interpreter-only adapter precedes the verified compiled entry.
         // Locate its own enter/setup sequence; the compiled frame-complete
@@ -202,6 +203,8 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
         // MacroAssembler::enter may protect LR before saving FP/LR. Keep the
         // scan bounded, and require the generated save/mov/sub sequence.
         instruction_t* save = entry;
+        // Up to four padding words, then stp/mov/sub: all must lie inside the nmethod.
+        if (!nm->contains(reinterpret_cast<const char*>(entry + 7) - 1)) return -1;
         for (int i = 0; i < 4; i++) {
             if (*save == 0xd503201f || *save == 0xd503245f || // nop, bti c
                 *save == 0xd503231f || *save == 0xd503233f || // paciaz, paciasp
