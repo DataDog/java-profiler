@@ -10,6 +10,7 @@
 #include "jvmThread.h"
 #include "vmEntry.h"
 #include "profiler.h"
+#include "threadLocalData.inline.h"
 #include "gtest_crash_handler.h"
 
 // Regression/contract tests for JVMSupport::initialize() and its callers.
@@ -47,6 +48,8 @@ static JvmSupportGlobalSetup jvm_support_global_setup;
 // ---------------------------------------------------------------------------
 class VMTestAccessor {
 public:
+    static JavaVM* getVm() { return VM::_vm; }
+    static void setVm(JavaVM* vm) { VM::_vm = vm; }
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
     struct Runtime {
@@ -306,6 +309,170 @@ TEST_P(JvmSupportThreadClassificationTest, MissingJni21FunctionFailsClosed) {
     expectMissingJni19FunctionFailsClosed();
 }
 
+namespace {
+
+class JvmInternalThreadClassificationTest : public ::testing::Test {
+protected:
+    inline static const char* signature;
+    inline static jvmtiError current_error;
+    inline static jvmtiError signature_error;
+    inline static bool class_missing;
+    inline static bool current_missing;
+    inline static bool exception_pending;
+    inline static int current_calls, signature_calls, deleted_refs, deallocated, cleared;
+    inline static _jobject thread;
+    inline static _jclass klass;
+    JNINativeInterface_ jni_functions{};
+    jvmtiInterface_1_ jvmti_functions{};
+    JNIEnv jni{&jni_functions};
+    jvmtiEnv jvmti{&jvmti_functions};
+    jvmtiEnv* saved_jvmti;
+    JavaVM* saved_vm;
+    JNIInvokeInterface_ vm_functions{};
+    JavaVM vm{&vm_functions};
+    ProfiledThread* current;
+
+    static jvmtiError JNICALL getCurrentThread(jvmtiEnv*, jthread* result) {
+        current_calls++;
+        *result = current_missing ? nullptr : &thread;
+        return current_error;
+    }
+    static jclass JNICALL getObjectClass(JNIEnv*, jobject) {
+        return class_missing ? nullptr : &klass;
+    }
+    static jvmtiError JNICALL getClassSignature(jvmtiEnv*, jclass, char** result, char**) {
+        signature_calls++;
+        *result = const_cast<char*>(signature);
+        return signature_error;
+    }
+    static jvmtiError JNICALL deallocate(jvmtiEnv*, unsigned char*) {
+        deallocated++;
+        return JVMTI_ERROR_NONE;
+    }
+    static void JNICALL deleteLocalRef(JNIEnv*, jobject) { deleted_refs++; }
+    static jboolean JNICALL exceptionCheck(JNIEnv*) { return exception_pending; }
+    static void JNICALL exceptionClear(JNIEnv*) { cleared++; }
+
+    void SetUp() override {
+        ProfiledThread::initCurrentThread();
+        current = ProfiledThread::current();
+        saved_jvmti = VMTestAccessor::getJvmti();
+        saved_vm = VMTestAccessor::getVm();
+        VMTestAccessor::setJvmti(&jvmti);
+        jni_functions.GetObjectClass = getObjectClass;
+        jni_functions.DeleteLocalRef = deleteLocalRef;
+        jni_functions.ExceptionCheck = exceptionCheck;
+        jni_functions.ExceptionClear = exceptionClear;
+        jvmti_functions.GetCurrentThread = getCurrentThread;
+        jvmti_functions.GetClassSignature = getClassSignature;
+        jvmti_functions.Deallocate = deallocate;
+        signature = "Ljdk/internal/misc/InnocuousThread;";
+        current_error = signature_error = JVMTI_ERROR_NONE;
+        class_missing = current_missing = exception_pending = false;
+        current_calls = signature_calls = deleted_refs = deallocated = cleared = 0;
+    }
+    void TearDown() override {
+        VMTestAccessor::setJvmti(saved_jvmti);
+        VMTestAccessor::setVm(saved_vm);
+        ProfiledThread::release();
+    }
+};
+
+TEST_F(JvmInternalThreadClassificationTest, OwnerLookupCachesInternalAndReleasesBothLocalRefs) {
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni));
+    EXPECT_TRUE(current->isJvmInternalClassified());
+    EXPECT_TRUE(current->isJvmInternalThread());
+    EXPECT_EQ(1, current_calls);
+    EXPECT_EQ(1, signature_calls);
+    EXPECT_EQ(2, deleted_refs);
+    EXPECT_EQ(1, deallocated);
+    signature = "Ljava/lang/Thread;";
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current));
+    EXPECT_EQ(1, signature_calls);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, SuppliedApplicationThreadCachesNegativeWithoutDeletingBorrowedRef) {
+    signature = "Ljava/lang/Thread;";
+    EXPECT_FALSE(JVMSupport::isJvmInternalThread(current, &jni, &thread));
+    EXPECT_TRUE(current->isJvmInternalClassified());
+    EXPECT_EQ(0, current_calls);
+    EXPECT_EQ(1, deleted_refs);
+    EXPECT_EQ(1, deallocated);
+    signature = "Ljdk/internal/misc/InnocuousThread;";
+    EXPECT_FALSE(JVMSupport::isJvmInternalThread(current));
+    EXPECT_EQ(1, signature_calls);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, SignatureFailureDoesNotCacheAndReleasesAllocatedResult) {
+    signature_error = JVMTI_ERROR_INTERNAL;
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+    EXPECT_EQ(2, deleted_refs);
+    EXPECT_EQ(1, deallocated);
+    signature_error = JVMTI_ERROR_NONE;
+    signature = "Ljava/lang/Thread;";
+    EXPECT_FALSE(JVMSupport::isJvmInternalThread(current, &jni));
+    EXPECT_EQ(2, signature_calls);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, NullSignatureDoesNotCache) {
+    signature = nullptr;
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni, &thread));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+    EXPECT_EQ(1, deleted_refs);
+    EXPECT_EQ(0, deallocated);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, MissingClassClearsItsExceptionAndDoesNotCache) {
+    class_missing = exception_pending = true;
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+    EXPECT_EQ(1, cleared);
+    EXPECT_EQ(1, deleted_refs);
+    EXPECT_EQ(0, signature_calls);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, MissingClassWithoutExceptionDoesNotClear) {
+    class_missing = true;
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni, &thread));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+    EXPECT_EQ(0, cleared);
+    EXPECT_EQ(0, deleted_refs);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, FailedCurrentThreadLookupDoesNotCacheOrLeakReturnedRef) {
+    current_error = JVMTI_ERROR_INTERNAL;
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+    EXPECT_EQ(1, deleted_refs);
+    EXPECT_EQ(0, signature_calls);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, NullCurrentThreadDoesNotCacheOrDeleteNullRef) {
+    current_missing = true;
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+    EXPECT_EQ(0, deleted_refs);
+    EXPECT_EQ(0, signature_calls);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, UnavailableJniRejectsWithoutCaching) {
+    vm_functions.GetEnv = [](JavaVM*, void**, jint) -> jint { return JNI_EDETACHED; };
+    VMTestAccessor::setVm(&vm);
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+    EXPECT_EQ(0, current_calls);
+}
+
+TEST_F(JvmInternalThreadClassificationTest, UnavailableJvmtiRejectsWithoutCaching) {
+    VMTestAccessor::setJvmti(nullptr);
+    EXPECT_TRUE(JVMSupport::isJvmInternalThread(current, &jni));
+    EXPECT_FALSE(current->isJvmInternalClassified());
+}
+
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // ProfilerTestAccessor — friend of Profiler, lets tests force the internal
 // state machine to a known value so checkState()/start()/check() can be
@@ -321,9 +488,18 @@ public:
         return p->_state.load(std::memory_order_acquire);
     }
     // The stack walker mode as Profiler::start() resolved it from the arguments.
+    static void syntheticThreadStart() { Profiler::instance()->onThreadStart(nullptr, nullptr, nullptr); }
     static CStack getCStack(Profiler* p) { return p->_cstack; }
     static void setCStack(Profiler* p, CStack c) { p->_cstack = c; }
 };
+
+TEST_F(JvmInternalThreadClassificationTest, SyntheticStartPreservesKnownInternalStatus) {
+    current->setJvmInternalThread(true);
+    ProfilerTestAccessor::syntheticThreadStart();
+    EXPECT_TRUE(current->isJvmInternalClassified());
+    EXPECT_TRUE(current->isJvmInternalThread());
+    EXPECT_EQ(0, signature_calls);
+}
 
 // GetCurrentThread failing is exactly what JVMThread::currentThreadSlow()
 // sees against a JVM that hasn't (yet) attached this thread — it early

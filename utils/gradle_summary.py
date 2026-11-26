@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run Gradle with retained output and deterministic, non-LLM summary reports."""
 
+import ctypes
 import datetime
 import json
 import os
@@ -99,6 +100,43 @@ def signal_process_group(group, sig):
                 raise
 
 
+def adopt_gradle_descendants(args):
+    """Own detached single-use daemons on Linux, not just the launcher session."""
+    if sys.platform != "linux" or "--no-daemon" not in args:
+        return False
+    libc = ctypes.CDLL(None, use_errno=True)
+    # PR_SET_CHILD_SUBREAPER: orphaned descendants reparent here rather than PID 1.
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "cannot own Gradle descendant processes")
+    return True
+
+
+def reap_adopted_children():
+    """Terminate and reap only children adopted by this wrapper's subreaper."""
+    children_file = Path("/proc/self/task") / str(os.getpid()) / "children"
+    started = time.monotonic()
+    signalled = set()
+    while True:
+        while True:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return
+            if pid == 0:
+                break
+        children = [int(pid) for pid in children_file.read_text().split()]
+        for pid in children:
+            sig = signal.SIGKILL if time.monotonic() - started >= 10 else signal.SIGTERM
+            if (pid, sig) not in signalled:
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    # The adopted child can exit between the snapshot and kill().
+                    pass
+                signalled.add((pid, sig))
+        time.sleep(0.02)
+
+
 def main(args):
     """Own the Gradle process group, preserve its exit status, and report even on failure."""
     for directory in ("build/logs", "build/reports/claude", ".claude/out"):
@@ -112,6 +150,8 @@ def main(args):
     started = time.monotonic()
     child = None
     timer = None
+    descendant_reaper = None
+    cleanup_errors = []
     interrupted = None
 
     def kill_group(sig):
@@ -134,8 +174,22 @@ def main(args):
     try:
         with os.fdopen(os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
             stage = "Gradle launcher"
+            subreaper = adopt_gradle_descendants(args)
             child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      start_new_session=True, text=True, errors="replace", bufsize=1)
+            if subreaper:
+                # A detached daemon may retain stdout after the launcher exits.
+                # Reap then, not after waiting for that inherited pipe's EOF.
+                def reap_after_launcher():
+                    try:
+                        child.wait()
+                        kill_group(signal.SIGKILL)
+                        reap_adopted_children()
+                    except OSError as error:
+                        cleanup_errors.append(error)
+
+                descendant_reaper = threading.Thread(target=reap_after_launcher)
+                descendant_reaper.start()
             if interrupted is not None:
                 kill_group(signal.SIGTERM)
             stream = iter(child.stdout)
@@ -176,6 +230,11 @@ def main(args):
                     finally:
                         child.wait()
         finally:
+            if descendant_reaper is not None:
+                descendant_reaper.join()
+            for error in cleanup_errors:
+                print("Descendant cleanup failed: {}".format(error), file=sys.stderr)
+                status = status or 1
             if timer is not None:
                 timer.cancel()
             for sig, handler in previous.items():

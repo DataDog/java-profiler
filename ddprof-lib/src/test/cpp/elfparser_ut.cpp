@@ -169,6 +169,22 @@ TEST_F(ElfReladyn, resolveFromRela_dyn_R_ABS64) {
     ASSERT_THAT(sym, ::testing::NotNull());
 }
 
+TEST_F(ElfReladyn, resolvesEveryLocationForTheSameImport) {
+    ASSERT_EQ(3u, libreladyn()->importCount(im_read));
+
+    void** first = libreladyn()->findImport(im_read, 0);
+    void** second = libreladyn()->findImport(im_read, 1);
+    void** third = libreladyn()->findImport(im_read, 2);
+
+    ASSERT_THAT(first, ::testing::NotNull());
+    ASSERT_THAT(second, ::testing::NotNull());
+    ASSERT_THAT(third, ::testing::NotNull());
+    EXPECT_NE(first, second);
+    EXPECT_NE(first, third);
+    EXPECT_NE(second, third);
+    EXPECT_THAT(libreladyn()->findImport(im_read, 3), ::testing::IsNull());
+}
+
 class ElfTest : public ::testing::Test {
 protected:
     void SetUp() override {

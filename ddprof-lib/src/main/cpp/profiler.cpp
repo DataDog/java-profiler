@@ -11,6 +11,7 @@
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
+#include "nativeSocketInterposer.h"
 #include "context.h"
 #include "guards.h"
 #include "common.h"
@@ -106,6 +107,9 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   current->setJavaThread(true);
+  if (thread != nullptr && jvmti != nullptr && jni != nullptr) {
+    JVMSupport::isJvmInternalThread(current, jni, thread);
+  }
   int tid = current->tid();
   // Context-filtered recordings pre-register Java threads. Unfiltered wall
   // tracking binds lazily in context/block/park hooks, so an idle thread that
@@ -2843,6 +2847,10 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     setTaskBlockEnabled(
         (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
+    if (taskBlockEnabled()) {
+      Error native_io_error = NativeSocketInterposer::instance()->start();
+      if (native_io_error) Log::warn("%s", native_io_error.message());
+    }
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     // What the recording allocated on top of "before start".
@@ -2973,6 +2981,7 @@ Error Profiler::stop() {
   // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
+  NativeSocketInterposer::instance()->stop();
   // The refresher also re-installs malloc hooks (MallocTracer::installHooks()).
   if (_activated_mask & EM_NATIVEMEM) {
     malloc_tracer.stop();

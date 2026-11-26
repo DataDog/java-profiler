@@ -5,12 +5,20 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import com.datadoghq.profiler.NativeBuildConfig;
+
 /**
  * Read-only observations of the existing worker slot, without seeding state or allocating identity.
- * Works in every build.
+ * The tid and pending-weight reads work in every build; the registry and owned-block observations
+ * are DEBUG-only.
  */
 final class WallClockBlockTrackerTestSupport {
   private WallClockBlockTrackerTestSupport() {}
+
+  /** Whether the DEBUG-only registry and owned-block observations are compiled in. */
+  static boolean available() {
+    return NativeBuildConfig.isDebugInstrumented();
+  }
 
   static int currentTid() {
     return currentTid0();
@@ -27,6 +35,19 @@ final class WallClockBlockTrackerTestSupport {
   }
 
   private static native long maxPendingUnownedSegmentWeight0(int tid);
+
+  /** Observes the target native thread's existing registry entry; false in release. */
+  static boolean hasRegistryEntry(int tid) {
+    return available() && hasRegistryEntry0(tid);
+  }
+
+  private static native boolean hasRegistryEntry0(int tid);
+
+  static boolean hasActiveOwnedBlock(int tid) {
+    return available() && hasActiveOwnedBlock0(tid);
+  }
+
+  private static native boolean hasActiveOwnedBlock0(int tid);
 
   private static native int currentTid0();
 

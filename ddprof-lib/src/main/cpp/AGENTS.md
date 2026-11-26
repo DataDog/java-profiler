@@ -17,6 +17,7 @@ before working on a subsystem.
 | Profiling engines (CPU, monotonic wall-clock cadence, allocation, native memory, liveness; prechecks preserve reservoir selections in epoch accounting; timer TID metadata lookup is capped at 256 probes and fails open to ordinary signals; lazy wall-block backing survives recording resets; unowned teardown tails retain slot custody until written, and stop counts the weight of the ones it cannot write as dropped; token-owned completed-at-exit TaskBlocks exclude virtual threads; allocation/liveness stack capture via `allocstack`, with JVMTI retry for unsafe frames, depth-limit truncation and separate verification scratch) | [doc/architecture/ProfilingEngines.md](/doc/architecture/ProfilingEngines.md) |
 | JFR integration (FlightRecorder, metadata, constant pools, buffers; bounded DEBUG TaskBlock transition receipts survive recording teardown; wall epochs settle before chunk seals; retained tails carry originating metadata across dumps; stop archives full thread tables before bounded tail-admission retries; output quarantine retains custody and stops producers in non-restartable ERROR) | [doc/architecture/JfrIntegration.md](/doc/architecture/JfrIntegration.md) |
 | Live-heap reference chains (implementation, leak-signal gate, scheduling, design) | [doc/architecture/LiveHeapReferenceChainsImplementation.md](/doc/architecture/LiveHeapReferenceChainsImplementation.md), [doc/architecture/ReferenceChainsSignalsExplained.md](/doc/architecture/ReferenceChainsSignalsExplained.md), [doc/ReferenceChainsDesign.md](/doc/ReferenceChainsDesign.md), [doc/ReferenceChainsCollectionSummary.md](/doc/ReferenceChainsCollectionSummary.md) |
+| Native I/O hooks (shared-owner JDK import patches, FD classification, exiting-thread timeout-probe bypass, cancellation-safe cleanup and synchronous physical-thread IO_WAIT TaskBlocks) | [doc/architecture/NativeIoHooks.md](/doc/architecture/NativeIoHooks.md) |
 | Native memory profiling (malloc interception installed per recording and restored on stop; startup admission check for conflicting native-memory profilers; reuse-aware exit admission; sampling) | [doc/architecture/NativeMemoryProfiling.md](/doc/architecture/NativeMemoryProfiling.md) |
 | glibc malloc arena warning (lock-free arena walk, per-chunk rule, `MallocArenaWarning`/`MallocArenaStats` events, `arenawarn`) | [doc/architecture/MallocArenaWarning.md](/doc/architecture/MallocArenaWarning.md) |
 | Startup sanity checks | [doc/architecture/SanityChecks.md](/doc/architecture/SanityChecks.md) |
@@ -202,6 +203,11 @@ See [CallTraceStorage](/doc/architecture/CallTraceStorage.md#reusable-unowned-wa
 **Context-window membership.** Owner TLS is the logical source; registry slots are recording projections.
 Only owner-side entry/exit changes membership; signals and timers do not walk remote TLS.
 See [TLSContext](/doc/architecture/TLSContext.md#context-window-membership).
+
+**Native I/O hooks.** Installed patches do not imply either owner is active. When both
+owners disable, entered stream hooks forward without classification, clock reads or block scopes.
+FD revalidation publishes only against the pre-probe epoch/incarnation; transient failures are not cached.
+See [NativeIoHooks](/doc/architecture/NativeIoHooks.md).
 
 **Paired TaskBlock intervals.** Run begin admission checks before discarding a pending interval.
 Recovery emits no event and closes only the token's matching current slot and generation.

@@ -5,6 +5,14 @@
 
 #include <gtest/gtest.h>
 #include "codeCache.h"
+#ifdef __linux__
+#include "libraries.h"
+#include "nativeTestResources_linux.h"
+#include <dlfcn.h>
+#endif
+
+#include <atomic>
+#include <thread>
 
 #include <memory>
 #include <stdio.h>
@@ -229,3 +237,137 @@ TEST(CodeCacheTest, CommitAddTakesOwnership) {
     EXPECT_EQ(nullptr, prepared.grown);
     EXPECT_EQ(reinterpret_cast<const void *>(0x1000), cc.findSymbol("owned"));
 }
+
+TEST(CodeCacheTest, PeekImportFinalizesVariableCountLayoutWithoutWritingMappings) {
+    CodeCache cache("non-writing-imports");
+    void** read_slot = reinterpret_cast<void**>(1);
+    void** second_read_slot = reinterpret_cast<void**>(2);
+    void** recv_slot = reinterpret_cast<void**>(3);
+    cache.addImport(recv_slot, "recv");
+    cache.addImport(second_read_slot, "read");
+    cache.addImport(read_slot, "read");
+    cache.addImport(read_slot, "read");
+
+    EXPECT_EQ(second_read_slot, cache.peekImport(im_read));
+    EXPECT_EQ(2u, cache.importCount(im_read));
+    EXPECT_EQ(recv_slot, cache.peekImport(im_recv));
+    EXPECT_EQ(nullptr, cache.peekImport(im_sigaction));
+    // Negative values are outside ImportId's C++ enum domain; use a valid upper outlier.
+    EXPECT_EQ(nullptr, cache.peekImport(static_cast<ImportId>(NUM_IMPORTS + 1)));
+    EXPECT_EQ(nullptr, cache.peekImport(NUM_IMPORTS));
+}
+
+// ElfParser records the .rela.plt JUMP_SLOT before a .rela.dyn GLOB_DAT that can sit
+// at a lower address. Single-slot callers (the sigaction hook, the J9 dlopen trap)
+// patch index 0, so it must be the JUMP_SLOT that direct calls go through.
+TEST(CodeCacheTest, FirstImportSlotIsFirstRecordedNotLowestAddress) {
+    void* slots[2] = {};
+    void** glob_dat = &slots[0];
+    void** jump_slot = &slots[1];
+    CodeCache cache("call-slot-first", -1, NO_MIN_ADDRESS, NO_MAX_ADDRESS, nullptr,
+                    /* imports_patchable */ true);
+    cache.addImport(jump_slot, "sigaction");
+    cache.addImport(glob_dat, "sigaction");
+
+    ASSERT_EQ(2u, cache.importCount(im_sigaction));
+    EXPECT_EQ(jump_slot, cache.findImport(im_sigaction));
+    EXPECT_EQ(glob_dat, cache.findImport(im_sigaction, 1));
+    EXPECT_EQ(jump_slot, cache.peekImport(im_sigaction));
+}
+
+// A duplicate recording must not move a slot ahead of one recorded between the two,
+// and a slot recorded after finalization goes last.
+TEST(CodeCacheTest, ImportOrderSurvivesDuplicatesAndLateRecording) {
+    void* slots[3] = {};
+    CodeCache cache("ordered-imports", -1, NO_MIN_ADDRESS, NO_MAX_ADDRESS, nullptr,
+                    /* imports_patchable */ true);
+    cache.addImport(&slots[2], "dlopen");
+    cache.addImport(&slots[1], "dlopen");
+    cache.addImport(&slots[2], "dlopen");
+    ASSERT_EQ(2u, cache.importCount(im_dlopen));
+    EXPECT_EQ(&slots[2], cache.findImport(im_dlopen, 0));
+    EXPECT_EQ(&slots[1], cache.findImport(im_dlopen, 1));
+
+    cache.addImport(&slots[0], "dlopen");
+    ASSERT_EQ(3u, cache.importCount(im_dlopen));
+    EXPECT_EQ(&slots[2], cache.findImport(im_dlopen, 0));
+    EXPECT_EQ(&slots[1], cache.findImport(im_dlopen, 1));
+    EXPECT_EQ(&slots[0], cache.findImport(im_dlopen, 2));
+}
+
+// An allocation failure while recording a slot must mark that import incomplete, so
+// that patchers skip it, without affecting imports recorded afterwards.
+TEST(CodeCacheTest, FailedImportGrowthMarksOnlyThatImportIncomplete) {
+    CodeCache cache("import-growth-failure");
+    void** recv_slot = reinterpret_cast<void**>(1);
+    void** read_slot = reinterpret_cast<void**>(2);
+    cache.failImportGrowthForTest(true);
+    cache.addImport(recv_slot, "recv");
+    cache.failImportGrowthForTest(false);
+    cache.addImport(read_slot, "read");
+
+    EXPECT_FALSE(cache.importsComplete(im_recv));
+    EXPECT_EQ(0u, cache.importCount(im_recv));
+    EXPECT_TRUE(cache.importsComplete(im_read));
+    ASSERT_EQ(1u, cache.importCount(im_read));
+    EXPECT_EQ(read_slot, cache.peekImport(im_read));
+}
+
+TEST(CodeCacheTest, PublishedImportsPreserveLookupAndDeduplication) {
+    CodeCache cache("published-imports");
+    void** read_slot = reinterpret_cast<void**>(1);
+    void** recv_slot = reinterpret_cast<void**>(2);
+    cache.addImport(recv_slot, "recv");
+    cache.addImport(read_slot, "read");
+    cache.addImport(recv_slot, "recv");
+    cache.markPublished();
+
+    EXPECT_EQ(read_slot, cache.peekImport(im_read));
+    EXPECT_EQ(recv_slot, cache.peekImport(im_recv));
+    EXPECT_EQ(1u, cache.importCount(im_read));
+    EXPECT_EQ(1u, cache.importCount(im_recv));
+}
+
+#ifdef __linux__
+TEST(CodeCacheTest, ConcurrentImportLookupAndReprotectionUseIndependentWriterDomains) {
+    char path[PATH_MAX];
+    ASSERT_TRUE(nativeTestResourcePath("patch-target-lib/libpatchtarget.so", path, sizeof(path)));
+    void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    ASSERT_NE(nullptr, handle) << dlerror();
+    void* symbol = dlsym(handle, "patch_target_write");
+    ASSERT_NE(nullptr, symbol);
+    Libraries::instance()->updateSymbols(false);
+    CodeCache* cache = Libraries::instance()->findLibraryByAddress(symbol);
+    ASSERT_NE(nullptr, cache);
+    void** slot = cache->findImport(im_write);
+    ASSERT_NE(nullptr, slot);
+    void* original = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+    std::atomic<bool> start{false};
+    std::atomic<bool> lookup_ok{true};
+    std::atomic<bool> reprotect_ok{true};
+    std::thread lookup([&]() {
+        while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (int i = 0; i < 2000; i++) {
+            if (cache->findImport(im_write) != slot ||
+                __atomic_load_n(slot, __ATOMIC_ACQUIRE) != original) {
+                lookup_ok.store(false, std::memory_order_release);
+            }
+        }
+    });
+    std::thread reprotect([&]() {
+        while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (int i = 0; i < 2000; i++) {
+            if (!cache->makeImportsWritable()) {
+                reprotect_ok.store(false, std::memory_order_release);
+            }
+        }
+    });
+    start.store(true, std::memory_order_release);
+    lookup.join();
+    reprotect.join();
+    EXPECT_TRUE(lookup_ok.load(std::memory_order_acquire));
+    EXPECT_TRUE(reprotect_ok.load(std::memory_order_acquire));
+    EXPECT_EQ(original, __atomic_load_n(slot, __ATOMIC_ACQUIRE));
+    EXPECT_EQ(0, dlclose(handle));
+}
+#endif
