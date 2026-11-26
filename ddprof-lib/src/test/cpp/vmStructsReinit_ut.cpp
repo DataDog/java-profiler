@@ -140,10 +140,10 @@ protected:
         VMStructs::init(&symbols);
     }
 
-    // resolveOffsets() asserts HotSpot; JDK 17 skips the JDK 21+ symbol fallbacks.
-    void resolve() {
+    // resolveOffsets() asserts HotSpot; versions below 21 skip the JDK 21+ symbol fallbacks.
+    void resolve(int hotspot_version = 17) {
         VMTestAccessor::setHotspot(true);
-        VMTestAccessor::setHotspotVersion(17);
+        VMTestAccessor::setHotspotVersion(hotspot_version);
         resolveOffsets();
         VMTestAccessor::setHotspot(false);
         VMTestAccessor::setHotspotVersion(-1);
@@ -290,13 +290,25 @@ TEST_F(VMStructsReinitTest, ResolveRejectsInvalidShift) {
     }
 }
 
-TEST_F(VMStructsReinitTest, ResolveWithoutHeapsLeavesShiftUnset) {
+TEST_F(VMStructsReinitTest, SegmentedAgentLoadThenVmInit) {
+    // Agent_OnLoad: CodeCache::_heaps exists but is empty and the bounds are null.
     heaps.len = 0;
+    heap.log2_segment_size = 6;
     init(segmentedRows());
     resolve();
+    ASSERT_EQ(nullptr, _code_heap[0]);
+    ASSERT_EQ(-1, _code_heap_segment_shift);
+    EXPECT_EQ(NO_MIN_ADDRESS, _code_heap_low);
 
-    EXPECT_EQ(nullptr, _code_heap[0]);
-    EXPECT_EQ(-1, _code_heap_segment_shift);
+    // VMInit: the heaps and bounds are set up.
+    heaps.len = 1;
+    low_bound = code;
+    high_bound = code + sizeof(code);
+    resolve();
+    EXPECT_EQ(reinterpret_cast<char*>(&heap), _code_heap[0]);
+    EXPECT_EQ(6, _code_heap_segment_shift);
+    EXPECT_EQ(static_cast<const void*>(code), _code_heap_low);
+    EXPECT_EQ(static_cast<const void*>(code + sizeof(code)), _code_heap_high);
 }
 
 TEST_F(VMStructsReinitTest, ResolveWithoutSegmentSizeRowDisablesHeap) {
@@ -313,7 +325,7 @@ TEST_F(VMStructsReinitTest, ResolveWithoutSegmentSizeRowDisablesHeap) {
 TEST_F(VMStructsReinitTest, Jdk8AgentLoadThenVmInit) {
     // Agent_OnLoad: the CodeHeap object exists but is not initialized yet.
     init(jdk8Rows());
-    resolve();
+    resolve(8);
     ASSERT_EQ(0, _code_heap_segment_shift);
     EXPECT_EQ(NO_MIN_ADDRESS, _code_heap_low) << "null JVM bounds must not be published";
     EXPECT_EQ(NO_MAX_ADDRESS, _code_heap_high);
@@ -321,7 +333,7 @@ TEST_F(VMStructsReinitTest, Jdk8AgentLoadThenVmInit) {
     // VMInit: the heap is reserved.
     heap.log2_segment_size = 6;
     heap.memory = {code, code + sizeof(code)};
-    resolve();
+    resolve(8);
     EXPECT_EQ(6, _code_heap_segment_shift);
     EXPECT_EQ(static_cast<const void*>(code), _code_heap_low);
     EXPECT_EQ(static_cast<const void*>(code + sizeof(code)), _code_heap_high);

@@ -66,6 +66,9 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
                       + "=start,cpu=10ms,jfr,file="
                       + jfr.toAbsolutePath()),
               agentLib.toAbsolutePath().toString(),
+              Collections.emptyMap(),
+              // Startup, the reload, a 500 ms spin and the JFR dump at exit, with a debug library.
+              childTimeoutSeconds(30),
               l -> {
                 if (l.contains("[getInstance-begin]")) {
                   reloading.set(true);

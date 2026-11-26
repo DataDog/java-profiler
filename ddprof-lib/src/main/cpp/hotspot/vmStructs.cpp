@@ -460,6 +460,9 @@ void VMStructs::resolveOffsets() {
     // Since JDK-8268406, it is no longer possible to get VMMethod* by dereferencing jmethodID
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
 
+    // Built in a local so that walkers never see a heap whose structures failed validation.
+    char* heaps[3];
+    memcpy(heaps, _code_heap, sizeof(heaps));
     const void* heap_low = nullptr;
     const void* heap_high = nullptr;
     if (_code_heap_addr != NULL && _code_heap_low_addr != NULL && _code_heap_high_addr != NULL) {
@@ -467,29 +470,31 @@ void VMStructs::resolveOffsets() {
         unsigned int code_heap_count = *(unsigned int*)(code_heaps + _array_len_offset);
         if (code_heap_count <= 3 && _array_data_offset >= 0) {
             char* code_heap_array = *(char**)(code_heaps + _array_data_offset);
-            memcpy(_code_heap, code_heap_array, code_heap_count * sizeof(_code_heap[0]));
+            memcpy(heaps, code_heap_array, code_heap_count * sizeof(heaps[0]));
         }
         heap_low = *(const void**)_code_heap_low_addr;
         heap_high = *(const void**)_code_heap_high_addr;
     } else if (_code_heap_addr != NULL && _code_heap_memory_offset >= 0) {
-        _code_heap[0] = *(char**)_code_heap_addr;
-        heap_low = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_low_bound_offset);
-        heap_high = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_high_bound_offset);
+        heaps[0] = *(char**)_code_heap_addr;
+        heap_low = *(const void**)(heaps[0] + _code_heap_memory_offset + _vs_low_bound_offset);
+        heap_high = *(const void**)(heaps[0] + _code_heap_memory_offset + _vs_high_bound_offset);
     }
 
     // Invariant: _code_heap[i] != NULL iff all CodeHeap structures are available.
     // Re-read every call: a JDK 8 heap read before VM init reports shift 0. Plain stores
-    // suffice: samplers start after the final value is stored; later reruns repeat it.
+    // suffice: samplers start after the final values are stored; later reruns repeat them.
     DEBUG_ONLY(int entry_shift = _code_heap_segment_shift;)
     int shift = -1;
-    if (_code_heap[0] != NULL && _code_heap_log2_segment_size_offset >= 0) {
-        shift = *(int*)(_code_heap[0] + _code_heap_log2_segment_size_offset);
+    if (heaps[0] != NULL && _code_heap_log2_segment_size_offset >= 0) {
+        shift = *(int*)(heaps[0] + _code_heap_log2_segment_size_offset);
     }
     if (_code_heap_memory_offset < 0 || _code_heap_segmap_offset < 0 ||
         shift < 0 || shift > 16 || _heap_block_used_offset < 0) {
         memset(_code_heap, 0, sizeof(_code_heap));
     } else {
+        // The shift first: findNMethod() uses it for every non-null heap.
         _code_heap_segment_shift = shift;
+        memcpy(_code_heap, heaps, sizeof(_code_heap));
     }
     TEST_LOG("VMStructs::resolveOffsets shift entry=%d exit=%d", entry_shift, _code_heap_segment_shift);
     // Merge rather than overwrite: JitCodeCache may already have widened the bounds, and
