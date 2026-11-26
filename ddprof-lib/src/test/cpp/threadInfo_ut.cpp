@@ -26,7 +26,7 @@ class ThreadInfoTest : public ::testing::Test {};
 
 TEST_F(ThreadInfoTest, resolverSkippedWhenNameKnown) {
     ThreadInfo ti;
-    ti.set(42, "known", 5, 7);
+    ti.set(42, "known", 7);
 
     bool resolver_called = false;
     ti.updateThreadName(42, [&](int) {
@@ -71,7 +71,7 @@ TEST_F(ThreadInfoTest, racingSetDuringResolveWins) {
     ThreadInfo ti;
     ti.updateThreadName(100, [&](int tid) {
         // Stands in for a concurrent set() landing in the unlocked window.
-        ti.set(tid, "jvmti-name", 10, 9);
+        ti.set(tid, "jvmti-name", 9);
         return std::string("proc-name");
     });
 
@@ -79,13 +79,4 @@ TEST_F(ThreadInfoTest, racingSetDuringResolveWins) {
     ASSERT_NE(info.first, nullptr);
     EXPECT_EQ(*info.first, "jvmti-name");
     EXPECT_EQ(info.second, 9u);
-}
-
-TEST_F(ThreadInfoTest, explicitLengthKeepsEmbeddedNul) {
-    ThreadInfo ti;
-    const char name[] = "a\0b";
-    ti.set(5, name, 3, 1);
-    auto info = ti.get(5);
-    ASSERT_NE(nullptr, info.first);
-    EXPECT_EQ(std::string(name, 3), *info.first);
 }

@@ -84,14 +84,14 @@ and the correlation ID (`flightRecorder.cpp:2914-2943`, `flightRecorder.h:646-65
 
 | Constant | Value | Source |
 |----------|-------|--------|
-| `RECORDING_BUFFER_SIZE` | 65536 | `buffers.h:23` |
-| `RECORDING_BUFFER_LIMIT` (= `JFR_EVENT_FLUSH_THRESHOLD`) | 65536 − 4096 | `buffers.h:24`, `flightRecorder.h:44` |
-| `RECORDING_BUFFER_OVERFLOW` | 8192 bytes of slack past the buffer | `buffers.h:22` |
-| `MAX_STRING_LENGTH` | 8191; `putUtf8()` truncates to it | `buffers.h:25`, `171-176` |
+| `RECORDING_BUFFER_SIZE` | 65536 | `buffers.h:29` |
+| `RECORDING_BUFFER_LIMIT` (= `JFR_EVENT_FLUSH_THRESHOLD`) | 65536 − 4096 | `buffers.h:30`, `flightRecorder.h:44` |
+| `RECORDING_BUFFER_OVERFLOW` | 8192 bytes of slack past the buffer | `buffers.h:28` |
+| `MAX_STRING_LENGTH` | 8191; `putUtf8()` truncates to it without splitting a character | `buffers.h:31`, `177-197` |
 
 The overflow area exists so that a serializer overrunning the limit corrupts
-the recording rather than the neighbouring buffer (`buffers.h:15-22`,
-`192-214`).
+the recording rather than the neighbouring buffer (`buffers.h:21-28`,
+`213-235`).
 
 `Recording::flushIfNeeded(buf, limit)` flushes when `offset() >= limit`, with
 `limit` defaulting to `JFR_EVENT_FLUSH_THRESHOLD` (`flightRecorder.cpp:1368-1372`).
@@ -110,7 +110,7 @@ events reserve room first by flushing against a reduced limit, for example
 
 Every event starts with a size prefix and its `JfrType` ID, followed by fields
 in the order the metadata declares them. Integers are LEB128
-(`putVar32`/`putVar64`, `buffers.h:127-157`); fixed-width values are big-endian.
+(`putVar32`/`putVar64`, `buffers.h:133-163`); fixed-width values are big-endian.
 
 - **Sample events** (`recordExecutionSample()`, `recordAllocation()`, ...)
   reserve a 1-byte size with `skip(1)` and patch it with
@@ -121,7 +121,14 @@ in the order the metadata declares them. Integers are LEB128
   `profiler.Log`, debug unwind failures, the metadata and constant-pool events)
   reserve 5 bytes and patch them with the fixed-width form
   `putVar32(offset, v)`, which always writes 5 LEB128 bytes
-  (`buffers.h:182-189`, `flightRecorder.cpp:1582-1597`).
+  (`buffers.h:203-210`, `flightRecorder.cpp:1582-1597`).
+
+Every string is written by `putUtf8()` as JFR string encoding 3, a UTF-8 byte array.
+Strings from the JVM, JNI and JVMTI are modified UTF-8: U+0000 is `C0 80` and a
+supplementary character is a 6-byte surrogate pair. JFR readers decode standard UTF-8 and
+show these bytes as replacement characters. `putUtf8()` therefore converts every string
+with `toStandardUtf8()` (`standardUtf8.h`). Valid standard UTF-8 is copied unchanged. The
+output is never longer than the input, so callers size their flushes from the input length.
 
 `datadog.UnwindFailure` events are emitted only in `DEBUG` builds.
 `Recording::writeUnwindFailureEvent()` reserves `MAX_VAR32_LENGTH` (5) bytes

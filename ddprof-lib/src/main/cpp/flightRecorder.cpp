@@ -1915,19 +1915,18 @@ void Recording::writeThreads(Buffer *buf) {
   buf->putVar64(threads.size());
   for (auto tid : threads) {
     const char *thread_name;
-    int length;
     jlong thread_id;
     std::pair<std::shared_ptr<std::string>, u64> info = t_info->get(tid);
     if (info.first) {
-      thread_name = info.first->data();
-      length = static_cast<int>(info.first->size());
+      thread_name = info.first->c_str();
       thread_id = info.second;
     } else {
-      length = snprintf(name_buf, sizeof(name_buf), "[tid=%d]", tid);
+      snprintf(name_buf, sizeof(name_buf), "[tid=%d]", tid);
       thread_name = name_buf;
       thread_id = 0;
     }
 
+    int length = strlen(thread_name);
     int required = RECORDING_BUFFER_LIMIT -
                    (thread_id == 0 ? length + 1 : 2 * length) -
                    3 * 10; // 3x max varint length

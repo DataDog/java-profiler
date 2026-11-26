@@ -51,8 +51,7 @@ public:
 
   ThreadInfo() {}
 
-  // Stores exactly len bytes, so a name may contain embedded NUL bytes.
-  void set(int tid, const char *name, size_t len, u64 java_thread_id);
+  void set(int tid, const char *name, u64 java_thread_id);
   std::pair<std::shared_ptr<std::string>, u64> get(int tid);
 
   void updateThreadName(int tid, std::function<std::string(int)> resolver);

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2023, 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef _BUFFERS_H
 #define _BUFFERS_H
 
@@ -9,6 +14,7 @@
 #include <arpa/inet.h>
 
 #include "os.h"
+#include "standardUtf8.h"
 
 const int BUFFER_SIZE = 1024;
 const int BUFFER_LIMIT = BUFFER_SIZE - 128;
@@ -167,12 +173,27 @@ public:
     }
   }
 
+  // Writes a JFR UTF-8 string as standard UTF-8 (see toStandardUtf8), capped at MAX_STRING_LENGTH
+  // without splitting a character. It is never longer than len, so callers size flushes from len.
   __attribute__((no_sanitize("bounds")))
   void putUtf8(const char *v, u32 len) {
-    len = len < MAX_STRING_LENGTH ? len : MAX_STRING_LENGTH;
+    u32 ascii = 0;
+    while (ascii < len && static_cast<unsigned char>(v[ascii]) < 0x80) {
+      ascii++;
+    }
+    if (ascii == len) {
+      len = len < MAX_STRING_LENGTH ? len : MAX_STRING_LENGTH;
+      put8(3);
+      putVar32(len);
+      put(v, len);
+      return;
+    }
+    u32 out_len = static_cast<u32>(toStandardUtf8(v, len, nullptr, MAX_STRING_LENGTH));
     put8(3);
-    putVar32(len);
-    put(v, len);
+    putVar32(out_len);
+    assert(static_cast<int>(_offset + out_len) < limit());
+    toStandardUtf8(v, len, _data + _offset, out_len);
+    _offset += static_cast<int>(out_len);
   }
 
   __attribute__((no_sanitize("bounds")))

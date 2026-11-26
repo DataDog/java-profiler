@@ -7,12 +7,12 @@
 #include "counters.h"
 #include "mutex.h"
 
-void ThreadInfo::set(int tid, const char *name, size_t len, u64 java_thread_id) {
+void ThreadInfo::set(int tid, const char *name, u64 java_thread_id) {
   MutexLocker ml(_ti_lock);
   auto it = _thread_names.find(tid);
   long long old_bytes = it != _thread_names.end() ? nameHeapBytes(it->second) : 0;
   std::string &stored = _thread_names[tid];
-  stored = std::string(name, len);
+  stored = std::string(name);
   long long new_bytes = nameHeapBytes(stored);
   if (new_bytes != old_bytes) {
     NativeMem::record(NM_THREAD_INFO, new_bytes - old_bytes);
