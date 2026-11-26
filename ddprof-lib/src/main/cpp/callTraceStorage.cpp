@@ -51,6 +51,7 @@ bool CallTraceStorage::allocateTables() {
     // on first rotation (see the member comment).
     _traces_buffer.max_load_factor(0.75f);
     _preserve_set_buffer.max_load_factor(0.75f);
+    _collector_set_buffer.max_load_factor(0.75f);
 
     // nothrow allocation: an OOM here must fail acquire(), not terminate the
     // process. The constructor itself does not throw: it allocates via
@@ -106,6 +107,7 @@ void CallTraceStorage::release() {
     // with empty sets frees their bucket arrays (clear() would keep them).
     CallTraceSet().swap(_traces_buffer);
     CallTraceIdSet().swap(_preserve_set_buffer);
+    CallTraceIdSet().swap(_collector_set_buffer);
     Counters::set(CALLTRACE_STORAGE_BYTES, 0);
     Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
@@ -158,10 +160,11 @@ CallTrace* CallTraceStorage::getDroppedTrace() {
     return &dropped_trace;
 }
 
-u64 CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
+u64 CallTraceStorage::registerLivenessChecker(LivenessChecker checker,
+    std::function<void(const CallTraceIdSet&)> completion) {
     ExclusiveLockGuard lock(&_liveness_lock);
     const u64 token = _next_liveness_token++;
-    _liveness_checkers.emplace_back(token, std::move(checker));
+    _liveness_checkers.push_back({token, std::move(checker), std::move(completion)});
     return token;
 }
 
@@ -169,7 +172,7 @@ void CallTraceStorage::unregisterLivenessChecker(u64 token) {
     ExclusiveLockGuard lock(&_liveness_lock);
     _liveness_checkers.erase(
         std::remove_if(_liveness_checkers.begin(), _liveness_checkers.end(),
-                       [token](const std::pair<u64, LivenessChecker>& c) { return c.first == token; }),
+                       [token](const LivenessRegistration& c) { return c.token == token; }),
         _liveness_checkers.end());
 }
 
@@ -248,8 +251,13 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
         _preserve_set_buffer.clear();
 
         for (const auto& checker : _liveness_checkers) {
-            checker.second(_preserve_set_buffer);
+            _collector_set_buffer.clear();
+            checker.collect(_collector_set_buffer);
+            // The heap collector clears its output, including while disabled.
+            // Transfer nodes so it cannot erase roots from earlier collectors.
+            _preserve_set_buffer.merge(_collector_set_buffer);
         }
+        _collector_set_buffer.clear();  // Release duplicate nodes not transferred by merge.
     }
 
     // PHASE 2: 10-Step Triple-Buffer Rotation
@@ -268,7 +276,9 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     // so we can iterate the first one and at the same time add new elements to the second one safely
     original_standby->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
-            original_scratch->putWithExistingId(trace, 1);
+            if (original_scratch->putWithExistingId(trace, 1)) {
+                _preserve_set_buffer.erase(trace->trace_id);
+            }
         }
     });
 
@@ -304,9 +314,19 @@ void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> pr
     // Step 6: Collect from old active directly to _traces_buffer with hook for immediate preservation
     original_active->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
-            original_scratch->putWithExistingId(trace, 1);
+            if (original_scratch->putWithExistingId(trace, 1)) {
+                _preserve_set_buffer.erase(trace->trace_id);
+            }
         }
     });
+
+    // Report only unconfirmed requests, before source frames are reclaimed.
+    {
+        SharedLockGuard lock(&_liveness_lock);
+        for (const auto& checker : _liveness_checkers) {
+            if (checker.complete) checker.complete(_preserve_set_buffer);
+        }
+    }
 
     // Step 7: Update the instance id for the recently retired active buffer
     original_active->setInstanceId(getNextInstanceId());

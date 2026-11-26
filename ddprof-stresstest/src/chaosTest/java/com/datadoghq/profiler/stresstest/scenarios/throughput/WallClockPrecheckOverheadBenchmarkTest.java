@@ -4,6 +4,7 @@
  */
 package com.datadoghq.profiler.stresstest.scenarios.throughput;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -103,7 +104,10 @@ class WallClockPrecheckOverheadBenchmarkTest {
       IllegalStateException failure =
           assertThrows(IllegalStateException.class, benchmark::tearDown);
       assertTrue(failure.getMessage().contains("did not exit"), failure.toString());
-      assertFalse(Files.exists(recording), "recording must be deleted");
+      assertEquals(
+          Boolean.getBoolean("ddprof_test.keep_jfrs"),
+          Files.exists(recording),
+          "recording must be deleted unless kept");
       assertThrows(
           IllegalStateException.class,
           JavaProfiler.getInstance()::stop,

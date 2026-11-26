@@ -248,6 +248,9 @@ public abstract class AbstractProfilerTest {
             ".jfr");
     CREATED_RECORDINGS.add(jfrDump);
     profiler = JavaProfiler.getInstance();
+    // Hygiene: start every test with no trace context on the test thread,
+    // independent of how the previous test ended.
+    profiler.clearTraceContext();
     beforeProfilerStart();
     String command =
         "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();

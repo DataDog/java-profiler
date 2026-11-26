@@ -60,11 +60,13 @@ public:
   OSThreadState _thread_state;
   ExecutionMode _execution_mode;
   u64 _weight;
+  // Deferred wall observations keep their sampling-epoch timestamp; zero means now.
+  u64 _sample_ticks;
   u32 _call_trace_id;
 
   ExecutionEvent()
       : Event(), _thread_state(OSThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
-        _weight(1), _call_trace_id(0) {}
+        _weight(1), _sample_ticks(0), _call_trace_id(0) {}
 };
 
 class AllocEvent : public Event {
@@ -255,12 +257,8 @@ public:
     }
   }
 
-  void addNumSuppressedSampledRun(u64 n) {
-    if (n > 0) {
-      _dirty = true;
-      _num_suppressed_sampled_run += n;
-    }
-  }
+  // Accumulates into the open epoch; a suppression alone never closes it.
+  void addNumSuppressedSampledRun(u64 n) { _num_suppressed_sampled_run += n; }
 
   void endEpoch(u64 millis) { _duration_millis = millis; }
 

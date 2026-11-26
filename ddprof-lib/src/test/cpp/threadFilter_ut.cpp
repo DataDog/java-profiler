@@ -16,8 +16,12 @@
 
 #include <gtest/gtest.h>
 #include "counters.h"
+#include "callTraceStorage.h"
 #include "nativeMem.h"
+#include "profiler.h"
 #include "threadFilter.h"
+#include "threadLocalData.h"
+#include "threadLocalDataPool.h"
 #include "wallClockBlockTracker.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <thread>
@@ -27,6 +31,18 @@
 #include <set>
 #include <chrono>
 #include <random>
+#include <limits>
+#include <memory>
+#include <future>
+
+class ThreadFilterTestAccessor {
+public:
+    static std::unique_lock<std::mutex> lock(ThreadFilter& filter) {
+        return std::unique_lock<std::mutex>(filter._registry_lock);
+    }
+    static int retired(const ThreadFilter& filter) { return filter._retired_count.load(std::memory_order_acquire); }
+    static int free(const ThreadFilter& filter) { return filter._free_count.load(std::memory_order_acquire); }
+};
 
 // Test name for crash handler
 static constexpr char THREAD_FILTER_TEST_NAME[] = "ThreadFilterTest";
@@ -509,6 +525,38 @@ protected:
 
     ThreadFilter registry;
     WallClockBlockTracker tracker;
+};
+
+using RegistryOwner = std::unique_ptr<ProfiledThread, decltype(&ProfiledThread::deleteForTest)>;
+
+static RegistryOwner registryOwner(int tid) {
+    return RegistryOwner(ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+}
+
+class ScopedRegistryToken {
+    WallClockBlockTracker& _tracker;
+    u64 _token;
+public:
+    ScopedRegistryToken(WallClockBlockTracker& tracker, u64 token) : _tracker(tracker), _token(token) {}
+    ~ScopedRegistryToken() {
+        if (_token != 0) {
+            _tracker.exitBlockedRun(WallClockBlockTracker::tokenSlotId(_token),
+                                    WallClockBlockTracker::tokenGeneration(_token));
+        }
+    }
+    ScopedRegistryToken(const ScopedRegistryToken&) = delete;
+    ScopedRegistryToken& operator=(const ScopedRegistryToken&) = delete;
+    u64 token() const { return _token; }
+};
+
+class ScopedRegistryHook {
+    ThreadFilter& _registry;
+public:
+    ScopedRegistryHook(ThreadFilter& registry, void (*hook)(void*), void* arg)
+        : _registry(registry) { registry.setPostActiveCheckHookForTest(hook, arg); }
+    ~ScopedRegistryHook() { _registry.setPostActiveCheckHookForTest(nullptr, nullptr); }
+    ScopedRegistryHook(const ScopedRegistryHook&) = delete;
+    ScopedRegistryHook& operator=(const ScopedRegistryHook&) = delete;
 };
 
 TEST_F(ThreadRegistryTest, UnfilteredTrackingSeparatesRegistrationFromContextWindow) {
@@ -1380,6 +1428,96 @@ static void fillRegistry(ThreadFilter& registry, int first_tid, std::vector<int>
     }
 }
 
+TEST(ThreadFilterRetirementTest, TlsDestructionDoesNotWaitForRegistryMutex) {
+    auto& registry = *Profiler::instance()->threadFilter();
+    registry.init("", true);
+    struct Deactivate {
+        ThreadFilter& registry;
+        ~Deactivate() { registry.deactivateRecording(); }
+    } deactivate{registry};
+    std::promise<int> registered;
+    std::promise<void> exit;
+    auto exit_signal = exit.get_future();
+    std::thread owner([&] {
+        auto* current = ProfiledThread::initCurrentThreadSignalSafe();
+        if (current == nullptr || registry.ensureOwnerSlot(*current) < 0) {
+            registered.set_value(-1);
+            return;
+        }
+        registered.set_value(current->tid());
+        exit_signal.wait();
+        // The pthread-key destructor, not an explicit release, retires this TLS.
+    });
+    auto joined = std::async(std::launch::async, [&] { owner.join(); });
+    const int tid = registered.get_future().get();
+    std::future_status status;
+    {
+        auto lock = ThreadFilterTestAccessor::lock(registry);
+        exit.set_value();
+        status = joined.wait_for(std::chrono::seconds(5));
+    }
+    joined.get();
+    ASSERT_GE(tid, 0);
+    EXPECT_EQ(std::future_status::ready, status) << "TLS destruction blocked on the held registry mutex";
+    EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+    EXPECT_EQ(1, ThreadFilterTestAccessor::retired(registry));
+    registry.unregisterThreadByTid(tid);
+    // A fresh lock holder drains even when the old TID is already invisible.
+    registry.unregisterThread(-1);
+    EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+}
+
+TEST_F(ThreadRegistryTest, RetiredListDrainRecoversEverySlotAtCapacity) {
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 10000));
+    ASSERT_EQ(-1, registry.registerThread(20000));
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        registry.retireThreadByTid(10000 + i);
+        ASSERT_EQ(nullptr, registry.lookupByTid(10000 + i));
+    }
+    ASSERT_EQ(ThreadFilter::kMaxThreads, ThreadFilterTestAccessor::retired(registry));
+    ASSERT_EQ(0, ThreadFilterTestAccessor::free(registry));
+    std::vector<int> recovered;
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 20000, &recovered));
+    EXPECT_EQ(ThreadFilter::kMaxThreads, std::set<int>(recovered.begin(), recovered.end()).size());
+    EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+    EXPECT_EQ(0, ThreadFilterTestAccessor::free(registry));
+    EXPECT_EQ(-1, registry.registerThread(30000));
+}
+
+TEST_F(ThreadRegistryTest, RetireVersusUnregisterReclaimsEachOwnershipOnce) {
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        const int tid = 10000 + attempt;
+        const int slot = registry.registerThread(tid);
+        ASSERT_GE(slot, 0);
+        if (attempt == 0) {
+            registry.retireThreadByTid(tid);
+            registry.unregisterThread(slot, tid);
+        } else if (attempt == 1) {
+            registry.unregisterThread(slot, tid);
+            registry.retireThreadByTid(tid);
+        } else {
+            std::promise<void> start;
+            auto go = start.get_future().share();
+            auto retire = std::async(std::launch::async, [&] { go.wait(); registry.retireThreadByTid(tid); });
+            auto unregister = std::async(std::launch::async, [&] { go.wait(); registry.unregisterThread(slot, tid); });
+            start.set_value();
+            EXPECT_EQ(std::future_status::ready, retire.wait_for(std::chrono::seconds(5)));
+            EXPECT_EQ(std::future_status::ready, unregister.wait_for(std::chrono::seconds(5)));
+            retire.get();
+            unregister.get();
+        }
+        EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+        EXPECT_EQ(1, ThreadFilterTestAccessor::retired(registry) + ThreadFilterTestAccessor::free(registry));
+        registry.unregisterThread(-1);
+        EXPECT_EQ(0, ThreadFilterTestAccessor::retired(registry));
+        EXPECT_EQ(1, ThreadFilterTestAccessor::free(registry));
+    }
+    std::vector<int> slots;
+    ASSERT_NO_FATAL_FAILURE(fillRegistry(registry, 20000, &slots));
+    EXPECT_EQ(ThreadFilter::kMaxThreads, std::set<int>(slots.begin(), slots.end()).size());
+    EXPECT_EQ(-1, registry.registerThread(30000));
+}
+
 TEST_F(ThreadRegistryTest, FullRegistryRejectsUnknownTidWithoutLocking) {
     fillRegistry(registry, 10000);
 
@@ -1517,6 +1655,298 @@ TEST(ThreadFilterTidIndexStorageTest, DestructionBalancesIndexAndProbeCountStora
     EXPECT_EQ(baseline, NativeMem::live(NM_THREAD_FILTER));
 }
 
+TEST_F(ThreadRegistryTest, NewUnfilteredRecordingPreservesSurvivingWindowForAdmission) {
+    constexpr int tid = 6199;
+    auto owner = registryOwner(tid);
+    int slot_id = registry.registerThread(tid, owner->logicalContextWindowState());
+    ASSERT_GE(slot_id, 0);
+    registry.onContextWindowEnter(*owner);
+    ASSERT_EQ(slot_id, owner->filterSlotId());
+    ASSERT_EQ(3u, owner->logicalContextWindowState());
+    auto* slot = registry.slotForId(slot_id);
+    const auto generation = slot->lifecycleGeneration();
+    const auto epoch = registry.recordingEpoch();
+    ASSERT_TRUE(slot->inContextWindow());
+    registry.init("", true);
+    ASSERT_NE(epoch, registry.recordingEpoch());
+    ASSERT_EQ(slot_id, registry.registerThread(tid, owner->logicalContextWindowState()));
+    EXPECT_EQ(tid, slot->nativeTid());
+    EXPECT_EQ(generation, slot->lifecycleGeneration());
+    EXPECT_FALSE(tracker.slotForId(slot_id)->sampledThisRun());
+    EXPECT_EQ(BlockRunOwner::NONE, tracker.slotForId(slot_id)->activeBlockOwner());
+    EXPECT_TRUE(slot->inContextWindow());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING));
+    EXPECT_EQ(0ULL, run.token());
+}
+
+// Construct never-activated registries: ThreadRegistryTest's SetUp() activates
+// its index, which would miss allocation caused by a first inactive add.
+TEST(ThreadOwnerRegistryTest, ContextEnterWhileInactiveRetainsLogicalSourceWithoutAllocation) {
+    ThreadFilter registry;
+    WallClockBlockTracker tracker;
+    registry.setBlockTracker(&tracker);
+    auto owner = registryOwner(6201);
+    const auto registry_bytes = NativeMem::live(NM_THREAD_FILTER);
+    const auto wall_bytes = NativeMem::live(NM_WALL_BLOCK_TRACKER);
+    ASSERT_FALSE(registry.registryActive());
+    ASSERT_EQ(nullptr, tracker.slotForId(0));
+    registry.onContextWindowEnter(*owner);
+    EXPECT_EQ(3u, owner->logicalContextWindowState());
+    EXPECT_EQ(-1, owner->filterSlotId());
+    EXPECT_EQ(nullptr, registry.lookupByTid(owner->tid()));
+    EXPECT_EQ(nullptr, tracker.slotForId(0));
+    EXPECT_EQ(registry_bytes, NativeMem::live(NM_THREAD_FILTER));
+    EXPECT_EQ(wall_bytes, NativeMem::live(NM_WALL_BLOCK_TRACKER));
+    registry.init("", true);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    EXPECT_TRUE(registry.slotForId(id)->inContextWindow());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    EXPECT_EQ(0u, run.token());
+}
+
+TEST(ThreadOwnerRegistryTest, ContextExitWhileInactiveIsPublishedAtActivation) {
+    ThreadFilter registry;
+    WallClockBlockTracker tracker;
+    registry.setBlockTracker(&tracker);
+    auto owner = registryOwner(6202);
+    registry.onContextWindowEnter(*owner);
+    registry.onContextWindowExit(*owner);
+    EXPECT_EQ(4u, owner->logicalContextWindowState());
+    EXPECT_EQ(-1, owner->filterSlotId());
+    EXPECT_EQ(nullptr, tracker.slotForId(0));
+    registry.init("", true);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    EXPECT_FALSE(registry.slotForId(id)->inContextWindow());
+    EXPECT_EQ(4u, registry.slotForId(id)->rawContextWindowState());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    EXPECT_NE(0u, run.token());
+}
+
+TEST_F(ThreadRegistryTest, LogicalWindowReentryInvalidatesOwnedRun) {
+    auto owner = registryOwner(6203);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    auto* slot = registry.slotForId(id);
+    auto* block = tracker.slotForId(id);
+    ThreadEntry entry{owner->tid(), slot, id, slot->lifecycleGeneration(), slot->recordingEpoch()};
+    ScopedRegistryToken old_run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, old_run.token());
+    block->markSampledThisRun(OSThreadState::SLEEPING);
+    ASSERT_TRUE(tracker.shouldSuppressOwnedBlock(&registry, entry));
+    registry.onContextWindowEnter(*owner);
+    registry.onContextWindowExit(*owner);
+    EXPECT_EQ(4u, owner->logicalContextWindowState());
+    EXPECT_EQ(4u, slot->rawContextWindowState());
+    EXPECT_FALSE(block->sampledThisRun());
+    EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, entry));
+    ScopedRegistryToken next_run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, next_run.token());
+    EXPECT_NE(old_run.token(), next_run.token());
+    EXPECT_FALSE(tracker.exitBlockedRun(WallClockBlockTracker::tokenSlotId(old_run.token()),
+                                        WallClockBlockTracker::tokenGeneration(old_run.token())));
+    EXPECT_EQ(OSThreadState::SLEEPING, block->activeBlockState());
+}
+
+TEST_F(ThreadRegistryTest, StaleRefreshCannotPublishAfterRecordingCloses) {
+    auto owner = registryOwner(6204);
+    registry.onContextWindowEnter(*owner);
+    int id = owner->filterSlotId();
+    ASSERT_GE(id, 0);
+    auto* slot = registry.slotForId(id);
+    const auto old_epoch = slot->recordingEpoch();
+    const auto lifecycle = slot->lifecycleGeneration();
+    registry.init("", true);
+    const auto requested_epoch = registry.recordingEpoch();
+    ASSERT_NE(old_epoch, requested_epoch);
+    ScopedRegistryHook hook(registry, [](void* arg) {
+        static_cast<ThreadFilter*>(arg)->deactivateRecording();
+    }, &registry);
+    EXPECT_EQ(-1, registry.ensureOwnerSlot(*owner));
+    EXPECT_FALSE(registry.registryActive());
+    EXPECT_EQ(0u, registry.recordingEpoch());
+    EXPECT_EQ(old_epoch, slot->recordingEpoch());
+    EXPECT_EQ(lifecycle, slot->lifecycleGeneration());
+    EXPECT_EQ(nullptr, registry.lookupByTid(owner->tid(), requested_epoch));
+    EXPECT_EQ(3u, owner->logicalContextWindowState());
+}
+
+TEST_F(ThreadRegistryTest, MembershipSurvivesCapacityRejectionWithoutLiveOwnerReclaim) {
+    std::vector<RegistryOwner> live_owners;
+    live_owners.reserve(ThreadFilter::kMaxThreads);
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        live_owners.emplace_back(registryOwner(10000 + i));
+        auto& live = *live_owners.back();
+        ASSERT_GE(registry.registerThread(live.tid(), live.logicalContextWindowState()), 0);
+    }
+    auto owner = registryOwner(6205);
+    registry.deactivateRecording();
+    registry.onContextWindowEnter(*owner);
+    EXPECT_EQ(3u, owner->logicalContextWindowState());
+    registry.init("", true);
+    EXPECT_EQ(-1, registry.ensureOwnerSlot(*owner));
+    EXPECT_EQ(3u, owner->logicalContextWindowState());
+    EXPECT_NE(nullptr, registry.lookupByTid(10000));
+    EXPECT_NE(nullptr, registry.lookupByTid(10001));
+    // Explicit retirement, not recording rotation, makes this capacity free.
+    registry.unregisterThreadByTid(10000);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    EXPECT_TRUE(registry.slotForId(id)->inContextWindow());
+    EXPECT_NE(nullptr, registry.lookupByTid(10001));
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    EXPECT_EQ(0u, run.token());
+}
+
+TEST_F(ThreadRegistryTest, OwnerReuseStartsOutsideWindow) {
+    std::unique_ptr<ThreadLocalDataPool, decltype(&ThreadLocalDataPool::destroyForTest)>
+        pool(ThreadLocalDataPool::createForTest(1), ThreadLocalDataPool::destroyForTest);
+    ProfiledThread* first = pool->claimForTest(6206);
+    ASSERT_NE(nullptr, first);
+    int old_id = registry.ensureOwnerSlot(*first);
+    ASSERT_GE(old_id, 0);
+    ScopedRegistryToken old_run(tracker, tracker.enterBlockedRun(&registry, old_id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, old_run.token());
+    registry.onContextWindowEnter(*first);
+    auto* old_slot = registry.slotForId(old_id);
+    ThreadEntry stale{first->tid(), old_slot, old_id,
+                      old_slot->lifecycleGeneration(), old_slot->recordingEpoch()};
+    registry.unregisterThread(old_id, first->tid());
+    // Explicit release/reclaim observes the same storage between owners;
+    // the pool guard owns its allocation across both claims.
+    ASSERT_TRUE(pool->unclaimForTest(first));
+    ProfiledThread* second = pool->claimForTest(6207);
+    ASSERT_EQ(first, second);
+    EXPECT_EQ(0u, second->logicalContextWindowState());
+    int id = registry.ensureOwnerSlot(*second);
+    ASSERT_GE(id, 0);
+    EXPECT_EQ(old_id, id);
+    EXPECT_NE(stale.lifecycle_generation, registry.slotForId(id)->lifecycleGeneration());
+    EXPECT_FALSE(registry.slotForId(id)->inContextWindow());
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, stale));
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, run.token());
+    EXPECT_FALSE(tracker.exitBlockedRun(WallClockBlockTracker::tokenSlotId(old_run.token()),
+                                        WallClockBlockTracker::tokenGeneration(old_run.token())));
+    EXPECT_EQ(OSThreadState::SLEEPING, tracker.slotForId(id)->activeBlockState());
+}
+
+TEST_F(ThreadRegistryTest, StaleOwnerExitLeavesReassignedSlotUntouched) {
+    auto first = registryOwner(6212);
+    auto second = registryOwner(6213);
+    registry.onContextWindowEnter(*first);
+    const int old_id = first->filterSlotId();
+    ASSERT_GE(old_id, 0);
+    registry.unregisterThread(old_id, first->tid());
+    ASSERT_EQ(old_id, first->filterSlotId()) << "Retirement must leave the owner's stale projection";
+    const int id = registry.ensureOwnerSlot(*second);
+    ASSERT_EQ(old_id, id) << "The retired slot must be reassigned to the second owner";
+    auto* slot = registry.slotForId(id);
+    ASSERT_EQ(second->tid(), slot->nativeTid());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, run.token());
+    const u64 window_state = slot->rawContextWindowState();
+    registry.onContextWindowExit(*first);
+    EXPECT_EQ(4u, first->logicalContextWindowState());
+    EXPECT_EQ(window_state, slot->rawContextWindowState());
+    EXPECT_EQ(OSThreadState::SLEEPING, tracker.slotForId(id)->activeBlockState());
+}
+
+TEST_F(ThreadRegistryTest, NearWrapLogicalVersionDoesNotReviveOldToken) {
+    auto owner = registryOwner(6208);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    auto* slot = registry.slotForId(id);
+    auto* block = tracker.slotForId(id);
+    ThreadEntry entry{owner->tid(), slot, id, slot->lifecycleGeneration(), slot->recordingEpoch()};
+    ScopedRegistryToken old_run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, old_run.token());
+    block->markSampledThisRun(OSThreadState::SLEEPING);
+    ASSERT_TRUE(tracker.shouldSuppressOwnedBlock(&registry, entry));
+    // Seed the last in-window word without concurrent handlers, then exercise
+    // the real exit. The wrapped word equals the old run's complete word, not
+    // just its membership bit; clearing incompatible ownership prevents ABA.
+    owner->setLogicalContextWindowStateForTest(std::numeric_limits<u64>::max());
+    registry.onContextWindowExit(*owner);
+    EXPECT_EQ(0u, owner->logicalContextWindowState());
+    EXPECT_EQ(0u, slot->rawContextWindowState());
+    EXPECT_FALSE(tracker.shouldSuppressOwnedBlock(&registry, entry));
+    EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
+    ScopedRegistryToken next_run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, next_run.token());
+    EXPECT_FALSE(tracker.exitBlockedRun(WallClockBlockTracker::tokenSlotId(old_run.token()),
+                                        WallClockBlockTracker::tokenGeneration(old_run.token())));
+    EXPECT_EQ(OSThreadState::SLEEPING, block->activeBlockState());
+}
+
+TEST_F(ThreadRegistryTest, ContextEntryPreservesResolvableTailAndCadence) {
+    registry.init("0");
+    auto owner = registryOwner(6209);
+    registry.onContextWindowEnter(*owner);
+    int id = owner->filterSlotId();
+    ASSERT_GE(id, 0);
+    auto* block = tracker.slotForId(id);
+    ASSERT_NE(nullptr, block);
+    CallTraceStorage storage;
+    ASSERT_TRUE(storage.acquire());
+    ASGCT_CallFrame frame;
+    frame.bci = 39;
+    frame.method_id = reinterpret_cast<jmethodID>(0x7747);
+    u64 trace_id = storage.put(1, &frame, false, 0);
+    ASSERT_GT(trace_id, CallTraceStorage::DROPPED_TRACE_ID);
+    ASSERT_TRUE(block->shouldRecordUnownedBlockedSample());
+    tracker.publishUnownedTrace(id, trace_id, OSThreadState::SLEEPING);
+    ASSERT_FALSE(block->shouldRecordUnownedBlockedSample());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, run.token());
+    registry.onContextWindowEnter(*owner);
+    EXPECT_EQ(trace_id, block->unowned_blocked_call_trace_id.load(std::memory_order_acquire));
+    EXPECT_EQ(1u, block->unowned_blocked_pending_weight.load(std::memory_order_acquire));
+    EXPECT_EQ(2u, block->unowned_blocked_decision_count.load(std::memory_order_acquire));
+    EXPECT_EQ(OSThreadState::SLEEPING, block->unowned_blocked_state.load(std::memory_order_acquire));
+    EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
+    CallTraceIdSet roots;
+    tracker.collectLiveTraceIds(roots);
+    EXPECT_EQ(1u, roots.count(trace_id));
+}
+
+TEST_F(ThreadRegistryTest, RepeatedOutsideRemovePreservesOwnedRun) {
+    auto owner = registryOwner(6210);
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    auto* slot = registry.slotForId(id);
+    ThreadEntry entry{owner->tid(), slot, id, slot->lifecycleGeneration(), slot->recordingEpoch()};
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    ASSERT_NE(0u, run.token());
+    tracker.slotForId(id)->markSampledThisRun(OSThreadState::SLEEPING);
+    registry.onContextWindowExit(*owner);
+    EXPECT_EQ(0u, owner->logicalContextWindowState());
+    EXPECT_TRUE(tracker.shouldSuppressOwnedBlock(&registry, entry));
+    EXPECT_EQ(OSThreadState::SLEEPING, tracker.slotForId(id)->activeBlockState());
+}
+
+TEST_F(ThreadRegistryTest, FilteredResetDoesNotRestoreLogicalMembershipFromBlockHook) {
+    auto owner = registryOwner(6211);
+    registry.onContextWindowEnter(*owner);
+    ASSERT_EQ(3u, owner->logicalContextWindowState());
+    registry.init("0");
+    registry.clearActive();
+    int id = registry.ensureOwnerSlot(*owner);
+    ASSERT_GE(id, 0);
+    EXPECT_EQ(3u, owner->logicalContextWindowState());
+    EXPECT_FALSE(registry.slotForId(id)->inContextWindow());
+    ScopedRegistryToken run(tracker, tracker.enterBlockedRun(&registry, id, OSThreadState::SLEEPING));
+    EXPECT_NE(0u, run.token());
+    std::vector<ThreadEntry> selected;
+    registry.collect(selected);
+    EXPECT_TRUE(selected.empty());
+    registry.onContextWindowEnter(*owner);
+    registry.collect(selected);
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(owner->tid(), selected[0].tid);
+}
 
 TEST(ThreadFilterTidIndexTest, AllocationFailureKeepsRegistryInactive) {
     ThreadFilter filter;
