@@ -367,6 +367,7 @@ test_percent_in_checkout_path() {
     equals "$(state_value source_head)" "$PERCENT_HEAD"
   check "percent-path /source is the host clone under the checkout" \
     starts_with "$(state_value source_host)" "$PERCENT_WORKTREE/build/container-source."
+  check "percent-path /source can be cloned" equals "$(state_value source_clonable)" yes
 }
 
 test_clone_mode_outside_git() {
