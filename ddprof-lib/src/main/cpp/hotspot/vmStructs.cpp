@@ -492,7 +492,6 @@ void VMStructs::resolveOffsets() {
         shift < 0 || shift > 16 || _heap_block_used_offset < 0) {
         memset(_code_heap, 0, sizeof(_code_heap));
     } else {
-        // The shift first: findNMethod() uses it for every non-null heap.
         _code_heap_segment_shift = shift;
         memcpy(_code_heap, heaps, sizeof(_code_heap));
     }

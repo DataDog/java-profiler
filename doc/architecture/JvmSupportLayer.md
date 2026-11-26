@@ -45,7 +45,7 @@ load path goes through this function:
 | Load path | Entry point | Calls |
 |---|---|---|
 | `-agentpath` at JVM start | `Agent_OnLoad` (`vmEntry.cpp`) | `VM::initProfilerBridge(vm, false)` (`vmEntry.cpp`) |
-| `System.loadLibrary` | `JNI_OnLoad` (`vmEntry.cpp`) | `VM::initLibrary(vm)` → `initShared()` + `ready()` (`vmEntry.cpp:389-396`) |
+| `System.loadLibrary` | `JNI_OnLoad` (`vmEntry.cpp`) | `VM::initLibrary(vm)` → `initShared()` + `ready()` (`vmEntry.cpp`) |
 | `JavaProfiler.init0()` | `Java_com_datadoghq_profiler_JavaProfiler_init0` (`javaApi.cpp`) | `VM::initProfilerBridge(nullptr, true)` (`javaApi.cpp`) |
 
 `initShared()` returns early once `_jvmti` is set, so the detection runs only once.
