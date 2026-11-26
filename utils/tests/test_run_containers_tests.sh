@@ -88,6 +88,7 @@ if [[ "$vol" == *:/source* ]]; then
   echo "source_mode=$(ls -ld "$host" | cut -c1-10)" >> "$FAKE_STATE"
   echo "source_head_file_mode=$(ls -l "$host/.git/HEAD" | cut -c1-10)" >> "$FAKE_STATE"
   echo "source_ref_format=$(git -C "$host" rev-parse --show-ref-format 2>/dev/null)" >> "$FAKE_STATE"
+  echo "source_worktree_config=$(git -C "$host" config core.worktree)" >> "$FAKE_STATE"
   clone_dir=$(mktemp -d "$FAKE_WORK/clone.XXXXXX")
   if git clone --quiet --depth 1 "file://$host" "$clone_dir/ws" 2>/dev/null; then
     echo "source_clonable=yes" >> "$FAKE_STATE"
@@ -137,7 +138,6 @@ populate_project "$OTHER"
 git_quiet init "$OTHER"
 git_quiet -C "$OTHER" add -A
 git_quiet -C "$OTHER" commit -m other
-OTHER_HEAD=$(git -C "$OTHER" rev-parse HEAD)
 NOCOMMIT="$FIXTURE/nocommit"
 populate_project "$NOCOMMIT"
 git_quiet init "$NOCOMMIT"
@@ -344,7 +344,7 @@ test_host_clone_ignores_git_dir_env() {
   check "GIT_DIR run exits 0 (got $STATUS)" equals "$STATUS" 0
   check "GIT_DIR run clones the worktree HEAD" equals "$(state_value source_head)" "$WORKTREE_HEAD"
   check "GIT_DIR run logs the worktree HEAD" output_contains ">>> Source commit: $WORKTREE_HEAD"
-  check "GIT_DIR run leaves the other repo's HEAD alone" equals "$(git -C "$OTHER" rev-parse HEAD)" "$OTHER_HEAD"
+  check "GIT_WORK_TREE does not leak into the host clone config" equals "$(state_value source_worktree_config)" ""
 }
 
 test_clone_mode_outside_git() {
