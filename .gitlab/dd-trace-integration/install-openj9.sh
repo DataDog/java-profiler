@@ -76,15 +76,21 @@ esac
 export JAVA_HOME="${1:?installation root required}/openj9-${JAVA_VERSION}"
 DOWNLOAD_URL="https://github.com/ibmruntimes/semeru${JAVA_VERSION}-binaries/releases/download/${SEMERU_TAG}/${SEMERU_ARCHIVE}"
 mkdir -p "${JAVA_HOME}"
-# curl does not retry a 200 response with a non-gzip body, so check each body
-# and its pinned digest before extracting. The subshell keeps the trap and
-# exits out of the caller.
+# curl --retry skips a body cut off mid-transfer (exit 18, 56) and a 200 with a
+# non-gzip body, so this loop retries both; an HTTP error (22) is final. The
+# subshell keeps the trap and exits out of the caller.
 (
   archive=$(mktemp)
   trap 'rm -f "${archive}"' EXIT
   for attempt in 1 2 3; do
-    curl --fail --location --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" > "${archive}"
-    if tar tzf "${archive}" > /dev/null 2>&1; then
+    curl_status=0
+    curl --fail --location --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" > "${archive}" || curl_status=$?
+    if [ "${curl_status}" -eq 22 ]; then
+      echo "ERROR: Semeru download failed with an HTTP error: ${DOWNLOAD_URL}" >&2
+      exit 1
+    elif [ "${curl_status}" -ne 0 ]; then
+      echo "WARN: Semeru download attempt ${attempt}/3 failed with curl exit ${curl_status}: ${DOWNLOAD_URL}" >&2
+    elif tar tzf "${archive}" > /dev/null 2>&1; then
       # A valid archive with the wrong digest is not a transient egress error: fail without retrying.
       if ! printf '%s  %s\n' "${SEMERU_SHA256}" "${archive}" | sha256sum -c --status -; then
         echo "ERROR: Semeru archive SHA-256 does not match the pinned ${SEMERU_SHA256}: ${DOWNLOAD_URL}" >&2
@@ -92,8 +98,9 @@ mkdir -p "${JAVA_HOME}"
       fi
       tar xzf "${archive}" -C "${JAVA_HOME}" --strip-components=1
       exit 0
+    else
+      echo "WARN: Semeru download attempt ${attempt}/3 is not a gzip tar archive: ${DOWNLOAD_URL}" >&2
     fi
-    echo "WARN: Semeru download attempt ${attempt}/3 is not a gzip tar archive: ${DOWNLOAD_URL}" >&2
     [ "${attempt}" -eq 3 ] || sleep 5
   done
   echo "ERROR: Could not download a valid Semeru archive after 3 attempts: ${DOWNLOAD_URL}" >&2
