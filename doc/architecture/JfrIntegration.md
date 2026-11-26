@@ -35,6 +35,7 @@ Profiler
      └─ Recording* _rec           one open file descriptor (_fd)
          ├─ RecordingBuffer _buf[CONCURRENCY_LEVEL]     event buffers, one per lock stripe
          ├─ ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2]  threads seen, per stripe
+         ├─ VirtualThreadMap _virtual_threads[CONCURRENCY_LEVEL]  virtual threads seen, per stripe
          ├─ Buffer _cpu_monitor_buf
          └─ MethodMap _method_map  method constant pool, kept across chunks
 ```
@@ -403,7 +404,7 @@ the pool count is not known up front. A 1-byte placeholder is written and
 | `jdk.types.ThreadState` | `writeThreadStates()` | fixed list of 11 | yes |
 | `datadog.types.ExecutionMode` | `writeExecutionModes()` | fixed list of 6 | yes |
 | `profiler.types.LogLevel` | `writeLogLevels()` | fixed list | yes |
-| `java.lang.Thread` | `writeThreads()` | `_thread_ids` + stop-time archived IDs + `ThreadInfo` | yes (contains the recording thread) |
+| `java.lang.Thread` | `writeThreads()` | `_thread_ids` + stop-time archived IDs + `ThreadInfo`, then `_virtual_threads` | yes (contains the recording thread) |
 | `jdk.types.StackTrace` | `writeStackTraces()` | `CallTraceStorage` | no |
 | `jdk.types.Method` | `writeMethods()` | `MethodMap` rows marked this chunk | no |
 | `java.lang.Class` | `writeClasses()` | `Profiler::classMap()->standby()` | no |
@@ -439,6 +440,24 @@ Each pool has its own deduplication:
   `writeThreads()` flips `_active_index`, collects and clears the previous set,
   and names each thread from `ThreadInfo`, or `[tid=N]` if unknown
   (`flightRecorder.cpp:1873-1923`).
+- **Virtual threads:** a TaskBlock event that carries a `VirtualThreadIdentity`
+  references a separate key space. `addVirtualThread()` stores the Java thread
+  id and name in `_virtual_threads[lock_index]`. It does not add the carrier tid.
+  The key is `virtualThreadKey(id)`, which is `2^32 + id` for an id in
+  `[1, 2^62)`. No key can equal an `int` tid, even a negative tid that is
+  sign-extended to 64 bits. The entry has a null `osName`, `osThreadId` 0, the
+  Java name as `javaName` and the id as `javaThreadId`. The type has no
+  `virtual` field, so `osThreadId` 0 identifies a virtual thread. Platform
+  entries keep their encoding.
+  `writeThreads()` writes each id once, after the platform entries, and then
+  clears the maps. It runs under the exclusive `_rec_lock`, and writers hold
+  the stripe and the shared `_rec_lock`, so the maps need no double buffer.
+  A chunk admits about `VIRTUAL_THREAD_POOL_CAPACITY` (16384) new entries.
+  Concurrent stripes can each add one more, and a virtual thread seen on two
+  stripes uses two entries. Past the limit, a new
+  id is rejected before any event bytes and `task_block_virtual_thread_pool_full`
+  is incremented. The maps allocate (charged to `NM_JFR_BUFFERS`), so this path
+  is not signal-safe.
 
 ### Method pool
 
