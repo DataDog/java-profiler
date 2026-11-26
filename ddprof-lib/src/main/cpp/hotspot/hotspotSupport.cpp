@@ -292,7 +292,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // reaching the MARK_JAVA_PROFILER boundary, and a shallow malloc/socket
     // sample can run out of depth before it gets there. Keep them inline.
     if (ucontext == NULL) {
-        return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
+        return walkVM(nullptr, frames, max_depth, features, event_type,
                       callerPC(), CALLER_PC_IS_RETURN_ADDRESS,
                       (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated);
     }
@@ -323,7 +323,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // path in DEBUG/ASan/TSan builds.
     DEBUG_ONLY(UnwindFailures* unwindFailures = prof_thread->unwindFailures(false);)
 
-    HotspotStackFrame frame(ucontext);
+    // A register-less walk reads its other registers from empty_ucontext; only
+    // `leaf` tells the DWARF step whether LR belongs to the walk.
+    HotspotStackFrame frame(ucontext != nullptr ? ucontext : &empty_ucontext);
+    const LeafLink leaf = LeafLink::fromContext(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
     Profiler* profiler = Profiler::instance();
@@ -1012,8 +1015,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         prev_native_walk_pc = walk_pc;
         have_prev_native_pc = true;
 
-        if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
-                               profiler)) {
+        if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, leaf, profiler)) {
             break;
         }
     }
@@ -1515,7 +1517,7 @@ int HotspotSupport::walkCurrentJavaStack(StackWalkRequest& request) {
   // walkVM() chains its own crash protection onto the previous context.
   jmp_scope.restore();
   // The anchor pc is where the last Java frame resumes, i.e. a return address.
-  int depth = walkVM(&empty_ucontext, frames, max_depth, features, eventTypeFromBCI(event_type),
+  int depth = walkVM(nullptr, frames, max_depth, features, eventTypeFromBCI(event_type),
                      pc, /*pc_is_return_address=*/true, sp, fp, lock_index, truncated,
                      /*seeded_from_anchor=*/true);
   // Unlike a signal-time walk, this thread can still be walked by GetStackTrace,

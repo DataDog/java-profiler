@@ -15,10 +15,35 @@
 #include "stackFrame.h"
 #include "stackWalker.inline.h"
 
+// The interrupted frame's registers, captured once by a walker that has a real
+// ucontext. LR holds a return address only for that frame: once the walk has
+// moved off it (or a stub unwind consumed LR), the value belongs to no frame.
+struct LeafLink {
+    const void* pc;
+    uintptr_t sp;
+    const void* lr;
+    bool valid;
+
+    // nullptr means the walk has no interrupted registers (seeded from
+    // callerPC() or a JavaFrameAnchor); a non-null ucontext must be readable.
+    static LeafLink fromContext(void* ucontext) {
+        if (ucontext == nullptr) {
+            return LeafLink{nullptr, 0, nullptr, false};
+        }
+        StackFrame frame(ucontext);
+        // stripPointer: the raw link register carries PAC bits on aarch64.
+        return LeafLink{reinterpret_cast<const void*>(frame.pc()), frame.sp(),
+                        stripPointer(reinterpret_cast<const void*>(frame.link())), true};
+    }
+
+    // True when the walk still stands at the interrupted pc and sp.
+    bool owns(const WalkPc& walk_pc, uintptr_t frame_sp) const {
+        return valid && !walk_pc.isReturnAddress() && walk_pc.raw() == pc && frame_sp == sp;
+    }
+};
+
 // One step of the DWARF unwind, shared by StackWalker::walkDwarf and
-// HotspotSupport::walkVM. The two had drifted into separate copies; 61959b06f
-// and the commit that added this reconciled the last of the differences so
-// that this could be a pure move rather than a merge of two behaviours.
+// HotspotSupport::walkVM.
 //
 // Advances sp/fp/walk_pc from the current frame to its caller. Returns false
 // where the walk must stop -- an unusable CFA rule, an implausible sp or fp,
@@ -34,17 +59,10 @@
 // apart. Left out of line, this body would carry one attribute for both --
 // either dropping walkDwarf's instrumentation or adding to walkVM the
 // instrumentation it exists to avoid.
-//
-// `depth` is passed rather than tracked here because the two callers do not
-// agree on it: walkVM's fp-chain fallback reaches this step via
-// `goto dwarf_unwind`, which skips its fillFrame(frames[depth++], ...), so on
-// that path walkVM arrives one lower than walkDwarf does at the same logical
-// position. Passing it through is what keeps this a pure move; do not
-// "correct" it to a value derived here.
 __attribute__((always_inline))
 inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
-                              uintptr_t bottom, int depth,
-                              const StackFrame& frame, Profiler* profiler) {
+                              uintptr_t bottom, const LeafLink& leaf,
+                              Profiler* profiler) {
     using StackWalkValidation::inDeadZone;
     using StackWalkValidation::aligned;
     using StackWalkValidation::MAX_FRAME_SIZE;
@@ -121,12 +139,8 @@ inline bool advanceDwarfFrame(WalkPc& walk_pc, uintptr_t& sp, uintptr_t& fp,
             walk_pc.setRecoveredPc(
                 stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))),
                 f.isSignalFrame());
-        } else if (depth == 1) {
-            // Matches the memory-slot path above: StackFrame::link() returns
-            // the raw link register, which carries PAC bits on aarch64 and
-            // would otherwise be fed to findFrameDesc as a nonsense address.
-            walk_pc.setRecoveredPc(stripPointer((const void*)frame.link()),
-                                   f.isSignalFrame());
+        } else if (leaf.owns(walk_pc, prev_sp)) {
+            walk_pc.setRecoveredPc(leaf.lr, f.isSignalFrame());
         } else {
             return false;
         }

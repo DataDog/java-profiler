@@ -141,6 +141,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         fp = frame.fp();
         sp = frame.sp();
     }
+    const LeafLink leaf = LeafLink::fromContext(ucontext);
 
     volatile int depth = 0;
     Profiler* profiler = Profiler::instance();
@@ -193,8 +194,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         const void* attribution_pc = walk_pc.attribution();
         callchain[depth++] = attribution_pc;
 
-        if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
-                               profiler)) {
+        if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, leaf, profiler)) {
             break;
         }
     }
