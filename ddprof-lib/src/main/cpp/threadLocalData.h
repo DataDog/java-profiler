@@ -104,8 +104,8 @@ private:
     BlockSlot task_block;
     BlockSlot monitor;
   };
-  // Owns the slots, allocated by the first producer enter so threads that never
-  // block in a producer hook pay one pointer. A set FLAG_* bit implies non-null.
+  // Owns the slots, allocated by the first enter holding an owner registry slot.
+  // A set FLAG_* bit implies non-null, except FLAG_PARKED after parkEnterWithoutPayload().
   // Only the owner thread touches them, never from a signal handler.
   class BlockSlotsOwner {
   public:
@@ -528,6 +528,22 @@ public:
   inline bool parkEnter() { return parkEnter(0, Context{}); }
 #endif
 
+  // Parks with no owned run: sets only FLAG_PARKED and never allocates slots.
+  // Zeroing an existing park token keeps the exit from reporting a run.
+  inline bool parkEnterWithoutPayload() {
+    BlockSlots* slots = _block_slots.get();
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    while ((flags & FLAG_PARKED) == 0) {
+      if (slots != nullptr) slots->park.block_token = 0;
+      if (__atomic_compare_exchange_n(&_misc_flags, &flags, flags | FLAG_PARKED,
+                                      true, __ATOMIC_RELEASE,
+                                      __ATOMIC_ACQUIRE)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Only after a successful parkEnter(), which allocated the slots.
   inline void setParkBlockToken(u64 token) {
     _block_slots.get()->park.block_token = token;
@@ -600,6 +616,15 @@ public:
   // Returns false if the thread was not parked (idempotent).
   inline bool parkExit(u64& start_ticks, Context& context,
                        u64& park_block_token) {
+    if (_block_slots.get() == nullptr) {
+      // Only a payload-free park sets FLAG_PARKED without slots; it owns no run.
+      u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
+      if ((prev & FLAG_PARKED) == 0) return false;
+      start_ticks = 0;
+      context = {};
+      park_block_token = 0;
+      return true;
+    }
     u64 blocker_unused;
     return blockSlotExit<FLAG_PARKED, &BlockSlots::park>(
         OSThreadState::UNKNOWN, start_ticks, context, blocker_unused,

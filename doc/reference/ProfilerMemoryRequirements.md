@@ -272,11 +272,12 @@ Pool backing has process lifetime; returning an owner resets its state without
 freeing the backing. Separately allocated owners are released at thread teardown.
 
 TaskBlock producer state is not part of `S`. Each owner holds one pointer to its
-park, task-block and monitor slots. The first park, TaskBlock or monitor enter on
-that owner allocates the slots. The allocation adds `sizeof(BlockSlots)` to
+park, task-block and monitor slots. The first producer enter that holds an owner
+registry slot allocates the slots. A park without an owner registry slot sets only
+the parked flag and allocates nothing. The allocation adds `sizeof(BlockSlots)` to
 `NM_THREAD_LOCAL`: 576 bytes on LP64, because each `Context` is cache-line aligned.
-Owners that never reach a producer hook, including all idle pool owners, pay no slot
-bytes. Pool reuse and thread teardown free the slots. A failed allocation drops the
+Owners that never enter a producer with an owner registry slot, including all idle
+pool owners, pay no slot bytes. Pool reuse and thread teardown free the slots. A failed allocation drops the
 interval and increments `task_block_state_alloc_failed`; a later enter retries.
 
 `Context` is a normalized value containing two IDs and ten tag encodings, with

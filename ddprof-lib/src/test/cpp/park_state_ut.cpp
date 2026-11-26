@@ -313,6 +313,39 @@ TEST(ProfiledThreadBlockSlotsTest, RefreshClearsExistingSlotsWithoutFreeingThem)
   ASSERT_TRUE(thread->monitorEnter(4, context, 5, OSThreadState::MONITOR_WAIT));
 }
 
+TEST(ProfiledThreadBlockSlotsTest, PayloadFreeParkZeroesAnExistingParkToken) {
+  TestProfiledThread thread = testThread(12366);
+  u64 token = 0;
+  ASSERT_TRUE(thread->parkEnter());
+  ASSERT_TRUE(thread->parkExit(token));
+  // Seeds a stale token directly; the producers never leave one behind.
+  thread->setParkBlockToken(0x55);
+  ASSERT_TRUE(thread->parkEnterWithoutPayload());
+  EXPECT_FALSE(thread->parkEnterWithoutPayload());
+  EXPECT_FALSE(thread->parkEnter());
+  token = 1;
+  ASSERT_TRUE(thread->parkExit(token));
+  EXPECT_EQ(0ULL, token);
+}
+
+TEST(ProfiledThreadBlockSlotsTest, PayloadFreeParkExitWithoutSlotsClearsTheFlag) {
+  TestProfiledThread thread = testThread(12367);
+  long long base = NativeMem::live(NM_THREAD_LOCAL);
+  ASSERT_TRUE(thread->parkEnterWithoutPayload());
+  EXPECT_NE(0u, thread->snapshotForTest().misc_flags & ProfiledThread::FLAG_PARKED);
+  u64 start_ticks = 1, token = 1;
+  Context context{};
+  context.spanId = 1;
+  ASSERT_TRUE(thread->parkExit(start_ticks, context, token));
+  EXPECT_EQ(0ULL, start_ticks);
+  EXPECT_EQ(0ULL, token);
+  EXPECT_EQ(0ULL, context.spanId);
+  EXPECT_EQ(0u, thread->snapshotForTest().misc_flags & ProfiledThread::FLAG_PARKED);
+  EXPECT_FALSE(thread->parkExit(start_ticks, context, token));
+  EXPECT_FALSE(thread->hasBlockSlots());
+  EXPECT_EQ(base, NativeMem::live(NM_THREAD_LOCAL));
+}
+
 TEST(WallClockOwnedBlockFilterTest, SlotStateTransitions) {
   WallClockBlockTracker::BlockState slot;
 
