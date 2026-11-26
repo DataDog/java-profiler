@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk25
 
 ## musl-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-11-26 06:52:55 EST
+**Date:** 2026-11-26 07:11:25 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 47 |
-| CPU Cores (end) | 47 |
+| CPU Cores (start) | 34 |
+| CPU Cores (end) | 34 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,11 +28,11 @@ title: musl-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 79 |
-| Sample Rate | 1.32/sec |
-| Health Score | 82% |
-| Threads | 10 |
-| Allocations | 71 |
+| CPU Samples | 75 |
+| Sample Rate | 1.25/sec |
+| Health Score | 78% |
+| Threads | 7 |
+| Allocations | 61 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
@@ -45,29 +45,29 @@ title: musl-arm64-hotspot-jdk25
 | Allocations | 17 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 47-47 cores)</summary>
+<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1795693678 47
-1795693683 47
-1795693688 47
-1795693693 47
-1795693698 47
-1795693703 47
-1795693708 47
-1795693713 47
-1795693718 47
-1795693723 47
-1795693728 47
-1795693733 47
-1795693738 47
-1795693743 47
-1795693748 47
-1795693753 47
-1795693758 47
-1795693763 47
-1795693768 47
-1795693773 47
+1795694798 34
+1795694803 34
+1795694808 34
+1795694813 34
+1795694818 34
+1795694823 34
+1795694828 34
+1795694833 34
+1795694838 34
+1795694843 34
+1795694848 34
+1795694853 34
+1795694858 34
+1795694863 34
+1795694868 34
+1795694873 34
+1795694878 34
+1795694883 34
+1795694888 34
+1795694893 34
 ```
 </details>
 
