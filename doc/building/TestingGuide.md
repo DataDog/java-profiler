@@ -200,8 +200,10 @@ The PR reporter counts them as not applicable, not as passes, failures or missin
 The other 30 configurations still require validation logs; missing results fail the report.
 
 OpenJ9 glibc cells install pinned IBM Semeru JDKs, not distro OpenJDK packages.
-A download that is cut off mid-transfer, or whose body is not a gzip tar archive, is fetched again, up to three attempts.
-Every other curl failure is also retried; an HTTP error left after curl's own retries fails the cell.
+The installer makes up to five download attempts within a shared 300-second deadline.
+It retries a curl failure, HTTP 408, 429 or 5xx, and a body that is not a gzip tar archive.
+A transfer that stays under 100 KiB/s for 30 seconds is aborted and retried.
+Any other HTTP status, or the spent deadline, fails the cell.
 Each archive must match the SHA-256 that upstream publishes for it; a mismatch fails the cell without a retry.
 Direct musl/OpenJ9 provisioning still fails closed, as do failed downloads and invalid JDK archives.
 

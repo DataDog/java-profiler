@@ -77,17 +77,25 @@ class JvmSelectionTest(unittest.TestCase):
         self.archive = self.path / "jdk.tar.gz"
         with tarfile.open(self.archive, "w:gz") as archive:
             archive.add(self.jdk, arcname="semeru-jdk")
-        # The first CURL_FAILURES requests exit CURL_FAILURE_EXIT, like a transfer cut off
-        # mid-body; the next BAD_BODIES succeed with a non-gzip body, like an egress error page.
+        # Requests in order: CURL_FAILURES exit CURL_FAILURE_EXIT (a transfer cut off or stalled),
+        # HTTP_ERRORS answer HTTP_ERROR_CODE, BAD_BODIES answer 200 with an egress error page.
         self.executable(
             self.bin / "curl",
             'echo "curl $*" >> "$CALLS"\n'
-            '[ "${CURL_EXIT:-0}" = 0 ] || exit "$CURL_EXIT"\n'
+            'out=""; prev=""\n'
+            'for arg in "$@"; do [ "$prev" = --output ] && out="$arg"; prev="$arg"; done\n'
+            '[ -n "$out" ] || { echo "curl stub: --output required" >&2; exit 2; }\n'
             'served=$(grep -c "^curl " "$CALLS")\n'
             'if [ "$served" -le "${CURL_FAILURES:-0}" ]; then exit "$CURL_FAILURE_EXIT"; fi\n'
             'served=$((served - ${CURL_FAILURES:-0}))\n'
-            'if [ "$served" -le "${BAD_BODIES:-0}" ]; then echo "<html>proxy error</html>"; exit 0; fi\n'
-            'cat "$ARCHIVE"\n',
+            'if [ "$served" -le "${HTTP_ERRORS:-0}" ]; then\n'
+            '  echo "error page" > "$out"; printf %s "$HTTP_ERROR_CODE"; exit 0\n'
+            'fi\n'
+            'served=$((served - ${HTTP_ERRORS:-0}))\n'
+            'if [ "$served" -le "${BAD_BODIES:-0}" ]; then\n'
+            '  echo "<html>proxy error</html>" > "$out"; printf 200; exit 0\n'
+            'fi\n'
+            'cat "$ARCHIVE" > "$out"; printf 200\n',
         )
         self.executable(self.bin / "sleep", 'echo "sleep $*" >> "$CALLS"\n')
         # The fixture archive cannot match a pinned digest: record the digest checked, exit SHA_EXIT.
@@ -202,12 +210,25 @@ class JvmSelectionTest(unittest.TestCase):
                 self.assert_failed(result, message)
                 self.assertNotIn("\ncurl ", self.calls.read_text())
 
-    def test_http_error_fails_closed_without_another_attempt(self):
-        result = self.run_cell(CURL_EXIT="22")
-        self.assert_failed(result, "ERROR: Semeru download failed with an HTTP error")
-        self.assertNotIn("Verified integration JVM:", result.stdout)
-        self.assertNotIn("java ", self.calls.read_text())
-        self.assertEqual(len(self.curl_urls()), 1, "curl handles transport retries itself")
+    def test_client_http_error_fails_closed_without_another_attempt(self):
+        for code in ("403", "404"):
+            with self.subTest(http_code=code):
+                self.calls.write_text("")
+                result = self.run_cell(HTTP_ERRORS="1", HTTP_ERROR_CODE=code)
+                self.assert_failed(result, f"ERROR: Semeru download failed with HTTP {code}")
+                self.assertNotIn("java ", self.calls.read_text())
+                self.assertEqual(len(self.curl_urls()), 1)
+                self.assertEqual(self.checked_digests(), [])
+
+    def test_transient_http_error_is_downloaded_again(self):
+        for code in ("408", "429", "500", "503"):
+            with self.subTest(http_code=code):
+                self.calls.write_text("")
+                result = self.run_cell(HTTP_ERRORS="1", HTTP_ERROR_CODE=code)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"attempt 1/5 got HTTP {code}", result.stdout)
+                self.assertEqual(self.curl_urls(), [SEMERU_URLS[17, "x64"]] * 2)
+                self.assertEqual(self.checked_digests(), [SEMERU_SHA256[17, "x64"]])
 
     def test_interrupted_transfer_is_downloaded_again(self):
         for code in ("18", "56"):
@@ -215,17 +236,41 @@ class JvmSelectionTest(unittest.TestCase):
                 self.calls.write_text("")
                 result = self.run_cell(CURL_FAILURES="1", CURL_FAILURE_EXIT=code)
                 self.assertEqual(result.returncode, 0, result.stdout)
-                self.assertIn(f"attempt 1/3 failed with curl exit {code}", result.stdout)
+                self.assertIn(f"attempt 1/5 failed with curl exit {code}", result.stdout)
                 self.assertEqual(self.curl_urls(), [SEMERU_URLS[17, "x64"]] * 2)
                 self.assertEqual(self.calls.read_text().count("sleep 5\n"), 1)
                 self.assertEqual(self.checked_digests(), [SEMERU_SHA256[17, "x64"]])
                 self.assertIn("Verified integration JVM:", result.stdout)
 
-    def test_three_interrupted_transfers_fail_closed(self):
-        result = self.run_cell(CURL_FAILURES="3", CURL_FAILURE_EXIT="18")
-        self.assert_failed(result, "ERROR: Could not download a valid Semeru archive after 3 attempts")
-        self.assertEqual(len(self.curl_urls()), 3)
-        self.assertEqual(self.calls.read_text().count("sleep 5\n"), 2)
+    def test_every_attempt_is_bounded_by_the_shared_deadline_and_retried_only_here(self):
+        result = self.run_cell(BAD_BODIES="1")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        attempts = [line.split() for line in self.calls.read_text().splitlines() if line.startswith("curl ")]
+        self.assertEqual(len(attempts), 2)
+        for args in attempts:
+            for flag, value in (("--connect-timeout", "30"), ("--speed-limit", "102400"),
+                                ("--speed-time", "30")):
+                with self.subTest(flag=flag):
+                    self.assertIn(flag, args)
+                    self.assertEqual(args[args.index(flag) + 1], value)
+            self.assertIn("--max-time", args)
+            self.assertTrue(0 < int(args[args.index("--max-time") + 1]) <= 300, args)
+            # curl's own retry would append a retried body to the partial one.
+            self.assertNotIn("--retry", args)
+            self.assertNotIn("--fail", args)
+
+    def test_spent_download_budget_fails_closed_before_another_attempt(self):
+        result = self.run_cell(SEMERU_DOWNLOAD_BUDGET_SECONDS="0")
+        self.assert_failed(result, "ERROR: Semeru download did not finish within 0 s")
+        self.assertEqual(self.curl_urls(), [])
+        self.assertFalse((self.path / "installed/openj9-17/bin").exists())
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_five_failed_transfers_fail_closed(self):
+        result = self.run_cell(CURL_FAILURES="5", CURL_FAILURE_EXIT="28")
+        self.assert_failed(result, "ERROR: Could not download a valid Semeru archive after 5 attempts")
+        self.assertEqual(len(self.curl_urls()), 5)
+        self.assertEqual(self.calls.read_text().count("sleep 5\n"), 4)
         self.assertEqual(self.checked_digests(), [])
         self.assertFalse((self.path / "installed/openj9-17/bin").exists())
         self.assertEqual(list(self.tmp.iterdir()), [])
@@ -233,7 +278,7 @@ class JvmSelectionTest(unittest.TestCase):
     def test_invalid_archive_body_is_downloaded_again(self):
         result = self.run_cell(BAD_BODIES="1")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("attempt 1/3 is not a gzip tar archive", result.stdout)
+        self.assertIn("attempt 1/5 is not a gzip tar archive", result.stdout)
         self.assertEqual(self.curl_urls(), [SEMERU_URLS[17, "x64"]] * 2)
         self.assertEqual(self.calls.read_text().count("sleep 5\n"), 1)
         self.assertIn("Verified integration JVM:", result.stdout)
@@ -262,11 +307,11 @@ class JvmSelectionTest(unittest.TestCase):
                 result = subprocess.run(["bash", "-c", check[1]], env=dict(env, SEMERU_SHA256=pinned))
                 self.assertEqual(result.returncode, expected)
 
-    def test_three_invalid_archive_bodies_fail_closed(self):
-        result = self.run_cell(BAD_BODIES="3")
-        self.assert_failed(result, "ERROR: Could not download a valid Semeru archive after 3 attempts")
-        self.assertEqual(len(self.curl_urls()), 3)
-        self.assertEqual(self.calls.read_text().count("sleep 5\n"), 2)
+    def test_five_invalid_archive_bodies_fail_closed(self):
+        result = self.run_cell(BAD_BODIES="5")
+        self.assert_failed(result, "ERROR: Could not download a valid Semeru archive after 5 attempts")
+        self.assertEqual(len(self.curl_urls()), 5)
+        self.assertEqual(self.calls.read_text().count("sleep 5\n"), 4)
         self.assertNotIn("java ", self.calls.read_text())
         self.assertFalse((self.path / "installed/openj9-17/bin").exists())
         self.assertEqual(list(self.tmp.iterdir()), [])

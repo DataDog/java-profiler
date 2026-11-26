@@ -76,20 +76,34 @@ esac
 export JAVA_HOME="${1:?installation root required}/openj9-${JAVA_VERSION}"
 DOWNLOAD_URL="https://github.com/ibmruntimes/semeru${JAVA_VERSION}-binaries/releases/download/${SEMERU_TAG}/${SEMERU_ARCHIVE}"
 mkdir -p "${JAVA_HOME}"
-# curl --retry covers timeouts and HTTP 408/429/500/502-504, not a body cut off mid-transfer
-# (exit 18, 56) or a 200 with a non-gzip body: retry every outcome but HTTP errors (22).
+# Every retry happens in this loop, so each attempt starts from a truncated file and
+# all attempts share one deadline: a stall or slow trickle cannot use up the job timeout.
 # The subshell keeps the trap and exits out of the caller.
 (
   archive=$(mktemp)
   trap 'rm -f "${archive}"' EXIT
-  for attempt in 1 2 3; do
-    curl_status=0
-    curl --fail --location --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" > "${archive}" || curl_status=$?
-    if [ "${curl_status}" -eq 22 ]; then
-      echo "ERROR: Semeru download failed with an HTTP error: ${DOWNLOAD_URL}" >&2
+  attempts=5
+  # Overridable only so the regression tests can reach the deadline branch.
+  budget=${SEMERU_DOWNLOAD_BUDGET_SECONDS:-300}
+  deadline=$((SECONDS + budget))
+  for attempt in $(seq 1 "${attempts}"); do
+    remaining=$((deadline - SECONDS))
+    if [ "${remaining}" -le 0 ]; then
+      echo "ERROR: Semeru download did not finish within ${budget} s: ${DOWNLOAD_URL}" >&2
       exit 1
-    elif [ "${curl_status}" -ne 0 ]; then
-      echo "WARN: Semeru download attempt ${attempt}/3 failed with curl exit ${curl_status}: ${DOWNLOAD_URL}" >&2
+    fi
+    curl_status=0
+    # Under 100 KiB/s for 30 s aborts the attempt, so a stall is retried within the budget.
+    http_code=$(curl --location --silent --show-error --connect-timeout 30 \
+      --speed-limit 102400 --speed-time 30 --max-time "${remaining}" \
+      --output "${archive}" --write-out '%{http_code}' "${DOWNLOAD_URL}") || curl_status=$?
+    if [ "${curl_status}" -ne 0 ]; then
+      echo "WARN: Semeru download attempt ${attempt}/${attempts} failed with curl exit ${curl_status}: ${DOWNLOAD_URL}" >&2
+    elif [ "${http_code}" != 200 ]; then
+      case "${http_code}" in
+        408|429|5??) echo "WARN: Semeru download attempt ${attempt}/${attempts} got HTTP ${http_code}: ${DOWNLOAD_URL}" >&2 ;;
+        *) echo "ERROR: Semeru download failed with HTTP ${http_code}: ${DOWNLOAD_URL}" >&2; exit 1 ;;
+      esac
     elif tar tzf "${archive}" > /dev/null 2>&1; then
       # A valid archive with the wrong digest is not a transient egress error: fail without retrying.
       if ! printf '%s  %s\n' "${SEMERU_SHA256}" "${archive}" | sha256sum -c --status -; then
@@ -99,11 +113,11 @@ mkdir -p "${JAVA_HOME}"
       tar xzf "${archive}" -C "${JAVA_HOME}" --strip-components=1
       exit 0
     else
-      echo "WARN: Semeru download attempt ${attempt}/3 is not a gzip tar archive: ${DOWNLOAD_URL}" >&2
+      echo "WARN: Semeru download attempt ${attempt}/${attempts} is not a gzip tar archive: ${DOWNLOAD_URL}" >&2
     fi
-    [ "${attempt}" -eq 3 ] || sleep 5
+    [ "${attempt}" -eq "${attempts}" ] || sleep 5
   done
-  echo "ERROR: Could not download a valid Semeru archive after 3 attempts: ${DOWNLOAD_URL}" >&2
+  echo "ERROR: Could not download a valid Semeru archive after ${attempts} attempts: ${DOWNLOAD_URL}" >&2
   exit 1
 )
 
