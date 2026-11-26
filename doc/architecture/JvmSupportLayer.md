@@ -189,8 +189,9 @@ is LR, and PLT leaf descriptors use the same rule. Compact and extended
 including a non-default stack offset;
 `DW_CFA_same_value` also keeps the return address in LR. A saved return-address
 slot applies only while its CFI offset rule is active. On x64 the initial
-return address remains at CFA-8. The sampled LR is used only for a leaf frame;
-recovered PCs retain the normal return-address attribution and PAC stripping.
+return address remains at CFA-8. LR is read only where the registers describe the
+current PC: the sampled leaf, or a context restored at a signal frame. Recovered
+PCs retain the normal return-address attribution and PAC stripping.
 
 For arm64 compiled callers, `StackFrame::adjustSP()` also accounts for temporary
 16-byte argument or register-save areas outside the nmethod's fixed frame.
