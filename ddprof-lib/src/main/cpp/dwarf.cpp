@@ -327,7 +327,7 @@ DwarfParser::CieInfo DwarfParser::parseCie() {
   if (cie.has_z_augmentation) {
     if (_ptr >= cie_end) return cie;
     u32 augmentation_size = getLeb(cie_end);
-    if (augmentation_size > (size_t)(cie_end - _ptr)) return cie;
+    if (augmentation_size > static_cast<size_t>(cie_end - _ptr)) return cie;
     _ptr += augmentation_size;
   }
   parseInstructions(0, cie_end, cie, &cie.initial_pc_offset);

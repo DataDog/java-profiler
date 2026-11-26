@@ -830,7 +830,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 if (nm->isFrameCompleteAt(walk_pc.raw())) {
                     const void* epilogue_pc = walk_pc.raw();
-                    if (!seeded_from_anchor && !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()) && frame.unwindEpilogue(nm, (uintptr_t&)epilogue_pc, sp, fp)) {
+                    if (!seeded_from_anchor && !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()) && frame.unwindEpilogue(nm, reinterpret_cast<uintptr_t&>(epilogue_pc), sp, fp)) {
                         walk_pc.setReturnAddress(epilogue_pc);
                         continue;
                     }

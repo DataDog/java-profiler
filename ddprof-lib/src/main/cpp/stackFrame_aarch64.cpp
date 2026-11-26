@@ -81,7 +81,7 @@ void StackFrame::ret() {
 
 NOSANALIGSANITIZE void StackFrame::adjustSP(const void* entry, const void* pc, uintptr_t& sp) {
     instruction_t* ip = (instruction_t*)pc;
-    if (ip > entry && (ip[-1] == 0xa9bf27ff || (ip - (const instruction_t*)entry >= 2 && ip[-1] == 0xd63f0100 && ip[-2] == 0xa9bf27ff))) {
+    if (ip > entry && (ip[-1] == 0xa9bf27ff || (ip - static_cast<const instruction_t*>(entry) >= 2 && ip[-1] == 0xd63f0100 && ip[-2] == 0xa9bf27ff))) {
         // When calling a leaf native from Java, JVM puts a dummy frame link onto the stack,
         // thus breaking the invariant: sender_sp == current_sp + frame_size.
         // Since JDK 21, there are more instructions between `blr` and `add`,
@@ -106,7 +106,7 @@ NOSANALIGSANITIZE void StackFrame::adjustSP(const void* entry, const void* pc, u
     // These words are outside the nmethod frame size. Require the matching
     // push, allowing only far_call's address setup between it and the call.
     unsigned int call_reg = (ip[-1] >> 5) & 31;
-    for (int back = 2; back <= 5 && ip - (const instruction_t*)entry >= back; back++) {
+    for (int back = 2; back <= 5 && ip - static_cast<const instruction_t*>(entry) >= back; back++) {
         instruction_t insn = ip[-back];
         if ((insn & 0xffff83e0) == 0xa9bf03e0) { // stp ..., [sp, #-16]!
             // FP/LR saves are part of the fixed frame, not outgoing arguments.
@@ -116,11 +116,11 @@ NOSANALIGSANITIZE void StackFrame::adjustSP(const void* entry, const void* pc, u
             // arguments. Both CBNZ paths pop the same outer pair after the
             // immediate argument pop, so another 16 bytes are still live.
             if (pops_pair && ((insn ^ ip[0]) & 0x7c1f) == 0) {
-                instruction_t branch = SafeAccess::safeFetch32((int*)(ip + 1), 0);
-                int offset = (int32_t)(branch << 8) >> 11;
+                instruction_t branch = SafeAccess::safeFetch32(reinterpret_cast<int*>(ip + 1), 0);
+                int offset = static_cast<int32_t>(branch << 8) >> 11;
                 if ((branch & 0x7f00001f) == (0x35000000 | (ip[0] & 31)) && offset >= 4 && offset <= 1024 &&
-                    SafeAccess::safeFetch32((int*)(ip + 2), 0) == (int32_t)ip[0] &&
-                    SafeAccess::safeFetch32((int*)((uintptr_t)(ip + 1) + offset), 0) == (int32_t)ip[0]) {
+                    SafeAccess::safeFetch32(reinterpret_cast<int*>(ip + 2), 0) == static_cast<int32_t>(ip[0]) &&
+                    SafeAccess::safeFetch32(reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(ip + 1) + offset), 0) == static_cast<int32_t>(ip[0])) {
                     sp += 16;
                 }
             }

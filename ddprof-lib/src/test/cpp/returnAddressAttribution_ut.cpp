@@ -1458,18 +1458,18 @@ extern "C" void prof_ra_restored_lr_pc(void);
 
 TEST_F(ReturnAddressAttributionTest, RestoredLinkRegisterIgnoresStaleStackSlot) {
     static uintptr_t scratch[64];
-    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_restored_lr_pc, scratch, 64);
-    uc.uc_mcontext.regs[30] = (unsigned long)&prof_ra_lr_next;
+    ucontext_t uc = makeFabricatedContext(reinterpret_cast<const void*>(&prof_ra_restored_lr_pc), scratch, 64);
+    uc.uc_mcontext.regs[30] = reinterpret_cast<unsigned long>(&prof_ra_lr_next);
     // A signal can overwrite the callee's old LR slot after SP is restored.
     // Populate it with a plausible code address to expose a phantom caller.
-    ((uintptr_t*)uc.uc_mcontext.sp)[-3] = (uintptr_t)&prof_ra_lr_fn + 1;
+    reinterpret_cast<uintptr_t*>(uc.uc_mcontext.sp)[-3] = reinterpret_cast<uintptr_t>(&prof_ra_lr_fn) + 1;
     StackContext ctx{};
     bool truncated = false;
     const void* chain[9];
     int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
     ASSERT_GE(depth, 2);
-    EXPECT_EQ((const void*)&prof_ra_restored_lr_pc, chain[0]);
-    EXPECT_EQ((const char*)&prof_ra_lr_next - 1, chain[1]);
+    EXPECT_EQ(reinterpret_cast<const void*>(&prof_ra_restored_lr_pc), chain[0]);
+    EXPECT_EQ(reinterpret_cast<const char*>(&prof_ra_lr_next) - 1, chain[1]);
 }
 
 asm(
@@ -1492,10 +1492,10 @@ extern "C" void prof_ra_sigreturn_without_signal_cfi(void);
 TEST_F(ReturnAddressAttributionTest, UnsupportedSigreturnDoesNotFollowInterruptedFp) {
     VMTestAccessor recovering_vm;
     static uintptr_t scratch[64];
-    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_sigreturn_without_signal_cfi, scratch, 64);
+    ucontext_t uc = makeFabricatedContext(reinterpret_cast<const void*>(&prof_ra_sigreturn_without_signal_cfi), scratch, 64);
     // Model the FP-based fallback with a plausible but unrelated saved PC.
-    ((uintptr_t*)uc.uc_mcontext.regs[29])[0] = uc.uc_mcontext.regs[29] + 16;
-    ((uintptr_t*)uc.uc_mcontext.regs[29])[1] = (uintptr_t)&prof_ra_lr_next;
+    reinterpret_cast<uintptr_t*>(uc.uc_mcontext.regs[29])[0] = uc.uc_mcontext.regs[29] + 16;
+    reinterpret_cast<uintptr_t*>(uc.uc_mcontext.regs[29])[1] = reinterpret_cast<uintptr_t>(&prof_ra_lr_next);
     StackContext ctx{};
     bool truncated = false;
     const void* chain[9];

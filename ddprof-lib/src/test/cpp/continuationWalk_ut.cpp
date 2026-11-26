@@ -683,9 +683,9 @@ protected:
             // A recovered return PC is not an interrupted epilogue. Its full
             // frame is still present; the sampled LR belongs to the native leaf.
             stack[-4] = sampled_fp;
-            stack[-3] = (uintptr_t)sampled_pc;
-            frame.pc() = (uintptr_t)LEAF_PC;
-            frame.sp() = (uintptr_t)(stack - 4);
+            stack[-3] = reinterpret_cast<uintptr_t>(sampled_pc);
+            frame.pc() = reinterpret_cast<uintptr_t>(LEAF_PC);
+            frame.sp() = reinterpret_cast<uintptr_t>(stack - 4);
 #ifdef __aarch64__
 #ifdef __APPLE__
             machine_context.__ss.__lr = 1;
@@ -712,11 +712,11 @@ protected:
         if (native_wrapper) {
             int prefix_depth = test_case == EntryCase::NativeWrapperReturnPc ? 1 : 0;
             ASSERT_EQ(2 + prefix_depth, depth);
-            if (prefix_depth != 0) EXPECT_STREQ("continuation_sampled_leaf", (const char*)frames[0].method_id);
+            if (prefix_depth != 0) EXPECT_STREQ("continuation_sampled_leaf", reinterpret_cast<const char*>(frames[0].method_id));
             EXPECT_EQ(FrameType::encode(FRAME_JIT_COMPILED, 0), frames[prefix_depth].bci);
             EXPECT_EQ(JMETHODID_NOT_WALKABLE, frames[prefix_depth].method_id);
             EXPECT_EQ(BCI_NATIVE_FRAME, frames[1 + prefix_depth].bci);
-            EXPECT_STREQ("continuation_carrier", (const char*)frames[1 + prefix_depth].method_id);
+            EXPECT_STREQ("continuation_carrier", reinterpret_cast<const char*>(frames[1 + prefix_depth].method_id));
             EXPECT_FALSE(truncated);
             return;
         }
@@ -1692,7 +1692,7 @@ TEST_F(ContinuationWalkTest, NativeWrapperPhasesRetainCaller) {
     for (EntryPhase phase : {EntryPhase::BeforeSave, EntryPhase::AfterSave, EntryPhase::BeforeAllocation,
                             EntryPhase::Complete, EntryPhase::BeforeSpRestore, EntryPhase::AfterDeallocation,
                             EntryPhase::AfterRestore}) {
-        SCOPED_TRACE((int)phase);
+        SCOPED_TRACE(static_cast<int>(phase));
         assertCarrierFromEntry(phase, EntryCase::NativeWrapper);
     }
     assertCarrierFromEntry(EntryPhase::AfterRestore, EntryCase::NativeWrapperBranch);

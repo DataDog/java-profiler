@@ -185,7 +185,7 @@ TEST(DwarfEhFrame, RestoredLinkRegisterReplacesSavedReturnAddressSlot) {
         ASSERT_GE(count, 3);
         EXPECT_EQ(-8, rows.get()[0].pc_off);
         EXPECT_EQ(DW_LINK_REGISTER, rows.get()[1].pc_off);
-        EXPECT_EQ((u32)DW_REG_SP, rows.get()[1].cfa);
+        EXPECT_EQ(static_cast<u32>(DW_REG_SP), rows.get()[1].cfa);
     }
 }
 

@@ -145,7 +145,7 @@ class DwarfParser {
     };
 
     static CieInfo defaultCieInfo() {
-        return CieInfo{(u32)sizeof(instruction_t), -(int)sizeof(void*), false, false, false, INITIAL_PC_OFFSET};
+        return CieInfo{static_cast<u32>(sizeof(instruction_t)), -static_cast<int>(sizeof(void*)), false, false, false, INITIAL_PC_OFFSET};
     }
 
     // FrameDesc::flags value implied by `cie`.

@@ -227,7 +227,7 @@ class UnwindNMethodHelperContractTest : public UnwindHelperContractTest {
         memset(_nmethod, 0, sizeof(_nmethod));
         *(const void**)(bytes() + kEntryAddressOffset) = code();
         *(int*)(bytes() + kFrameSizeOffset) = 4;
-        *(int*)(bytes() + 24) = sizeof(_nmethod);
+        *reinterpret_cast<int*>(bytes() + 24) = sizeof(_nmethod);
         VMStructsTestAccessor::setBlobSizeOffset(24);
 
         VMStructsTestAccessor::setFrameSizeOffset(kFrameSizeOffset);
@@ -361,31 +361,31 @@ TEST_F(UnwindNMethodHelperContractTest, NativeWrapperPendingAllocationRestoresSa
     code()[0] = 0xa9bf7bfd;
     code()[1] = 0x910003fd;
     code()[2] = 0xd10143ff; // sub sp, sp, #80: 12-word full frame
-    *(int*)(bytes() + kFrameSizeOffset) = 12;
+    *reinterpret_cast<int*>(bytes() + kFrameSizeOffset) = 12;
     uintptr_t* slot = stackSlot();
     slot[0] = kOtherSlot;
     slot[1] = kSenderRa;
     for (int phase : {1, 2}) {
-        uintptr_t pc = (uintptr_t)(code() + phase);
-        uintptr_t sp = (uintptr_t)slot;
+        uintptr_t pc = reinterpret_cast<uintptr_t>(code() + phase);
+        uintptr_t sp = reinterpret_cast<uintptr_t>(slot);
         uintptr_t fp = sp;
         HotspotStackFrame frame(&_uc);
         ASSERT_TRUE(frame.unwindPrologue(nmethod(), pc, sp, fp));
         EXPECT_EQ(kSenderRa, pc);
-        EXPECT_EQ((uintptr_t)(slot + 2), sp);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(slot + 2), sp);
         EXPECT_EQ(kOtherSlot, fp);
     }
     for (int words : {-2, 1, 3, 11, 13, 514}) {
         SCOPED_TRACE(words);
-        *(int*)(bytes() + kFrameSizeOffset) = words;
-        uintptr_t pc = (uintptr_t)(code() + 2);
-        uintptr_t sp = (uintptr_t)slot;
+        *reinterpret_cast<int*>(bytes() + kFrameSizeOffset) = words;
+        uintptr_t pc = reinterpret_cast<uintptr_t>(code() + 2);
+        uintptr_t sp = reinterpret_cast<uintptr_t>(slot);
         uintptr_t fp = sp;
         HotspotStackFrame frame(&_uc);
         ASSERT_TRUE(frame.unwindPrologue(nmethod(), pc, sp, fp));
         EXPECT_EQ(kLinkReg, pc);
-        EXPECT_EQ((uintptr_t)slot, sp);
-        EXPECT_EQ((uintptr_t)slot, fp);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(slot), sp);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(slot), fp);
     }
 }
 
@@ -397,13 +397,13 @@ TEST_F(UnwindNMethodHelperContractTest, NativeWrapperEpilogueRestoresOnlyTheLive
         uintptr_t* slot = stackSlot();
         slot[0] = kOtherSlot;
         slot[1] = kSenderRa;
-        uintptr_t pc = (uintptr_t)(code() + 4 + phase);
-        uintptr_t sp = (uintptr_t)slot;
+        uintptr_t pc = reinterpret_cast<uintptr_t>(code() + 4 + phase);
+        uintptr_t sp = reinterpret_cast<uintptr_t>(slot);
         uintptr_t fp = phase == 1 ? sp : kOtherSlot;
         HotspotStackFrame frame(&_uc);
         ASSERT_TRUE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
         EXPECT_EQ(phase == 1 ? kSenderRa : kLinkReg, pc);
-        EXPECT_EQ((uintptr_t)slot + (phase == 1 ? 16 : 0), sp);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(slot) + (phase == 1 ? 16 : 0), sp);
         EXPECT_EQ(kOtherSlot, fp);
     }
 }
@@ -414,8 +414,8 @@ TEST_F(UnwindNMethodHelperContractTest, NativeWrapperEpilogueRejectsAdjacentLook
         SCOPED_TRACE(changed);
         memcpy(code() + 4, tail, sizeof(tail));
         code()[4 + changed] ^= 1; // Wrong register/instruction, not the generated tail.
-        uintptr_t pc = (uintptr_t)(code() + 6);
-        uintptr_t sp = (uintptr_t)stackSlot();
+        uintptr_t pc = reinterpret_cast<uintptr_t>(code() + 6);
+        uintptr_t sp = reinterpret_cast<uintptr_t>(stackSlot());
         uintptr_t fp = sp;
         HotspotStackFrame frame(&_uc);
         EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
@@ -431,34 +431,34 @@ TEST_F(UnwindNMethodHelperContractTest, NativeWrapperEpilogueAcceptsAuthenticati
             slot[0] = kOtherSlot;
             slot[1] = kSenderRa | (1ULL << 60); // Saved LR can still carry PAC bits.
             setLinkRegister(kLinkReg | (1ULL << 60));
-            uintptr_t pc = (uintptr_t)(code() + 4 + phase);
-            uintptr_t sp = (uintptr_t)slot;
+            uintptr_t pc = reinterpret_cast<uintptr_t>(code() + 4 + phase);
+            uintptr_t sp = reinterpret_cast<uintptr_t>(slot);
             uintptr_t fp = phase == 1 ? sp : kOtherSlot;
             HotspotStackFrame frame(&_uc);
             ASSERT_TRUE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
             EXPECT_EQ(phase == 1 ? kSenderRa : kLinkReg, pc);
-            EXPECT_EQ((uintptr_t)slot + (phase == 1 ? 16 : 0), sp);
+            EXPECT_EQ(reinterpret_cast<uintptr_t>(slot) + (phase == 1 ? 16 : 0), sp);
             EXPECT_EQ(kOtherSlot, fp);
         }
     }
-    uintptr_t pc = (uintptr_t)(code() + 7);
-    uintptr_t sp = (uintptr_t)stackSlot();
+    uintptr_t pc = reinterpret_cast<uintptr_t>(code() + 7);
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stackSlot());
     uintptr_t fp = sp;
     HotspotStackFrame frame(&_uc);
     // Ret remains readable in the allocation but lies outside this code blob.
     for (int bytes_present = 0; bytes_present < 4; bytes_present++) {
         SCOPED_TRACE(bytes_present);
-        pc = (uintptr_t)(code() + 7);
-        *(int*)(bytes() + 24) = (char*)(code() + 9) - bytes() + bytes_present;
+        pc = reinterpret_cast<uintptr_t>(code() + 7);
+        *reinterpret_cast<int*>(bytes() + 24) = reinterpret_cast<char*>(code() + 9) - bytes() + bytes_present;
         EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
     }
     for (int bytes_present = 0; bytes_present < 4; bytes_present++) {
-        pc = (uintptr_t)(code() + 5); // Pending ldp, before the optional AUTI word.
-        *(int*)(bytes() + 24) = (char*)(code() + 6) - bytes() + bytes_present;
+        pc = reinterpret_cast<uintptr_t>(code() + 5); // Pending ldp, before the optional AUTI word.
+        *reinterpret_cast<int*>(bytes() + 24) = reinterpret_cast<char*>(code() + 6) - bytes() + bytes_present;
         EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
     }
-    pc = (uintptr_t)(code() + 7);
-    *(int*)(bytes() + 24) = sizeof(_nmethod);
+    pc = reinterpret_cast<uintptr_t>(code() + 7);
+    *reinterpret_cast<int*>(bytes() + 24) = sizeof(_nmethod);
     *(const void**)(bytes() + kEntryAddressOffset) = code() + 5;
     EXPECT_FALSE(frame.unwindEpilogue(nmethod(), pc, sp, fp));
 }

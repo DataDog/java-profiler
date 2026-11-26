@@ -29,7 +29,7 @@ class StackFrame {
     // True only for the interrupted instruction in the current register context.
     // Signal-frame recovery can replace this view without modifying either context.
     bool isInterruptedPC(const void* address) {
-        return _ucontext != nullptr && pc() == (uintptr_t)address;
+        return _ucontext != nullptr && pc() == reinterpret_cast<uintptr_t>(address);
     }
 
     void restore(uintptr_t saved_pc, uintptr_t saved_sp, uintptr_t saved_fp) {
