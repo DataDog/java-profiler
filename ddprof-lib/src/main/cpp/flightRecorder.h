@@ -318,12 +318,10 @@ private:
   int _fd;
   RecordingOutput _output;
   // Cold sequences (constructor, chunk finish, chunk restart) write only to
-  // _buf[0]. After their first failed flush, _buf[0] serves as scratch and its
-  // bytes at the failure wait in _cold_failure_buf until ColdIoScope ends.
-  // Preallocated: flush() is reachable from signal handlers, so it must not allocate.
+  // _buf[0]. After their first failed flush, _buf[0] serves as scratch and is
+  // left empty when ColdIoScope ends.
   bool _cold_io = true;
   bool _cold_failed = false;
-  RecordingBuffer _cold_failure_buf;
   class ColdIoScope {
     Recording& _rec;
   public:

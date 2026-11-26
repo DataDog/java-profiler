@@ -34,7 +34,6 @@ Profiler
  └─ FlightRecorder _jfr           _rec_lock (SpinLock), _filename, _args
      └─ Recording* _rec           one open file descriptor (_fd)
          ├─ RecordingBuffer _buf[CONCURRENCY_LEVEL]     event buffers, one per lock stripe
-         ├─ RecordingBuffer _cold_failure_buf    _buf[0] bytes held after a failed cold flush
          ├─ ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2]  threads seen, per stripe
          ├─ Buffer _cpu_monitor_buf
          └─ MethodMap _method_map  method constant pool, kept across chunks
@@ -114,13 +113,13 @@ the recording rather than the neighbouring buffer (`buffers.h:15-22`,
 `Recording::flushIfNeeded(buf, limit)` flushes when `offset() >= limit`, with
 `limit` defaulting to `JFR_EVENT_FLUSH_THRESHOLD` (`flightRecorder.cpp:1368-1372`).
 `Recording::flush()` reserves a disjoint file range and uses bounded `pwrite()`
-retries. It resets the buffer only after every byte is written. Output failure
+retries. Outside cold sequences it resets the buffer only after every byte is written. Output failure
 is sticky and stops later event admission.
 Cold sequences (the constructor, `finishChunk()` and the `switchChunk()` restart)
 write only to stripe 0. After their first failed flush, that stripe serves as
 scratch for the rest of the sequence. The sequence then returns before its next
-step that changes shared state, and stripe 0 again holds the bytes it held at the
-failure.
+step that changes shared state and leaves stripe 0 empty; the failed output
+never reads its bytes again.
 There is no background writer: the thread that fills a buffer past the
 threshold, which can be a signal handler, writes it out.
 

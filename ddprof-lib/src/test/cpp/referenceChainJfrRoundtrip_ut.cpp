@@ -664,7 +664,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, FailedDeliveryRetainsSealedChunksForTheNe
     // their original chunk headers. This case makes no original-JVM claim.
 }
 
-TEST_F(ReferenceChainJfrRoundtripTest, FailedStopRetainsBuffersReferencesAndRefusesRestart) {
+TEST_F(ReferenceChainJfrRoundtripTest, FailedStopEmptiesBufferKeepsReferencesAndRefusesRestart) {
     Arguments args;
     char path[] = "/tmp/ddprof-failed-stop-XXXXXX";
     int temporary = mkstemp(path);
@@ -689,8 +689,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, FailedStopRetainsBuffersReferencesAndRefu
     ASSERT_TRUE(recorder.recordEvent(0, 123, 0, BCI_WALL, &event));
     Recording* owned = FlightRecorderTestAccessor::ownedRecording(recorder);
     Buffer* buffer = owned->buffer(0);
-    std::vector<char> original(buffer->data(), buffer->data() + buffer->offset());
-    ASSERT_FALSE(original.empty());
+    ASSERT_GT(buffer->offset(), 0);
     struct rlimit original_limit;
     ASSERT_EQ(0, getrlimit(RLIMIT_FSIZE, &original_limit));
     struct sigaction previous, ignored{};
@@ -708,8 +707,8 @@ TEST_F(ReferenceChainJfrRoundtripTest, FailedStopRetainsBuffersReferencesAndRefu
     ASSERT_EQ(0, signal_restored);
     EXPECT_TRUE(stopped);
     EXPECT_EQ(owned, FlightRecorderTestAccessor::ownedRecording(recorder));
-    EXPECT_GE(buffer->offset(), static_cast<int>(original.size()));
-    EXPECT_EQ(0, memcmp(buffer->data(), original.data(), original.size()));
+    // The failed cold flush discards stripe 0's bytes; its thread IDs stay.
+    EXPECT_EQ(0, buffer->offset());
     std::unordered_set<int> references;
     RecordingTestAccessor::collectReferences(*owned, references);
     EXPECT_EQ(1U, references.count(123));
@@ -868,7 +867,8 @@ static void assertJvmInfoReleasesPropertyBuffers(jvmtiInterface_1_& jvmti_table,
     EXPECT_EQ(g_jvmti_property_allocations - allocated,
               g_jvmti_property_releases - released);
     EXPECT_FALSE(recording.outputGood());
-    EXPECT_EQ(retained, buffer->offset());
+    // A cold failure empties stripe 0; a hot preflush failure keeps its bytes.
+    EXPECT_EQ(cold_path ? 0 : retained, buffer->offset());
     RecordingTestAccessor::setAgentProperties(nullptr);
 }
 
@@ -946,7 +946,7 @@ static void assertSystemPropertiesReleaseAllKeys(jvmtiInterface_1_& jvmti_table,
         EXPECT_TRUE(recording.outputGood());
     } else {
         EXPECT_FALSE(recording.outputGood());
-        EXPECT_EQ(retained, buffer->offset());
+        EXPECT_EQ(exit_mode == kColdFailure ? 0 : retained, buffer->offset());
     }
 }
 
@@ -1004,9 +1004,9 @@ int unlinkedTemporaryFd() {
 }
 } // namespace
 
-// The first finishChunk() step fails. Later steps must not touch shared state,
-// and stripe 0 must again hold exactly the bytes and references it held.
-TEST_F(ReferenceChainJfrRoundtripTest, ColdChunkFailureSkipsLaterStepsAndRestoresTheBuffer) {
+// The first finishChunk() step fails. Later steps must not touch shared state;
+// stripe 0 ends empty while its thread references survive.
+TEST_F(ReferenceChainJfrRoundtripTest, ColdChunkFailureSkipsLaterStepsAndEmptiesTheBuffer) {
     Arguments args = coldFailureArgs();
     int source_fd = unlinkedTemporaryFd();
     ASSERT_GE(source_fd, 0);
@@ -1017,7 +1017,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, ColdChunkFailureSkipsLaterStepsAndRestore
     ASSERT_TRUE(recording.addThread(0, 656));
     recording.recordMethodSample(recording.buffer(0), 656, 0, 0, &sample);
     Buffer* buffer = recording.buffer(0);
-    std::vector<char> original(buffer->data(), buffer->data() + buffer->offset());
+    ASSERT_GT(buffer->offset(), 0);
     Buffer* cpu = RecordingTestAccessor::cpuMonitorBuffer(recording);
     cpu->put8(0);
     constexpr long long kUnsampled = -4242;
@@ -1036,8 +1036,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, ColdChunkFailureSkipsLaterStepsAndRestore
     EXPECT_EQ(kUnsampled, Counters::getCounter(NATIVE_MEM_LIVE_BYTES))
         << "native-memory sampling runs after the failed cpu-monitor flush";
     EXPECT_EQ(1, cpu->offset());
-    ASSERT_EQ(static_cast<int>(original.size()), buffer->offset());
-    EXPECT_EQ(0, memcmp(buffer->data(), original.data(), original.size()));
+    EXPECT_EQ(0, buffer->offset());
     std::unordered_set<int> references;
     RecordingTestAccessor::collectReferences(recording, references);
     EXPECT_EQ(1U, references.count(656));
@@ -1060,7 +1059,6 @@ TEST_F(ReferenceChainJfrRoundtripTest, ColdWriterContinuesPastFailureWithoutOver
         recording.recordMethodSample(buffer, 657, 0, 0, &sample);
     }
     buffer->skip(RECORDING_BUFFER_LIMIT - 1 - buffer->offset());
-    std::vector<char> original(buffer->data(), buffer->data() + buffer->offset());
     int tid = 100000;
     for (int stripe = 0; stripe < CONCURRENCY_LEVEL; ++stripe) {
         for (int slot = 0; slot < ThreadIdTable::capacity(); ++slot) {
@@ -1068,20 +1066,21 @@ TEST_F(ReferenceChainJfrRoundtripTest, ColdWriterContinuesPastFailureWithoutOver
         }
     }
 
+    int in_scope = -1;
     {
         OneByteFileSizeLimit limit;
         ASSERT_TRUE(limit.installed());
         RecordingTestAccessor::runCold(recording, [&] {
             RecordingTestAccessor::writeThreads(recording, buffer);
+            in_scope = buffer->offset();
         });
     }
 
     EXPECT_FALSE(recording.outputGood());
-    // The failure keeps the pool header written before the first flush:
-    // T_THREAD (1 byte) and the 4097-thread count (2 varint bytes).
-    constexpr int kPoolHeaderBytes = 3;
-    ASSERT_EQ(static_cast<int>(original.size()) + kPoolHeaderBytes, buffer->offset());
-    EXPECT_EQ(0, memcmp(buffer->data(), original.data(), original.size()));
+    // Each failed flush empties stripe 0, so the last entries fit below the limit.
+    EXPECT_GT(in_scope, 0);
+    EXPECT_LE(in_scope, RECORDING_BUFFER_LIMIT);
+    EXPECT_EQ(0, buffer->offset());
 }
 
 // The constructor's final flush fails: start() must close the descriptor once,

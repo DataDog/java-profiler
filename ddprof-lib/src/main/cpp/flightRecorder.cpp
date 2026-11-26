@@ -1455,8 +1455,8 @@ bool Recording::parseAgentProperties() {
 bool Recording::flush(Buffer *buf) {
   size_t bytes = buf->offset();
   if (!_output.append(buf->data(), bytes)) {
-    // Failed bytes stay owned with every dictionary they reference; only a
-    // cold sequence moves _buf[0]'s bytes aside so it can keep writing.
+    // Hot-path bytes stay owned with every dictionary they reference; a cold
+    // sequence discards _buf[0]'s bytes so it can keep writing.
     if (_cold_io) holdColdFailure();
     return false;
   }
@@ -1466,13 +1466,10 @@ bool Recording::flush(Buffer *buf) {
 }
 
 // Cold writers keep appending to _buf[0] until their sequence checks the
-// output, so every failed cold flush empties it; the first one saves its bytes.
+// output, so every failed cold flush empties it. Its bytes are not kept: the
+// output stays failed and no later step reads them.
 void Recording::holdColdFailure() {
-  if (!_cold_failed) {
-    _cold_failed = true;
-    _cold_failure_buf.reset();
-    _cold_failure_buf.put(_buf->data(), static_cast<u32>(_buf->offset()));
-  }
+  _cold_failed = true;
   _buf->reset();
 }
 
@@ -1481,8 +1478,6 @@ void Recording::endColdIo() {
   if (!_cold_failed) return;
   _cold_failed = false;
   _buf->reset();
-  _buf->put(_cold_failure_buf.data(), static_cast<u32>(_cold_failure_buf.offset()));
-  _cold_failure_buf.reset();
 }
 
 bool Recording::patch(Buffer* buf, size_t size, off_t offset) {
