@@ -27,6 +27,13 @@ public class JavaProfilerApiSurfaceTest {
   }
 
   @Test
+  public void javaProfilerTestSupportIsNotPublicApi() {
+    assertFalse(
+        Modifier.isPublic(JavaProfilerTestSupport.class.getModifiers()),
+        "JavaProfilerTestSupport is a test seam; tests reach it via WallStartFailureTestHooks");
+  }
+
+  @Test
   public void ownedBlockHooksAreNotPublicApiBeforeTaskBlockInstrumentation() throws Exception {
     assertNotPublic(JavaProfiler.class.getDeclaredMethod("parkEnter"));
     assertNotPublic(JavaProfiler.class.getDeclaredMethod("parkExit", long.class, long.class));

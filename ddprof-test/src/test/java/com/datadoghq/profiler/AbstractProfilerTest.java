@@ -248,6 +248,7 @@ public abstract class AbstractProfilerTest {
             ".jfr");
     CREATED_RECORDINGS.add(jfrDump);
     profiler = JavaProfiler.getInstance();
+    beforeProfilerStart();
     String command =
         "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval =
@@ -322,6 +323,12 @@ public abstract class AbstractProfilerTest {
         failure.addSuppressed(t);
       }
     }
+    // Cleared here, not in stopProfiler(): a test may stop and resume with its context still
+    // applied, but the context must not leak into the next test on this thread. profiler is
+    // null when a @BeforeEach assumption aborted before the recording started.
+    if (profiler != null) {
+      profiler.clearTraceContext();
+    }
     // Bookkeeping must run even when after() or stopProfiler() failed: skipping it
     // leaks recordings and hides sanitizer errors detected during the test.
     dumpSanitizerLogs();
@@ -351,6 +358,16 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void before() throws Exception {}
+
+  /**
+   * Runs after the profiler instance is available but before the recording starts.
+   *
+   * <p>Tests may override this hook when their setup must predate profiler thread-event
+   * registration.
+   *
+   * @throws Exception if setup fails
+   */
+  protected void beforeProfilerStart() throws Exception {}
 
   protected void after() throws Exception {}
 

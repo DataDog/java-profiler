@@ -4,6 +4,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "profilerRangeTestSupport.h"
 
 #include "../../main/cpp/counters.h"
 #include "../../main/cpp/flightRecorder.h"
@@ -545,7 +546,7 @@ protected:
         uintptr_t b = (uintptr_t)&HotspotSupport::walkJavaStack;
         _range_lo = std::min(a, b) - kRangeMargin;
         _range_hi = std::max(a, b) + kRangeMargin;
-        Profiler::setAddressRangeForTest(_range_lo, _range_hi);
+        setProfilerRangeWithSafeAccessForTest(_range_lo, _range_hi);
     }
 
     void TearDown() override {

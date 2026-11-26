@@ -92,6 +92,71 @@ SIGSEGV occurs
 
 `busHandler()` does the same for SIGBUS. An intercepted library that chains on to the `oldact` we returned reaches the JVM's original handler.
 
+## Crash-handler bootstrap
+
+`segvHandler`/`busHandler` first filter by fault PC with
+`Profiler::isProfilerOwnedFault()`: a PC inside this library (SafeAccess stubs,
+`checkFault` walks), a WX trap page, or the JDK-8313796 interpreter range. While
+the library range is unknown every fault counts as owned. Other faults belong
+to the JVM and chain before any syscall, TLS read, registry lookup or fence.
+
+Owned faults then consult `ThreadExitRegistry` before TLS access.
+Marked threads bypass `SignalHandlerScope` and `crashHandlerInternal` and
+chain to the preceding handler, or the default action when none exists.
+
+Early marks cover the pthread-create wrapper, JVMTI ThreadEnd, and normal
+engine returns (wall timer, refresher, reference-chain BFS, J9 sampler).
+The `ProfiledThread` TSD destructor supplies a later fallback mark.
+
+Every mark site blocks profiling signals (`blockProfilingForExit`) before
+publishing the identity: a marked thread's fault chains out without
+SafeAccess or walk recovery, so a sampler must never be admitted after the
+mark. The window before the block keeps only the pre-registry handler-bootstrap
+exposure.
+
+Registry identities use raw `gettid` (Linux) and `thread_selfid` (Darwin)
+syscalls. Darwin profiler IDs remain Mach ports for Mach API users.
+Registration clears stale registry identities when a thread ID is reused.
+
+The 4096-slot registry scans all 64 probe slots, including deletion holes.
+Removal uses compare-exchange so eviction cannot make it erase a replacement.
+No allocation, TLS access or locking is required for membership operations.
+
+On Linux, `CrashBootstrapFence` blocks SIGSEGV, SIGBUS, SIGPROF and SIGVTALRM
+across the TLS prefix. A blocked synchronous fault takes the default action;
+profiling walks are deferred so they cannot inherit blocked recovery faults.
+
+The fence is a no-op on macOS. A blocked synchronous fault stays pending
+there and the thread spins on the faulting instruction. Masking that fault
+would live-lock the thread instead of terminating it.
+
+The fence is explicitly disarmed before safefetch, `checkFault` or chaining.
+Crash-depth admission is cached under the fence; safefetch precedes rejection
+and undoes successful admission. `checkFault` resets depth before `siglongjmp`.
+
+Each owned crash-handler entry makes one raw identity syscall for the
+exit-registry lookup. On Linux the fence adds two mask syscalls, so an unmarked
+owned entry costs at least three; recovery and chaining add their own. Faults
+the PC filter rejects pay none of these. The empty `SIGIO` wakeup handler only interrupts sleep and does not
+look up TLS or change signal depth.
+
+These handlers use the interrupted stack, not `sigaltstack`. An unusable
+handler-entry stack can fault before the registry or fence runs. Darwin has
+no fence, so an unmarked thread can still recurse during bootstrap.
+
+Unhooked native threads remain unmarked until their TSD destructor starts.
+J9 cancellation skips the normal-return mark. The wrapper covers cancellation
+only for threads it wraps; another mark family is not guaranteed.
+
+Marks persist across lifetimes until registration clears them or pressure
+evicts them. Once a 64-slot window is full, one colliding insertion can evict
+even a recent mark; 64 simultaneous exits are not required.
+
+A reused identity can bypass recovery until registration or a sampled
+allocation clears the mark (`ThreadExitRegistry::isCurrentExiting()`). A thread
+that does neither can retain that degradation for its whole lifetime. The crash
+handler keeps the raw check: the reuse test reads TLS, which can fault here.
+
 ## Scope
 
 All native libraries that import `sigaction` are patched, including:
