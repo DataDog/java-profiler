@@ -57,6 +57,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _plt_offset = 0;
   _plt_size = 0;
   _debug_symbols = false;
+  _netty_epoll_markers = 0;
 
   // Initialize build-id fields
   _build_id = nullptr;
@@ -97,6 +98,7 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _plt_offset = other._plt_offset;
   _plt_size = other._plt_size;
   _debug_symbols = other._debug_symbols;
+  _netty_epoll_markers = other._netty_epoll_markers;
 
   // Copy build-id information
   _build_id_len = other._build_id_len;
@@ -241,6 +243,13 @@ CodeBlob *CodeCache::commitAdd(const void *start, int length,
   _blobs[_count]._end = end;
   _blobs[_count]._name = prepared.name;
   _count++;
+  if (start != nullptr) {
+    if (strcmp(prepared.name, "JNI_OnLoad_netty_transport_native_epoll") == 0) {
+      _netty_epoll_markers |= 1;
+    } else if (strcmp(prepared.name, "JNI_OnUnload_netty_transport_native_epoll") == 0) {
+      _netty_epoll_markers |= 2;
+    }
+  }
   // The cache owns both allocations now; the PreparedAdd destructor must not
   // free them.
   prepared.name = nullptr;
@@ -450,6 +459,8 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_epoll_wait, entry);
           } else if (strcmp(name, "epoll_pwait") == 0) {
               saveImport(im_epoll_pwait, entry);
+          } else if (strcmp(name, "epoll_pwait2") == 0) {
+              saveImport(im_epoll_pwait2, entry);
           }
           break;
       case 'm':

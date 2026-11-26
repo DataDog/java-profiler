@@ -59,6 +59,7 @@ enum ImportId {
   im_ppoll,
   im_select,
   im_pselect,
+  im_epoll_pwait2,
   NUM_IMPORTS
 };
 
@@ -217,6 +218,7 @@ private:
   // LibraryPatcher and MallocHooker protect import writes with different locks.
   std::atomic<bool> _imports_patchable{false};
   bool _debug_symbols;
+  u8 _netty_epoll_markers;
 
   FrameDesc *_dwarf_table;
   int _dwarf_table_length;
@@ -303,6 +305,8 @@ public:
   }
 
   bool hasDebugSymbols() const { return _debug_symbols; }
+  // Ingested before the native CodeCache is published; discovery never rescans symbols.
+  bool hasNettyEpollMarkers() const { return _netty_epoll_markers == 3; }
 
   void setDebugSymbols(bool debug_symbols) { _debug_symbols = debug_symbols; }
 

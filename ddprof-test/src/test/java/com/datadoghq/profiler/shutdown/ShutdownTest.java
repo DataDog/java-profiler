@@ -44,8 +44,8 @@ public class ShutdownTest {
   }
 
   /**
-   * Stops the profiler, retrying the documented-retryable "did not drain" outcome per {@link
-   * AbstractProfilerTest#stopRetryingOnDrainTimeout}.
+   * Exercises repeated starts and bounded retryable stops via {@link
+   * AbstractProfilerTest#stopRetryingOnTransientFailure}.
    */
   private static void runTest(JavaProfiler profiler, String command) throws IOException {
     Path rootDir = Paths.get("/tmp/recordings");
@@ -68,7 +68,7 @@ public class ShutdownTest {
                       } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                       } finally {
-                        AbstractProfilerTest.stopRetryingOnDrainTimeout(profiler);
+                        AbstractProfilerTest.stopRetryingOnTransientFailure(profiler);
                       }
                     } catch (Throwable error) {
                       errors.offer(error);

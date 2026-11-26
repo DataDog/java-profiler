@@ -62,6 +62,10 @@ public class ProfilerTestRunner {
 
     // Build discovery request
     LauncherDiscoveryRequestBuilder requestBuilder = LauncherDiscoveryRequestBuilder.request();
+    // These cases have their own process owner; this runner already has the complete runtime
+    // classpath.
+    requestBuilder.filters(TagFilter.excludeTags("netty-child"));
+    System.setProperty("ddprof.netty.classpath", System.getProperty("java.class.path"));
 
     if (testFilter != null && !testFilter.isEmpty()) {
       // Apply test filter based on format

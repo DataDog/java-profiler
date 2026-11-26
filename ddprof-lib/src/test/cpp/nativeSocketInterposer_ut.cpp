@@ -323,6 +323,12 @@ int stub_epoll_wait(int, struct epoll_event*, int, int) {
   return g_epoll_wait_ret.load();
 }
 
+int stub_epoll_pwait2(int, struct epoll_event*, int, const struct timespec*, const sigset_t*) {
+  g_epoll_pwait_calls++;
+  errno = EPIPE;
+  return g_epoll_pwait_ret.load();
+}
+
 int stub_epoll_pwait(int, struct epoll_event*, int, int, const sigset_t*) {
   g_epoll_pwait_calls++;
   return g_epoll_pwait_ret.load();
@@ -390,6 +396,8 @@ protected:
                         reinterpret_cast<void*>(stub_epoll_wait));
     setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_PWAIT,
                         reinterpret_cast<void*>(stub_epoll_pwait));
+    setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_PWAIT2,
+                        reinterpret_cast<void*>(stub_epoll_pwait2));
     setOriginalFunction(NativeSocketInterposer::HOOK_POLL,
                         reinterpret_cast<void*>(stub_poll));
     setOriginalFunction(NativeSocketInterposer::HOOK_PPOLL,
@@ -465,6 +473,7 @@ protected:
     setOriginalFunction(NativeSocketInterposer::HOOK_RECVMSG, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_WAIT, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_PWAIT, nullptr);
+    setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_PWAIT2, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_POLL, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_PPOLL, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_SELECT, nullptr);
@@ -921,6 +930,26 @@ TEST_F(NativeSocketInterposerHookTest,
   close(fds[1]);
 }
 
+TEST_F(NativeSocketInterposerHookTest, EpollPwait2PreservesErrnoAndForkBypass) {
+  struct epoll_event event;
+  g_epoll_pwait_ret = -1;
+  errno = E2BIG;
+  EXPECT_EQ(-1, NativeSocketInterposer::epoll_pwait2_hook(-1, &event, 1, nullptr, nullptr));
+  EXPECT_EQ(EPIPE, errno);
+  EXPECT_EQ(1, g_epoll_pwait_calls.load());
+  pid_t saved = NativeSocketInterposer::setHookOwnerPidForTest(getpid() + 1);
+  errno = E2BIG;
+  EXPECT_EQ(-1, NativeSocketInterposer::fork_safe_epoll_pwait2_hook(
+                    -1, &event, 1, reinterpret_cast<const timespec*>(1), nullptr));
+  EXPECT_EQ(EPIPE, errno);
+  EXPECT_EQ(2, g_epoll_pwait_calls.load());
+  NativeSocketInterposer::setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_PWAIT2, nullptr);
+  EXPECT_EQ(-1, NativeSocketInterposer::fork_safe_epoll_pwait2_hook(
+                    -1, &event, 1, nullptr, nullptr));
+  EXPECT_EQ(ENOSYS, errno);
+  NativeSocketInterposer::setHookOwnerPidForTest(saved);
+}
+
 TEST_F(NativeSocketInterposerHookTest, ForkSafeHookDetectsRealForkChild) {
   int fds[2];
   ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
@@ -934,7 +963,11 @@ TEST_F(NativeSocketInterposerHookTest, ForkSafeHookDetectsRealForkChild) {
   if (child == 0) {
     ssize_t ret = NativeSocketInterposer::fork_safe_send_hook(
         fds[0], buf, sizeof(buf), 0);
-    _exit(ret == 43 ? 0 : 1);
+    struct epoll_event event;
+    g_epoll_pwait_ret = -1;
+    int wait_result = NativeSocketInterposer::fork_safe_epoll_pwait2_hook(
+        -1, &event, 1, reinterpret_cast<const timespec*>(1), nullptr);
+    _exit(ret == 43 && wait_result == -1 && errno == EPIPE ? 0 : 1);
   }
 
   int status = 0;
@@ -1162,6 +1195,59 @@ TEST(LibraryPatcherSocketStateTest,
     EXPECT_NE(nullptr, fork_safe) << hook_index;
     EXPECT_NE(regular, fork_safe) << hook_index;
   }
+}
+
+TEST(LibraryPatcherSocketStateTest, AdmitsNettyNativeEpollBySymbolOutsideJdkDirectory) {
+  CodeCache netty("libnetty_transport_native_epoll_x86_64.so");
+  CodeCache netty_shaded("libio_grpc_netty_shaded_netty_transport_native_epoll_x86_64.so");
+  CodeCache netty_partial("libnetty_transport_native_epoll_x86_64.so");
+
+  char marker_addresses[2] = {};
+  netty.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll");
+  netty.add(&marker_addresses[1], 1, "JNI_OnUnload_netty_transport_native_epoll");
+  netty_shaded.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll");
+  netty_shaded.add(&marker_addresses[1], 1, "JNI_OnUnload_netty_transport_native_epoll");
+  netty_partial.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll");
+
+  // Admitted even though it is not located in the JDK's own lib directory,
+  // and regardless of the .so's basename (shading relocates the filename).
+  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL,
+            LibraryPatcher::socket_patch_target_for_test(
+                &netty, "libnetty_transport_native_epoll_x86_64.so", false));
+  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL,
+            LibraryPatcher::socket_patch_target_for_test(
+                &netty_shaded,
+                "libio_grpc_netty_shaded_netty_transport_native_epoll_x86_64.so",
+                false));
+
+  // Requires both symbols, mirroring the IBM JCL bridge's all-or-nothing check.
+  EXPECT_EQ(SOCKET_PATCH_NONE,
+            LibraryPatcher::socket_patch_target_for_test(
+                &netty_partial,
+                "libnetty_transport_native_epoll_x86_64.so", false));
+}
+
+TEST(LibraryPatcherSocketStateTest, NettyMarkersTrackIngestionAndCopy) {
+  CodeCache source("arbitrarily-renamed.so");
+  char marker_addresses[2] = {};
+  auto target = [](CodeCache& cache) {
+    return LibraryPatcher::socket_patch_target_for_test(
+        &cache, "arbitrarily-renamed.so", false);
+  };
+  EXPECT_EQ(SOCKET_PATCH_NONE, target(source));
+  source.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll");
+  EXPECT_EQ(SOCKET_PATCH_NONE, target(source));
+  source.add(&marker_addresses[1], 1, "JNI_OnUnload_netty_transport_native_epoll");
+  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL, target(source));
+  source.sort();
+  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL, target(source));
+  CodeCache copied(source);
+  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL, target(copied));
+
+  CodeCache partial("unknown-markers.so");
+  partial.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll_suffix");
+  partial.add(&marker_addresses[1], 1, "JNI_OnUnload_netty_transport_native_epoll");
+  EXPECT_EQ(SOCKET_PATCH_NONE, target(partial));
 }
 
 TEST_F(LibraryPatcherImportTest, PatchesAndRestoresEveryImportLocation) {

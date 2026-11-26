@@ -1329,7 +1329,10 @@ static bool isFullyMappedOnMusl(const CodeCache* cc) {
     return dl_iterate_phdr(matchImageBase, const_cast<char*>(cc->imageBase())) != 0;
 }
 
-UnloadProtection::UnloadProtection(const CodeCache *cc) {
+UnloadProtection::UnloadProtection(const CodeCache *cc)
+    : UnloadProtection(cc, cc->name()) {}
+
+UnloadProtection::UnloadProtection(const CodeCache* cc, const char* loader_name) {
     if (isMainExecutable(cc->imageBase(), cc->maxAddress()) || isLoader(cc->imageBase())) {
         _lib_handle = NULL;
         _valid = true;
@@ -1345,7 +1348,7 @@ UnloadProtection::UnloadProtection(const CodeCache *cc) {
     }
 
     // dlopen() can reopen previously loaded libraries even if the underlying file has been deleted
-    const char* stripped_name = cc->name();
+    const char* stripped_name = loader_name;
     size_t name_len = strlen(stripped_name);
     if (name_len > 10 && strcmp(stripped_name + name_len - 10, " (deleted)") == 0) {
         char* buf = (char*) alloca(name_len - 9);

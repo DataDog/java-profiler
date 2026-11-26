@@ -48,5 +48,22 @@ write_xml "$CASE/ddprof-test/build/test-results/testDebug"
   || fail "a populated snapshot must still reach the artifact"
 pass "a populated snapshot is shipped as-is"
 
+# Netty's independently launched JVM keeps diagnostics below the build root.
+CASE="$TEMP_DIR/case-netty-child"
+CHILD="ddprof-test/build/netty-epoll/positive-timeout/attempt-1"
+mkdir -p "$CASE/$CHILD" "$CASE/build/logs"
+write_xml "$CASE/flake-evidence/attempt-1"
+write_xml "$CASE/$CHILD/junit"
+printf '%s\n' 'java -Dfixture=netty' > "$CASE/$CHILD/argv.txt"
+printf '%s\n' 'child failure witness' > "$CASE/$CHILD/child.log"
+printf '%s\n' 'fatal error witness' > "$CASE/$CHILD/hs_err_pid123.log"
+( cd "$CASE" && "$SCRIPT" >/dev/null 2>&1 )
+for relative in argv.txt child.log hs_err_pid123.log junit/TEST-com.dd.Some.xml; do
+  cmp "$CASE/$CHILD/$relative" \
+    "$CASE/test-reports/netty-epoll/positive-timeout/attempt-1/$relative" >/dev/null 2>&1 \
+    || fail "Netty child diagnostic missing or changed: $relative"
+done
+pass "nested Netty child argv, log, crash and JUnit XML are retained"
+
 echo
 echo "All $TESTS prepare-reports tests passed."
