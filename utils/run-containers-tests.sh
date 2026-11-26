@@ -82,7 +82,9 @@ clone_source_for_container() {
     # mktemp creates 0700 and the umask may be 077, but a container user that is not
     # the host owner must still read the clone.
     chmod 755 "$SOURCE_CLONE_DIR"
-    if ! (umask 022 && host_clone_git clone --quiet --no-checkout --depth 1 "file://$PROJECT_ROOT" "$SOURCE_CLONE_DIR"); then
+    # A literal path with --no-local: git would URL-decode a file:// URL (a %20 in the
+    # path becomes a space), and plain local clones ignore --depth.
+    if ! (umask 022 && host_clone_git clone --quiet --no-checkout --no-local --depth 1 "$PROJECT_ROOT" "$SOURCE_CLONE_DIR"); then
         echo "Error: could not clone $PROJECT_ROOT for the container (see git's error above). Clone mode needs a git checkout; use --mount otherwise."
         exit 1
     fi

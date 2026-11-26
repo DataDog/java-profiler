@@ -90,7 +90,8 @@ if [[ "$vol" == *:/source* ]]; then
   echo "source_ref_format=$(git -C "$host" rev-parse --show-ref-format 2>/dev/null)" >> "$FAKE_STATE"
   echo "source_worktree_config=$(git -C "$host" config core.worktree)" >> "$FAKE_STATE"
   clone_dir=$(mktemp -d "$FAKE_WORK/clone.XXXXXX")
-  if git clone --quiet --depth 1 "file://$host" "$clone_dir/ws" 2>/dev/null; then
+  # The container clones a fixed /source path; --no-local keeps a %-containing host path literal.
+  if git clone --quiet --no-local --depth 1 "$host" "$clone_dir/ws" 2>/dev/null; then
     echo "source_clonable=yes" >> "$FAKE_STATE"
   else
     echo "source_clonable=no" >> "$FAKE_STATE"
@@ -132,6 +133,18 @@ git_quiet -C "$WORKTREE" add change.txt
 git_quiet -C "$WORKTREE" commit -m feature
 MAIN_HEAD=$(git -C "$MAIN" rev-parse HEAD)
 WORKTREE_HEAD=$(git -C "$WORKTREE" rev-parse HEAD)
+# A literal %20 in the checkout path, next to a decoy repo at the URL-decoded path.
+PERCENT_WORKTREE="$FIXTURE/pct%20dir"
+DECOY="$FIXTURE/pct dir"
+git_quiet -C "$MAIN" worktree add -b percent "$PERCENT_WORKTREE"
+echo percent > "$PERCENT_WORKTREE/percent.txt"
+git_quiet -C "$PERCENT_WORKTREE" add percent.txt
+git_quiet -C "$PERCENT_WORKTREE" commit -m percent
+PERCENT_HEAD=$(git -C "$PERCENT_WORKTREE" rev-parse HEAD)
+git_quiet clone "$MAIN" "$DECOY"
+echo decoy > "$DECOY/decoy.txt"
+git_quiet -C "$DECOY" add decoy.txt
+git_quiet -C "$DECOY" commit -m decoy
 populate_project "$NOGIT"
 OTHER="$FIXTURE/other"
 populate_project "$OTHER"
@@ -347,6 +360,15 @@ test_host_clone_ignores_git_dir_env() {
   check "GIT_WORK_TREE does not leak into the host clone config" equals "$(state_value source_worktree_config)" ""
 }
 
+test_percent_in_checkout_path() {
+  run_runner "$PERCENT_WORKTREE" -- --container=podman
+  check "percent-path run exits 0 (got $STATUS)" equals "$STATUS" 0
+  check "percent-path /source is at the checkout's own HEAD, not the decoy's" \
+    equals "$(state_value source_head)" "$PERCENT_HEAD"
+  check "percent-path /source is the host clone under the checkout" \
+    starts_with "$(state_value source_host)" "$PERCENT_WORKTREE/build/container-source."
+}
+
 test_clone_mode_outside_git() {
   run_runner "$NOGIT" -- --container=podman
   check "clone outside git exits non-zero" test "$STATUS" -ne 0
@@ -387,6 +409,7 @@ test_mount_mode_probe_failure
 test_shell_mode
 test_host_clone_ignores_global_config
 test_host_clone_ignores_git_dir_env
+test_percent_in_checkout_path
 test_clone_mode_outside_git
 test_clone_mode_without_commit
 test_host_clone_readable_under_strict_umask
