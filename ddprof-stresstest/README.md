@@ -172,6 +172,33 @@ Thread filtering with counter metrics collection.
   scenarios.counters.ThreadFilterBenchmark
 ```
 
+## TaskBlock Benchmarks
+
+Located in `scenarios.taskblock.*`. They measure the TaskBlock producers per call, each under
+`config=none` (no recording), `wall` (`wall=10ms,filter=`: wall-clock, TaskBlock off) and
+`taskblock` (adds `wallprecheck=true`: TaskBlock on; this one switch enables every producer).
+Other `config` values are used as the profiler command, with `;` in place of `,`.
+
+| Class | Producer |
+|---|---|
+| `TaskBlockPairedApiBenchmark` | `beginTaskBlock`/`endTaskBlock`, short and emitting |
+| `TaskBlockParkHookBenchmark` | `parkEnter`/`parkExit` around `LockSupport.park` |
+| `TaskBlockMonitorBenchmark` | JVMTI monitor-contended and `Object.wait` callbacks |
+| `TaskBlockNativeIoBenchmark` | Linux native I/O hooks: `EAGAIN` read and emitting blocked read |
+
+Each trial prints a `[taskblock-bench]` line with the TaskBlock event count, event rate and JFR size,
+and fails if the producer did not run, or emitted, as the command implies. They use the annotation
+settings, so run them from the jar rather than through the `jmh` task, which overrides forks and
+iterations:
+
+```bash
+java -cp ddprof-stresstest/build/libs/stresstests.jar org.openjdk.jmh.Main 'scenarios.taskblock.*'
+```
+
+The jar bundles the debug (`-O0`) library. Pass `-jvmArgsAppend
+-Dddprof.bench.lib=/path/to/release/libjavaProfiler.so` to measure a release build, and
+`-Dddprof.bench.wall=<interval>` to change the wall-clock interval.
+
 ## Saving Results
 
 ### JSON Output
@@ -250,6 +277,7 @@ ddprof-stresstest/
 │       ├── Configuration.java          # Base benchmark configuration
 │       ├── WhiteboxProfiler.java       # Custom JMH profiler
 │       └── scenarios/
+│           ├── taskblock/              # TaskBlock producer overhead
 │           ├── throughput/             # Raw performance benchmarks
 │           │   ├── ProfilerThroughput* # End-to-end profiling engine suite
 │           │   ├── ContextCombinedBenchmark # All-native context write API perf guard
