@@ -44,6 +44,7 @@
 #include "stackWalker.inline.h"
 #include "symbols.h"
 #include "taskBlockRecorder.h"
+#include "taskBlockSegments.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "utils.h"
@@ -1427,6 +1428,41 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
   return recorded ? TaskBlockRecordResult::RECORDED
                   : TaskBlockRecordResult::RECORD_FAILED;
 }
+
+bool Profiler::storeTaskBlockSegmentTrace(int tid, const jvmtiFrameInfo* frames, int num_frames,
+                                          u64& call_trace_id) {
+  call_trace_id = 0;
+  // Lightweight recordings encode an absent stack as trace id 0, as recordTaskBlock() does.
+  if (_omit_stacktraces) return true;
+  CallTraceBuffer* buffer = _calltrace_buffer[getLockIndex(tid)];
+  if (frames == nullptr || num_frames <= 0 || buffer == nullptr || _max_stack_depth <= 0) {
+    return false;
+  }
+  // The capture probed one extra frame, as captureJVMTIFrames() does.
+  bool truncated = num_frames > _max_stack_depth;
+  if (truncated) num_frames = _max_stack_depth;
+  copyJvmtiFrames(buffer->_asgct_frames, frames, num_frames);
+  call_trace_id = _call_trace_storage.put(num_frames, buffer->_asgct_frames, truncated, 1);
+  return call_trace_id != 0;
+}
+
+bool Profiler::recordTaskBlockSegment(int tid, TaskBlockEvent* event) {
+  return _jfr.recordTaskBlock(getLockIndex(tid), tid, event);
+}
+
+namespace {
+class ProfilerSegmentSink : public TaskBlockSegmentSink {
+  Profiler* _profiler;
+ public:
+  explicit ProfilerSegmentSink(Profiler* profiler) : _profiler(profiler) {}
+  bool storeTrace(int tid, const jvmtiFrameInfo* frames, int num_frames, u64& id) override {
+    return _profiler->storeTaskBlockSegmentTrace(tid, frames, num_frames, id);
+  }
+  bool record(int tid, TaskBlockEvent* event) override {
+    return _profiler->recordTaskBlockSegment(tid, event);
+  }
+};
+}  // namespace
 
 bool Profiler::tryEnterTaskBlockActivity(TASK_BLOCK_DIAGNOSTIC_ONLY(const TaskBlockDiagnosticRecord* diagnostic)) {
   u64 state = _task_block_activity_state.load(std::memory_order_acquire);
@@ -2869,6 +2905,9 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
+  // Stop is a final dump: capture open intervals before TaskBlock is disabled.
+  OpenTaskBlockSegments open_segments(_max_stack_depth);
+  if (taskBlockEnabled()) open_segments.collect(&_thread_filter, &_block_tracker);
   setTaskBlockEnabled(false);
 
   // Order matters: disable engines first so the _enabled check inside signal
@@ -3051,7 +3090,11 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  Error output_error = rotateDictsAndRun([&]{ return _jfr.stop(); });
+  Error output_error = rotateDictsAndRun([&]{
+    ProfilerSegmentSink sink(this);
+    open_segments.emit(&sink, &_thread_filter, &_block_tracker, TSC::ticks(), true);
+    return _jfr.stop();
+  });
   // The final chunk is written: nothing reads the call traces or the
   // dictionaries until the next start(). Retained output keeps them: start() is
   // refused while it is owned, and the release would also drop uncommitted tails.
@@ -3221,12 +3264,17 @@ Error Profiler::dump(const char *path, const int length) {
     updateNativeLibMemStats();
 
     Error err = Error::OK;
+    // Stacks of open TaskBlock intervals are captured before any stripe is held.
+    OpenTaskBlockSegments open_segments(_max_stack_depth);
+    if (taskBlockEnabled()) open_segments.collect(&_thread_filter, &_block_tracker);
     // Normal-thread order: epoch mutex -> all recording stripes -> _rec_lock.
     // TaskBlock rotation drains paired writers before settlement and sealing.
     if (beginTaskBlockRotation()) {
       {
         auto epoch_lock = BaseWallClock::samplingEpochLock();
         err = rotateDictsAndRun([&]{
+          ProfilerSegmentSink sink(this);
+          open_segments.emit(&sink, &_thread_filter, &_block_tracker, TSC::ticks(), false);
           BaseWallClock::settleSamplingEpoch();
           Error delivered = _jfr.dump(path, length);
           __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);

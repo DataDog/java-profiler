@@ -191,10 +191,15 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
     assertTrue(
         workerIoWait.filter(event -> completionTimeNanos(event) < stopBoundary).hasItems(),
         "the controlled pre-stop read must produce an IO_WAIT before the stop boundary");
-    // Completed setup I/O is allowed; an interval crossing the stop boundary is not.
+    // Stop reports the read still open as a continued segment; its exit must add nothing.
     assertFalse(
-        workerIoWait.filter(event -> completesAtOrAfter(event, stopBoundary)).hasItems(),
-        "a native I/O operation returning after stop must not emit TaskBlock");
+        workerIoWait
+            .filter(
+                event ->
+                    completesAtOrAfter(event, stopBoundary)
+                        && !Boolean.TRUE.equals(event.getBoolean("continued")))
+            .hasItems(),
+        "a native I/O operation returning after stop must not emit a closing TaskBlock");
 
     Path restartedRecording =
         Files.createTempFile(

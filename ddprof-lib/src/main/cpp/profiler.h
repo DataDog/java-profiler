@@ -863,6 +863,11 @@ public:
                                         TaskBlockEvent *event
                                         TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr,
                                                                    TaskBlockStage* rejection = nullptr));
+  // Dump/stop thread with every recording stripe held: stores the frames of an
+  // open-interval segment captured before the stripes, then records it.
+  bool storeTaskBlockSegmentTrace(int tid, const jvmtiFrameInfo* frames, int num_frames,
+                                  u64& call_trace_id);
+  bool recordTaskBlockSegment(int tid, TaskBlockEvent* event);
 #ifdef UNIT_TEST
   using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);

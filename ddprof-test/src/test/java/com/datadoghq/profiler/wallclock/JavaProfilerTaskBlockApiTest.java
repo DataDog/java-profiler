@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.NativeBuildConfig;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
@@ -387,7 +388,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   public void liveDumpPreservesCompletedTaskBlockInterval() throws Exception {
     String workerName = "taskblock-live-dump";
     AtomicLong logicalDuration = new AtomicLong();
-    recordWithinAttempts("live-dump interval", () -> runLiveDumpBlock(workerName, logicalDuration));
+    AtomicLong prefixDuration = new AtomicLong();
+    recordWithinAttempts(
+        "live-dump interval", () -> runLiveDumpBlock(workerName, logicalDuration, prefixDuration));
 
     stopProfiler();
     JfrEvents suffix = verifyEvents("datadog.TaskBlock");
@@ -396,7 +399,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertNoCorrelationId(suffix);
 
     TaskBlockAssertions.assertContains(suffix, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
-    double completedDuration = TaskBlockAssertions.durationNanosForThread(suffix, workerName);
+    // The dump reported the open prefix as a continued segment; the exit reports the rest.
+    double completedDuration =
+        prefixDuration.get() + TaskBlockAssertions.durationNanosForThread(suffix, workerName);
     assertTrue(
         completedDuration >= logicalDuration.get() * 0.75,
         "rotation lost TaskBlock duration: completed="
@@ -413,11 +418,11 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   /**
    * Dumps while one interval is armed and reports whether its completion was recorded. A rejected
-   * attempt writes no event, so the exactly-one suffix check spans all attempts.
+   * attempt writes no suffix event, so the exactly-one suffix check spans all attempts.
    */
-  private boolean runLiveDumpBlock(String workerName, AtomicLong logicalDuration) throws Exception {
+  private boolean runLiveDumpBlock(
+      String workerName, AtomicLong logicalDuration, AtomicLong prefixDuration) throws Exception {
     CountDownLatch armed = new CountDownLatch(1);
-    CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
     AtomicLong logicalStart = new AtomicLong();
     AtomicLong logicalEnd = new AtomicLong();
@@ -431,7 +436,8 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
                 long token = profiler.beginTaskBlock();
                 assertTrue(token != 0);
                 armed.countDown();
-                assertTrue(release.await(5, TimeUnit.SECONDS));
+                // The paired API owns SLEEPING, so the dump reports the open part of a sleep.
+                sleepUntilInterrupted();
                 recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
                 logicalEnd.set(System.nanoTime());
               } catch (Throwable t) {
@@ -450,20 +456,34 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     try {
       dump(snapshot);
       JfrEvents prefix = verifyEvents(snapshot, "datadog.TaskBlock", false);
-      assertEquals(0, TaskBlockAssertions.countEventsForThread(prefix, workerName));
+      assertEquals(1, TaskBlockAssertions.countEventsForThread(prefix, workerName));
+      for (JfrEvent event : prefix) {
+        if (workerName.equals(event.getThreadName("eventThread"))) {
+          assertEquals(Boolean.TRUE, event.getBoolean("continued"));
+        }
+      }
+      prefixDuration.set((long) TaskBlockAssertions.durationNanosForThread(prefix, workerName));
 
       Thread.sleep(150L);
-      release.countDown();
+      worker.interrupt();
       worker.join(5_000L);
       assertFalse(worker.isAlive());
       if (error.get() != null) throw new AssertionError(error.get());
       logicalDuration.set(logicalEnd.get() - logicalStart.get());
       return recorded.get();
     } finally {
-      release.countDown();
+      worker.interrupt();
       worker.join(5_000L);
       if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(snapshot);
       else System.out.println("TASK_BLOCK snapshot recording=" + snapshot.toAbsolutePath());
+    }
+  }
+
+  private static void sleepUntilInterrupted() {
+    try {
+      Thread.sleep(10_000L);
+    } catch (InterruptedException released) {
+      // The test thread interrupts the sleep to end the interval.
     }
   }
 

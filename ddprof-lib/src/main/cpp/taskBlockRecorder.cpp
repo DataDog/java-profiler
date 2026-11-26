@@ -73,7 +73,7 @@ bool recoverAbandonedTaskBlock(ProfiledThread* current,
 }
 
 u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
-                       OSThreadState state, BlockRunOwner owner
+                       OSThreadState state, BlockRunOwner owner, u64 start_ticks
                        TASK_BLOCK_DIAGNOSTIC_ONLY(, TaskBlockDiagnosticRecord* diagnostic)) {
   Profiler* profiler = Profiler::instance();
   ThreadFilter* registry = profiler->threadFilter();
@@ -101,7 +101,7 @@ u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
     }
   }
 
-  u64 token = tracker->enterBlockedRun(registry, slot_id, state, owner TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic));
+  u64 token = tracker->enterBlockedRun(registry, slot_id, state, owner, start_ticks TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic));
   if (token == 0 && fallback_enabled) slot->resumeUnownedBlockedFallback();
   return token;
 }
@@ -167,7 +167,6 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
                            u64 unblocking_span_id, u64 end_ticks) {
-  if (end_ticks == 0) end_ticks = TSC::ticks();
   Profiler* profiler = Profiler::instance();
 #if defined(DEBUG) || defined(UNIT_TEST)
   TaskBlockDiagnosticRecord diagnostic{};
@@ -213,6 +212,11 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   bool exited = current_slot == slot_id &&
       tracker->snapshotAndExitBlockedRun(thread_filter, slot_id, generation,
                                          &snapshot TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
+  // Sampled after the claim, so a racing dump's segment cannot pass a sampled end.
+  if (end_ticks == 0) end_ticks = TSC::ticks();
+#if defined(DEBUG) || defined(UNIT_TEST)
+  diagnostic.words[TaskBlockDiagnosticRecord::END] = end_ticks;
+#endif
 #ifdef UNIT_TEST
   Profiler::runTaskBlockActivityHookForTest(
       Profiler::TaskBlockActivityStage::AFTER_EXIT);
@@ -237,10 +241,26 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
     return false;
   }
 
+  // Stop reported and closed this run's open part; nothing is left for its exit.
+  if (!snapshot.segment_claimed) return false;
+  u64 segment_start = 0;
+  if (snapshot.segment_advanced) {
+    // A caller-supplied end can precede a racing dump's segment end. Close the chain with a
+    // one-tick segment; eligibility (and its skip counters) is judged on the real end.
+    if (end_ticks <= snapshot.segment_start) {
+      if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, context
+                                           TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr))) {
+        return false;
+      }
+      end_ticks = snapshot.segment_start + 1;
+    }
+    segment_start = snapshot.segment_start;
+  }
   TASK_BLOCK_DIAGNOSTIC(EXIT_ELIGIBLE, diagnostic_ptr, 0);
   return recordTaskBlockIfEligible(
       current->tid(), thread, start_depth, start_ticks, end_ticks, context,
-      blocker, unblocking_span_id, snapshot.active_state, true TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
+      blocker, unblocking_span_id, snapshot.active_state, true TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr),
+      segment_start);
 }
 
 #ifdef UNIT_TEST
@@ -286,7 +306,8 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
   ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (!tf->unfilteredWallTrackingActive() || slot_id < 0) return;
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
-  if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
+  u64 enter_ticks = monitorTicks();
+  if (!current->monitorEnter(enter_ticks, context, /*blocker=*/0, state)) {
     u64 token = current->monitorBlockToken();
     bool current_owner = false;
     if (token != 0) {
@@ -306,12 +327,12 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
       return;
     }
     current->clearMonitorBlock();
-    if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
+    if (!current->monitorEnter(enter_ticks, context, /*blocker=*/0, state)) {
       return;
     }
   }
 
-  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::JVMTI);
+  u64 token = enterOwnedBlockRun(current, slot_id, state, BlockRunOwner::JVMTI, enter_ticks);
   if (token == 0) {
     ThreadFilter::Slot *slot = tf->slotForId(slot_id);
     if (slot != nullptr && slot->inContextWindow()) {

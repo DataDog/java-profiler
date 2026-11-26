@@ -2724,6 +2724,7 @@ void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
   buf->putVar64(event->_unblockingSpanId);
   buf->putVar64(event->_callTraceId);
   buf->put8(static_cast<int>(event->_observedBlockingState));
+  buf->put8(event->_continued ? 1 : 0);
   writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);

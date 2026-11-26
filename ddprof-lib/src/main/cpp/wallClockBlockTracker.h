@@ -57,6 +57,11 @@ enum class BlockRunOwner : int {
 struct BlockRunSnapshot {
     OSThreadState active_state{OSThreadState::UNKNOWN};
     bool context_eligible{false};
+    // The exit's claim on the open segment: segment_start is where the part no
+    // dump reported begins; segment_advanced is set once a dump reported a part.
+    bool segment_claimed{false};
+    bool segment_advanced{false};
+    u64 segment_start{0};
 };
 
 class WallClockBlockTracker {
@@ -378,15 +383,32 @@ public:
         return generation != 0;
     }
 
+    // start_ticks opens the run's first segment; 0 samples TSC::ticks().
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
-                        OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA
+                        OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA,
+                        u64 start_ticks = 0
                         TASK_BLOCK_DIAGNOSTIC_ONLY(, TaskBlockDiagnosticRecord* admitted_origin = nullptr));
     bool exitBlockedRun(ThreadFilter::SlotID slot_id, u64 generation);
     // Same generation check as exitBlockedRun(slot_id, generation), but
-    // captures the run's state and context eligibility before clearing it.
+    // captures the run's state, context eligibility and segment claim before clearing it.
     bool snapshotAndExitBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                                    u64 generation, BlockRunSnapshot* snapshot
                                    TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* origin = nullptr));
+
+    // Open-segment protocol; see ProfilingEngines.md#open-interval-segments.
+    // control packs generation << 2 | ADVANCED | start index; generation 0 means closed.
+    struct OpenSegment {
+        u64 control = 0;
+        u64 start = 0;
+        u64 generation() const { return control >> kSegmentGenerationShift; }
+    };
+    // Any thread. False when the slot has no open segment.
+    bool readOpenSegment(ThreadFilter::SlotID slot_id, OpenSegment& segment) const;
+    // Single advancer: callers hold Profiler::_state_lock. On true the caller owns
+    // [segment.start, end_ticks); the run restarts there, or close_run ends it.
+    bool advanceOpenSegment(ThreadFilter::SlotID slot_id, const OpenSegment& segment,
+                            u64 end_ticks, bool close_run);
+
     using TailFlush = std::function<bool(ThreadFilter::SlotID, int, bool)>;
     // Wired once before registry use. Only the drained stop path passes blocking=true;
     // elsewhere lock contention must retain the tail, not wait.
@@ -465,6 +487,23 @@ public:
 private:
     TailFlush _tail_flush;
 
+    static constexpr u64 kSegmentIndexBit = 1;
+    static constexpr u64 kSegmentAdvancedBit = 2;
+    static constexpr int kSegmentGenerationShift = 2;
+    static_assert((kMaxBlockRunGeneration << kSegmentGenerationShift) >> kSegmentGenerationShift ==
+                  kMaxBlockRunGeneration, "segment control must hold every block-run generation");
+    // A dump writes only the start[] entry that control does not select, so the
+    // exit's exchange and the dump's CAS on control decide alone who owns a tick.
+    struct SegmentState {
+        std::atomic<u64> control{0};
+        std::atomic<u64> start[2]{};
+    };
+    SegmentState* segmentForId(ThreadFilter::SlotID slot_id) const;
+    void openSegment(ThreadFilter::SlotID slot_id, u64 generation, u64 start_ticks);
+    // Closes the open segment, if any; fills snapshot's claim when it was generation's.
+    void closeSegment(ThreadFilter::SlotID slot_id, u64 generation = 0,
+                      BlockRunSnapshot* snapshot = nullptr);
+
     bool ownedBlockGeneration(ThreadFilter* registry, const ThreadEntry& entry,
                               u64& generation, bool& already_sampled) const;
 
@@ -495,6 +534,7 @@ private:
     struct SlotStorage {
         std::array<BlockState, ThreadFilter::kMaxThreads> slots;
         std::array<std::atomic<u64>, ThreadFilter::kMaxThreads / 64> roots{};
+        std::array<SegmentState, ThreadFilter::kMaxThreads> segments{};
     };
     // Signal paths only load backing; only the destructor reclaims it.
     std::atomic<SlotStorage*> _storage{nullptr};

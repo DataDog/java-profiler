@@ -299,6 +299,8 @@ typedef struct TaskBlockEvent {
   Context _ctx;
   u64 _callTraceId;
   OSThreadState _observedBlockingState;
+  // True when a dump reported this part of a still-open interval.
+  bool _continued;
 } TaskBlockEvent;
 
 #endif // _EVENT_H

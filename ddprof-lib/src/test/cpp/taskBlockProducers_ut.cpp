@@ -380,6 +380,21 @@ TEST_F(MonitorTaskBlockRecordTest, NestedContentionKeepsObjectWaitInterval) {
     EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
 }
 
+// The open segment starts at the monitor entry tick, not at a later clock read.
+TEST_F(MonitorTaskBlockRecordTest, EntryTickSeedsTheOpenSegment) {
+    constexpr u64 start_ticks = 100;
+    setMonitorTaskBlockTicksForTest(start_ticks);
+    MonitorContendedEnter(&jvmti, &jni, testThread(), &monitor);
+    u64 token = current->monitorBlockToken();
+    ASSERT_NE(0u, token);
+    BlockRunSnapshot snapshot;
+    ASSERT_TRUE(profiler->blockTracker()->snapshotAndExitBlockedRun(
+        registry, current->filterSlotId(), WallClockBlockTracker::tokenGeneration(token), &snapshot));
+    EXPECT_TRUE(snapshot.segment_claimed);
+    EXPECT_EQ(start_ticks, snapshot.segment_start);
+    current->clearMonitorBlock();
+}
+
 // With Object.wait delegated to Java, the native wait callbacks own nothing.
 TEST_F(MonitorTaskBlockRecordTest, DelegatedWaitCallbacksAreNoOps) {
     {

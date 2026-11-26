@@ -58,8 +58,10 @@ void setMonitorTaskBlockTicksForTest(u64 ticks);
 // Starts a producer-owned run after flushing the preceding unowned wall tail.
 // Called on the slot's owning thread, so pausing fallback accumulation also
 // prevents a profiling signal from adding weight between the flush and admission.
+// start_ticks is the producer's interval start, where a dump's first segment begins.
 u64 enterOwnedBlockRun(ProfiledThread* current, ThreadFilter::SlotID slot_id,
-                       OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA
+                       OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA,
+                       u64 start_ticks = 0
                        TASK_BLOCK_DIAGNOSTIC_ONLY(, TaskBlockDiagnosticRecord* diagnostic = nullptr));
 
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
@@ -147,11 +149,14 @@ static inline bool taskBlockPassesBasicEligibility(u64 start_ticks, u64 end_tick
   return false;
 }
 
+// Eligibility uses the whole interval; segment_start, when non-zero, is where
+// the part no dump reported begins and becomes the event's start.
 static inline bool recordTaskBlockIfEligible(
     int tid, jthread thread, int start_depth, u64 start_ticks, u64 end_ticks,
     const Context& ctx, u64 blocker, u64 unblocking_span_id,
     OSThreadState observed_state, bool activity_already_held = false
-    TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr)) {
+    TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr),
+    u64 segment_start = 0) {
 #if defined(DEBUG) || defined(UNIT_TEST)
   TaskBlockDiagnosticRecord interval = diagnostic == nullptr ? TaskBlockDiagnosticRecord{} : *diagnostic;
   interval.words[TaskBlockDiagnosticRecord::TID] = tid;
@@ -168,7 +173,7 @@ static inline bool recordTaskBlockIfEligible(
     return false;
   }
   TaskBlockEvent event{};
-  event._start = start_ticks;
+  event._start = segment_start != 0 ? segment_start : start_ticks;
   event._end = end_ticks;
   event._blocker = blocker;
   event._unblockingSpanId = unblocking_span_id;
