@@ -392,6 +392,9 @@ The C++ report covers only the `-O0 -DDEBUG` build. Prerequisites and limits are
 Cached images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
 after the base image's package list changes, e.g. to pick up gcovr for coverage runs:
 it rebuilds the base image and the JDK image built on it.
+Clone mode (the default) builds the committed HEAD, also from a git worktree. On macOS,
+the checkout must be in a host directory that the runtime's VM shares, or the script stops
+with an error. See [utils/README.md](../../utils/README.md#run-containers-testssh) for the details.
 
 ```bash
 # Matches the nightly configuration
