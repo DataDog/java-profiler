@@ -478,8 +478,8 @@ void VMStructs::resolveOffsets() {
     }
 
     // Invariant: _code_heap[i] != NULL iff all CodeHeap structures are available.
-    // Re-read on every call: a JDK 8 heap read before VM init reports shift 0. Plain
-    // stores suffice: samplers start after the final value is stored; reruns store identical values.
+    // Re-read every call: a JDK 8 heap read before VM init reports shift 0. Plain stores
+    // suffice: samplers start after the final value is stored; later reruns repeat it.
     DEBUG_ONLY(int entry_shift = _code_heap_segment_shift;)
     int shift = -1;
     if (_code_heap[0] != NULL && _code_heap_log2_segment_size_offset >= 0) {
