@@ -581,7 +581,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   return true;
 }
 
-// Runs once per library image: a later initProfilerBridge() call would otherwise save the
+// Installs once per library image: a later initProfilerBridge() call would otherwise save the
 // installed hooks as the originals, and each hook would then call itself without end.
 // Guarding on the saved originals, not on the table, also keeps another agent's wrapper.
 void VM::installClassRedefinitionHooks(JVMTIFunctions *functions) {

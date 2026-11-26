@@ -430,6 +430,8 @@ public class ExternalLauncher {
         if (inst != null) {
           inst.retransformClasses(ExternalLauncher.class);
           System.out.println("[retransform-done]");
+        } else {
+          System.out.println("[retransform-agent-missing]");
         }
       } else if (args[0].equals("profiler-virtual-thread")) {
         Thread vt =

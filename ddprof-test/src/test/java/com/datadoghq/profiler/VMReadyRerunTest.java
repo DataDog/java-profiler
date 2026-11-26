@@ -6,6 +6,7 @@
 package com.datadoghq.profiler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -54,6 +55,7 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
     Path javaAgent = RetransformAgent.writeAgentJar(jfr.getParent());
     AtomicBoolean reloading = new AtomicBoolean();
     AtomicBoolean retransformed = new AtomicBoolean();
+    AtomicBoolean agentMissing = new AtomicBoolean();
     AtomicBoolean reloaded = new AtomicBoolean();
     AtomicInteger skips = new AtomicInteger();
     AtomicInteger resolves = new AtomicInteger();
@@ -75,6 +77,8 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
               l -> {
                 if (l.contains("[retransform-done]")) {
                   retransformed.set(true);
+                } else if (l.contains("[retransform-agent-missing]")) {
+                  agentMissing.set(true);
                 } else if (l.contains("[getInstance-begin]")) {
                   reloading.set(true);
                 } else if (l.contains("[getInstance-done]")) {
@@ -104,6 +108,7 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
           "the reload did not rerun VM::ready() in the agent's library image, or reparsed the tables");
       assertTrue(resolves.get() > 0, "the reload did not resolve the VMStructs offsets");
       assertTrue(unstable.isEmpty(), "a rerun changed or invalidated the shift: " + unstable);
+      assertFalse(agentMissing.get(), "the RetransformAgent -javaagent did not load");
       assertTrue(retransformed.get(), "retransformClasses() after the reload did not return");
 
       AtomicBoolean sampledAfterReload = new AtomicBoolean();
