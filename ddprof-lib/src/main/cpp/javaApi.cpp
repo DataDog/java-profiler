@@ -17,6 +17,7 @@
 
 #include <assert.h>
 
+#include "jniHelper.h"
 #include "arch.h"
 #include "context.h"
 #include "context_api.h"
@@ -657,6 +658,38 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
                         1, park_block_token, start_ticks, context,
                         static_cast<u64>(blocker),
                         static_cast<u64>(unblockingSpanId));
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_virtualParkExit0(
+    JNIEnv *env, jclass unused, jthread thread, jlong javaThreadId, jstring name,
+    jlong elapsedNanos, jlong blocker, jlong unblockingSpanId) {
+  // The caller verified that thread is the current, virtual thread.
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr || !Profiler::instance()->taskBlockEnabled()) {
+    return JNI_FALSE;
+  }
+  // GetStringRegion copies into this frame without allocating. JFR strings are standard UTF-8,
+  // unlike GetStringUTFRegion's modified UTF-8, so the name is encoded here (at most 3 bytes/unit).
+  constexpr jsize VIRTUAL_THREAD_NAME_CHARS = 128;
+  jchar units[VIRTUAL_THREAD_NAME_CHARS];
+  char name_buf[3 * VIRTUAL_THREAD_NAME_CHARS];
+  size_t name_length = 0;
+  if (name != nullptr) {
+    jsize total = env->GetStringLength(name);
+    jsize chars = total < VIRTUAL_THREAD_NAME_CHARS ? total : VIRTUAL_THREAD_NAME_CHARS;
+    env->GetStringRegion(name, 0, chars, units);
+    // A pending exception forbids the JVMTI stack capture.
+    if (env->ExceptionCheck()) return JNI_FALSE;
+    name_length = utf16ToUtf8(units, utf16TruncatedLength(units, chars, total), name_buf);
+  }
+  VirtualThreadIdentity identity{static_cast<u64>(javaThreadId), name_buf, name_length};
+  return recordVirtualParkExit(current->tid(), thread, identity,
+                               elapsedNanos > 0 ? static_cast<u64>(elapsedNanos) : 0,
+                               static_cast<u64>(blocker),
+                               static_cast<u64>(unblockingSpanId))
+             ? JNI_TRUE
+             : JNI_FALSE;
 }
 
 static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {

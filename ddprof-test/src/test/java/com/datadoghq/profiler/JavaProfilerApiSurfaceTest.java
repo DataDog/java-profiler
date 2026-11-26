@@ -34,6 +34,10 @@ public class JavaProfilerApiSurfaceTest {
     assertNotPublic(parkEnter);
     assertEquals(boolean.class, parkEnter.getReturnType());
     assertNotPublic(JavaProfiler.class.getDeclaredMethod("parkExit", long.class, long.class));
+    Method virtualParkExit =
+        JavaProfiler.class.getDeclaredMethod("virtualParkExit", long.class, long.class, long.class);
+    assertNotPublic(virtualParkExit);
+    assertEquals(boolean.class, virtualParkExit.getReturnType());
     assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockEnter", int.class));
     assertNotPublic(
         JavaProfiler.class.getDeclaredMethod("blockExit", long.class, long.class, long.class));

@@ -687,6 +687,21 @@ The exit captures the workload stack synchronously and writes blocker,
 unblocking span, entry context, duration and observed state. `OBJECT_WAIT`
 serializes as `WAITING`; monitor contention serializes as `CONTENDED`.
 
+The virtual-thread park hook `JavaProfiler.virtualParkExit()` reports a completed
+park of the current virtual thread after it remounts. The caller times the park with
+`System.nanoTime()`, so the interval survives unmount and carrier migration. The hook
+returns `false` without a native call on a platform thread or a JDK without virtual
+threads. `recordVirtualParkExit()` ends the interval at `TSC::ticks()` and subtracts
+the converted duration; only the duration crosses clocks. Under `TaskBlockActivity`,
+it rejects an interval that starts before `start()` enabled TaskBlocks and counts
+`task_block_virtual_skipped_before_recording`. It then applies the trace-context and
+1 ms checks, captures the virtual thread's stack with JVMTI and writes `PARKED` with
+the virtual-thread identity (see [JfrIntegration](JfrIntegration.md#deduplication)).
+The JNI entry copies at most 128 UTF-16 units of the thread name into a stack buffer,
+so the pool entry's `javaName` is truncated there. It does not touch the carrier's
+blocked run, so carrier wall samples are unchanged.
+Success also counts `task_block_virtual_emitted`.
+
 A live dump does not emit a prefix for an open interval. A later eligible exit
 writes one completed event, so its start may precede an earlier dump. Stop/start
 invalidates open owners instead of attributing them to a new recording.

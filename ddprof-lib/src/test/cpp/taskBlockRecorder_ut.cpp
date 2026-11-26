@@ -1627,3 +1627,136 @@ TEST_F(TaskBlockRecorderTest, StoppedRegistryFallbackReceiptSurvivesRestart) {
   EXPECT_NE(fresh.words[TaskBlockDiagnosticRecord::LIFECYCLE], replacement.words[TaskBlockDiagnosticRecord::LIFECYCLE]);
   EXPECT_EQ(fresh.words[TaskBlockDiagnosticRecord::TID], replacement.words[TaskBlockDiagnosticRecord::TID]);
 }
+
+namespace {
+std::atomic<int> g_virtual_record_calls{0};
+int g_virtual_record_tid = 0;
+int g_virtual_record_depth = 0;
+TaskBlockEvent g_virtual_record_event{};
+
+Profiler::TaskBlockRecordResult recordVirtualTaskBlockForTest(
+    int tid, jthread thread, int start_depth, TaskBlockEvent* event) {
+  g_virtual_record_calls.fetch_add(1, std::memory_order_relaxed);
+  g_virtual_record_tid = tid;
+  g_virtual_record_depth = start_depth;
+  g_virtual_record_event = *event;
+  return g_record_result.load(std::memory_order_acquire);
+}
+
+class VirtualParkExitTest : public TaskBlockRecorderTest {
+protected:
+  VirtualThreadIdentity identity{77, "vt-77", 5};
+  u64 previous_start_ticks = 0;
+  static constexpr u64 RECORDING_START = 1000000000ULL;
+
+  void SetUp() override {
+    TaskBlockRecorderTest::SetUp();
+    previous_start_ticks = Profiler::instance()->taskBlockStartTicks();
+    Profiler::instance()->setTaskBlockStartTicksForTest(RECORDING_START);
+    ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+    g_virtual_record_calls.store(0, std::memory_order_relaxed);
+    g_virtual_record_event = TaskBlockEvent{};
+    Profiler::setTaskBlockRecordOverrideForTest(recordVirtualTaskBlockForTest);
+  }
+
+  void TearDown() override {
+    Profiler::instance()->setTaskBlockStartTicksForTest(previous_start_ticks);
+    TaskBlockRecorderTest::TearDown();
+  }
+
+  // Elapsed nanoseconds of exactly `ticks` at the current TSC frequency, rounded up.
+  static u64 nanosFor(u64 ticks) {
+    return static_cast<u64>((static_cast<unsigned __int128>(ticks) * NANOTIME_FREQ +
+                             TSC::frequency() - 1) / TSC::frequency());
+  }
+
+  static u64 tenMillisNanos() { return 10 * 1000 * 1000; }
+};
+} // namespace
+
+TEST_F(VirtualParkExitTest, EligibleParkIsRecordedUnderTheVirtualIdentity) {
+  u64 end = RECORDING_START + TSC::frequency();  // one second into the recording
+  EXPECT_TRUE(recordVirtualParkExit(4321, nullptr, identity, tenMillisNanos(), 0x11, 0x22, end));
+
+  ASSERT_EQ(1, g_virtual_record_calls.load());
+  EXPECT_EQ(4321, g_virtual_record_tid) << "the carrier tid selects the stripe";
+  EXPECT_EQ(1, g_virtual_record_depth) << "the native hook frame is skipped";
+  EXPECT_EQ(end, g_virtual_record_event._end);
+  u64 expected_ticks = tenMillisNanos() * TSC::frequency() / NANOTIME_FREQ;
+  EXPECT_EQ(end - expected_ticks, g_virtual_record_event._start);
+  EXPECT_EQ(0x11u, g_virtual_record_event._blocker);
+  EXPECT_EQ(0x22u, g_virtual_record_event._unblockingSpanId);
+  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, g_virtual_record_event._observedBlockingState);
+  EXPECT_EQ(&identity, g_virtual_record_event._virtualThread);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_VIRTUAL_EMITTED));
+}
+
+TEST_F(VirtualParkExitTest, FailedRecordIsNotCountedAsVirtualEmission) {
+  g_record_result.store(Profiler::TaskBlockRecordResult::RECORD_FAILED);
+  u64 end = RECORDING_START + TSC::frequency();
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, tenMillisNanos(), 0, 0, end));
+  EXPECT_EQ(1, g_virtual_record_calls.load());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_VIRTUAL_EMITTED));
+}
+
+TEST_F(VirtualParkExitTest, IntervalMayStartExactlyAtTheRecordingStart) {
+  u64 ticks = TSC::frequency() / 100;  // 10 ms
+  u64 nanos = nanosFor(ticks);
+  u64 converted = nanos * TSC::frequency() / NANOTIME_FREQ;
+  ASSERT_GE(converted, ticks);
+  u64 end = RECORDING_START + converted;
+  EXPECT_TRUE(recordVirtualParkExit(1, nullptr, identity, nanos, 0, 0, end));
+  EXPECT_EQ(RECORDING_START, g_virtual_record_event._start);
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, nanos, 0, 0, end - 1))
+      << "one tick earlier the interval starts in the previous recording";
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_VIRTUAL_SKIPPED_BEFORE_RECORDING));
+  EXPECT_EQ(1, g_virtual_record_calls.load());
+}
+
+TEST_F(VirtualParkExitTest, ExitBeforeTheRecordingStartAndHugeElapsedAreRejected) {
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, 0, 0, 0, RECORDING_START - 1));
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, ~0ULL, 0, 0,
+                                     RECORDING_START + TSC::frequency()))
+      << "the duration conversion must not wrap into an eligible start";
+  EXPECT_EQ(2, Counters::getCounter(TASK_BLOCK_VIRTUAL_SKIPPED_BEFORE_RECORDING));
+  EXPECT_EQ(0, g_virtual_record_calls.load());
+}
+
+TEST_F(VirtualParkExitTest, ShortParkIsCountedTooShort) {
+  u64 end = RECORDING_START + TSC::frequency();
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, 500 * 1000, 0, 0, end));
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, 0, 0, 0, end));
+  EXPECT_EQ(2, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_VIRTUAL_SKIPPED_BEFORE_RECORDING));
+  EXPECT_EQ(0, g_virtual_record_calls.load());
+}
+
+TEST_F(VirtualParkExitTest, DisabledOrClosedRecordingRecordsNothing) {
+  u64 end = RECORDING_START + TSC::frequency();
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(false);
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, tenMillisNanos(), 0, 0, end));
+  EXPECT_EQ(0, Counters::getCounter(TASK_BLOCK_VIRTUAL_SKIPPED_BEFORE_RECORDING));
+  ProfilerTestAccessor::exchangeTaskBlockEnabled(true);
+  {
+    ProfilerTestAccessor::TaskBlockActivityStateScope closed(Profiler::instance(), 0, true);
+    EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, tenMillisNanos(), 0, 0, end));
+  }
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+  EXPECT_EQ(0, g_virtual_record_calls.load());
+}
+
+namespace {
+u64 fiveGigahertz() { return 5ULL * NANOTIME_FREQ; }
+} // namespace
+
+TEST_F(VirtualParkExitTest, ConversionAboveOneGigahertzSaturatesInsteadOfWrapping) {
+  setTaskBlockFrequencySourceForTest(fiveGigahertz);
+  initializeTaskBlockDurationThreshold();
+  // 2^63 ns at 5 GHz is 2.5 * 2^64 ticks; a wrapped product would land inside the recording.
+  u64 elapsed = 1ULL << 63;
+  EXPECT_FALSE(recordVirtualParkExit(1, nullptr, identity, elapsed, 0, 0, ~0ULL));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_VIRTUAL_SKIPPED_BEFORE_RECORDING));
+  EXPECT_EQ(0, g_virtual_record_calls.load());
+}
