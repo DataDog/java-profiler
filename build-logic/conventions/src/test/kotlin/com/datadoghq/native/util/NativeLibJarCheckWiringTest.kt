@@ -98,6 +98,8 @@ class NativeLibJarCheckWiringTest {
         val r = run("bench", fail = true)
         assertNotNull(r.task(":verifyJmhJarNativeLibs"))
         assertTrue(r.task(":verifyJmhJarNativeLibs")?.outcome != TaskOutcome.SKIPPED)
+        // Gradle's input validation rejects the missing jar before the check runs.
+        assertTrue(r.output.contains("Input file does not exist") && r.output.contains("wiring-test.jar"), r.output)
         assertNull(outcome(r, "bench"))
     }
 }
