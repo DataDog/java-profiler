@@ -61,8 +61,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 host=${vol%%:/*}
 n=${#args[@]}
-# The emulated container side must not see a global git config set by a test.
+# The emulated container side does not see the host's git environment.
 export GIT_CONFIG_GLOBAL=/dev/null
+unset GIT_DIR GIT_WORK_TREE GIT_DEFAULT_REF_FORMAT
 if [[ $n -ge 3 && "${args[$((n - 3))]}" == "test" ]]; then
   marker=${args[$((n - 1))]#/probe/}
   echo "probe_vol=$vol" >> "$FAKE_STATE"
@@ -131,6 +132,12 @@ git_quiet -C "$WORKTREE" commit -m feature
 MAIN_HEAD=$(git -C "$MAIN" rev-parse HEAD)
 WORKTREE_HEAD=$(git -C "$WORKTREE" rev-parse HEAD)
 populate_project "$NOGIT"
+OTHER="$FIXTURE/other"
+populate_project "$OTHER"
+git_quiet init "$OTHER"
+git_quiet -C "$OTHER" add -A
+git_quiet -C "$OTHER" commit -m other
+OTHER_HEAD=$(git -C "$OTHER" rev-parse HEAD)
 NOCOMMIT="$FIXTURE/nocommit"
 populate_project "$NOCOMMIT"
 git_quiet init "$NOCOMMIT"
@@ -273,6 +280,11 @@ test_probe_empty_mount_docker() {
 }
 
 test_probe_selinux_docker_hint() {
+  # The script reads this file before getenforce, so the stub cannot take effect.
+  if [[ -r /sys/fs/selinux/enforce ]]; then
+    echo "SKIP: host has /sys/fs/selinux/enforce; SELinux hint not checked"
+    return
+  fi
   run_runner "$MAIN" FAKE_PROBE=empty PATH="$SELINUX_BIN:$BIN:$PATH" -- --container=docker
   check "SELinux docker probe failure exits non-zero" test "$STATUS" -ne 0
   check "SELinux docker probe failure suggests podman" output_contains "use --container=podman"
@@ -313,7 +325,8 @@ test_host_clone_ignores_global_config() {
   printf '#!/bin/sh\ntouch "%s"\n' "$marker" > "$hooks/reference-transaction"
   chmod +x "$hooks/reference-transaction"
   printf '[init]\n\tdefaultRefFormat = reftable\n[core]\n\thooksPath = %s\n' "$hooks" > "$TEMP_DIR/gitconfig"
-  run_runner "$WORKTREE" GIT_CONFIG_GLOBAL="$TEMP_DIR/gitconfig" -- --container=podman
+  run_runner "$WORKTREE" GIT_CONFIG_GLOBAL="$TEMP_DIR/gitconfig" GIT_DEFAULT_REF_FORMAT=reftable \
+    -- --container=podman
   check "global-config run exits 0 (got $STATUS)" equals "$STATUS" 0
   check "global core.hooksPath hooks do not run during the host clone" test ! -e "$marker"
   # Before 2.45, rev-parse echoes the unknown option back instead of failing.
@@ -323,6 +336,15 @@ test_host_clone_ignores_global_config() {
   else
     echo "SKIP: host git predates --show-ref-format (2.45); ref format not checked"
   fi
+}
+
+# GIT_DIR/GIT_WORK_TREE exported by a caller must not redirect the host clone to another repo.
+test_host_clone_ignores_git_dir_env() {
+  run_runner "$WORKTREE" GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER" -- --container=podman
+  check "GIT_DIR run exits 0 (got $STATUS)" equals "$STATUS" 0
+  check "GIT_DIR run clones the worktree HEAD" equals "$(state_value source_head)" "$WORKTREE_HEAD"
+  check "GIT_DIR run logs the worktree HEAD" output_contains ">>> Source commit: $WORKTREE_HEAD"
+  check "GIT_DIR run leaves the other repo's HEAD alone" equals "$(git -C "$OTHER" rev-parse HEAD)" "$OTHER_HEAD"
 }
 
 test_clone_mode_outside_git() {
@@ -364,6 +386,7 @@ test_mount_mode
 test_mount_mode_probe_failure
 test_shell_mode
 test_host_clone_ignores_global_config
+test_host_clone_ignores_git_dir_env
 test_clone_mode_outside_git
 test_clone_mode_without_commit
 test_host_clone_readable_under_strict_umask

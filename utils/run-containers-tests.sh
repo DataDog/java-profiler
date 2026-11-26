@@ -65,6 +65,13 @@ selinux_enforcing() {
     fi
 }
 
+# git for the host-side clone, isolated from a caller's repository and user settings.
+# The container's git (2.34 in the glibc image) cannot read reftable repositories.
+host_clone_git() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_DEFAULT_REF_FORMAT \
+        git -c init.defaultRefFormat=files -c core.hooksPath=/dev/null "$@"
+}
+
 # Shallow-clone the committed HEAD of PROJECT_ROOT into SOURCE_CLONE_DIR, a self-contained
 # repo the container clones from. A worktree's .git file points at the main repository,
 # which is not mounted in the container.
@@ -75,13 +82,11 @@ clone_source_for_container() {
     # mktemp creates 0700 and the umask may be 077, but a container user that is not
     # the host owner must still read the clone.
     chmod 755 "$SOURCE_CLONE_DIR"
-    # The container's git (2.34 in the glibc image) cannot read reftable repositories.
-    if ! (umask 022 && env -u GIT_DIR -u GIT_WORK_TREE git -c init.defaultRefFormat=files \
-        -c core.hooksPath=/dev/null clone --quiet --no-checkout --depth 1 "file://$PROJECT_ROOT" "$SOURCE_CLONE_DIR"); then
+    if ! (umask 022 && host_clone_git clone --quiet --no-checkout --depth 1 "file://$PROJECT_ROOT" "$SOURCE_CLONE_DIR"); then
         echo "Error: could not clone $PROJECT_ROOT for the container (see git's error above). Clone mode needs a git checkout; use --mount otherwise."
         exit 1
     fi
-    if ! commit=$(git -C "$SOURCE_CLONE_DIR" rev-parse --verify --quiet HEAD); then
+    if ! commit=$(host_clone_git -C "$SOURCE_CLONE_DIR" rev-parse --verify --quiet HEAD); then
         echo "Error: $PROJECT_ROOT has no commit to clone. Commit first, or use --mount."
         exit 1
     fi
