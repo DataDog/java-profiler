@@ -185,6 +185,8 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
                 ? WallClockBlockTrackerTestSupport.nativeOwnerSnapshot(old.nativeTid())
                 : null;
         firstRecordFailures = recordFailures() - firstFailuresBefore;
+        // Stop emits the survivor's open part only once it has lasted the 1 ms threshold.
+        Thread.sleep(5);
         profiler.stop();
         running = false;
         profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + second.toAbsolutePath());
@@ -234,6 +236,9 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
       assertEquals(
           Boolean.TRUE, oldSurvivor.getBoolean("continued"), "survivor was blocked at stop");
       assertEquals("IO_WAIT", oldSurvivor.getString("observedBlockingState"));
+      Long oldSurvivorDuration = oldSurvivor.getLong("duration");
+      assertNotNull(oldSurvivorDuration, "missing survivor segment duration");
+      assertTrue(oldSurvivorDuration > 0, "survivor segment must cover its blocked time");
       JfrEvents oldRecordingInfo = verifyEvents(first, "jdk.ActiveRecording", false);
       assertEquals(1, oldRecordingInfo.count());
       Long oldRecordingStart = oldRecordingInfo.iterator().next().getLong("startTime");
@@ -486,7 +491,10 @@ public class NettyEpollTaskBlockTest extends AbstractProfilerTest {
     String firstExcluded = null;
     Set<Long> intervalStarts = new HashSet<>();
     for (JfrEvent event : events) {
-      if (!name.equals(event.getThreadName("eventThread"))) {
+      // Stop-time segments of a still-open wait are not completed intervals; counting them
+      // could hide a lost one.
+      if (!name.equals(event.getThreadName("eventThread"))
+          || Boolean.TRUE.equals(event.getBoolean("continued"))) {
         continue;
       }
       assertNotNull(event.get("stackTrace"), "missing TaskBlock stack");
