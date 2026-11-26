@@ -159,15 +159,9 @@ debug symbols via `buildDebug`, memory errors via ASan, suppressions in
 Custom Kotlin-based native build plugin (`build-logic/`) instead of Gradle's
 `cpp-library`/`cpp-application` plugins; it invokes `clang++`/`g++` directly. Build
 configurations are discovered dynamically from `ConfigurationPresets.kt`, never hardcoded.
-Google Test entry-point archives precede their dependencies so architecture-gated
-test files also link on hosts where they register no cases.
 Two-JDK pattern: `JAVA_HOME` (build, JDK 21+; CI uses 21 LTS) runs Gradle;
 `JAVA_TEST_HOME` runs tests against the target JDK; target bytecode is Java 8 via
 `--release 8`.
-
-The `ddprof-stresstest:chaosElements` outgoing configuration shares the chaos JAR
-with `ddprof-test` stack-correctness tests. See
-[TestingGuide.md](doc/building/TestingGuide.md#virtual-thread-remount-correctness).
 
 Details and troubleshooting:
 [build-logic/README.md](build-logic/README.md),
