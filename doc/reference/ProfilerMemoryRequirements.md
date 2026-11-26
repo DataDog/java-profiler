@@ -271,6 +271,15 @@ sizeof(ThreadLocalDataPool)`, including all reserved owners, not just claimed on
 Pool backing has process lifetime; returning an owner resets its state without
 freeing the backing. Separately allocated owners are released at thread teardown.
 
+TaskBlock producer state is not part of `S`. Each owner holds one pointer to its
+park, task-block and monitor slots. The first producer enter that holds an owner
+registry slot allocates the slots. A park without an owner registry slot sets only
+the parked flag and allocates nothing. The allocation adds `sizeof(BlockSlots)` to
+`NM_THREAD_LOCAL`: 576 bytes on LP64, because each `Context` is cache-line aligned.
+Owners that never enter a producer with an owner registry slot, including all idle
+pool owners, pay no slot bytes. Pool reuse and thread teardown free the slots. A failed allocation drops the
+interval and increments `task_block_state_alloc_failed`; a later enter retries.
+
 `Context` is a normalized value containing two IDs and ten tag encodings, with
 56 bytes of fields and cache-line alignment. It has no checksum and is not the
 per-thread tracing allocation. Its actual object size must include ABI padding.
@@ -309,7 +318,9 @@ filter, the wall-clock block tracker's slots and retained-context chunks
 (`wall_block_tracker`, once a thread-registry registration allocated them), the persistent
 `pthread_create`/`sigaction` GOT hooks, and `PerfEvents`' per-thread events. `ProfilerLifecycleTest` asserts that `calltrace`, `jfr_buffers`, `wallclock`,
 `line_tables`, `method_map`, `liveness` and `ctimer`, and the two per-dictionary
-counters, read 0 after every `stop()`.
+counters, read 0 after every `stop()`. A stop whose JFR output failed is the exception:
+the retained recording keeps its buffers and this recording-scoped memory, and the
+profiler refuses to start again.
 
 ### Summary: Memory Components
 

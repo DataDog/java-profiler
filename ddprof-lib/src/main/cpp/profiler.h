@@ -252,6 +252,7 @@ private:
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
   std::atomic<bool> _task_block_enabled{false};
+  std::atomic<bool> _task_block_monitor_events_enabled{false};
   static constexpr u64 TASK_BLOCK_CLOSED = 1ULL << 63;
   std::atomic<u64> _task_block_activity_state{0};
 
@@ -301,9 +302,13 @@ private:
   bool flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
                            bool preserve_cadence);
   bool flushWallTail(ThreadFilter::SlotID slot_id, int tid, bool blocking);
-  // Never fails: each retained tail is written, or its weight is counted as dropped.
+  // Never fails: each retained tail is written, kept by quarantined output, or its
+  // weight is counted as dropped.
   void flushUnownedTailsAtStop();
   WallClockBlockTracker::BlockState* wallSampleSlot(const WallSampleRequest& request);
+  bool writeUnownedBlockedTail(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                               WallClockBlockTracker::BlockState* block,
+                               const WallSampleRequest* request);
 
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
@@ -352,8 +357,21 @@ private:
   // (Engine::releaseThreads()) under a ThreadTablesFreeze. Returns false,
   // replacing nothing, if hook calls do not drain.
   bool replaceCpuEngine(Engine *next);
-  // Undoes start()'s setup after _jfr.start() when start() then fails.
-  void rollBackStart();
+  // Undoes start()'s setup after _jfr.start() when start() then fails. Returns the
+  // _jfr.stop() error; a recording it retains puts the profiler in ERROR.
+  Error rollBackStart();
+  // On a failed start(), releases the recording memory, or only closes the intern
+  // gate while a retained recording still references that memory.
+  class RecordingMemoryScope {
+    Profiler *_profiler;
+
+  public:
+    bool armed = true;
+    explicit RecordingMemoryScope(Profiler *profiler) : _profiler(profiler) {}
+    RecordingMemoryScope(const RecordingMemoryScope &) = delete;
+    RecordingMemoryScope &operator=(const RecordingMemoryScope &) = delete;
+    ~RecordingMemoryScope();
+  };
   // Enables the CPU engine's events iff EM_CPU is in activated.
   void enableCpuEngine(int activated);
 
@@ -395,6 +413,7 @@ private:
   // that turns it into DICTIONARY_DRAIN_TIMEOUTS and a warning.
   void reportDrainTimeout(const char *what);
   void unlockAll();
+  void setTaskBlockEnabled(bool enabled);
   bool beginTaskBlockRotation();
   void endTaskBlockRotation();
 
@@ -408,7 +427,7 @@ private:
     AllStripesLock &operator=(const AllStripesLock &) = delete;
   };
 
-  // Rotate all three dictionaries, then run jfr_op under lockAll().
+  // Rotate dictionaries and run jfr_op under lockAll(); failed output retains roots.
   //
   // rotate() drains concurrent JNI readers itself (RefCountGuard), and
   // SignalBlocker prevents profiling signals on this thread from inserting
@@ -422,7 +441,7 @@ private:
   // Dictionary writers that bypass lockAll() (e.g. recordTrace0) are handled
   // by the dictionary's own RefCountGuard protocol, not by lockAll().
   template<typename F>
-  void rotateDictsAndRun(F jfr_op) {
+  Error rotateDictsAndRun(F jfr_op) {
     SignalBlocker blocker;
     if (!_class_map.rotate()) {
       reportDrainTimeout("Class map reused a standby buffer it could not clear");
@@ -433,10 +452,12 @@ private:
     if (!_context_value_map.rotate()) {
       reportDrainTimeout("Context value map reused a standby buffer it could not clear");
     }
+    Error error = Error::OK;
     {
       AllStripesLock stripes(this);
-      jfr_op();
+      error = jfr_op();
     }
+    if (error) return error;
     if (!_class_map.clearStandby()) {
       reportDrainTimeout("Class map standby buffer not cleared");
     }
@@ -446,6 +467,7 @@ private:
     if (!_context_value_map.clearStandby()) {
       reportDrainTimeout("Context value map standby buffer not cleared");
     }
+    return Error::OK;
   }
 
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext, CrashBootstrapFence& bootstrap_fence);
@@ -529,6 +551,9 @@ public:
 #endif
   // Test-only capability probe for the default synchronous wall-clock API tests.
   bool taskBlockSupportedForTest(JNIEnv* env, jthread thread);
+  // Test-only probe: whether the default wall engine can track unfiltered owners,
+  // which park producers need; it does not classify the calling thread.
+  bool wallRegistryTrackingSupportedForTest();
 
   static inline Profiler *instance() {
     return _instance;
@@ -681,6 +706,8 @@ public:
   // and string-label dictionaries once a recording is over (not the
   // context-value one). acquireRecordingMemory() reallocates the storage.
   void releaseRecordingMemory();
+  // Stops new dictionary interning and waits out the callers already inside.
+  void closeInternGate();
   bool acquireRecordingMemory();
   /**
    * Opens both thread-registration gates (see _engines_ready). A CPU engine
@@ -788,6 +815,9 @@ public:
   WallSampleResult recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
                                     ExecutionEvent* event, const WallSampleRequest& request);
 
+  // Producer-side tail flush; the caller holds TaskBlockActivity and pauses fallback.
+  bool recordUnownedBlockedTail(int tid, ThreadFilter::SlotID slot_id);
+
   // recording_session: if set, recordingSession() read before the caller started; the
   // sample is dropped when the recording memory was released since.
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
@@ -851,6 +881,9 @@ public:
 
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
+  }
+  bool nativeMonitorTaskBlockEnabled() const {
+    return _task_block_monitor_events_enabled.load(std::memory_order_acquire);
   }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);

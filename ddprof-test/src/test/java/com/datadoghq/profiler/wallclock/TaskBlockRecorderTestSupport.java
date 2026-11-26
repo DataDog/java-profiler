@@ -34,26 +34,49 @@ final class TaskBlockRecorderTestSupport {
     boolean recorded() throws Exception;
   }
 
-  /**
-   * Repeats an eligible interval until one is recorded. Only the JNI endTaskBlock path records
-   * TaskBlocks here, so each rejected attempt must add exactly one task_block_record_failed.
-   */
+  /** How task_block_record_failed deltas may credit rejected attempts. */
+  enum Credit {
+    /** Only the attempt's JNI endTaskBlock records TaskBlocks: one increment per rejection. */
+    EXACT,
+    /** JVM-wide park/monitor TaskBlocks also count failures: the delta is only a lower bound. */
+    LOWER_BOUND
+  }
+
+  /** Exact-credit retry for tests where only the JNI endTaskBlock path records. */
   static void recordWithinAttempts(Supplier<Map<String, Long>> counters, Attempt attempt)
+      throws Exception {
+    recordWithinAttempts(counters, Credit.EXACT, "eligible interval", attempt);
+  }
+
+  /**
+   * Repeats an eligible interval until one is recorded, within MAX_RECORD_ATTEMPTS. Every rejected
+   * attempt must be covered by a task_block_record_failed increment under the given credit mode.
+   */
+  static void recordWithinAttempts(
+      Supplier<Map<String, Long>> counters, Credit credit, String description, Attempt attempt)
       throws Exception {
     long before = recordFailures(counters.get());
     int rejected = 0;
     while (!attempt.recorded()) {
       rejected++;
+      long failures = recordFailures(counters.get()) - before;
+      assertTrue(
+          credit == Credit.EXACT ? failures == rejected : failures >= rejected,
+          description
+              + ": endTaskBlock rejection not accounted as task_block_record_failed: rejected="
+              + rejected
+              + ", record_failed="
+              + failures);
+      assertTrue(
+          rejected < MAX_RECORD_ATTEMPTS,
+          description + ": no recorded interval in bounded attempts");
+    }
+    if (credit == Credit.EXACT) {
       assertEquals(
           rejected,
           recordFailures(counters.get()) - before,
-          "endTaskBlock rejection not accounted as task_block_record_failed");
-      assertTrue(rejected < MAX_RECORD_ATTEMPTS, "no recorded interval in bounded attempts");
+          description + ": recorded interval also counted a recorder failure");
     }
-    assertEquals(
-        rejected,
-        recordFailures(counters.get()) - before,
-        "recorded interval also counted a recorder failure");
   }
 
   static native long cursor0();

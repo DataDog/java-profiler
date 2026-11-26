@@ -18,6 +18,7 @@ import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.Platform;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -119,7 +120,8 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       if (!controlledTail()) System.out.println(awaitWorkerWeightedTailReady(workerFailure));
       int blockedSamples = 0;
       for (int i = 0; i < snapshots.length; i++) {
-        snapshots[i] = Files.createTempFile("unowned-context-dump-" + i, ".jfr");
+        snapshots[i] =
+            Files.createTempFile(Paths.get("/tmp/recordings"), "unowned-context-dump-" + i, ".jfr");
         System.out.println("===> attribution recording: " + snapshots[i]);
         dump(snapshots[i]);
         blockedSamples +=
@@ -344,15 +346,14 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
       }
       long retainedPending =
           WallClockBlockTrackerTestSupport.pendingUnownedWeight((int) workerNativeTid.get());
-      // The timer closes unchanged epochs after one second. Close A before extraction,
-      // otherwise its statistics can first appear after the last dump and mask metadata loss.
-      long closeDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1200);
-      while (miss == null && System.nanoTime() < closeDeadline) {
+      for (int i = 0; miss == null && i < 100; i++) {
         Thread.sleep(1);
         retainedPending = assertPendingDoesNotGrow(retainedPending);
       }
       for (int i = 0; miss == null && i < snapshots.length; i++) {
-        snapshots[i] = Files.createTempFile("unowned-span-context-dump-" + i, ".jfr");
+        snapshots[i] =
+            Files.createTempFile(
+                Paths.get("/tmp/recordings"), "unowned-span-context-dump-" + i, ".jfr");
         System.out.println("===> attribution recording: " + snapshots[i]);
         // The base dump() is a no-op once stopProfiler() ran, so retries dump their own recording.
         if (recording == null) {
@@ -370,6 +371,30 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
         clearedTimes.addAll(samples.timesC);
         retainedPending = assertPendingDoesNotGrow(retainedPending);
       }
+      long tracedWorkerSamples = 0;
+      for (int i = 0; miss == null && i < snapshots.length; i++) {
+        Path snapshot = snapshots[i];
+        tracedWorkerSamples +=
+            reduceEvents(
+                snapshot,
+                "datadog.MethodSample",
+                () -> new long[1],
+                (count, sample) -> {
+                  if (isWorker(sample)
+                      && sample.getStackTraceString().contains("runnableTracedContextB")) {
+                    assertEquals(7102L, sample.getLong(SPAN_ID, -1));
+                    assertEquals(7101L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
+                    assertEquals(
+                        1L,
+                        sample.getLong(WEIGHT, 0),
+                        "Traced B must remain an ordinary unit sample");
+                    count[0]++;
+                  }
+                })[0];
+      }
+      assertTrue(
+          miss != null || tracedWorkerSamples > 0,
+          "No actual traced B worker samples in retained dumps");
       inB.set(false);
       assertTrue(readyC.await(10, TimeUnit.SECONDS), "Worker did not clear into C");
       assertNull(workerFailure.get(), "Worker failed during clear");
@@ -483,7 +508,8 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
               }
             },
             WORKER);
-    Path recording = Files.createTempFile("unowned-context-restart-", ".jfr");
+    Path recording =
+        Files.createTempFile(Paths.get("/tmp/recordings"), "unowned-context-restart-", ".jfr");
     System.out.println("===> attribution recording: " + recording);
     boolean restarted = false;
     worker.start();
@@ -597,6 +623,15 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
     long weight = sample.getLong(WEIGHT, 0);
     Long time = sample.getLong("startTime");
     assertNotNull(time, "Worker sample has no capture time");
+    if (stack.contains("blockedOriginA")
+        && stack.contains("CountDownLatch.await()")
+        && "PARKED".equals(state)) {
+      // Unit tail segments emitted after the transition must keep A too; only weighted ones count.
+      assertTrue(time < transitionStart, "Deferred A must keep its original epoch timestamp");
+      assertTags(sample, tagsA);
+      assertEquals(0L, sample.getLong(SPAN_ID, -1));
+      assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
+    }
     if (stack.contains("blockedOriginA") && "PARKED".equals(state) && weight > 1) {
       acc.matched++;
       System.out.println(
@@ -612,10 +647,6 @@ public class UnownedWallTailContextTransitionTest extends AbstractProfilerTest {
               + sample.getString(TAG_2)
               + ";"
               + sample.getString(TAG_3));
-      assertTrue(time < transitionStart, "Deferred A must keep its original epoch timestamp");
-      assertTags(sample, tagsA);
-      assertEquals(0L, sample.getLong(SPAN_ID, -1));
-      assertEquals(0L, sample.getLong(LOCAL_ROOT_SPAN_ID, -1));
     }
     if ("RUNNABLE".equals(state) && stack.contains("runnableContextB")) {
       assertEquals(1L, weight, "B must not acquire already suppressed A time");

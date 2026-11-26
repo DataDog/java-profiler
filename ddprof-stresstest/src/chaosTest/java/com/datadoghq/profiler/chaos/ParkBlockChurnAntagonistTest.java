@@ -4,6 +4,7 @@
  */
 package com.datadoghq.profiler.chaos;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -129,7 +130,10 @@ class ParkBlockChurnAntagonistTest {
               InvocationTargetException.class, () -> type.getMethod("start").invoke(workload));
       assertTrue(failure.getCause() instanceof IllegalStateException, failure.toString());
       assertTrue(
-          failure.getCause().getCause() instanceof ClassNotFoundException, failure.toString());
+          failure.getCause().getCause() instanceof IllegalStateException, failure.toString());
+      assertEquals(
+          "Datadog agent class loader is not initialized",
+          failure.getCause().getCause().getMessage());
     }
   }
 
@@ -152,7 +156,8 @@ class ParkBlockChurnAntagonistTest {
               throw new ClassNotFoundException(name);
             }
             if (name.equals(ParkBlockChurnAntagonist.class.getName())
-                || name.equals(Antagonist.class.getName())) {
+                || name.equals(Antagonist.class.getName())
+                || name.equals(ProfilerAccess.class.getName())) {
               Class<?> type = findLoadedClass(name);
               if (type == null) {
                 String resource = name.replace('.', '/') + ".class";

@@ -5,46 +5,101 @@
 
 #include <gtest/gtest.h>
 #include "profiler.h"
+#include "recordingWriteFailureFixture.h"
 #include "tsc.h"
 #include <memory>
 #include <future>
+#include <array>
 #include <chrono>
 #include <thread>
+#include <tuple>
 
-class ProfilerTestAccessor {
+
+
+class RecordingTestAccessor {
 public:
-  static void flushUnownedTailsAtStop(Profiler& profiler) { profiler.flushUnownedTailsAtStop(); }
-  static FlightRecorder& recorder(Profiler& profiler) { return profiler._jfr; }
-  static u32 stripe(Profiler& profiler, int tid) { return profiler.getLockIndex(tid); }
+  // Match post-start hot writes: real flush failures retain bytes instead of throwing.
+  static void activateHotWrites(Recording* recording) { recording->_cold_io = false; }
+  static u32 threadTableOverflow(const Recording* recording) {
+    return recording->_thread_table_overflow.load(std::memory_order_acquire);
+  }
 };
 
 class FlightRecorderTestAccessor {
+  FlightRecorder* _recorder;
+
 public:
   static Recording* exchangeRecording(FlightRecorder& recorder, Recording* recording) {
     Recording* previous = recorder._rec;
     recorder._rec = recording;
     return previous;
   }
+  FlightRecorderTestAccessor(FlightRecorder* recorder, Recording* recording)
+      : _recorder(recorder) {
+    recorder->_rec = recording;
+  }
+  ~FlightRecorderTestAccessor() { _recorder->_rec = nullptr; }
+  FlightRecorderTestAccessor(const FlightRecorderTestAccessor&) = delete;
+  FlightRecorderTestAccessor& operator=(const FlightRecorderTestAccessor&) = delete;
+};
+
+class ProfilerTestAccessor {
+public:
+  static void flushUnownedTailsAtStop(Profiler& profiler) { profiler.flushUnownedTailsAtStop(); }
+  static FlightRecorder& recorder(Profiler& profiler) { return profiler._jfr; }
+  static u32 stripe(Profiler& profiler, int tid) { return profiler.getLockIndex(tid); }
+  static FlightRecorder* recorder(Profiler* profiler) { return &profiler->_jfr; }
+  static u32 stripe(Profiler* profiler, int tid) { return profiler->getLockIndex(tid); }
+  static void prepareStop(Profiler* profiler, Engine* cpu, Engine* wall, Engine* alloc) {
+    profiler->_cpu_engine = cpu;
+    profiler->_wall_engine = wall;
+    profiler->_alloc_engine = alloc;
+    profiler->_activated_mask = EM_CPU | EM_WALL | EM_ALLOC;
+    profiler->_intern_open.store(true, std::memory_order_release);
+    profiler->_state.store(RUNNING, std::memory_order_release);
+  }
+  static State state(Profiler* profiler) { return profiler->state(); }
 };
 
 namespace {
 class ScopedTailRecording {
+  RecordingWriteFailureFixture _output;
   std::unique_ptr<Recording> _recording;
   FlightRecorder& _recorder;
   Recording* _previous;
 
 public:
   explicit ScopedTailRecording(FlightRecorder& recorder)
-      : _recording(std::make_unique<Recording>()), _recorder(recorder),
+      : _recording(std::make_unique<Recording>(_output.fd())), _recorder(recorder),
         _previous(FlightRecorderTestAccessor::exchangeRecording(recorder, _recording.get())) {}
   ~ScopedTailRecording() {
     FlightRecorderTestAccessor::exchangeRecording(_recorder, _previous);
   }
+  bool valid() const { return _output.valid(); }
   RecordingBuffer* buffer(u32 stripe) { return _recording->buffer(stripe); }
   ScopedTailRecording(const ScopedTailRecording&) = delete;
   ScopedTailRecording& operator=(const ScopedTailRecording&) = delete;
 };
 } // namespace
+
+class VMTestAccessor {
+  jvmtiInterface_1_ _functions{};
+  _jvmtiEnv _environment{};
+  jvmtiEnv* _previous;
+
+public:
+  VMTestAccessor() : _previous(VM::_jvmti) {
+    // There is no JVM in this binary; thread-name refresh has no Java threads.
+    _functions.GetAllThreads = +[](jvmtiEnv*, jint*, jthread**) {
+      return JVMTI_ERROR_WRONG_PHASE;
+    };
+    _environment.functions = &_functions;
+    VM::_jvmti = &_environment;
+  }
+  ~VMTestAccessor() { VM::_jvmti = _previous; }
+  VMTestAccessor(const VMTestAccessor&) = delete;
+  VMTestAccessor& operator=(const VMTestAccessor&) = delete;
+};
 
 class WallTailRecordingTest : public ::testing::Test {
 protected:
@@ -100,6 +155,8 @@ protected:
     request.flush_tail = true;
     request.unowned_sample = true;
     request.observed_state = OSThreadState::CONDVAR_WAIT;
+    request.context.spanId = 22;
+    request.context.rootSpanId = 222;
     request.context.setTag(0, 22);
     ASGCT_CallFrame frame{};
     frame.method_id = reinterpret_cast<jmethodID>(0x1234);
@@ -126,15 +183,17 @@ protected:
     return profiler->recordWallSample(nullptr, 1, current, &event, request);
   }
 
-  void expectOriginRetained() {
+  void expectOriginRetained(u64 pending_weight = 1) {
     auto* block = profiler->blockTracker()->slotForId(request.slot_id);
     EXPECT_EQ(origin, block->unowned_blocked_call_trace_id.load());
-    EXPECT_EQ(1ULL, block->unowned_blocked_pending_weight.load());
+    EXPECT_EQ(pending_weight, block->unowned_blocked_pending_weight.load());
     EXPECT_EQ(OSThreadState::SLEEPING, block->unowned_blocked_state.load());
     Context context{};
     u64 publication = 0;
     ASSERT_TRUE(profiler->blockTracker()->readUnownedContext(request.slot_id, context, publication));
-    EXPECT_EQ(11U, context.getTag(0));
+    EXPECT_EQ(111ULL, context.spanId);
+    EXPECT_EQ(222ULL, context.rootSpanId);
+    for (int i = 0; i < DD_TAGS_CAPACITY; ++i) EXPECT_EQ(11U + i, context.getTag(i));
   }
 };
 
@@ -142,6 +201,7 @@ TEST_F(WallTailRecordingTest, ThreadTableOverflowRetainsTailUntilARepresentableC
   FlightRecorder& recorder = ProfilerTestAccessor::recorder(*profiler);
   {
     ScopedTailRecording output(recorder);
+    ASSERT_TRUE(output.valid());
     u32 stripe = ProfilerTestAccessor::stripe(*profiler, request.tid);
     TaskBlockEvent event{};
     event._start = 1;
@@ -161,6 +221,7 @@ TEST_F(WallTailRecordingTest, ThreadTableOverflowRetainsTailUntilARepresentableC
   }
   {
     ScopedTailRecording output(recorder);
+    ASSERT_TRUE(output.valid());
     u32 stripe = ProfilerTestAccessor::stripe(*profiler, request.tid);
     EXPECT_TRUE(profiler->threadFilter()->flushUnownedTails());
     EXPECT_GT(output.buffer(stripe)->offset(), 0);
@@ -229,6 +290,245 @@ TEST_F(WallTailRecordingTest, TailCarriesWeightAccumulatedWhileBlocked) {
   EXPECT_EQ(request.sampling_epoch_start, observation.epoch);
   EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(request.slot_id)
                       ->unowned_blocked_pending_weight.load(std::memory_order_acquire));
+}
+
+TEST_F(WallTailRecordingTest, ProducerFlushRetainsOriginWhenStripeIsContended) {
+  captureWrites();
+  {
+    auto held = profiler->recordingLocksForTest();
+    EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+    EXPECT_TRUE(writes.empty()) << "a contended stripe must not reach the writer";
+    expectOriginRetained();
+  }
+  // Positive control: the same flush writes once the stripe is free.
+  EXPECT_TRUE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  ASSERT_EQ(1u, writes.size());
+  expectWrite(writes[0], request.sampling_epoch_start, 1);
+  EXPECT_EQ(0ULL, profiler->blockTracker()->slotForId(request.slot_id)
+                      ->unowned_blocked_pending_weight.load(std::memory_order_acquire));
+}
+
+TEST_F(WallTailRecordingTest, ProducerFlushRetainsOriginWithoutActiveRecording) {
+  EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  expectOriginRetained();
+}
+
+TEST_F(WallTailRecordingTest, ActiveOutputFlushFailureRetainsEpochUnitsContextAndTraceRoot) {
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  auto recording = std::make_unique<Recording>(output.fd());
+  RecordingTestAccessor::activateHotWrites(recording.get());
+  FlightRecorderTestAccessor active(ProfilerTestAccessor::recorder(profiler.get()), recording.get());
+  RecordingBuffer* buffer = recording->buffer(ProfilerTestAccessor::stripe(profiler.get(), request.tid));
+  buffer->skip(JFR_EVENT_FLUSH_THRESHOLD - 1);
+  ASSERT_TRUE(recording->outputGood());
+  ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+      request.slot_id, request.sampling_epoch_start));
+  u64 second_epoch = request.sampling_epoch_start + 100;
+  ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(request.slot_id, second_epoch));
+  ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(request.slot_id, second_epoch));
+  ASSERT_TRUE(output.failWrites());
+
+  EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  EXPECT_FALSE(recording->outputGood());
+  EXPECT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD);
+  expectOriginRetained(4);
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  ASSERT_EQ(2u, profiler->blockTracker()->copyUnownedWeightSegments(request.slot_id, segments));
+  EXPECT_EQ(request.sampling_epoch_start, segments[0].epoch_start);
+  EXPECT_EQ(2ULL, segments[0].weight);
+  EXPECT_EQ(second_epoch, segments[1].epoch_start);
+  EXPECT_EQ(2ULL, segments[1].weight);
+  int before = buffer->offset();
+  EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  EXPECT_EQ(before, buffer->offset());
+  expectOriginRetained(4);
+  auto held = profiler->recordingLocksForTest();
+  CallTraceIdSet roots;
+  profiler->blockTracker()->collectLiveTraceIds(roots);
+  EXPECT_EQ(1u, roots.count(origin)) << "failed delivery must retain the original trace root";
+}
+
+class QuarantinedWallTailStopTest : public WallTailRecordingTest,
+                                    public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {};
+
+TEST_P(QuarantinedWallTailStopTest, QuarantinedStopShutsDownEnginesRetainsCustodyAndRejectsRestart) {
+  class StopObserver : public Engine {
+  public:
+    unsigned stops = 0;
+    bool enabled = true;
+    void enableEvents(bool value) override { enabled = value; }
+    void stop() override { ++stops; }
+  } cpu, wall, alloc;
+  const bool quarantine_before_stop = std::get<0>(GetParam());
+  const bool pending_tail = std::get<1>(GetParam());
+  const bool pending_capacity = std::get<2>(GetParam());
+  VMTestAccessor vm;
+  RecordingWriteFailureFixture output;
+  ASSERT_TRUE(output.valid());
+  auto recording = std::make_unique<Recording>(output.fd());
+  RecordingTestAccessor::activateHotWrites(recording.get());
+  auto* recorder = ProfilerTestAccessor::recorder(profiler.get());
+  FlightRecorderTestAccessor active(recorder, recording.get());
+  RecordingBuffer* buffer = recording->buffer(ProfilerTestAccessor::stripe(profiler.get(), request.tid));
+  const u64 second_epoch = request.sampling_epoch_start + 100;
+  if (pending_tail) {
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(
+        request.slot_id, request.sampling_epoch_start));
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(request.slot_id, second_epoch));
+    ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(request.slot_id, second_epoch));
+  } else {
+    ASSERT_TRUE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  }
+  u32 overflow_stripe = (ProfilerTestAccessor::stripe(profiler.get(), request.tid) + 1) % CONCURRENCY_LEVEL;
+  if (pending_capacity) {
+    TaskBlockEvent block{};
+    block._start = 1;
+    block._end = 2;
+    for (int tid = 1; tid <= ThreadIdTable::capacity(); ++tid) {
+      ASSERT_TRUE(recorder->recordTaskBlock(overflow_stripe, tid, &block));
+    }
+    ExecutionEvent event;
+    event._thread_state = OSThreadState::SLEEPING;
+    ASSERT_FALSE(recorder->recordWallSample(
+        overflow_stripe, ThreadIdTable::capacity() + 1, origin, &event, request.context));
+    ASSERT_TRUE(recording->outputGood());
+  }
+  const u32 expected_overflow = pending_capacity ? 1U << overflow_stripe : 0;
+  ASSERT_EQ(expected_overflow, RecordingTestAccessor::threadTableOverflow(recording.get()));
+  buffer->skip(JFR_EVENT_FLUSH_THRESHOLD - 1 - buffer->offset());
+  std::array<StringDictionary*, 3> dictionaries{{
+      profiler->classMap(), profiler->stringLabelMap(), profiler->contextValueMap()}};
+  std::array<u32, 3> dictionary_ids{};
+  std::array<u64, 3> dictionary_generations{};
+  constexpr char retained_value[] = "RetainedTailValue";
+  for (size_t i = 0; i < dictionaries.size(); ++i) {
+    dictionary_ids[i] = dictionaries[i]->lookup(retained_value, sizeof(retained_value) - 1);
+    ASSERT_NE(0U, dictionary_ids[i]);
+    dictionary_generations[i] = dictionaries[i]->generation();
+  }
+  ASSERT_TRUE(output.failWrites());
+  if (quarantine_before_stop) {
+    ExecutionEvent event;
+    event._thread_state = OSThreadState::SLEEPING;
+    ASSERT_FALSE(recorder->recordWallSample(
+        ProfilerTestAccessor::stripe(profiler.get(), request.tid), request.tid,
+        origin, &event, request.context));
+    ASSERT_FALSE(recording->outputGood());
+  } else {
+    ASSERT_TRUE(recording->outputGood());
+  }
+  const int bytes_before_stop = buffer->offset();
+  ProfilerTestAccessor::prepareStop(profiler.get(), &cpu, &wall, &alloc);
+
+  Error error = profiler->stop();
+  ASSERT_TRUE(error);
+  EXPECT_STREQ("Incomplete recording output retained; restart refused", error.message());
+  EXPECT_TRUE(recorder->outputQuarantined());
+  EXPECT_EQ(expected_overflow, RecordingTestAccessor::threadTableOverflow(recording.get()));
+  EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler.get()));
+  EXPECT_FALSE(profiler->internOpen()) << "retained dictionaries must not admit late interning";
+  EXPECT_EQ(1U, cpu.stops);
+  EXPECT_EQ(1U, wall.stops);
+  EXPECT_EQ(1U, alloc.stops);
+  EXPECT_FALSE(cpu.enabled);
+  EXPECT_FALSE(wall.enabled);
+  EXPECT_FALSE(profiler->taskBlockEnabled());
+  EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
+  EXPECT_EQ(0ULL, profiler->threadFilter()->recordingEpoch());
+  EXPECT_TRUE(recorder->active());
+  ASSERT_GE(buffer->offset(), JFR_EVENT_FLUSH_THRESHOLD);
+  const int retained_bytes = buffer->offset();
+  if (quarantine_before_stop) EXPECT_EQ(bytes_before_stop, retained_bytes);
+  else EXPECT_GT(retained_bytes, bytes_before_stop);
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  if (pending_tail) {
+    expectOriginRetained(4);
+    ASSERT_EQ(2u, profiler->blockTracker()->copyUnownedWeightSegments(request.slot_id, segments));
+    EXPECT_EQ(request.sampling_epoch_start, segments[0].epoch_start);
+    EXPECT_EQ(2ULL, segments[0].weight);
+    EXPECT_EQ(second_epoch, segments[1].epoch_start);
+    EXPECT_EQ(2ULL, segments[1].weight);
+  } else {
+    EXPECT_EQ(0u, profiler->blockTracker()->copyUnownedWeightSegments(request.slot_id, segments));
+  }
+  CallTraceIdSet roots;
+  profiler->blockTracker()->collectLiveTraceIds(roots);
+  EXPECT_EQ(pending_tail ? 1U : 0U, roots.count(origin));
+  for (size_t i = 0; i < dictionaries.size(); ++i) {
+    EXPECT_EQ(dictionary_ids[i],
+              dictionaries[i]->standby()->lookup(retained_value, sizeof(retained_value) - 1));
+  }
+
+  Arguments args;
+  for (bool reset : {false, true}) {
+    Error restart = profiler->start(args, reset);
+    ASSERT_TRUE(restart);
+    EXPECT_STREQ("Profiler encountered fatal error", restart.message());
+    EXPECT_EQ(ERROR, ProfilerTestAccessor::state(profiler.get()));
+    for (size_t i = 0; i < dictionaries.size(); ++i) {
+      EXPECT_EQ(dictionary_generations[i], dictionaries[i]->generation());
+    }
+    if (pending_tail) expectOriginRetained(4);
+  }
+  EXPECT_TRUE(profiler->stop());
+  EXPECT_EQ(1U, cpu.stops);
+  EXPECT_EQ(1U, wall.stops);
+  EXPECT_EQ(1U, alloc.stops);
+  EXPECT_EQ(retained_bytes, buffer->offset());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    OutputFailureTiming, QuarantinedWallTailStopTest,
+    ::testing::Values(std::make_tuple(true, true, false), std::make_tuple(false, true, false),
+                      std::make_tuple(true, false, false), std::make_tuple(true, true, true),
+                      std::make_tuple(false, true, true)),
+    [](const ::testing::TestParamInfo<std::tuple<bool, bool, bool>>& info) {
+      return std::string(std::get<0>(info.param) ? "BeforeStop" : "DuringTailFlush") +
+             (std::get<1>(info.param) ? "PendingTail" : "NoTail") +
+             (std::get<2>(info.param) ? "FullThreadTable" : "");
+    });
+
+TEST_F(WallTailRecordingTest, ProducerFlushRetriesOnlyFailedEpochWithOriginalContext) {
+  u64 second_epoch = request.sampling_epoch_start + 100;
+  ASSERT_TRUE(profiler->blockTracker()->deferUnownedWeight(request.slot_id, second_epoch));
+  struct Observation {
+    u64 origin;
+    u64 first_epoch;
+    u64 second_epoch;
+    int first_writes = 0;
+    int second_writes = 0;
+    bool fail_second = true;
+  } observed{origin, request.sampling_epoch_start, second_epoch};
+  profiler->sampleWriteHookArgForTest = &observed;
+  profiler->sampleWriteHookForTest = +[](u32, u64 id, Event* event,
+                                       const Context* context, void* arg) {
+    auto* observation = static_cast<Observation*>(arg);
+    auto* sample = static_cast<ExecutionEvent*>(event);
+    EXPECT_EQ(observation->origin, id);
+    EXPECT_EQ(1ULL, sample->_weight);
+    EXPECT_EQ(OSThreadState::SLEEPING, sample->_thread_state);
+    EXPECT_NE(nullptr, context);
+    if (context != nullptr) EXPECT_EQ(11U, context->getTag(0));
+    if (sample->_sample_ticks == observation->first_epoch) {
+      ++observation->first_writes;
+      return true;
+    }
+    EXPECT_EQ(observation->second_epoch, sample->_sample_ticks);
+    ++observation->second_writes;
+    return !observation->fail_second;
+  };
+  EXPECT_FALSE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  expectOriginRetained();
+  observed.fail_second = false;
+  EXPECT_TRUE(profiler->recordUnownedBlockedTail(request.tid, request.slot_id));
+  profiler->sampleWriteHookForTest = nullptr;
+  profiler->sampleWriteHookArgForTest = nullptr;
+  EXPECT_EQ(1, observed.first_writes) << "committed epoch must not be replayed";
+  EXPECT_EQ(2, observed.second_writes);
+  auto* block = profiler->blockTracker()->slotForId(request.slot_id);
+  EXPECT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
+  EXPECT_EQ(0ULL, block->unowned_blocked_call_trace_id.load());
 }
 
 

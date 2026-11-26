@@ -184,7 +184,8 @@ a JavaCritical-safety guarantee.
 ## Paired TaskBlock Intervals
 
 `JavaProfiler.beginTaskBlock()` stores one pending token, start tick and captured
-context in the calling native owner's `ProfiledThread`. A token belongs to that
+context in the block slots of the calling native owner's `ProfiledThread`. The
+first producer enter on that owner allocates these slots. A token belongs to that
 thread; callers must pass it to `endTaskBlock()` in a `finally` block.
 
 Begin checks recording activity, unfiltered wall tracking, caller identity,

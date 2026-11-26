@@ -8,12 +8,15 @@
 #include "threadLocalData.inline.h"
 #include "threadLocalDataPool.h"
 #include "context_api.h"
+#include "counters.h"
 #include "guards.h"
 #include "otel_context.h"
 #include "os.h"
 #include "profiler.h"
+#include "signalSafety.h"
 #include <cassert>
 #include <cstring>
+#include <new>
 #include <time.h>
 
 
@@ -26,7 +29,35 @@ ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread
 
 #ifdef UNIT_TEST
 void (*ProfiledThread::forTidTestHook)() = nullptr;
+bool ProfiledThread::failBlockSlotsAllocationForTest = false;
 #endif
+
+ProfiledThread::BlockSlots* ProfiledThread::BlockSlotsOwner::getOrCreate() {
+  if (_slots != nullptr) return _slots;
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+#ifdef UNIT_TEST
+  BlockSlots* slots = failBlockSlotsAllocationForTest ? nullptr : new (std::nothrow) BlockSlots();
+#else
+  BlockSlots* slots = new (std::nothrow) BlockSlots();
+#endif
+  if (slots == nullptr) {
+    Counters::increment(TASK_BLOCK_STATE_ALLOC_FAILED);
+    return nullptr;
+  }
+  NativeMem::record(NM_THREAD_LOCAL, static_cast<long long>(sizeof(BlockSlots)));
+  _slots = slots;
+  return _slots;
+}
+
+// Reached from unclaimAndReset() and ~ProfiledThread(), both outside signal
+// handlers: thread teardown after blockProfilingForExit(), or a primed-slot
+// release with profiling signals blocked.
+void ProfiledThread::BlockSlotsOwner::reset() {
+  if (_slots == nullptr) return;
+  delete _slots;
+  _slots = nullptr;
+  NativeMem::record(NM_THREAD_LOCAL, -static_cast<long long>(sizeof(BlockSlots)));
+}
 
 bool ProfiledThread::supportPriming() {
   // Key must be valid
@@ -180,13 +211,11 @@ void ProfiledThread::unclaimAndReset() {
   _wall_epoch = 0;
   _call_trace_id = 0;
   _recording_epoch = 0;
-  _park_block_token = 0;
-  _task_block_start_ticks = 0;
-  _task_block_token = 0;
+  _block_slots.reset();
+  _block_recording_epoch = 0;
 #if defined(DEBUG) || defined(UNIT_TEST)
   _task_block_diagnostic_origin = {};
 #endif
-  _task_block_context = {};
   _filter_slot_id = -1;
   _logical_context_window_state.store(0, std::memory_order_release);
   _init_window = 0;
