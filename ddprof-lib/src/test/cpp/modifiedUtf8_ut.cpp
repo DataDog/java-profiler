@@ -40,7 +40,7 @@ TEST(ModifiedUtf8ToStandardTest, LoneSurrogatesBecomeReplacementChar) {
     EXPECT_EQ("\xEF\xBF\xBD\xEF\xBF\xBD", convert("\xED\xA0\xBD\xED\xA0\xBD"));  // two highs
     // A high half followed by a low half cut by the terminator: U+FFFD for each piece.
     EXPECT_EQ("\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD", convert("\xED\xA0\xBD\xED\xB8"));
-    // A high half followed by ED and a non-continuation byte is not merged into a pair.
+    // A high half followed by ED and a second byte above BF (not a low half) is not merged.
     EXPECT_EQ(std::string("\xEF\xBF\xBD\xEF\xBF\xBD\0", 7), convert("\xED\xA0\xBD\xED\xC0\x80"));
 }
 
