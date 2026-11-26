@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Test;
  * non-ASCII class file name when the platform file-name encoding is not UTF-8.
  */
 public class MethodNameEncodingTest extends AbstractProfilerTest {
-  private static final String METHOD = "burn\uD835\uDC9C\u00e9";
+  private static final String METHOD = "burn𝒜é";
   private static final String CLASS = MethodNameEncodingTest.class.getName() + "$Spinner";
 
   static volatile long sink;

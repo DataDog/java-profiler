@@ -35,7 +35,7 @@ class JavaConventionsPlugin : Plugin<Project> {
             // JDK 21+ deprecated --release 8 with warnings; suppress with -Xlint:-options
             // The deprecation is informational - Java 8 targeting still works
             options.compilerArgs.addAll(listOf("--release", "8", "-Xlint:-options"))
-            // Sources are UTF-8; without this, javac on JDK 17 under a C locale reads them as ASCII.
+            // Sources are UTF-8. JDKs before 18 default to the locale charset (ASCII under C).
             options.encoding = "UTF-8"
         }
 

@@ -52,6 +52,7 @@ TEST(ToStandardUtf8Test, LoneSurrogatesBecomeReplacementChar) {
     EXPECT_EQ(FFFD + "a", convert("\xED\xA0\xBD" "a"));               // high without low
     EXPECT_EQ(FFFD + "a", convert("\xED\xB8\x80" "a"));               // low without high
     EXPECT_EQ(FFFD + FFFD + "a", convert("\xED\xA0\xBD\xED\xA0\xBD" "a"));  // two highs
+    EXPECT_EQ(FFFD + FFFD, convert("\xED\xB8\x80\xED\xB8\x80"));            // two lows
     // ED and a byte above BF after a high half: not a low half, so no pair.
     EXPECT_EQ(FFFD + "?" + std::string("\0", 1), convert("\xED\xA0\xBD\xED\xC0\x80"));
     // ED B0 then a non-continuation byte: a malformed low half.
@@ -79,6 +80,7 @@ TEST(ToStandardUtf8Test, SequenceCutByEndOfInputIsDropped) {
     EXPECT_EQ("a", convert("a\xED\xA0\xBD\xED\xB8"));  // pair cut after 5 bytes
     // Not cut pairs: ED then a byte that cannot start a low half, and a low half at the end.
     EXPECT_EQ("a" + FFFD + "?A", convert("a\xED\xA0\xBD\xED" "A"));
+    EXPECT_EQ("a" + FFFD + "?", convert("a\xED\xA0\xBD\xED\xC0"));  // C0 is above a low half
     EXPECT_EQ("a" + FFFD, convert("a\xED\xB8\x80"));
 }
 
