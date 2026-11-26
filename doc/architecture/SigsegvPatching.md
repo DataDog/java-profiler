@@ -55,7 +55,7 @@ This ensures:
 
 ```
 JVM Initialization
-    └── VM::ready()                                  (vmEntry.cpp, once)
+    └── VM::ready()                                  (vmEntry.cpp; signal setup once)
         └── Profiler::setupSignalHandlers()
             ├── OS::protectSignalHandlers()          save JVM handlers; must precede install
             ├── OS::replaceSigsegvHandler() / replaceSigbusHandler()

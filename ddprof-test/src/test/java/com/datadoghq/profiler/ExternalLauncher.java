@@ -37,6 +37,10 @@ import java.util.regex.Pattern;
  *   <li>profiler [comma delimited profiler command list] - starts the profiler
  *   <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the
  *       profiler and runs a CPU-intensive task
+ *   <li>profiler-at &lt;library path&gt; - calls {@link JavaProfiler#getInstance(String, String)}
+ *       with that path between {@code [getInstance-begin]} and {@code [getInstance-done]} lines,
+ *       then burns CPU briefly; with {@code -agentpath} on the same path it reloads the agent's
+ *       library image; see {@code VMReadyRerunTest}
  *   <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from
  *       a virtual thread
  *   <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
@@ -398,6 +402,16 @@ public class ExternalLauncher {
     }
   }
 
+  /** Burns CPU for 500 ms; its frame marks samples taken after the reload. */
+  static long spinAfterReload() {
+    long deadline = System.nanoTime() + 500_000_000L;
+    long acc = 0;
+    while (System.nanoTime() < deadline) {
+      acc = acc * 31 + System.nanoTime();
+    }
+    return acc;
+  }
+
   public static void main(String[] args) throws Exception {
     Thread worker = null;
     try {
@@ -406,6 +420,12 @@ public class ExternalLauncher {
       }
       if (args[0].equals("library")) {
         JVMAccess.getInstance();
+      } else if (args[0].equals("profiler-at")) {
+        System.out.println("[getInstance-begin]");
+        System.out.flush();
+        JavaProfiler.getInstance(args[1], null);
+        System.out.println("[getInstance-done]");
+        System.out.println("[spin-done] " + spinAfterReload());
       } else if (args[0].equals("profiler-virtual-thread")) {
         Thread vt =
             startVirtualThread(

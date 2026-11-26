@@ -20,6 +20,7 @@
 #include "threadState.h"
 
 CodeCache* VMStructs::_libjvm = nullptr;
+bool VMStructs::_initialized = false;
 bool VMStructs::_has_class_names = false;
 bool VMStructs::_has_method_structs = false;
 bool VMStructs::_has_compiler_structs = false;
@@ -31,6 +32,7 @@ bool VMStructs::_compact_object_headers = false;
 VMStructs::InflatedMark VMStructs::_inflated_mark = VMStructs::InflatedMark::Unknown;
 
 char* VMStructs::_code_heap[3] = {};
+int VMStructs::_code_heap_segment_shift = -1;
 const void* VMStructs::_code_heap_low = NO_MIN_ADDRESS;
 const void* VMStructs::_code_heap_high = NO_MAX_ADDRESS;
 char* VMStructs::_narrow_klass_base = nullptr;
@@ -113,14 +115,21 @@ uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     return *(uintptr_t*)symbol;
 }
 
-// Run at agent load time
+// Parses only data fixed once libjvm is loaded, so later calls skip it and never rewrite
+// fields that stack walkers read. Runtime state belongs in resolveOffsets(). The caller
+// (VM::ready) serializes calls.
 void VMStructs::init(CodeCache* libjvm) {
+    if (_initialized) {
+        TEST_LOG("VMStructs::init skipped: tables already parsed");
+        return;
+    }
     if (libjvm != NULL) {
         _libjvm = libjvm;
         initOffsets();
         initJvmFunctions();
         initUnsafeFunctions();
         initCriticalJNINatives();
+        _initialized = true;
     }
 }
 
@@ -341,6 +350,15 @@ void VMStructs::initOffsets() {
      // Disable verifier for now
      verify_offsets();
 #endif
+
+    // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
+    if (_nmethod_immutable_offset < 0) {
+        _data_offset = 0;
+    }
+#ifdef __aarch64__
+    // The constant is missing on ARM, but fortunately, it has been stable for years across all JDK versions
+    _frame_entry_frame_call_wrapper_offset = -64;
+#endif
 }
 
 void VMStructs::resolveOffsets() {
@@ -396,8 +414,6 @@ void VMStructs::resolveOffsets() {
     _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11 ? -8 : VM::hotspot_version() == 8 ? -7 : 0;
 #elif defined(__aarch64__)
     _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11 ? -9 : VM::hotspot_version() == 8 ? -7 : 0;
-    // The constant is missing on ARM, but fortunately, it has been stable for years across all JDK versions
-    _frame_entry_frame_call_wrapper_offset = -64;
 #endif
 
     // JDK-8292758 has slightly changed ScopeDesc encoding
@@ -428,11 +444,6 @@ void VMStructs::resolveOffsets() {
         if (sym != nullptr) _cont_entry_return_pc = *sym;
     }
 
-    // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
-    if (_nmethod_immutable_offset < 0) {
-        _data_offset = 0;
-    }
-
     _has_stack_structs = _has_method_structs
             && _call_wrapper_anchor_offset >= 0
             && _frame_entry_frame_call_wrapper_offset != -1
@@ -449,6 +460,8 @@ void VMStructs::resolveOffsets() {
     // Since JDK-8268406, it is no longer possible to get VMMethod* by dereferencing jmethodID
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
 
+    const void* heap_low = nullptr;
+    const void* heap_high = nullptr;
     if (_code_heap_addr != NULL && _code_heap_low_addr != NULL && _code_heap_high_addr != NULL) {
         char* code_heaps = *(char**)_code_heap_addr;
         unsigned int code_heap_count = *(unsigned int*)(code_heaps + _array_len_offset);
@@ -456,22 +469,33 @@ void VMStructs::resolveOffsets() {
             char* code_heap_array = *(char**)(code_heaps + _array_data_offset);
             memcpy(_code_heap, code_heap_array, code_heap_count * sizeof(_code_heap[0]));
         }
-        _code_heap_low = *(const void**)_code_heap_low_addr;
-        _code_heap_high = *(const void**)_code_heap_high_addr;
+        heap_low = *(const void**)_code_heap_low_addr;
+        heap_high = *(const void**)_code_heap_high_addr;
     } else if (_code_heap_addr != NULL && _code_heap_memory_offset >= 0) {
         _code_heap[0] = *(char**)_code_heap_addr;
-        _code_heap_low = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_low_bound_offset);
-        _code_heap_high = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_high_bound_offset);
+        heap_low = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_low_bound_offset);
+        heap_high = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_high_bound_offset);
     }
 
-    // Invariant: _code_heap[i] != NULL iff all CodeHeap structures are available
-    if (_code_heap[0] != NULL && _code_heap_segment_shift >= 0) {
-        _code_heap_segment_shift = *(int*)(_code_heap[0] + _code_heap_segment_shift);
+    // Invariant: _code_heap[i] != NULL iff all CodeHeap structures are available.
+    // Re-read on every call: a JDK 8 heap read before VM init reports shift 0. Plain
+    // stores suffice: samplers start after the final value is stored; reruns store it again.
+    DEBUG_ONLY(int entry_shift = _code_heap_segment_shift;)
+    int shift = -1;
+    if (_code_heap[0] != NULL && _code_heap_log2_segment_size_offset >= 0) {
+        shift = *(int*)(_code_heap[0] + _code_heap_log2_segment_size_offset);
     }
     if (_code_heap_memory_offset < 0 || _code_heap_segmap_offset < 0 ||
-        _code_heap_segment_shift < 0 || _code_heap_segment_shift > 16 ||
-        _heap_block_used_offset < 0) {
+        shift < 0 || shift > 16 || _heap_block_used_offset < 0) {
         memset(_code_heap, 0, sizeof(_code_heap));
+    } else {
+        _code_heap_segment_shift = shift;
+    }
+    TEST_LOG("VMStructs::resolveOffsets shift entry=%d exit=%d", entry_shift, _code_heap_segment_shift);
+    // Merge rather than overwrite: JitCodeCache may already have widened the bounds, and
+    // the bounds are still null when VM::ready runs from Agent_OnLoad.
+    if (heap_low != nullptr && heap_high != nullptr) {
+        CodeHeap::updateBounds(heap_low, heap_high);
     }
     if (_interpreter_nm == NULL && _interpreter_start != NULL) {
         _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);

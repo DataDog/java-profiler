@@ -218,10 +218,10 @@ protected:
         // populated by VMStructs::init() after a real symbol scan) from
         // VM::libjvm() above - nothing in this test's write path reads it,
         // but VMStructs::init(CodeCache*) is already public production API
-        // (hotspot/vmStructs.h) and idempotent (readSymbol() degrades to 0
-        // for every unresolved symbol, per its own comment), so initializing
-        // it here too keeps this fixture consistent with every other _ut.cpp
-        // that touches this process-wide singleton.
+        // (hotspot/vmStructs.h): it parses on its first call only, and
+        // readSymbol() degrades to 0 for every unresolved symbol, so
+        // initializing it here too keeps this fixture consistent with every
+        // other _ut.cpp that touches this process-wide singleton.
         VMStructs::init(&fake_libjvm);
     }
 
