@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-26 11:54:37 EST
+**Date:** 2026-11-26 16:09:03 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 105 |
-| Sample Rate | 1.75/sec |
-| Health Score | 109% |
-| Threads | 8 |
+| CPU Samples | 107 |
+| Sample Rate | 1.78/sec |
+| Health Score | 111% |
+| Threads | 10 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 83 |
-| Sample Rate | 1.38/sec |
-| Health Score | 86% |
+| CPU Samples | 110 |
+| Sample Rate | 1.83/sec |
+| Health Score | 114% |
 | Threads | 11 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 29-34 cores)</summary>
+<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1795711803 34
-1795711808 34
-1795711813 34
-1795711818 34
-1795711823 34
-1795711828 34
-1795711833 34
-1795711838 29
-1795711843 29
-1795711848 29
-1795711853 29
-1795711858 29
-1795711863 29
-1795711868 29
-1795711873 29
-1795711878 29
-1795711883 29
-1795711888 29
-1795711893 29
-1795711898 34
+1795727029 34
+1795727034 34
+1795727039 34
+1795727044 34
+1795727049 34
+1795727054 34
+1795727059 34
+1795727064 34
+1795727069 34
+1795727074 34
+1795727079 34
+1795727084 34
+1795727089 34
+1795727094 34
+1795727099 34
+1795727104 34
+1795727109 34
+1795727115 34
+1795727120 34
+1795727125 34
 ```
 </details>
 
