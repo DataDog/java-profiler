@@ -166,7 +166,7 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
 
     if (!nm->isFrameCompleteAt(pc)) {
         // MacroAssembler::enter followed by continuation_enter_setup's sub SP.
-        if (entry[0] != 0x55 || entry[1] != 0x48 ||
+        if (!nm->contains(entry + 7) || entry[0] != 0x55 || entry[1] != 0x48 ||
             !((entry[2] == 0x8b && entry[3] == 0xec) ||
               (entry[2] == 0x89 && entry[3] == 0xe5)) ||
             entry[4] != 0x48 || entry[6] != 0xec) return -1;
@@ -175,7 +175,7 @@ int HotspotStackFrame::continuationEntryFrameWords(VMNMethod* nm, const void* pc
         if (entry[5] == 0x83) {
             storage = entry[7];
             allocated = 8;
-        } else if (entry[5] == 0x81) {
+        } else if (entry[5] == 0x81 && nm->contains(entry + 10)) {
             storage = entry[7] | (entry[8] << 8) | (entry[9] << 16) | ((unsigned int)entry[10] << 24);
             allocated = 11;
         } else {

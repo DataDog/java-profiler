@@ -167,6 +167,21 @@ TEST_F(ContinuationEntryX64Test, RejectsInvalidFrameSizes) {
     }
 }
 
+TEST_F(ContinuationEntryX64Test, RejectsAPrologueCutOffByTheBlobEnd) {
+    method.complete = 64;
+    method.size = offsetof(Method, code) + 7; // sub rsp's imm8 lies outside the nmethod
+    EXPECT_EQ(-1, wordsAt(0));
+    method.size = offsetof(Method, code) + 8;
+    EXPECT_EQ(1, wordsAt(0));
+
+    const unsigned char setup[] = {0x55, 0x48, 0x8b, 0xec, 0x48, 0x81, 0xec, 0x40, 0, 0, 0};
+    memcpy(method.code, setup, sizeof(setup));
+    method.size = offsetof(Method, code) + 10; // the imm32's last byte lies outside
+    EXPECT_EQ(-1, wordsAt(0));
+    method.size = offsetof(Method, code) + 11;
+    EXPECT_EQ(1, wordsAt(0));
+}
+
 } // namespace
 #else
 TEST(ContinuationEntryX64Test, RequiresX64) {
