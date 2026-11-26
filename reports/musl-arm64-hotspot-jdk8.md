@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-26 08:20:29 EST
+**Date:** 2026-11-26 08:21:30 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 299 |
-| Sample Rate | 4.98/sec |
-| Health Score | 311% |
+| CPU Samples | 102 |
+| Sample Rate | 1.70/sec |
+| Health Score | 106% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 462 |
-| Sample Rate | 7.70/sec |
-| Health Score | 481% |
-| Threads | 10 |
+| CPU Samples | 113 |
+| Sample Rate | 1.88/sec |
+| Health Score | 117% |
+| Threads | 14 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1795698919 34
-1795698924 34
-1795698929 34
-1795698934 34
-1795698939 34
-1795698944 34
-1795698949 34
-1795698954 34
-1795698959 34
-1795698964 34
-1795698969 34
-1795698974 34
-1795698979 34
-1795698984 34
-1795698989 34
-1795698994 34
-1795698999 34
-1795699004 34
-1795699009 34
-1795699014 34
+1795698967 34
+1795698972 34
+1795698977 34
+1795698982 34
+1795698987 34
+1795698992 34
+1795698997 34
+1795699002 34
+1795699008 34
+1795699013 34
+1795699018 34
+1795699023 34
+1795699028 34
+1795699033 34
+1795699038 34
+1795699043 34
+1795699048 34
+1795699053 34
+1795699058 34
+1795699063 34
 ```
 </details>
 
