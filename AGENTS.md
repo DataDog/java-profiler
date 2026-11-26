@@ -73,7 +73,7 @@ and `:ddprof-lib:benchmarks`), `ddprof-test` (Java integration tests), `ddprof-t
 `malloc-shim` (Linux allocation interceptor), `demo-java-leak` (deployable
 dependency-free leak-demo app; not published).
 
-**Supported JVMs:** HotSpot, J9, Zing; HotSpot continuation recovery uses instruction phases (compiled/interpreted entries and x64/arm64 exception exits, including recognized resolver returns), validated metadata for return-barrier entries and interiors (positive-argument OSR layouts use validated entries, not guessed padding), and retires consumed Java anchors — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
+**Supported JVMs:** HotSpot, J9, Zing — see [doc/architecture/JvmSupportLayer.md](doc/architecture/JvmSupportLayer.md).
 **Platforms:** Linux x64/arm64 (primary), macOS arm64/x64; musl libc handled automatically.
 
 ## Operating Rules for Agent Sessions
@@ -114,8 +114,6 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   `tasks --all`. Do not use the bare `assemble` task.
 - Single Java test: `-Ptests=ClassName` / `-Ptests=ClassName.methodName` / `-Ptests="*.Pattern"`
   — unified across glibc, macOS and musl platforms.
-- CStack templates with no safe declared mode are disabled before per-test callbacks and
-  profiler setup; constructor injection still runs. See [TestingGuide.md](doc/building/TestingGuide.md).
 - Flaky native gtests: the Tier 1 GitLab jobs gate through `ddprof-test/quarantine.txt`
   with cell `glibc-<config>-<arch>` (see [doc/building/TestingGuide.md](doc/building/TestingGuide.md),
   Tier 1) — a flaky gtest gets an entry with a PROF ticket, same as the Java cells.
