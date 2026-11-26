@@ -24,6 +24,8 @@ public final class ContinuationStackChecks {
   private static final String WORKLOAD_CLASS = VirtualThreadRemountAntagonist.class.getName();
   private static final int MIN_SAMPLES = 10;
   private static final int MIN_SUCCESS_PERCENT = 99;
+  // Bounds excused cstack=vm thaws, so a walker regression that emits only the root still fails.
+  private static final int MAX_THAW_AT_ROOT_PERCENT = 10;
   private final boolean carrierFrames;
   private final Set<Long> carrierIds;
   private final long[] eligible = new long[2];
@@ -32,6 +34,7 @@ public final class ContinuationStackChecks {
   private final Map<String, Long> failureReasons = new LinkedHashMap<>();
   private long carrierOnlyFailures;
   private long idleNativeGaps;
+  private long thawsAtRoot;
   private long continuationErrors;
   private long invalidAncestry;
   private long falseComplete;
@@ -61,6 +64,22 @@ public final class ContinuationStackChecks {
     Object thread = event.get("eventThread");
     Object id = thread instanceof Map ? ((Map<?, ?>) thread).get("osThreadId") : null;
     return id instanceof Number ? ((Number) id).longValue() : -1;
+  }
+
+  /**
+   * cstack=vm ends the walk at a single, outermost continuation root. Above it, a carrier sampled
+   * mid-thaw has at least one thaw frame, and one sampled inside enterSpecial has none.
+   */
+  private boolean isThawAtContinuationRoot(List<JfrFrame> frames, int roots) {
+    int last = frames.size() - 1;
+    if (carrierFrames || roots != 1) return false;
+    if (!"JVM Continuation".equals(frames.get(last).methodName())) return false;
+    if (last == 0) return true;
+    for (int i = 0; i < last; i++) {
+      String method = frames.get(i).methodName();
+      if (method != null && method.contains("thaw")) return true;
+    }
+    return false;
   }
 
   /** Classifies one sample; keeps counts and only the first failing stack. */
@@ -98,13 +117,15 @@ public final class ContinuationStackChecks {
     boolean knownCarrier = carrierIds.contains(carrierId(event));
     if (continuationError) continuationErrors++;
     if (trace.isEmpty() && knownCarrier) walkError = "empty stack";
-    // A carrier walk that kept no Java frame and admits truncation failed to reach Java.
+    // A carrier walk that kept no Java frame and admits truncation failed to reach Java,
+    // unless it is a cstack=vm walk that stopped at the root mid-thaw or inside enterSpecial.
     if (walkError == null
         && knownCarrier
         && trace.isTruncated()
         && trace.frames().stream()
             .allMatch(frame -> frame.className() == null || frame.className().isEmpty())) {
-      walkError = "truncated native-only stack";
+      if (isThawAtContinuationRoot(trace.frames(), roots)) thawsAtRoot++;
+      else walkError = "truncated native-only stack";
     }
     boolean failedWalk = walkError != null && (workload || knownCarrier || continuationError);
     // Only a complete idle scheduler chain establishes that no continuation walk was attempted.
@@ -231,6 +252,11 @@ public final class ContinuationStackChecks {
             assertTrue(
                 successful * 100 >= attempts * MIN_SUCCESS_PERCENT,
                 "Fewer than 99% successful boundary walks including carrier-only failures"));
+    checks.add(
+        () ->
+            assertTrue(
+                thawsAtRoot * 100 <= successful * MAX_THAW_AT_ROOT_PERCENT,
+                "More than 10% of carrier walks ended at the continuation root mid-thaw"));
     assertAll(eventType + " carrier=" + carrierFrames + " " + this, checks);
   }
 
@@ -247,6 +273,8 @@ public final class ContinuationStackChecks {
         + carrierOnlyFailures
         + " idleNativeGaps="
         + idleNativeGaps
+        + " thawsAtRoot="
+        + thawsAtRoot
         + " continuationErrors="
         + continuationErrors
         + " invalidAncestry="

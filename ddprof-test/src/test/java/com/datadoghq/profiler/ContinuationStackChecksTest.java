@@ -391,6 +391,55 @@ public class ContinuationStackChecksTest {
     assertTrue(failure.getMessage().contains("reason=empty stack"));
   }
 
+  /** In cstack=vm, a carrier sampled mid-thaw ends at the continuation root: not a failure. */
+  @Test
+  public void acceptsTruncatedThawStacksEndingAtTheContinuationRoot() {
+    ContinuationStackChecks checks = covered(false, 100);
+    String eligible = eligible(checks);
+    for (int i = 0; i < 10; i++) {
+      checks.accept(sample(7, true, "#ThawBase::thaw_slow", "#JVM Continuation"));
+      checks.accept(sample(7, true, "#JVM Continuation"));
+    }
+    checks.assertValid("cpu"); // exactly 10% of the 200 successful walks
+    assertTrue(checks.toString().contains("thawsAtRoot=20"));
+    assertEquals(eligible, eligible(checks), "an excused sample is not a success");
+    checks.accept(sample(7, true, "#JVM Continuation"));
+    AssertionError failure = assertThrows(AssertionError.class, () -> checks.assertValid("cpu"));
+    assertTrue(failure.getMessage().contains("ended at the continuation root"));
+  }
+
+  /** Only that thaw shape is excused; other native-only carrier stacks still fail. */
+  @Test
+  public void rejectsOtherNativeOnlyStacksAtTheContinuationRoot() {
+    String[][] stacks = {
+      {"#__syscall_cancel_arch_start", "#clock_gettime"}, // no root
+      {
+        "#FreezeBase::recurse_freeze", "#JVM Continuation"
+      }, // the Java frames being frozen are missing
+      {"#ThawBase::thaw_slow", "#JVM Continuation", "#start_thread"}, // root not outermost
+      {"#ThawBase::thaw_slow", "#JVM Continuation", "#JVM Continuation"}
+    };
+    for (String[] frames : stacks) {
+      ContinuationStackChecks checks = covered(false, 10);
+      checks.accept(sample(7, true, frames));
+      AssertionError failure = assertThrows(AssertionError.class, () -> checks.assertValid("cpu"));
+      assertTrue(
+          failure.getMessage().contains("reason=truncated native-only stack"),
+          String.join(" > ", frames));
+    }
+    // With carrier frames the walk continues past the boundary, so a root does not excuse it.
+    ContinuationStackChecks carrierWalk = covered(true, 10);
+    carrierWalk.accept(sample(7, true, "#ThawBase::thaw_slow", "#JVM Continuation"));
+    AssertionError failure =
+        assertThrows(AssertionError.class, () -> carrierWalk.assertValid("cpu"));
+    assertTrue(failure.getMessage().contains("reason=truncated native-only stack"));
+  }
+
+  private static String eligible(ContinuationStackChecks checks) {
+    String text = checks.toString();
+    return text.substring(0, text.indexOf(" partialThaws="));
+  }
+
   /** A truncated carrier stack without any Java frame is a failed walk, not a success. */
   @Test
   public void rejectsTruncatedNativeOnlyStacksOnKnownCarriers() {

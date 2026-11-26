@@ -47,7 +47,10 @@ an ordered `Unsafe.park` → optional `LockSupport.park*` → `ForkJoinPool.awai
 → `ForkJoinPool.runWorker` → `ForkJoinWorkerThread.run` idle chain, with no other
 Java frames, continuation roots or other walk errors. These gaps remain visible
 in the separate `idleNativeGaps` counter and do not increase successful-walk
-counts. Ambiguous carrier samples remain in the failure budget. Error markers
+counts. In `vm` mode, a truncated carrier stack whose only root is outermost and
+has at least one thaw frame (or nothing) above it is a walk stopped mid-thaw or
+inside enterSpecial. It counts in `thawsAtRoot`, capped at 10% of successful walks,
+and never as a success. Ambiguous carrier samples remain in the failure budget. Error markers
 do not bypass carrier uniqueness or ordering checks. Errors on unrelated
 threads do not enter the generic failure budget. Profile events are streamed
 rather than retained for the whole run.

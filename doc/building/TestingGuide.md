@@ -205,7 +205,7 @@ CPU and wall samples must exercise both argument layouts and partial thaw.
 Continuation errors, invalid ancestry and falsely complete Java stacks fail
 unconditionally. The shared `ContinuationStackChecks` validator also requires
 99% successful classified walks; native gaps and ambiguous carrier-only failures
-consume that budget. Its unit tests cover the classifier and acceptance checks.
+consume that budget, and `vm`-mode walks stopped at the root mid-thaw are capped at 10%. Its unit tests cover the classifier and acceptance checks.
 See [the chaos harness guide](../../ddprof-stresstest/src/chaos/README.md#virtual-thread-carrier-recovery)
 for the complete classification rules, diagnostics and longer-run controls.
 
