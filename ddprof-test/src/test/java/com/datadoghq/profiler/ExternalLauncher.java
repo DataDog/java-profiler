@@ -10,6 +10,7 @@ import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
 import com.datadoghq.profiler.referencechains.StaticFieldGrowingCollectionScenario;
 import com.datadoghq.profiler.referencechains.ThreadLocalLeakScenario;
 import java.io.IOException;
+import java.lang.instrument.Instrumentation;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
@@ -38,8 +39,8 @@ import java.util.regex.Pattern;
  *   <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the
  *       profiler and runs a CPU-intensive task
  *   <li>profiler-at &lt;library path&gt; - loads the library from that path between {@code
- *       [getInstance-begin]} and {@code [getInstance-done]}, then burns CPU; see {@code
- *       VMReadyRerunTest}
+ *       [getInstance-begin]} and {@code [getInstance-done]}, burns CPU, then retransforms a class
+ *       when {@link RetransformAgent} is loaded; see {@code VMReadyRerunTest}
  *   <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from
  *       a virtual thread
  *   <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
@@ -425,6 +426,11 @@ public class ExternalLauncher {
         JavaProfiler.getInstance(args[1], null);
         System.out.println("[getInstance-done]");
         System.out.println("[spin-done] " + spinAfterReload());
+        Instrumentation inst = RetransformAgent.instrumentation();
+        if (inst != null) {
+          inst.retransformClasses(ExternalLauncher.class);
+          System.out.println("[retransform-done]");
+        }
       } else if (args[0].equals("profiler-virtual-thread")) {
         Thread vt =
             startVirtualThread(

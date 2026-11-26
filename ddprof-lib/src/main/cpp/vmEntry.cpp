@@ -567,11 +567,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   }
 
   // Make sure we reload method IDs upon class retransformation
-  JVMTIFunctions *functions = *(JVMTIFunctions **)_jvmti;
-  _orig_RedefineClasses = functions->RedefineClasses;
-  _orig_RetransformClasses = functions->RetransformClasses;
-  functions->RedefineClasses = RedefineClassesHook;
-  functions->RetransformClasses = RetransformClassesHook;
+  installClassRedefinitionHooks(*(JVMTIFunctions **)_jvmti);
 
   // Code generated before the persistent events are enabled is replayed by
   // Profiler::enablePersistentJvmtiEvents() in start(); a failed step is retried
@@ -583,6 +579,19 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   OS::installSignalHandler(WAKEUP_SIGNAL, NULL, wakeupHandler);
 
   return true;
+}
+
+// Runs once per library image: a later initProfilerBridge() call would otherwise save the
+// installed hooks as the originals, and each hook would then call itself without end.
+// Guarding on the saved originals, not on the table, also keeps another agent's wrapper.
+void VM::installClassRedefinitionHooks(JVMTIFunctions *functions) {
+  if (_orig_RedefineClasses != nullptr) {
+    return;
+  }
+  _orig_RedefineClasses = functions->RedefineClasses;
+  _orig_RetransformClasses = functions->RetransformClasses;
+  functions->RedefineClasses = RedefineClassesHook;
+  functions->RetransformClasses = RetransformClassesHook;
 }
 
 // Called from initLibrary(), initProfilerBridge() and VMInit, possibly while a profiler

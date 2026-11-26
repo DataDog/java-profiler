@@ -167,6 +167,7 @@ private:
                                                        const jclass *classes);
 
   static void ready(jvmtiEnv *jvmti, JNIEnv *jni);
+  static void installClassRedefinitionHooks(JVMTIFunctions *functions);
   static void applyPatch(char *func, const char *patch, const char *end_patch);
   static void *getLibraryHandle(const char *name);
 

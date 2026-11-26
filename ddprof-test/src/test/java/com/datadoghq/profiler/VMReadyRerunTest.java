@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,9 +22,8 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * Reloading a sampling {@code -agentpath} library reruns {@code VM::ready()}: it must skip the
- * table parsing, keep the segment shift final and keep sampling. Debug builds only ({@code
- * [TEST::INFO]}).
+ * Reloading a sampling {@code -agentpath} library reruns its init: it must skip the table parsing,
+ * keep the segment shift final, keep sampling and keep retransformation working. Debug builds only.
  */
 public class VMReadyRerunTest extends AbstractProcessProfilerTest {
   private static final String INIT_SKIPPED = "VMStructs::init skipped: tables already parsed";
@@ -51,7 +51,9 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
     assumeTrue(!Platform.isJ9() && !Platform.isZing(), "VMStructs is HotSpot-only");
     Path agentLib = LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir"));
     Path jfr = Files.createTempFile("vm-ready-rerun-", ".jfr");
+    Path javaAgent = RetransformAgent.writeAgentJar(jfr.getParent());
     AtomicBoolean reloading = new AtomicBoolean();
+    AtomicBoolean retransformed = new AtomicBoolean();
     AtomicBoolean reloaded = new AtomicBoolean();
     AtomicInteger skips = new AtomicInteger();
     AtomicInteger resolves = new AtomicInteger();
@@ -60,17 +62,20 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
       LaunchResult result =
           launch(
               "profiler-at",
-              Collections.singletonList(
+              Arrays.asList(
                   "-agentpath:"
                       + agentLib.toAbsolutePath()
                       + "=start,cpu=10ms,jfr,file="
-                      + jfr.toAbsolutePath()),
+                      + jfr.toAbsolutePath(),
+                  "-javaagent:" + javaAgent.toAbsolutePath()),
               agentLib.toAbsolutePath().toString(),
               Collections.emptyMap(),
               // Startup, the reload, a 500 ms spin and the JFR dump at exit, with a debug library.
               childTimeoutSeconds(30),
               l -> {
-                if (l.contains("[getInstance-begin]")) {
+                if (l.contains("[retransform-done]")) {
+                  retransformed.set(true);
+                } else if (l.contains("[getInstance-begin]")) {
                   reloading.set(true);
                 } else if (l.contains("[getInstance-done]")) {
                   reloading.set(false);
@@ -99,6 +104,7 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
           "the reload did not rerun VM::ready() in the agent's library image, or reparsed the tables");
       assertTrue(resolves.get() > 0, "the reload did not resolve the VMStructs offsets");
       assertTrue(unstable.isEmpty(), "a rerun changed or invalidated the shift: " + unstable);
+      assertTrue(retransformed.get(), "retransformClasses() after the reload did not return");
 
       AtomicBoolean sampledAfterReload = new AtomicBoolean();
       JfrEvents.load(
@@ -113,6 +119,7 @@ public class VMReadyRerunTest extends AbstractProcessProfilerTest {
       assertTrue(sampledAfterReload.get(), "the agent recorded no samples after the reload");
     } finally {
       Files.deleteIfExists(jfr);
+      Files.deleteIfExists(javaAgent);
     }
   }
 }

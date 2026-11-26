@@ -32,6 +32,7 @@ public:
     static void setRedefine(RedefineFn f) { VM::_orig_RedefineClasses = f; }
     static RetransformFn getRetransform() { return VM::_orig_RetransformClasses; }
     static void setRetransform(RetransformFn f) { VM::_orig_RetransformClasses = f; }
+    static void installHooks(JVMTIFunctions* functions) { VM::installClassRedefinitionHooks(functions); }
 };
 
 class JVMSupportTestAccessor {
@@ -237,3 +238,51 @@ INSTANTIATE_TEST_SUITE_P(Mode, RedefineHooksTest, ::testing::Bool(),
                          [](const ::testing::TestParamInfo<bool>& info) {
                              return info.param ? "Lazy" : "FullPreload";
                          });
+
+static jvmtiError JNICALL otherAgentRedefine(jvmtiEnv*, jint, const jvmtiClassDefinition*) {
+    return JVMTI_ERROR_NONE;
+}
+
+// A second VM::initProfilerBridge() in the same library image (an -agentpath library
+// loaded again through JavaProfiler.getInstance(path)) installs the hooks again.
+class RedefineHookInstallTest : public ::testing::Test {
+protected:
+    JVMTIFunctions table{};
+    VMTestAccessor::RedefineFn saved_redefine = nullptr;
+    VMTestAccessor::RetransformFn saved_retransform = nullptr;
+
+    void SetUp() override {
+        saved_redefine = VMTestAccessor::getRedefine();
+        saved_retransform = VMTestAccessor::getRetransform();
+        VMTestAccessor::setRedefine(nullptr);
+        VMTestAccessor::setRetransform(nullptr);
+        table.RedefineClasses = &origRedefine;
+        table.RetransformClasses = &origRetransform;
+    }
+
+    void TearDown() override {
+        VMTestAccessor::setRedefine(saved_redefine);
+        VMTestAccessor::setRetransform(saved_retransform);
+    }
+};
+
+TEST_F(RedefineHookInstallTest, SecondInstallKeepsTheJvmOriginals) {
+    VMTestAccessor::installHooks(&table);
+    VMTestAccessor::installHooks(&table);
+
+    EXPECT_EQ(&VM::RedefineClassesHook, table.RedefineClasses);
+    EXPECT_EQ(&VM::RetransformClassesHook, table.RetransformClasses);
+    EXPECT_EQ(&origRedefine, VMTestAccessor::getRedefine())
+        << "saving the installed hook as the original makes it call itself";
+    EXPECT_EQ(&origRetransform, VMTestAccessor::getRetransform());
+}
+
+TEST_F(RedefineHookInstallTest, SecondInstallKeepsAnotherAgentsWrapper) {
+    VMTestAccessor::installHooks(&table);
+    table.RedefineClasses = &otherAgentRedefine;
+    VMTestAccessor::installHooks(&table);
+
+    EXPECT_EQ(&otherAgentRedefine, table.RedefineClasses);
+    EXPECT_EQ(&origRedefine, VMTestAccessor::getRedefine())
+        << "saving the wrapper that calls our hook as the original makes the two call each other";
+}
