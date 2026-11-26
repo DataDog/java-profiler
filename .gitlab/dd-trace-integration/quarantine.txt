@@ -9,9 +9,9 @@
 #
 #   <cell-glob>/<scenario> | ticket | added | review_by | reason
 #
-#   cell-glob   Bash glob against a known matrix cell
+#   cell-glob   Bash glob against a scheduled matrix cell
 #               <libc>-<arch>-<jvm>-jdk<version> (e.g. glibc-x64-openj9-jdk25).
-#               Must match at least one known cell or validation fails - a
+#               Must match at least one scheduled cell or validation fails - a
 #               glob naming a cell CI never builds quarantines nothing.
 #               Prefer the narrowest glob with evidence: the same flake on the
 #               cell's other scenario, or on sibling cells, still gates.
