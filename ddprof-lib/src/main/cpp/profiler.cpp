@@ -27,11 +27,11 @@
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
 #include "jniHelper.h"
-#include "modifiedUtf8.h"
 #include "jvmSupport.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "libraryPatcher.h"
+#include "modifiedUtf8.h"
 #include "objectSampler.h"
 #include "os.h"
 #include "perfEvents.h"
@@ -1519,7 +1519,7 @@ void Profiler::setupSignalHandlers() {
 
 
 // JVMTI returns modified UTF-8 (surrogate pairs as 6 bytes, U+0000 as C0 80), which JFR readers
-// reject: store it as standard UTF-8 with an explicit length.
+// decode as replacement characters: store it as standard UTF-8 with an explicit length.
 void Profiler::storeThreadName(int tid, const char *name, jlong java_thread_id) {
   char out[3 * MAX_THREAD_NAME_UNITS];
   size_t length = modifiedUtf8ToStandard(name != nullptr ? name : "", MAX_THREAD_NAME_UNITS, out);

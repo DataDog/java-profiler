@@ -10,7 +10,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <cstring>
 #include <set>
 #include <string>
 
@@ -52,9 +51,6 @@ public:
 
   ThreadInfo() {}
 
-  void set(int tid, const char *name, u64 java_thread_id) {
-    set(tid, name, strlen(name), java_thread_id);
-  }
   // Stores exactly len bytes, so a name may contain embedded NUL bytes.
   void set(int tid, const char *name, size_t len, u64 java_thread_id);
   std::pair<std::shared_ptr<std::string>, u64> get(int tid);

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
     #include <gtest/gtest.h>
 
     #include "asyncSampleMutex.h"
@@ -117,8 +122,8 @@ static DdprofGlobalSetup ddprof_global_setup;
 
     TEST(ThreadInfoTest, testThreadInfoCleanupAllDead) {
         ThreadInfo info;
-        info.set(1, "main", 1);
-        info.set(2, "ephemeral", 2);
+        info.set(1, "main", 4, 1);
+        info.set(2, "ephemeral", 9, 2);
         ASSERT_EQ(2, info.size());
 
         std::set<int> live_thread_ids;
@@ -131,15 +136,15 @@ static DdprofGlobalSetup ddprof_global_setup;
 
         // sanity check that all threads are removed when no live threads are provided
         std::set<int> empty_set;
-        info.set(2, "ephemeral-1", 2);
+        info.set(2, "ephemeral-1", 11, 2);
         info.clearAll(empty_set);
         ASSERT_EQ(0, info.size());
     }
 
     TEST(ThreadInfoTest, testThreadInfoCleanupAll) {
         ThreadInfo info;
-        info.set(1, "main", 1);
-        info.set(2, "ephemeral", 2);
+        info.set(1, "main", 4, 1);
+        info.set(2, "ephemeral", 9, 2);
         ASSERT_EQ(2, info.size());
 
         info.clearAll();

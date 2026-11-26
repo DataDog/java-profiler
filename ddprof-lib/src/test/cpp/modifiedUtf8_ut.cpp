@@ -40,6 +40,8 @@ TEST(ModifiedUtf8ToStandardTest, LoneSurrogatesBecomeReplacementChar) {
     EXPECT_EQ("\xEF\xBF\xBD\xEF\xBF\xBD", convert("\xED\xA0\xBD\xED\xA0\xBD"));  // two highs
     // A high half followed by a low half cut by the terminator: U+FFFD for each piece.
     EXPECT_EQ("\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD", convert("\xED\xA0\xBD\xED\xB8"));
+    // A high half followed by ED and a non-continuation byte is not merged into a pair.
+    EXPECT_EQ(std::string("\xEF\xBF\xBD\xEF\xBF\xBD\0", 7), convert("\xED\xA0\xBD\xED\xC0\x80"));
 }
 
 TEST(ModifiedUtf8ToStandardTest, LowestValidLeadsAreCopied) {
@@ -47,9 +49,15 @@ TEST(ModifiedUtf8ToStandardTest, LowestValidLeadsAreCopied) {
     EXPECT_EQ("\xC2\x80", convert("\xC2\x80"));          // U+0080
 }
 
+TEST(ModifiedUtf8ToStandardTest, HighestValidLeadsAreCopied) {
+    EXPECT_EQ("\xDF\xBF", convert("\xDF\xBF"));          // U+07FF
+    EXPECT_EQ("\xEF\xBF\xBF", convert("\xEF\xBF\xBF"));  // U+FFFF
+}
+
 TEST(ModifiedUtf8ToStandardTest, MalformedBytesBecomeReplacementChar) {
     const std::string fffd = "\xEF\xBF\xBD";
     EXPECT_EQ(fffd + fffd, convert("\xC0\x81"));                // C0 not followed by 80
+    EXPECT_EQ(fffd + fffd + fffd, convert("\xE0\x9F\xBF"));     // overlong: below U+0800
     EXPECT_EQ(fffd + "a", convert("\x80" "a"));                 // stray continuation
     EXPECT_EQ(fffd + fffd, convert("\xE4\xB8"));                // sequence cut by the terminator
     EXPECT_EQ(fffd + fffd, convert("\xC1\x81"));                // overlong 2-byte
