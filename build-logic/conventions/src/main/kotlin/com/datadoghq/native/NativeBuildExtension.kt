@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package com.datadoghq.native
 
@@ -93,10 +97,7 @@ abstract class NativeBuildExtension @Inject constructor(
     /**
      * Platform identifier for library paths (e.g., "LINUX-x64", "MACOS-arm64-musl")
      */
-    fun platformIdentifier(): String {
-        val muslSuffix = if (PlatformUtils.isMusl()) "-musl" else ""
-        return "${PlatformUtils.currentPlatform}-${PlatformUtils.currentArchitecture}$muslSuffix"
-    }
+    fun platformIdentifier(): String = PlatformUtils.platformIdentifier()
 
     /**
      * Directory where native libraries are built for a given configuration.

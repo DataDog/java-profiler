@@ -30,14 +30,6 @@ dependencies {
   implementation(libs.bundles.jmh)
 }
 
-sourceSets {
-  named("jmh") {
-    java {
-      runtimeClasspath += project(":ddprof-lib").sourceSets["main"].output
-    }
-  }
-}
-
 jmh {
   // Set the JVM executable - this is used by the JMH plugin to fork benchmark processes
   jvm.set(PlatformUtils.testJavaExecutable())
@@ -70,21 +62,10 @@ tasks.named<Jar>("jmhJar") {
   archiveFileName.set("stresstests.jar")
 }
 
-// Fails if the jmh jar carries more than one libjavaProfiler per platform directory, because the
-// JVM would load an arbitrary one. jmh and runStressTests depend on it, because a finalizer is not
-// ordered before them; the finalizer covers a jmhJar build run on its own before `java -jar`.
-val verifyJmhJarNativeLibs = tasks.register("verifyJmhJarNativeLibs") {
-  group = "verification"
-  description = "Verify the JMH jar contains exactly one libjavaProfiler per platform"
-  val jar = tasks.named<Jar>("jmhJar").flatMap { it.archiveFile }
-  inputs.file(jar)
-  // A finalizer also runs after jmhJar fails; skip it then instead of reporting a missing jar.
-  onlyIf { jar.get().asFile.exists() }
-  doLast { NativeLibJarCheck.verifyOneLibPerPlatform(jar.get().asFile) }
-}
-
-tasks.named("jmh") { dependsOn(verifyJmhJarNativeLibs) }
-tasks.named("jmhJar") { finalizedBy(verifyJmhJarNativeLibs) }
+// The jar must hold exactly one libjavaProfiler per platform, including the host's: the JVM would
+// load an arbitrary duplicate. jmh and runStressTests depend on the check; the jar is finalized by
+// it so a jmhJar built on its own is checked before `java -jar`.
+NativeLibJarCheck.register(project, tasks.named<Jar>("jmhJar"), PlatformUtils.platformIdentifier(), "jmh", "runStressTests")
 
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH
@@ -160,7 +141,7 @@ tasks.register<Jar>("reproJar") {
 }
 
 tasks.register<Exec>("runStressTests") {
-  dependsOn(tasks.named("jmhJar"), verifyJmhJarNativeLibs)
+  dependsOn(tasks.named("jmhJar"))
 
   group = "application"
   description = "Run JMH stresstests"

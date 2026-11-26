@@ -30,6 +30,12 @@ object PlatformUtils {
         } ?: false
     }
 
+    /** Directory name under `META-INF/native-libs` that `LibraryLoader` loads, e.g. `linux-x64-musl`. */
+    fun platformIdentifier(): String {
+        val muslSuffix = if (isMusl()) "-musl" else ""
+        return "$currentPlatform-$currentArchitecture$muslSuffix"
+    }
+
     fun javaHome(): String {
         return System.getenv("JAVA_HOME")
             ?: System.getProperty("java.home")

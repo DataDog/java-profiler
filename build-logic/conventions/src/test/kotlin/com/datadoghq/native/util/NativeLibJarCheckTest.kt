@@ -15,6 +15,10 @@ import java.util.zip.ZipOutputStream
 
 class NativeLibJarCheckTest {
 
+    private companion object {
+        const val HOST = "linux-x64"
+    }
+
     @TempDir
     lateinit var tmp: File
 
@@ -48,7 +52,7 @@ class NativeLibJarCheckTest {
             "META-INF/native-libs/macos-arm64/libjavaProfiler.dylib",
             "META-INF/native-libs/macos-arm64/libjavaProfiler.dylib.dSYM/Contents/Resources/DWARF/libjavaProfiler.dylib",
         )
-        assertDoesNotThrow { NativeLibJarCheck.verifyOneLibPerPlatform(file) }
+        assertDoesNotThrow { NativeLibJarCheck.verifyOneLibPerPlatform(file, HOST) }
     }
 
     @Test
@@ -57,14 +61,14 @@ class NativeLibJarCheckTest {
             "META-INF/native-libs/linux-x64/libjavaProfiler.so.debug",
             "META-INF/native-libs/macos-arm64/libjavaProfiler.dylib.dSYM/Contents/Resources/DWARF/libjavaProfiler.dylib",
         )
-        val e = assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file) }
+        val e = assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file, HOST) }
         assertTrue(e.message!!.startsWith("No libjavaProfiler found"), e.message)
     }
 
     @Test
     fun `duplicate library entry in one platform directory fails`() {
         val file = jarWithDuplicate("META-INF/native-libs/linux-x64/libjavaProfiler.so")
-        val e = assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file) }
+        val e = assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file, HOST) }
         assertTrue(e.message!!.contains("META-INF/native-libs/linux-x64 "), e.message)
         assertTrue(e.message!!.endsWith("found 2"), e.message)
     }
@@ -75,7 +79,31 @@ class NativeLibJarCheckTest {
             "META-INF/native-libs/linux-x64/libjavaProfiler.so",
             "META-INF/native-libs/linux-arm64/libjavaProfiler.so",
         )
-        val e = assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file) }
+        val e = assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file, HOST) }
         assertTrue(e.message!!.contains("META-INF/native-libs/linux-x64 "), e.message)
+    }
+
+    @Test
+    fun `library only for another platform fails for the host`() {
+        val file = jar("META-INF/native-libs/linux-arm64/libjavaProfiler.so")
+        val e = assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file, HOST) }
+        assertTrue(e.message!!.startsWith("No libjavaProfiler for host platform $HOST"), e.message)
+    }
+
+    @Test
+    fun `musl host needs the musl directory`() {
+        val glibc = jar("META-INF/native-libs/linux-x64/libjavaProfiler.so")
+        assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(glibc, "linux-x64-musl") }
+        val musl = jar("META-INF/native-libs/linux-x64-musl/libjavaProfiler.so")
+        assertDoesNotThrow { NativeLibJarCheck.verifyOneLibPerPlatform(musl, "linux-x64-musl") }
+    }
+
+    @Test
+    fun `host directory with only debug symbols fails`() {
+        val file = jar(
+            "META-INF/native-libs/linux-x64/libjavaProfiler.so.debug",
+            "META-INF/native-libs/linux-arm64/libjavaProfiler.so",
+        )
+        assertThrows<GradleException> { NativeLibJarCheck.verifyOneLibPerPlatform(file, HOST) }
     }
 }
