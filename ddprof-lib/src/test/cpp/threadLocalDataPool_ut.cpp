@@ -11,6 +11,7 @@
 #include "threadLocalDataPool.h"
 #include "threadLocalData.inline.h"
 #include "counters.h"
+#include "nativeMem.h"
 
 #include <memory>
 #include <mutex>
@@ -199,6 +200,25 @@ TEST_F(ThreadLocalDataPoolTest, reclaimedSlotCanBeginTaskBlockAfterAbandonedInte
     EXPECT_TRUE(pool->unclaimForTest(second));
 }
 
+// A malloc-hook-claimed pool owner can later reach producer hooks, so pool
+// reuse must free the slots it allocated and retract their accounting.
+TEST_F(ThreadLocalDataPoolTest, unclaimReleasesBlockSlots) {
+    std::unique_ptr<ThreadLocalDataPool, void (*)(ThreadLocalDataPool*)> pool(
+        ThreadLocalDataPool::createForTest(1), ThreadLocalDataPool::destroyForTest);
+    ProfiledThread* owner = pool->claimForTest(100);
+    ASSERT_NE(nullptr, owner);
+    long long base = NativeMem::live(NM_THREAD_LOCAL);
+    Context context{};
+    ASSERT_TRUE(owner->taskBlockEnter(2048, 1, context));
+    ASSERT_TRUE(owner->hasBlockSlots());
+    EXPECT_EQ(base + static_cast<long long>(ProfiledThread::blockSlotsBytesForTest()),
+              NativeMem::live(NM_THREAD_LOCAL));
+
+    ASSERT_TRUE(pool->unclaimForTest(owner));
+    EXPECT_FALSE(owner->hasBlockSlots());
+    EXPECT_EQ(base, NativeMem::live(NM_THREAD_LOCAL));
+}
+
 // Broader companion to reclaimedSlotHasResetState above, which only checks
 // filterSlotId and _in_critical_section. This dirties every field
 // unclaimAndReset() is responsible for and asserts the result matches a
@@ -266,6 +286,7 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     dirty->unwindFailures()->record(UNWIND_FAILURE_STUB, "dirty");
 #endif
 
+    ASSERT_TRUE(dirty->snapshotForTest().block_slots_allocated);
     // Sanity-check the dirtying above actually took effect, so a broken
     // mutator can't make the post-reset comparison pass vacuously.
     ASSERT_NE(dirty->snapshotForTest().misc_flags, fresh->snapshotForTest().misc_flags);
@@ -289,6 +310,7 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     EXPECT_EQ(reset_snapshot.call_trace_id, fresh_snapshot.call_trace_id);
     EXPECT_EQ(reset_snapshot.recording_epoch, fresh_snapshot.recording_epoch);
     EXPECT_EQ(reset_snapshot.misc_flags, fresh_snapshot.misc_flags);
+    EXPECT_FALSE(reset_snapshot.block_slots_allocated);
     expectSameBlockSlot(reset_snapshot.park_slot, fresh_snapshot.park_slot);
     expectSameBlockSlot(reset_snapshot.monitor_slot, fresh_snapshot.monitor_slot);
     EXPECT_EQ(reset_snapshot.task_block_start_ticks, fresh_snapshot.task_block_start_ticks);
