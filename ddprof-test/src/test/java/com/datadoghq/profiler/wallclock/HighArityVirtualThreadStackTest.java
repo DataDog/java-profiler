@@ -98,13 +98,13 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
         profiler.getDebugCounters().getOrDefault("walkvm_cont_barrier_hit", 0L) > 0,
         "The workload must exercise a continuation return barrier");
     // First offending stack, indexed like the counts it explains.
-    String[] firstBadStack = new String[4];
+    String[] firstBadStack = new String[6];
     String warmupThread = Thread.currentThread().getName();
     Map<String, Integer> excludedBreaks = new TreeMap<>();
     int[] counts =
         reduceEvents(
             "datadog.MethodSample",
-            () -> new int[5],
+            () -> new int[6],
             (count, sample) -> {
               String thread = sample.getThreadName("eventThread");
               assertNotNull(thread, "MethodSample must name its thread");
@@ -134,6 +134,12 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
                   otherBreak = frame.methodName();
               }
               if (compiled && !outer) {
+                // A fault-recovered walk may come from carrier recovery, so it is never excluded.
+                if ("break_not_walkable".equals(otherBreak)) {
+                  count[5]++;
+                  if (firstBadStack[5] == null) firstBadStack[5] = sample.getStackTraceString();
+                  return;
+                }
                 // A walk that stopped before the boundary, at a break marker or silently at a
                 // compiled frame, never exercised continuation recovery.
                 JfrFrame last = trace.frames().get(trace.frames().size() - 1);
@@ -173,9 +179,12 @@ public class HighArityVirtualThreadStackTest extends CStackAwareAbstractProfiler
             + counts[1]
             + " stopsBeforeBoundary="
             + counts[4]
+            + " notWalkable="
+            + counts[5]
             + " "
             + excludedBreaks);
     assertTrue(counts[0] > 0, "No compiled high-arity sample left callers frozen");
+    assertEquals(0, counts[5], "High-arity walks must not fault\n" + firstBadStack[5]);
     assertEquals(
         0,
         counts[1],
