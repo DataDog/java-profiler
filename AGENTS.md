@@ -91,6 +91,14 @@ dependency-free leak-demo app; not published).
 - If a step fails, print the failing command and a one-line hint, then stop.
 - "build assembleDebugJar" means `./.claude/commands/build-and-summarize assembleDebugJar`.
 - When renaming a symbol or concept, grep for the old name and update function names, comments and the PR title/description to the new name before requesting review.
+- To drop a PR's changes to a file, fetch the base and restore it from the PR's merge base:
+  `git restore --staged --worktree --source="$(git merge-base origin/<base> HEAD)" -- <path>`.
+  The base's tip would add its newer, unrelated changes to the PR.
+- When rebasing a branch's recent commits, use an `<upstream>` (not itself replayed) with
+  no merge commit between it and `HEAD`: `git rebase --onto <new-base> <upstream>`. A merge
+  in the range is dropped, and the base commits it brought in that `<new-base>` lacks are replayed.
+- In zsh, brace a variable that a colon follows (`"${REV}:path"`), even inside double
+  quotes: a colon and a letter after `$REV` can be a modifier (`:A`, `:h`, `:u`, `:r`...).
 
 ## Build & Test Quick Reference
 
