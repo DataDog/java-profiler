@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 package com.datadoghq.profiler
 
@@ -12,6 +16,7 @@ import org.gradle.api.tasks.compile.JavaCompile
  * Applies standard Java compilation options across all subprojects:
  * - Java 8 release target for broad JVM compatibility
  * - Suppresses JDK 21+ deprecation warnings for --release 8
+ * - Reads sources as UTF-8 whatever the build machine's locale
  * - Redirects org.lz4:lz4-java to at.yawk.lz4:lz4-java (community fork)
  *
  * Requires JDK 21+ for building (Gradle 9 requirement).
@@ -30,6 +35,8 @@ class JavaConventionsPlugin : Plugin<Project> {
             // JDK 21+ deprecated --release 8 with warnings; suppress with -Xlint:-options
             // The deprecation is informational - Java 8 targeting still works
             options.compilerArgs.addAll(listOf("--release", "8", "-Xlint:-options"))
+            // Sources are UTF-8; without this, javac on JDK 17 under a C locale reads them as ASCII.
+            options.encoding = "UTF-8"
         }
 
         // Redirect org.lz4:lz4-java → at.yawk.lz4:lz4-java (community fork)

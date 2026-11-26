@@ -16,12 +16,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 /**
- * JVMTI reports method names as modified UTF-8 (U+1D49C, 𝒜, as a 6-byte surrogate pair); the JFR
- * symbol pool must carry them as standard UTF-8. The class name stays ASCII: javac cannot write a
+ * JVMTI reports method names as modified UTF-8 (U+1D49C as a 6-byte surrogate pair); the JFR symbol
+ * pool must carry them as standard UTF-8. The class name stays ASCII: javac cannot write a
  * non-ASCII class file name when the platform file-name encoding is not UTF-8.
  */
 public class MethodNameEncodingTest extends AbstractProfilerTest {
-  private static final String METHOD = "burn𝒜é";
+  private static final String METHOD = "burn\uD835\uDC9C\u00e9";
   private static final String CLASS = MethodNameEncodingTest.class.getName() + "$Spinner";
 
   static volatile long sink;

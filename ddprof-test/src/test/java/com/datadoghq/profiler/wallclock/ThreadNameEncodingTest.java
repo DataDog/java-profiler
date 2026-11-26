@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
  * U+0000 as C0 80); the JFR thread table must carry them as standard UTF-8.
  */
 public class ThreadNameEncodingTest extends AbstractProfilerTest {
-  private static final String NAME = "worker-😀-é中-a\u0000b";
+  private static final String NAME = "worker-\uD83D\uDE00-\u00e9\u4e2d-a\u0000b";
 
   @Test
   public void platformThreadNameRoundTrips() throws Exception {

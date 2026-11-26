@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Test;
  */
 public class EndpointEncodingTest extends AbstractProfilerTest {
   private static final long ROOT_SPAN_ID = 42;
-  private static final String ENDPOINT = "GET /items/😀-é中-a\u0000b";
-  private static final String OPERATION_NAME = "op-😀-\u0000";
+  private static final String ENDPOINT = "GET /items/\uD83D\uDE00-\u00e9\u4e2d-a\u0000b";
+  private static final String OPERATION_NAME = "op-\uD83D\uDE00-\u0000";
 
   @Test
   public void endpointAndOperationRoundTrip() {

@@ -77,6 +77,9 @@ TEST(ToStandardUtf8Test, SequenceCutByEndOfInputIsDropped) {
     EXPECT_EQ("a", convert("a\xED\xA0\xBD"));          // high half at the end
     EXPECT_EQ("a", convert("a\xED\xA0\xBD\xED"));      // pair cut after 4 bytes
     EXPECT_EQ("a", convert("a\xED\xA0\xBD\xED\xB8"));  // pair cut after 5 bytes
+    // Not cut pairs: ED then a byte that cannot start a low half, and a low half at the end.
+    EXPECT_EQ("a" + FFFD + "?A", convert("a\xED\xA0\xBD\xED" "A"));
+    EXPECT_EQ("a" + FFFD, convert("a\xED\xB8\x80"));
 }
 
 TEST(ToStandardUtf8Test, CapNeverSplitsACharacter) {

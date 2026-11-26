@@ -22,14 +22,14 @@ import org.junit.jupiter.api.Test;
  * thread table must drop the cut-off bytes instead of writing invalid UTF-8.
  */
 public class NativeThreadNameEncodingTest extends AbstractProfilerTest {
-  private static final String KEPT = "native-é中";
+  private static final String KEPT = "native-\u00e9\u4e2d";
 
   @Test
   public void cutNativeThreadNameKeepsWholeCharacters() throws Exception {
     Assumptions.assumeTrue(Platform.isLinux(), "native thread names are read from /proc on Linux");
     byte[] kept = KEPT.getBytes(StandardCharsets.UTF_8);
     byte[] cut = Arrays.copyOf(kept, kept.length + 2);
-    cut[kept.length] = (byte) 0xE4; // the first two bytes of 中 (E4 B8 AD)
+    cut[kept.length] = (byte) 0xE4; // the first two bytes of U+4E2D (E4 B8 AD)
     cut[kept.length + 1] = (byte) 0xB8;
     try (NamedNativeThread thread = new NamedNativeThread(cut)) {
       Thread.sleep(500);
