@@ -287,6 +287,8 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
   if (!tf->unfilteredWallTrackingActive() || slot_id < 0) return;
   current->refreshBlockState(tf->slotForId(slot_id)->recordingEpoch());
   if (!current->monitorEnter(monitorTicks(), context, /*blocker=*/0, state)) {
+    // No slots means the allocation just failed and was counted; retrying would count it twice.
+    if (!current->hasBlockSlots()) return;
     u64 token = current->monitorBlockToken();
     bool current_owner = false;
     if (token != 0) {

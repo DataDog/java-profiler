@@ -99,9 +99,29 @@ private:
     u64 block_token{0};
     OSThreadState block_state{OSThreadState::UNKNOWN};
   };
-  BlockSlot _park_slot;
-  BlockSlot _task_block_slot;
-  BlockSlot _monitor_slot;
+  struct BlockSlots {
+    BlockSlot park;
+    BlockSlot task_block;
+    BlockSlot monitor;
+  };
+  // Owns the slots, allocated by the first producer enter so threads that never
+  // block in a producer hook pay one pointer. A set FLAG_* bit implies non-null.
+  // Only the owner thread touches them, never from a signal handler.
+  class BlockSlotsOwner {
+  public:
+    BlockSlotsOwner() = default;
+    ~BlockSlotsOwner() { reset(); }
+    BlockSlotsOwner(const BlockSlotsOwner&) = delete;
+    BlockSlotsOwner& operator=(const BlockSlotsOwner&) = delete;
+    BlockSlots* get() const { return _slots; }
+    // Returns null and counts TASK_BLOCK_STATE_ALLOC_FAILED when allocation fails.
+    BlockSlots* getOrCreate();
+    void reset();
+
+  private:
+    BlockSlots* _slots{nullptr};
+  };
+  BlockSlotsOwner _block_slots;
   u64 _block_recording_epoch;
 #if defined(DEBUG) || defined(UNIT_TEST)
   struct TaskBlockDiagnosticOrigin {
@@ -141,7 +161,7 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_slot{}, _task_block_slot{}, _monitor_slot{}, _block_recording_epoch(0),
+        _block_slots(), _block_recording_epoch(0),
         _filter_slot_id(-1),
         _init_window(0),
         _signal_depth(0),
@@ -230,6 +250,7 @@ public:
     u64 call_trace_id;
     u32 recording_epoch;
     u32 misc_flags;
+    bool block_slots_allocated;
     BlockSlot park_slot;
     BlockSlot monitor_slot;
     u64 task_block_start_ticks;
@@ -251,17 +272,24 @@ public:
   }
 
   ResetStateForTest snapshotForTest() const {
+    const BlockSlots* slots = _block_slots.get();
+    const BlockSlots empty{};
+    const BlockSlots& view = slots != nullptr ? *slots : empty;
     return ResetStateForTest{
       _unwinding_Java, _jmp_buf.load(), _pc, _sp, _span_id,
       __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED),
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
-      _park_slot, _monitor_slot, _task_block_slot.start_ticks, _task_block_slot.block_token,
-      _task_block_slot.context, _block_recording_epoch, _filter_slot_id, logicalContextWindowState(), _init_window,
+      slots != nullptr, view.park, view.monitor, view.task_block.start_ticks,
+      view.task_block.block_token, view.task_block.context, _block_recording_epoch, _filter_slot_id, logicalContextWindowState(), _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
     };
   }
+
+  // While true, BlockSlotsOwner::getOrCreate() behaves as if allocation failed.
+  static bool failBlockSlotsAllocationForTest;
+  static constexpr size_t blockSlotsBytesForTest() { return sizeof(BlockSlots); }
 #endif
   // initCurrentThread() and release() are not async-signal-safe:
   // must be called outside of a signal handler with signal blocked
@@ -486,23 +514,23 @@ public:
     __atomic_fetch_and(&_misc_flags,
                        ~(FLAG_PARKED | FLAG_TASK_BLOCKED | FLAG_MONITOR_BLOCKED),
                        __ATOMIC_ACQ_REL);
-    _park_slot = {};
-    _task_block_slot = {};
-    _monitor_slot = {};
+    BlockSlots* slots = _block_slots.get();
+    if (slots != nullptr) *slots = {};
     _block_recording_epoch = recording_epoch;
   }
 
   inline bool parkEnter(u64 start_ticks, const Context& context) {
-    return blockSlotEnter<FLAG_PARKED>(_park_slot, start_ticks, context,
-                                       /*blocker=*/0, OSThreadState::UNKNOWN);
+    return blockSlotEnter<FLAG_PARKED, &BlockSlots::park>(
+        start_ticks, context, /*blocker=*/0, OSThreadState::UNKNOWN);
   }
 
 #ifdef UNIT_TEST
   inline bool parkEnter() { return parkEnter(0, Context{}); }
 #endif
 
+  // Only after a successful parkEnter(), which allocated the slots.
   inline void setParkBlockToken(u64 token) {
-    _park_slot.block_token = token;
+    _block_slots.get()->park.block_token = token;
   }
 
 #if defined(DEBUG) || defined(UNIT_TEST)
@@ -511,7 +539,7 @@ public:
         diagnostic.words[TaskBlockDiagnosticRecord::LIFECYCLE], diagnostic.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH],
         diagnostic.words[TaskBlockDiagnosticRecord::OWNER], diagnostic.words[TaskBlockDiagnosticRecord::STATE]};
     TaskBlockDiagnosticRecord armed = diagnostic;
-    armed.words[TaskBlockDiagnosticRecord::START] = _task_block_slot.start_ticks;
+    armed.words[TaskBlockDiagnosticRecord::START] = taskBlockSlotField(&BlockSlot::start_ticks);
     TASK_BLOCK_DIAGNOSTIC(TLS_ARMED, &armed, 0);
   }
   TaskBlockDiagnosticRecord taskBlockDiagnosticOrigin() const {
@@ -521,23 +549,22 @@ public:
     diagnostic.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH] = _task_block_diagnostic_origin.epoch;
     diagnostic.words[TaskBlockDiagnosticRecord::OWNER] = _task_block_diagnostic_origin.owner;
     diagnostic.words[TaskBlockDiagnosticRecord::STATE] = _task_block_diagnostic_origin.state;
-    diagnostic.words[TaskBlockDiagnosticRecord::START] = _task_block_slot.start_ticks;
+    diagnostic.words[TaskBlockDiagnosticRecord::START] = taskBlockSlotField(&BlockSlot::start_ticks);
     if (_task_block_diagnostic_origin.token != 0) {
       diagnostic.words[TaskBlockDiagnosticRecord::VALID] = TaskBlockDiagnosticRecord::HAS_IDENTITY | TaskBlockDiagnosticRecord::HAS_ORIGIN;
     }
     return diagnostic;
   }
-  u64 taskBlockTokenForDiagnostic() const { return _task_block_slot.block_token; }
+  u64 taskBlockTokenForDiagnostic() const { return taskBlockToken(); }
 #endif
   inline bool taskBlockEnter(u64 token, u64 start_ticks,
                              const Context& context) {
     if (token == 0) return false;
-    if (!blockSlotEnter<FLAG_TASK_BLOCKED>(_task_block_slot, start_ticks,
-                                          context, /*blocker=*/0,
-                                          OSThreadState::UNKNOWN)) {
+    if (!blockSlotEnter<FLAG_TASK_BLOCKED, &BlockSlots::task_block>(
+            start_ticks, context, /*blocker=*/0, OSThreadState::UNKNOWN)) {
       return false;
     }
-    _task_block_slot.block_token = token;
+    _block_slots.get()->task_block.block_token = token;
 #if defined(DEBUG) || defined(UNIT_TEST)
     _task_block_diagnostic_origin = {};
 #endif
@@ -549,34 +576,34 @@ public:
   // endTaskBlock0 was never reached; without this, taskBlockEnter() keeps
   // failing for the rest of the thread's life.
   inline u64 abandonTaskBlock() {
-    u64 token = _task_block_slot.block_token;
+    u64 token = taskBlockToken();
     clearTaskBlock();
     return token;
   }
 
   inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
-    if (token == 0 || _task_block_slot.block_token != token) return false;
+    if (token == 0 || taskBlockToken() != token) return false;
     u64 blocker_unused, token_unused;
-    return blockSlotExit<FLAG_TASK_BLOCKED>(_task_block_slot,
-                                            OSThreadState::UNKNOWN,
-                                            start_ticks, context,
-                                            blocker_unused, token_unused);
+    return blockSlotExit<FLAG_TASK_BLOCKED, &BlockSlots::task_block>(
+        OSThreadState::UNKNOWN, start_ticks, context, blocker_unused,
+        token_unused);
   }
 
-  inline u64 taskBlockToken() const { return _task_block_slot.block_token; }
+  inline u64 taskBlockToken() const { return taskBlockSlotField(&BlockSlot::block_token); }
 
   inline void clearTaskBlock() {
     __atomic_fetch_and(&_misc_flags, ~FLAG_TASK_BLOCKED, __ATOMIC_ACQ_REL);
-    _task_block_slot.block_token = 0;
+    BlockSlots* slots = _block_slots.get();
+    if (slots != nullptr) slots->task_block.block_token = 0;
   }
 
   // Returns false if the thread was not parked (idempotent).
   inline bool parkExit(u64& start_ticks, Context& context,
                        u64& park_block_token) {
     u64 blocker_unused;
-    return blockSlotExit<FLAG_PARKED>(_park_slot, OSThreadState::UNKNOWN,
-                                      start_ticks, context, blocker_unused,
-                                      park_block_token);
+    return blockSlotExit<FLAG_PARKED, &BlockSlots::park>(
+        OSThreadState::UNKNOWN, start_ticks, context, blocker_unused,
+        park_block_token);
   }
 
 #ifdef UNIT_TEST
@@ -592,39 +619,54 @@ public:
   // contention callback must not overwrite an interval that is still open.
   inline bool monitorEnter(u64 start_ticks, const Context& context, u64 blocker,
                            OSThreadState state) {
-    return blockSlotEnter<FLAG_MONITOR_BLOCKED>(_monitor_slot, start_ticks,
-                                                context, blocker, state);
+    return blockSlotEnter<FLAG_MONITOR_BLOCKED, &BlockSlots::monitor>(
+        start_ticks, context, blocker, state);
   }
 
+  // Only after a successful monitorEnter(), which allocated the slots.
   inline void setMonitorBlockToken(u64 token) {
-    _monitor_slot.block_token = token;
+    _block_slots.get()->monitor.block_token = token;
   }
 
-  inline u64 monitorBlockToken() const { return _monitor_slot.block_token; }
+  inline u64 monitorBlockToken() const {
+    const BlockSlots* slots = _block_slots.get();
+    return slots != nullptr ? slots->monitor.block_token : 0;
+  }
+
+  inline bool hasBlockSlots() const { return _block_slots.get() != nullptr; }
 
   inline void clearMonitorBlock() {
     __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);
-    _monitor_slot.block_token = 0;
-    _monitor_slot.block_state = OSThreadState::UNKNOWN;
+    BlockSlots* slots = _block_slots.get();
+    if (slots == nullptr) return;
+    slots->monitor.block_token = 0;
+    slots->monitor.block_state = OSThreadState::UNKNOWN;
   }
 
   inline bool monitorExit(OSThreadState expected_state, u64& start_ticks,
                           Context& context, u64& blocker,
                           u64& monitor_block_token) {
-    return blockSlotExit<FLAG_MONITOR_BLOCKED>(_monitor_slot, expected_state,
-                                               start_ticks, context, blocker,
-                                               monitor_block_token);
+    return blockSlotExit<FLAG_MONITOR_BLOCKED, &BlockSlots::monitor>(
+        expected_state, start_ticks, context, blocker, monitor_block_token);
   }
 
   Context snapshotContext(size_t numAttrs);
 
 private:
-  // FLAG selects the caller's _misc_flags bit; UNKNOWN clears any stored state.
-  // monitorExit gates clearing by state so nested contention cannot clear Object.wait.
-  template <u32 FLAG>
-  inline bool blockSlotEnter(BlockSlot& slot, u64 start_ticks,
-                             const Context& context, u64 blocker,
-                             OSThreadState state) {
+  inline u64 taskBlockSlotField(u64 BlockSlot::*field) const {
+    const BlockSlots* slots = _block_slots.get();
+    return slots != nullptr ? slots->task_block.*field : 0;
+  }
+
+  // FLAG selects the caller's _misc_flags bit and SLOT its payload; UNKNOWN
+  // clears any stored state. monitorExit gates clearing by state so nested
+  // contention cannot clear Object.wait.
+  template <u32 FLAG, BlockSlot BlockSlots::*SLOT>
+  inline bool blockSlotEnter(u64 start_ticks, const Context& context,
+                             u64 blocker, OSThreadState state) {
+    BlockSlots* slots = _block_slots.getOrCreate();
+    if (slots == nullptr) return false;
+    BlockSlot& slot = slots->*SLOT;
     u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
     while ((flags & FLAG) == 0) {
       slot.start_ticks = start_ticks;
@@ -641,12 +683,12 @@ private:
     return false;
   }
 
-  template <u32 FLAG>
-  inline bool blockSlotExit(BlockSlot& slot, OSThreadState expected_state,
-                            u64& start_ticks, Context& context, u64& blocker,
-                            u64& block_token) {
+  template <u32 FLAG, BlockSlot BlockSlots::*SLOT>
+  inline bool blockSlotExit(OSThreadState expected_state, u64& start_ticks,
+                            Context& context, u64& blocker, u64& block_token) {
     u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
     if ((flags & FLAG) == 0) return false;
+    BlockSlot& slot = _block_slots.get()->*SLOT;
     if (expected_state != OSThreadState::UNKNOWN &&
         slot.block_state != expected_state) {
       return false;

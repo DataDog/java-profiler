@@ -465,6 +465,32 @@ TEST_P(MonitorTaskBlockHashTest, ShortBlockSkipsHashAndNextEligibleBlockHashesOn
     EXPECT_EQ(1, record_calls);
 }
 
+// Each producer drops its interval and releases the run it acquired; the monitor
+// hook must not retry and count the failed allocation twice.
+TEST_F(TaskBlockProducersTest, BlockSlotsAllocationFailureDropsEveryProducerInterval) {
+    long long failed_before = Counters::getCounter(TASK_BLOCK_STATE_ALLOC_FAILED);
+    ProfiledThread::failBlockSlotsAllocationForTest = true;
+    u64 paired = begin();
+    u64 generic = Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
+        &jni, nullptr, JNI_FALSE, static_cast<jint>(OSThreadState::SLEEPING));
+    jboolean parked = Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+        &jni, nullptr, testThread(), JNI_FALSE);
+    MonitorContendedEnter(&jvmti, &jni, testThread(), nullptr);
+    ProfiledThread::failBlockSlotsAllocationForTest = false;
+
+    EXPECT_EQ(0u, paired);
+    EXPECT_EQ(0u, generic);
+    EXPECT_EQ(JNI_FALSE, parked);
+    EXPECT_EQ(failed_before + 4, Counters::getCounter(TASK_BLOCK_STATE_ALLOC_FAILED));
+    EXPECT_FALSE(current->hasBlockSlots());
+    ASSERT_NE(nullptr, block());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+
+    u64 token = begin();
+    ASSERT_NE(0u, token) << "a later begin must retry the allocation";
+    end(token);
+}
+
 TEST_F(TaskBlockProducersTest, ParkLifecycleDoesNotRequireRegistryAdmission) {
     ProfilerTestAccessor::setProducerState(profiler, false);
     registry->deactivateRecording();

@@ -271,6 +271,14 @@ sizeof(ThreadLocalDataPool)`, including all reserved owners, not just claimed on
 Pool backing has process lifetime; returning an owner resets its state without
 freeing the backing. Separately allocated owners are released at thread teardown.
 
+TaskBlock producer state is not part of `S`. Each owner holds one pointer to its
+park, task-block and monitor slots. The first park, TaskBlock or monitor enter on
+that owner allocates the slots. The allocation adds `sizeof(BlockSlots)` to
+`NM_THREAD_LOCAL`: 576 bytes on LP64, because each `Context` is cache-line aligned.
+Owners that never reach a producer hook, including all idle pool owners, pay no slot
+bytes. Pool reuse and thread teardown free the slots. A failed allocation drops the
+interval and increments `task_block_state_alloc_failed`; a later enter retries.
+
 `Context` is a normalized value containing two IDs and ten tag encodings, with
 56 bytes of fields and cache-line alignment. It has no checksum and is not the
 per-thread tracing allocation. Its actual object size must include ABI padding.
