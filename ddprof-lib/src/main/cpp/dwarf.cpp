@@ -85,8 +85,13 @@ enum {
   DW_EH_PE_omit = 0xff,
 };
 
+// Parser-only pc_off state after DW_CFA_register moved the return address to a
+// register the walker does not track; addRecord() marks such rows DW_REG_INVALID
+// so the walk stops there instead of trusting a stale LR or stack slot.
+static const int DW_PC_UNTRACKED = DW_LINK_REGISTER + 1;
+
 FrameDesc FrameDesc::empty_frame = {0, DW_REG_SP | EMPTY_FRAME_SIZE << 8,
-                                    DW_SAME_FP, -EMPTY_FRAME_SIZE};
+                                    DW_SAME_FP, INITIAL_PC_OFFSET};
 FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 8,
                                       -LINKED_FRAME_SIZE,
                                       -LINKED_FRAME_SIZE + DW_STACK_SLOT};
@@ -435,12 +440,12 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
   u32 cfa_reg = DW_REG_SP;
   int cfa_off = EMPTY_FRAME_SIZE;
   int fp_off = DW_SAME_FP;
-  int pc_off = -EMPTY_FRAME_SIZE;
+  int pc_off = INITIAL_PC_OFFSET;
 
   u32 rem_cfa_reg = DW_REG_SP;
   int rem_cfa_off = EMPTY_FRAME_SIZE;
   int rem_fp_off = DW_SAME_FP;
-  int rem_pc_off = -EMPTY_FRAME_SIZE;
+  int rem_pc_off = INITIAL_PC_OFFSET;
 
   while (_ptr < end) {
     u8 op = get8();
@@ -476,14 +481,25 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
         }
         break;
       case DW_CFA_restore_extended:
+      case DW_CFA_same_value: {
+        // For the return-address column both mean "as on entry": still in LR on aarch64.
+        u32 reg = getLeb();
+        if (reg == DW_REG_FP) {
+          fp_off = DW_SAME_FP;
+        } else if (reg == DW_REG_PC) {
+          pc_off = INITIAL_PC_OFFSET;
+        }
+        break;
+      }
       case DW_CFA_undefined:
-      case DW_CFA_same_value:
         if (getLeb() == DW_REG_FP) {
           fp_off = DW_SAME_FP;
         }
         break;
       case DW_CFA_register:
-        skipLeb();
+        if (getLeb() == DW_REG_PC) {
+          pc_off = DW_PC_UNTRACKED;
+        }
         skipLeb();
         break;
       case DW_CFA_remember_state:
@@ -587,6 +603,8 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
     case DW_CFA_restore:
       if ((op & 0x3f) == DW_REG_FP) {
         fp_off = DW_SAME_FP;
+      } else if ((op & 0x3f) == DW_REG_PC) {
+        pc_off = INITIAL_PC_OFFSET;
       }
       break;
     }
@@ -662,6 +680,9 @@ void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
   // walker treats a missing entry for a PC the same as any other unwind miss.
   if (cfa_reg > 0xFF || cfa_off < -8388608 || cfa_off > 8388607) {
     return;
+  }
+  if (pc_off == DW_PC_UNTRACKED) {
+    cfa_reg = DW_REG_INVALID;
   }
 
   // cfa_reg and cfa_off can be encoded to a single 32 bit value, considering the existing and supported systems

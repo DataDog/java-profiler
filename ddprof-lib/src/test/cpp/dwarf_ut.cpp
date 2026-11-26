@@ -5,11 +5,14 @@
 
 #include <gtest/gtest.h>
 
+#include "codeCache.h"
 #include "dwarf.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <vector>
 
 // Test name for crash handler
@@ -803,6 +806,246 @@ TEST(DwarfEhFrame, FdeAfterValidCieProducesRows) {
     EXPECT_GT(dwarf->count(), 0);
     free(dwarf->table());
     delete dwarf;
+}
+
+// ---------------------------------------------------------------------------
+// Return-address column (pc_off) rules. INITIAL_PC_OFFSET is the CIE's
+// assumed rule: DW_LINK_REGISTER on aarch64 (x30 not yet saved), [CFA-8] on
+// x86_64. Each test is written against the constants, so it runs on both.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint8_t DW_CFA_advance_loc_4 = 0x40 | 4;
+// DW_CFA_offset <reg>, 2 with data_align -8: a slot that differs from
+// INITIAL_PC_OFFSET on every architecture.
+constexpr uint8_t kSavedSlotFactor = 2;
+constexpr int kSavedSlot = -8 * kSavedSlotFactor;
+constexpr uint32_t kFdeRangeLen = 100;
+
+// Parses one FDE whose call frame instructions are `insns`, against a CIE with
+// code_align 1 and data_align -8, and keeps the rows for lookup.
+class PcColumnFde {
+  public:
+    explicit PcColumnFde(const std::vector<uint8_t>& insns) {
+        std::vector<uint8_t> body;
+        uint32_t cie_offset = static_cast<uint32_t>(body.size());
+        appendCieWithCodeAlign(body, 1);
+        uint32_t fde_offset = static_cast<uint32_t>(body.size());
+        uint32_t cie_id_field_offset = fde_offset + 4;
+        put32(body, static_cast<uint32_t>(12 + insns.size()));  // cie_offset + range_start + range_len
+        put32(body, cie_id_field_offset - cie_offset);
+        put32(body, 0);  // range_start pcrel = 0
+        put32(body, kFdeRangeLen);
+        body.insert(body.end(), insns.begin(), insns.end());
+
+        _image = buildEhFrameHdrImage(body, {fde_offset});
+        _range_start = hdrSizeFor(1) + fde_offset + 8;
+        const char* base = reinterpret_cast<const char*>(_image.data());
+        DwarfParser dwarf("test", base, base, _image.size(), DwarfParser::EhFrameHdrTag{},
+                          base + _image.size());
+        _table = dwarf.table();
+        _count = dwarf.count();
+    }
+    ~PcColumnFde() { free(_table); }
+    PcColumnFde(const PcColumnFde&) = delete;
+    PcColumnFde& operator=(const PcColumnFde&) = delete;
+
+    // The row in effect `offset` bytes into the FDE (addRecord() merges identical
+    // neighbours, so rows are never indexed). Keep offsets below kFdeRangeLen,
+    // where the parser appends its own range-end row.
+    const FrameDesc* rowAt(uint32_t offset) const {
+        const FrameDesc* best = nullptr;
+        for (int i = 0; i < _count; i++) {
+            if (_table[i].loc <= _range_start + offset &&
+                (best == nullptr || _table[i].loc >= best->loc)) {
+                best = &_table[i];
+            }
+        }
+        return best;
+    }
+
+  private:
+    std::vector<uint8_t> _image;
+    uint32_t _range_start = 0;
+    FrameDesc* _table = nullptr;
+    int _count = 0;
+};
+
+std::vector<uint8_t> savePcInSlot() {
+    return {static_cast<uint8_t>(0x80 | DW_REG_PC), kSavedSlotFactor};  // DW_CFA_offset
+}
+
+}  // namespace
+
+// A function that never saves the return-address register (an arm64 leaf)
+// must keep the CIE rule in every row, not a stack slot at CFA+0.
+TEST(DwarfPcColumn, RowsWithoutRaSaveCarryInitialPcOffset) {
+    PcColumnFde fde({0x0e, 16,  // DW_CFA_def_cfa_offset 16
+                     DW_CFA_advance_loc_4,
+                     0x0e, 32,  // DW_CFA_def_cfa_offset 32
+                     DW_CFA_advance_loc_4});
+    for (uint32_t offset : {0u, 4u, 8u}) {
+        const FrameDesc* row = fde.rowAt(offset);
+        ASSERT_NE(nullptr, row) << "offset " << offset;
+        EXPECT_EQ(INITIAL_PC_OFFSET, row->pc_off) << "offset " << offset;
+    }
+}
+
+// DW_CFA_restore, DW_CFA_restore_extended and DW_CFA_same_value of the
+// return-address column all put it back where the CIE had it (for x30: still
+// in LR), so the epilogue rows after them must not keep the saved slot.
+TEST(DwarfPcColumn, RestoreOfPcResetsToInitialPcOffset) {
+    std::vector<uint8_t> insns = savePcInSlot();
+    insns.push_back(DW_CFA_advance_loc_4);
+    insns.push_back(static_cast<uint8_t>(0xc0 | DW_REG_PC));  // DW_CFA_restore
+    insns.push_back(DW_CFA_advance_loc_4);
+    PcColumnFde fde(insns);
+    ASSERT_NE(nullptr, fde.rowAt(0));
+    EXPECT_EQ(kSavedSlot, fde.rowAt(0)->pc_off);
+    ASSERT_NE(nullptr, fde.rowAt(4));
+    EXPECT_EQ(INITIAL_PC_OFFSET, fde.rowAt(4)->pc_off);
+}
+
+TEST(DwarfPcColumn, RestoreExtendedOfPcResetsToInitialPcOffset) {
+    std::vector<uint8_t> insns = savePcInSlot();
+    insns.insert(insns.end(), {DW_CFA_advance_loc_4,
+                               0x06, static_cast<uint8_t>(DW_REG_PC),  // DW_CFA_restore_extended
+                               DW_CFA_advance_loc_4});
+    PcColumnFde fde(insns);
+    ASSERT_NE(nullptr, fde.rowAt(4));
+    EXPECT_EQ(kSavedSlot, fde.rowAt(0)->pc_off);
+    EXPECT_EQ(INITIAL_PC_OFFSET, fde.rowAt(4)->pc_off);
+}
+
+TEST(DwarfPcColumn, SameValueOfPcResetsToInitialPcOffset) {
+    std::vector<uint8_t> insns = savePcInSlot();
+    insns.insert(insns.end(), {DW_CFA_advance_loc_4,
+                               0x08, static_cast<uint8_t>(DW_REG_PC),  // DW_CFA_same_value
+                               DW_CFA_advance_loc_4});
+    PcColumnFde fde(insns);
+    ASSERT_NE(nullptr, fde.rowAt(4));
+    EXPECT_EQ(kSavedSlot, fde.rowAt(0)->pc_off);
+    EXPECT_EQ(INITIAL_PC_OFFSET, fde.rowAt(4)->pc_off);
+}
+
+// DW_CFA_undefined marks an outermost frame, not a return address in LR, so
+// it must not be folded into the reset above. Restoring an unrelated register
+// must not touch the column either: the case split reads its operand once.
+TEST(DwarfPcColumn, UndefinedOfPcAndRestoreOfOtherRegisterKeepTheSlot) {
+    const uint8_t other_reg = 19;
+    static_assert(other_reg != DW_REG_PC && other_reg != DW_REG_FP, "must be a third register");
+    std::vector<uint8_t> insns = savePcInSlot();
+    insns.insert(insns.end(), {DW_CFA_advance_loc_4,
+                               0x07, static_cast<uint8_t>(DW_REG_PC),  // DW_CFA_undefined
+                               0x0e, 16,                               // force a new row
+                               DW_CFA_advance_loc_4,
+                               0x06, other_reg,                        // DW_CFA_restore_extended
+                               0x08, other_reg,                        // DW_CFA_same_value
+                               static_cast<uint8_t>(0xc0 | other_reg), // DW_CFA_restore
+                               0x0e, 32,
+                               DW_CFA_advance_loc_4});
+    PcColumnFde fde(insns);
+    for (uint32_t offset : {0u, 4u, 8u}) {
+        ASSERT_NE(nullptr, fde.rowAt(offset)) << "offset " << offset;
+        EXPECT_EQ(kSavedSlot, fde.rowAt(offset)->pc_off) << "offset " << offset;
+    }
+}
+
+// DW_CFA_restore_state with nothing remembered yields the parser's initial
+// remembered state, which must also carry the CIE rule.
+TEST(DwarfPcColumn, RestoreStateWithoutRememberUsesInitialPcOffset) {
+    std::vector<uint8_t> insns = savePcInSlot();
+    insns.insert(insns.end(), {DW_CFA_advance_loc_4,
+                               0x0b,  // DW_CFA_restore_state
+                               DW_CFA_advance_loc_4});
+    PcColumnFde fde(insns);
+    ASSERT_NE(nullptr, fde.rowAt(4));
+    EXPECT_EQ(kSavedSlot, fde.rowAt(0)->pc_off);
+    EXPECT_EQ(INITIAL_PC_OFFSET, fde.rowAt(4)->pc_off);
+}
+
+TEST(DwarfPcColumn, RememberRestoreStateRoundTripsPcOffset) {
+    std::vector<uint8_t> insns = savePcInSlot();
+    insns.insert(insns.end(), {0x0a,  // DW_CFA_remember_state
+                               DW_CFA_advance_loc_4,
+                               static_cast<uint8_t>(0xc0 | DW_REG_PC),  // DW_CFA_restore
+                               DW_CFA_advance_loc_4,
+                               0x0b,  // DW_CFA_restore_state
+                               DW_CFA_advance_loc_4});
+    PcColumnFde fde(insns);
+    ASSERT_NE(nullptr, fde.rowAt(8));
+    EXPECT_EQ(kSavedSlot, fde.rowAt(0)->pc_off);
+    EXPECT_EQ(INITIAL_PC_OFFSET, fde.rowAt(4)->pc_off);
+    EXPECT_EQ(kSavedSlot, fde.rowAt(8)->pc_off);
+}
+
+// The frame-pointer column keeps its existing rule for all three ops.
+TEST(DwarfPcColumn, RestoreExtendedSameValueAndUndefinedOfFpResetFp) {
+    const uint8_t save_fp[] = {static_cast<uint8_t>(0x80 | DW_REG_FP), kSavedSlotFactor};
+    std::vector<uint8_t> insns;
+    for (uint8_t op : {static_cast<uint8_t>(0x06), static_cast<uint8_t>(0x08),
+                       static_cast<uint8_t>(0x07)}) {
+        insns.insert(insns.end(), std::begin(save_fp), std::end(save_fp));
+        insns.push_back(DW_CFA_advance_loc_4);
+        insns.push_back(op);
+        insns.push_back(static_cast<uint8_t>(DW_REG_FP));
+        insns.push_back(DW_CFA_advance_loc_4);
+    }
+    PcColumnFde fde(insns);
+    for (uint32_t offset : {0u, 8u, 16u}) {
+        ASSERT_NE(nullptr, fde.rowAt(offset + 4)) << "offset " << offset;
+        EXPECT_EQ(kSavedSlot, fde.rowAt(offset)->fp_off) << "offset " << offset;
+        EXPECT_EQ(DW_SAME_FP, fde.rowAt(offset + 4)->fp_off) << "offset " << offset;
+    }
+}
+
+// DW_CFA_register moves the return address to a register the walker does not
+// track, so those rows must stop the walk; restoring x30 makes them usable again.
+TEST(DwarfPcColumn, RegisterOfPcStopsTheWalkUntilRestored) {
+    PcColumnFde fde({0x09, static_cast<uint8_t>(DW_REG_PC), 9,  // DW_CFA_register PC, x9
+                     DW_CFA_advance_loc_4,
+                     static_cast<uint8_t>(0xc0 | DW_REG_PC),  // DW_CFA_restore
+                     DW_CFA_advance_loc_4});
+    ASSERT_NE(nullptr, fde.rowAt(0));
+    EXPECT_EQ(static_cast<u32>(DW_REG_INVALID), fde.rowAt(0)->cfa & 0xff);
+    ASSERT_NE(nullptr, fde.rowAt(4));
+    EXPECT_EQ(static_cast<u32>(DW_REG_SP), fde.rowAt(4)->cfa & 0xff);
+    EXPECT_EQ(INITIAL_PC_OFFSET, fde.rowAt(4)->pc_off);
+}
+
+// Moving another register leaves the column alone, and both operands are
+// consumed: the following DW_CFA_def_cfa_offset still applies.
+TEST(DwarfPcColumn, RegisterOfOtherRegisterKeepsThePcRule) {
+    std::vector<uint8_t> insns = savePcInSlot();
+    insns.insert(insns.end(), {DW_CFA_advance_loc_4,
+                               0x09, 19, 9,  // DW_CFA_register x19, x9
+                               0x0e, 32,     // DW_CFA_def_cfa_offset 32
+                               DW_CFA_advance_loc_4});
+    PcColumnFde fde(insns);
+    ASSERT_NE(nullptr, fde.rowAt(4));
+    EXPECT_EQ(kSavedSlot, fde.rowAt(4)->pc_off);
+    EXPECT_EQ(static_cast<u32>(DW_REG_SP), fde.rowAt(4)->cfa & 0xff);
+    EXPECT_EQ(32, static_cast<int>(fde.rowAt(4)->cfa) >> 8);
+}
+
+// A pc in the PLT range below the first row is served FrameDesc::empty_frame.
+// PLT entries do not save x30, so that row must carry the CIE rule too.
+TEST(DwarfPcColumn, PltRangeBelowFirstRowUsesInitialPcOffset) {
+    static char text[0x200];
+    CodeCache cc("dwarf_pc_column_plt", /*lib_index=*/-1, text, text + sizeof(text), text);
+    cc.setTextBase(text);
+    cc.setPlt(/*plt_offset=*/0, /*plt_size=*/0x40);
+    FrameDesc* table = static_cast<FrameDesc*>(malloc(sizeof(FrameDesc)));
+    ASSERT_NE(nullptr, table);
+    *table = FrameDesc::default_frame;
+    table->loc = 0x100;
+    cc.setDwarfTable(table, 1);
+
+    FrameDesc row = cc.findFrameDesc(text + 0x10);
+    // empty_frame, not the default frame: CFA is SP-based.
+    EXPECT_EQ(static_cast<u32>(DW_REG_SP), row.cfa & 0xff);
+    EXPECT_EQ(INITIAL_PC_OFFSET, row.pc_off);
 }
 
 #endif  // DWARF_SUPPORTED
