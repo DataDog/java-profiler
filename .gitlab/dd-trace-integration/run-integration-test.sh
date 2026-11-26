@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright 2026, Datadog, Inc.
 
 set -euo pipefail
 
@@ -47,6 +48,29 @@ NC='\033[0m' # No Color
 
 function log_info() {
   echo -e "${GREEN}[INFO]${NC} $*"
+}
+
+# newest_jfr <dir> — path of the most recently modified .jfr under <dir>, empty
+# when none exists. The debug dump_path holds one snapshot per upload period;
+# the newest covers the whole run window, directory order may not.
+# -nt per file instead of -exec ls -t {} + | head -1: find batches the exec
+# above ARG_MAX and ls -t orders only within a batch, so head -1 could return
+# a first-batch file rather than the globally newest one.
+newest_jfr() {
+  local newest="" f
+  # || true is not needed with this shape: the while loop reads find's output
+  # through a process substitution, so a missing <dir> fails only the
+  # substitution's find — the loop reads nothing, the function prints nothing,
+  # and always exits 0, keeping the caller's set -e assignment alive. Empty
+  # output drives the caller's not-found branch.
+  while IFS= read -r -d '' f; do
+    if [ -z "${newest}" ] || [ "${f}" -nt "${newest}" ]; then
+      newest="${f}"
+    fi
+  done < <(find "${1}" -name '*.jfr' -type f -print0 2>/dev/null)
+  if [ -n "${newest}" ]; then
+    printf '%s\n' "${newest}"
+  fi
 }
 
 function log_warn() {
@@ -422,10 +446,11 @@ log_info "✓ Profiler-only test completed"
 # Collect mid-test system metrics
 collect_system_metrics "mid"
 
-# Find the JFR recording (profiler writes continuously)
+# Find the JFR recording (profiler writes continuously): the newest snapshot,
+# see newest_jfr.
 log_info "Locating JFR recording in ${SCENARIO1_JFR_DIR}..."
 
-SCENARIO1_JFR=$(find "${SCENARIO1_JFR_DIR}" -name "*.jfr" -print -quit)
+SCENARIO1_JFR=$(newest_jfr "${SCENARIO1_JFR_DIR}")
 
 if [ -z "${SCENARIO1_JFR}" ] || [ ! -f "${SCENARIO1_JFR}" ]; then
   # Early aborts before validation (no JFR, recording too small) still skip
@@ -538,10 +563,11 @@ log_info "Log output: ${SCENARIO2_LOG}"
 
 log_info "✓ Tracer+profiler test completed"
 
-# Find the JFR recording (profiler writes continuously)
+# Find the JFR recording (profiler writes continuously) - newest snapshot, as
+# in scenario 1: the dump directory accumulates one file per upload period.
 log_info "Locating JFR recording in ${SCENARIO2_JFR_DIR}..."
 
-SCENARIO2_JFR=$(find "${SCENARIO2_JFR_DIR}" -name "*.jfr" -print -quit)
+SCENARIO2_JFR=$(newest_jfr "${SCENARIO2_JFR_DIR}")
 
 if [ -z "${SCENARIO2_JFR}" ] || [ ! -f "${SCENARIO2_JFR}" ]; then
   log_error "JFR recording not found in: ${SCENARIO2_JFR_DIR}"

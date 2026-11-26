@@ -33,5 +33,4 @@ function onexit {
 
 trap onexit EXIT
 
-./gradlew -Pddprof_version="$(get_version)" -Pskip-native -Pskip-tests -Pwith-libs="$(pwd)/libs" assembleDebugJar --max-workers=1 --build-cache --stacktrace --info --no-watch-fs --no-daemon
 ./gradlew -Pddprof_version="$(get_version)" -Pskip-native -Pwith-libs="$(pwd)/libs" -x gtestDebug runStressTests --max-workers=1 --build-cache --stacktrace --info --no-watch-fs --no-daemon

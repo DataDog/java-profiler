@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import com.datadoghq.native.util.NativeLibJarCheck
 import com.datadoghq.native.util.PlatformUtils
 
 plugins {
@@ -22,17 +23,11 @@ plugins {
 }
 
 dependencies {
-  implementation(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
+  // Release only: ddprof-test-tracer already brings the release library in transitively, and a
+  // second (debug) library in the jmh jar makes the loaded one undefined and skews overheads.
+  implementation(project(mapOf("path" to ":ddprof-lib", "configuration" to "release")))
   implementation(project(":ddprof-test-tracer"))
   implementation(libs.bundles.jmh)
-}
-
-sourceSets {
-  named("jmh") {
-    java {
-      runtimeClasspath += project(":ddprof-lib").sourceSets["main"].output
-    }
-  }
 }
 
 jmh {
@@ -66,6 +61,11 @@ tasks.named<Jar>("jmhJar") {
   }
   archiveFileName.set("stresstests.jar")
 }
+
+// The jar must hold exactly one libjavaProfiler per platform, including the host's: the JVM would
+// load an arbitrary duplicate. jmh and runStressTests depend on the check; the jar is finalized by
+// it so a jmhJar built on its own is checked before `java -jar`.
+NativeLibJarCheck.register(project, tasks.named<Jar>("jmhJar"), PlatformUtils.platformIdentifier(), "jmh", "runStressTests")
 
 // --- chaos harness ---------------------------------------------------------
 // Long-running antagonist workload driven by the reliability CI cell. NOT a JMH

@@ -30,6 +30,15 @@ object PlatformUtils {
         } ?: false
     }
 
+    /**
+     * Build host's directory name under `META-INF/native-libs`, e.g. `linux-x64-musl`. It matches what
+     * `LibraryLoader` loads when the test JVM uses the build host's libc (musl detected via `/lib/ld-musl-*`).
+     */
+    fun platformIdentifier(): String {
+        val muslSuffix = if (isMusl()) "-musl" else ""
+        return "$currentPlatform-$currentArchitecture$muslSuffix"
+    }
+
     fun javaHome(): String {
         return System.getenv("JAVA_HOME")
             ?: System.getProperty("java.home")
