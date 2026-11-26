@@ -167,6 +167,18 @@ TEST_F(ContinuationEntryX64Test, RejectsInvalidFrameSizes) {
     }
 }
 
+TEST_F(ContinuationEntryX64Test, AcceptsTheLargestFrameSize) {
+    method.words = 256;
+    method.complete = 64;
+    const unsigned char setup[] = {0x55, 0x48, 0x8b, 0xec, 0x48, 0x81, 0xec, 0xf0, 0x07, 0, 0};
+    memcpy(method.code, setup, sizeof(setup));
+    EXPECT_EQ(256, wordsAt(11));
+    method.words = 258;
+    method.code[7] = 0x00; // storage (258 - 2) * 8 = 0x800: only the size bound rejects it
+    method.code[8] = 0x08;
+    EXPECT_EQ(-1, wordsAt(11));
+}
+
 TEST_F(ContinuationEntryX64Test, RejectsAPrologueCutOffByTheBlobEnd) {
     method.complete = 64;
     method.size = offsetof(Method, code) + 7; // sub rsp's imm8 lies outside the nmethod

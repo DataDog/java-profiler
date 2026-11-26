@@ -1198,6 +1198,19 @@ TEST_F(ContinuationWalkTest, ReturnBarrierDecoderAcceptsGeneratedThreadLoad) {
 #endif
 }
 
+#ifdef __x86_64__
+TEST_F(ContinuationWalkTest, ReturnBarrierDecoderRejectsNegativeDisplacements) {
+    const unsigned char disp8_max[] = {0x49, 0x8b, 0x67, 0x7f};
+    const unsigned char disp8_negative[] = {0x49, 0x8b, 0x67, 0x80};
+    const unsigned char disp32_max[] = {0x49, 0x8b, 0xa7, 0xff, 0xff, 0xff, 0x7f};
+    const unsigned char disp32_negative[] = {0x49, 0x8b, 0xa7, 0, 0, 0, 0x80};
+    EXPECT_EQ(0x7f, HotspotStackFrame::continuationEntryThreadOffset(disp8_max, sizeof(disp8_max)));
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(disp8_negative, sizeof(disp8_negative)));
+    EXPECT_EQ(0x7fffffff, HotspotStackFrame::continuationEntryThreadOffset(disp32_max, sizeof(disp32_max)));
+    EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(disp32_negative, sizeof(disp32_negative)));
+}
+#endif
+
 TEST_F(ContinuationWalkTest, ReturnBarrierDecoderRejectsTruncatedOrUnknownInstructions) {
     auto code = barrierInstructions();
     EXPECT_EQ(-1, HotspotStackFrame::continuationEntryThreadOffset(nullptr, code.size()));
