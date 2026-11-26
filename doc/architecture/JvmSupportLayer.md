@@ -80,7 +80,8 @@ predicates. More detection-dependent setup:
 - `VM::ready()` initializes `VMStructs` only on HotSpot (`vmEntry.cpp:600-607`).
   It can be called more than once, also while a profiler instance samples. A
   static flag ensures that the signal handlers are installed only once.
-  `VMStructs::init()` parses the vmStructs tables on the first call only.
+  `VMStructs::init()` parses the vmStructs tables and looks up JVM symbols on
+  the first call only.
   `VMStructs::ready()` resolves the JVM runtime state on every call. Under
   `Agent_OnLoad`, the first call runs before HotSpot sets up its code heaps and
   stubs, so the `VMInit` call resolves them.

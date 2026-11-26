@@ -472,7 +472,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // VM::VMInit() runs -- but CodeHeap::available()/VMFlag::find() below are used
   // synchronously in this function. Get VMStructs (and crash-protection signal
   // handlers) ready now; the later VM::VMInit() call re-resolves the JVM runtime
-  // state that HotSpot has not set up yet at Agent_OnLoad.
+  // state that HotSpot has not set up yet at Agent_OnLoad. With attach == true,
+  // this call reruns the one made by VM::initLibrary().
   ready(jvmti(), jni());
 
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {

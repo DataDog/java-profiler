@@ -37,10 +37,9 @@ import java.util.regex.Pattern;
  *   <li>profiler [comma delimited profiler command list] - starts the profiler
  *   <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the
  *       profiler and runs a CPU-intensive task
- *   <li>profiler-at &lt;library path&gt; - calls {@link JavaProfiler#getInstance(String, String)}
- *       with that path between {@code [getInstance-begin]} and {@code [getInstance-done]} lines,
- *       then burns CPU briefly; with {@code -agentpath} on the same path it reloads the agent's
- *       library image; see {@code VMReadyRerunTest}
+ *   <li>profiler-at &lt;library path&gt; - loads the library from that path between {@code
+ *       [getInstance-begin]} and {@code [getInstance-done]}, then burns CPU; see {@code
+ *       VMReadyRerunTest}
  *   <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from
  *       a virtual thread
  *   <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this

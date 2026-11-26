@@ -21,12 +21,9 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * An agent started with {@code -agentpath} and then loaded again through {@link
- * JavaProfiler#getInstance(String, String)} on the same path reruns {@code VM::ready()} in the
- * agent's library image while it samples. The rerun must skip the vmStructs table parsing and leave
- * the code heap segment shift at its final value from entry to exit. Reads the {@code [TEST::INFO]}
- * lines of the debug library, so it only runs against the debug build. Samples in a frame that runs
- * only after the reload show that the agent keeps sampling across it.
+ * Reloading a sampling {@code -agentpath} library reruns {@code VM::ready()}: it must skip the
+ * table parsing, keep the segment shift final and keep sampling. Debug builds only ({@code
+ * [TEST::INFO]}).
  */
 public class VMReadyRerunTest extends AbstractProcessProfilerTest {
   private static final String INIT_SKIPPED = "VMStructs::init skipped: tables already parsed";
