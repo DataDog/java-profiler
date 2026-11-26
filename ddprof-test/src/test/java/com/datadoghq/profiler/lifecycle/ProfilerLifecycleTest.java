@@ -98,7 +98,7 @@ public class ProfilerLifecycleTest {
   public void stopIfRunning() throws IOException {
     JavaProfiler profiler = JavaProfiler.getInstance();
     if (profiler.getStatus().contains("Running          : true")) {
-      AbstractProfilerTest.stopRetryingOnDrainTimeout(profiler);
+      AbstractProfilerTest.stopRetryingOnTransientFailure(profiler);
     }
   }
 

@@ -12,6 +12,7 @@ cp ddprof-test/javacore*.txt test-reports/ || true
 cp ddprof-test/build/hs_err* test-reports/ || true
 cp -r ddprof-lib/build/tmp test-reports/native_build || true
 cp -r ddprof-test/build/reports/tests test-reports/tests || true
+cp -r ddprof-test/build/netty-epoll test-reports/netty-epoll || true
 # The JUnit XML of every attempt, for reading by hand, normally comes from
 # flake-evidence/ alone (copied below): run_tests_with_retry.sh snapshots
 # each attempt's build/test-results there, and flake-evidence/attempt-<final>

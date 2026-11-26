@@ -507,6 +507,58 @@ TEST_F(NativeBlockScopeTest, OldRecordingExitCannotConsumeRestartedNativeOwner) 
             g_record_event._blocker);
 }
 
+TEST_F(NativeBlockScopeTest, SurvivingOldOwnerCannotTearDownNewWorkersRun) {
+  ScopedTaskBlockEnabled task_block_enabled(true);
+  auto* profiler = Profiler::instance();
+  auto* filter = profiler->threadFilter();
+  std::promise<int> old_entered;
+  std::promise<void> release_old;
+  auto old_release = release_old.get_future();
+  std::thread old_worker([&] {
+    CurrentThreadScope current;
+    registerCurrentJavaThread(current.thread());
+    NativeBlockScope scope(NativeBlockKind::EPOLL_WAIT, 41);
+    old_entered.set_value(scope.active() ? current.thread()->filterSlotId() : -1);
+    old_release.wait();
+    scope.finishForTest(eligibleEndTicks(scope.startTicksForTest()));
+  });
+  int old_id = old_entered.get_future().get();
+  EXPECT_GE(old_id, 0);
+  filter->deactivateRecording();
+  filter->init("", true);
+  std::promise<int> new_entered;
+  std::promise<void> release_new;
+  auto new_release = release_new.get_future();
+  std::thread new_worker([&] {
+    CurrentThreadScope current;
+    current.thread()->setJavaThread(true);
+    // No JVM is attached; classify without pre-registering the lazy owner slot.
+    current.thread()->setJvmInternalThread(false);
+    NativeBlockScope scope(NativeBlockKind::EPOLL_WAIT, 42);
+    new_entered.set_value(scope.active() ? current.thread()->filterSlotId() : -1);
+    new_release.wait();
+    scope.finishForTest(eligibleEndTicks(scope.startTicksForTest()));
+  });
+  int new_id = new_entered.get_future().get();
+  EXPECT_GE(new_id, 0);
+  EXPECT_NE(old_id, new_id);
+  auto* new_slot = profiler->blockTracker()->slotForId(new_id);
+  u64 generation = new_slot == nullptr ? 0 : new_slot->blockGeneration();
+  release_old.set_value();
+  old_worker.join();
+  EXPECT_EQ(0, g_record_calls.load());
+  if (new_slot != nullptr) {
+    EXPECT_EQ(BlockRunOwner::NATIVE, new_slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::IO_WAIT, new_slot->activeBlockState());
+    EXPECT_EQ(generation, new_slot->blockGeneration());
+  }
+  release_new.set_value();
+  new_worker.join();
+  EXPECT_EQ(1, g_record_calls.load());
+  EXPECT_EQ(NativeBlockScope::blocker(NativeBlockKind::EPOLL_WAIT, 42),
+            g_record_event._blocker);
+}
+
 TEST_F(NativeBlockScopeTest, ConcurrentScopeLifecyclePreservesSlotOwnership) {
   CurrentThreadScope current;
   ScopedTaskBlockEnabled task_block_enabled(true);

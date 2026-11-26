@@ -1613,6 +1613,26 @@ Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_hasActive
   return state != nullptr && state->activeBlockOwner() != BlockRunOwner::NONE
       ? JNI_TRUE : JNI_FALSE;
 }
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_wallclock_WallClockBlockTrackerTestSupport_nativeOwnerSnapshot0(
+    JNIEnv* env, jclass unused, jint tid) {
+  if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) return nullptr;
+  ThreadFilter* registry = Profiler::instance()->threadFilter();
+  ThreadFilter::SlotID slot_id = -1;
+  // A blocked survivor retains its identity with the preceding recording epoch.
+  ThreadFilter::Slot* slot = registry->lookupByTid(tid, &slot_id);
+  if (slot == nullptr) return nullptr;
+  WallClockBlockTracker::BlockState* state = Profiler::instance()->blockTracker()->slotForId(slot_id);
+  // Reset-start clears active ownership, but retains identity and token generations.
+  if (state == nullptr) return nullptr;
+  jlong values[] = {slot_id, static_cast<jlong>(slot->lifecycleGeneration()),
+                    static_cast<jlong>(slot->recordingEpoch()),
+                    static_cast<jlong>(state->blockGeneration()),
+                    static_cast<jlong>(registry->recordingEpoch())};
+  jlongArray result = env->NewLongArray(5);
+  if (result != nullptr) env->SetLongArrayRegion(result, 0, 5, values);
+  return result;
+}
 #endif // DEBUG
 
 // LivenessTracker/ReferenceChainTracker test seams. They mutate real tracker

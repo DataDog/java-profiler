@@ -116,6 +116,12 @@ val jacocoIncludes: String by lazy {
 }
 
 tasks.withType<Test>().configureEach {
+  useJUnitPlatform { excludeTags("netty-child") }
+  jvmArgumentProviders.add(
+    CommandLineArgumentProvider {
+      listOf("-Dddprof.netty.classpath=${classpath.asPath}")
+    },
+  )
   extensions.configure<JacocoTaskExtension> {
     isEnabled = name in coverageTaskNames
     if (isEnabled) {
@@ -286,6 +292,11 @@ dependencies {
   "testCommon"(libs.bundles.profiler.runtime)
   "testCommon"(libs.jafar.parser)
   "testCommon"(libs.asm)
+  "testCommon"("org.ow2.asm:asm-commons:${libs.versions.asm.get()}")
+  "testCommon"("org.junit.platform:junit-platform-reporting:${libs.versions.junit.platform.get()}")
+  "testCommon"("io.netty:netty-transport-classes-epoll:4.1.137.Final")
+  "testCommon"("io.netty:netty-transport-native-epoll:4.1.137.Final:linux-x86_64")
+  "testCommon"("io.netty:netty-transport-native-epoll:4.1.137.Final:linux-aarch_64")
 
   // Main/application dependencies
   "mainCommon"(libs.slf4j.simple)

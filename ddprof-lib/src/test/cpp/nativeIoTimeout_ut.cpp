@@ -16,6 +16,7 @@
 #include "vmEntry.h"
 
 #include <cerrno>
+#include <sys/epoll.h>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
@@ -37,7 +38,7 @@ public:
 };
 
 namespace {
-enum TimeoutOperation { PPOLL, PSELECT, SELECT };
+enum TimeoutOperation { PPOLL, PSELECT, SELECT, EPOLL_PWAIT2 };
 // LIVE_MARKED: TLS then mark. EXITING: mark after the exit block, TLS released.
 // REUSED: a predecessor's mark on a thread with no TLS and unblocked profiling signals.
 enum MarkedIdentity { LIVE_MARKED, EXITING, REUSED };
@@ -112,8 +113,34 @@ int selectOriginal(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfd
   return 7;
 }
 
+int epollPwait2Original(int epfd, struct epoll_event* events, int maxevents,
+                        const struct timespec* timeout, const sigset_t* mask) {
+  if (!originalArgumentsMatch(timeout) || epfd != -1 || events == nullptr ||
+      maxevents != 1 || mask != nullptr) {
+    errno = EPROTO;
+    return -1;
+  }
+  if (kernel_original) {
+    int fd = epoll_create1(0);
+    if (fd < 0) return -1;
+    // Linux assigns epoll_pwait2 number 441 on both supported architectures, x64 and arm64.
+    int result = syscall(441, fd, events, maxevents, timeout, mask, 8);
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return result;
+  }
+  errno = EPIPE;
+  return 7;
+}
+
 int invokeTimeoutHook(TimeoutOperation operation, void *timeout, bool hook) {
   struct pollfd fd = {-1, POLLIN, 0};
+  if (operation == EPOLL_PWAIT2) {
+    struct epoll_event event;
+    return NativeSocketInterposer::epoll_pwait2_hook(
+        -1, &event, 1, static_cast<timespec*>(timeout), nullptr);
+  }
   if (operation == PPOLL) {
     return hook ? NativeSocketInterposer::ppoll_hook(&fd, 1, static_cast<timespec *>(timeout),
                                                      nullptr)
@@ -211,6 +238,8 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
   NativeSocketInterposer::setOriginalFunction(
       NativeSocketInterposer::HOOK_SELECT,
       reinterpret_cast<void *>(libc_original ? ::select : selectOriginal));
+  NativeSocketInterposer::setOriginalFunction(NativeSocketInterposer::HOOK_EPOLL_PWAIT2,
+      reinterpret_cast<void*>(epollPwait2Original));
   if (scenario == READABLE_CONTROLS || scenario == MARKED_READABLE_REAL_HANDLERS) {
     kernel_original = false;
     for (int value = real_handlers ? 1 : 0; value < 4; value++) {
@@ -253,7 +282,8 @@ int timeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scenario, b
   int result = invokeTimeoutHook(operation, timeout, scenario != LIBC_BASELINE);
   if (libc_original)
     return result == -1 && errno == EFAULT ? 0 : 60;
-  if (result != -1 || errno != EFAULT || original_calls != 1 || scope_entries != 0)
+  bool expected_errno = errno == EFAULT || (operation == EPOLL_PWAIT2 && errno == ENOSYS);
+  if (result != -1 || !expected_errno || original_calls != 1 || scope_entries != 0)
     return 61;
   if (real_handlers && !markedIdentityRetained(identity)) return 63;
   return recovered_faults == (active && vm != 2 && !real_handlers ? 1 : 0) ? 0 : 62;
@@ -276,7 +306,7 @@ int waitForTimeoutChild(int vm, TimeoutOperation operation, TimeoutScenario scen
 
 TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesForwardInaccessibleTimeoutsWithRealCrashHandlers) {
   for (int vm : {0, 1}) {
-    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT}) {
+    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT, EPOLL_PWAIT2}) {
       for (MarkedIdentity identity : {LIVE_MARKED, EXITING, REUSED}) {
         for (bool partial : {false, true}) {
           SCOPED_TRACE(vm);
@@ -293,7 +323,7 @@ TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesForwardInaccessibleTimeoutsWit
 
 TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesDoNotAdmitReadableNonNullTimeouts) {
   for (int vm : {0, 1}) {
-    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT}) {
+    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT, EPOLL_PWAIT2}) {
       for (MarkedIdentity identity : {LIVE_MARKED, EXITING, REUSED}) {
         SCOPED_TRACE(vm);
         SCOPED_TRACE(operation);
@@ -307,7 +337,7 @@ TEST(NativeIoTimeoutTest, MarkedAndStaleIdentitiesDoNotAdmitReadableNonNullTimeo
 
 TEST(NativeIoTimeoutTest, ProtectedVmFaultRecoveryForwardsUnchangedToKernelOriginal) {
   for (int vm : {0, 1}) {
-    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT}) {
+    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT, EPOLL_PWAIT2}) {
       for (bool partial : {false, true}) {
         SCOPED_TRACE(vm);
         SCOPED_TRACE(operation);
@@ -320,7 +350,7 @@ TEST(NativeIoTimeoutTest, ProtectedVmFaultRecoveryForwardsUnchangedToKernelOrigi
 
 TEST(NativeIoTimeoutTest, UnprotectedAndInactiveHooksDoNotReadTimeoutBeforeOriginal) {
   for (int vm : {0, 1, 2}) {
-    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT}) {
+    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT, EPOLL_PWAIT2}) {
       SCOPED_TRACE(vm);
       SCOPED_TRACE(operation);
       EXPECT_EQ(0, waitForTimeoutChild(vm, operation, KERNEL_FAULT, false));
@@ -332,7 +362,7 @@ TEST(NativeIoTimeoutTest, UnprotectedAndInactiveHooksDoNotReadTimeoutBeforeOrigi
 
 TEST(NativeIoTimeoutTest, BoundedReadableTimeoutsKeepEligibilityAndErrno) {
   for (int vm : {0, 1, 2}) {
-    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT}) {
+    for (TimeoutOperation operation : {PPOLL, PSELECT, SELECT, EPOLL_PWAIT2}) {
       for (bool active : {false, true}) {
         SCOPED_TRACE(vm);
         SCOPED_TRACE(operation);

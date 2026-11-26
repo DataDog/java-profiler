@@ -213,6 +213,8 @@ public:
     // Normal-owner JNI/context hooks only. No remote TLS lookup or signal-side
     // registration. An inactive registry does not allocate or reserve a slot.
     SlotID ensureOwnerSlot(ProfiledThread& owner);
+    // Lazy recording admission accepts only the captured native ownership.
+    bool refreshOwnerSlotForRecording(const ThreadEntry& owner, u64 logical_window_state);
     void onContextWindowEnter(ProfiledThread& owner);
     void onContextWindowExit(ProfiledThread& owner);
 #ifdef UNIT_TEST
@@ -365,7 +367,7 @@ private:
     }
 };
 
-// Snapshot entry produced by ThreadFilter::collect for the wall-clock timer.
+// Native ownership snapshot for timer observation and lazy recording admission.
 struct ThreadEntry {
     int tid;
     ThreadFilter::Slot* slot;

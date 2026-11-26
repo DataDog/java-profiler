@@ -62,6 +62,9 @@ class UnloadProtection {
 
   public:
     UnloadProtection(const CodeCache *cc);
+#ifdef __linux__
+    UnloadProtection(const CodeCache* cc, const char* loader_name);
+#endif
     ~UnloadProtection();
 
     UnloadProtection(const UnloadProtection& other) = delete;
