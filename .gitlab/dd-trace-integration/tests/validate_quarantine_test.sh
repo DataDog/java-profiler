@@ -230,13 +230,22 @@ run_validator "${L}"
 assert_exit "the ticket prose's 'tracer+profiler' token is rejected" 1
 assert_out_contains "the scenario error names both accepted tokens" "profiler-only tracer-profiler"
 
-# --- cell globs must match the known matrix ---
+# --- cell globs must match a scheduled matrix cell ---
 
 L=$(new_list bad-glob)
 add "${L}" "glibc-x64-foo-jdk99/profiler-only" "PROF-16618" "${TODAY}" "${FUTURE}"
 run_validator "${L}"
 assert_exit "a glob matching no known cell fails" 1
-assert_out_contains "the glob error explains the cell shape" "matches no known matrix cell"
+assert_out_contains "the glob error explains the cell shape" "matches no scheduled matrix cell"
+
+# musl/OpenJ9 is in the rendered matrix but never scheduled, so it is no cell.
+for cell in musl-x64-openj9-jdk17 musl-arm64-openj9-jdk8 "musl-*-openj9-*"; do
+  L=$(new_list "unscheduled-${cell//\*/star}")
+  add "${L}" "${cell}/profiler-only" "PROF-16618" "${TODAY}" "${FUTURE}"
+  run_validator "${L}"
+  assert_exit "a glob matching only unscheduled ${cell} fails" 1
+  assert_out_contains "the unscheduled ${cell} error names the glob" "cell glob '${cell}' matches no scheduled matrix cell"
+done
 
 L=$(new_list runner-tag-glob)
 add "${L}" "glibc-*/profiler-only" "PROF-16618" "${TODAY}" "${FUTURE}"
@@ -259,6 +268,15 @@ add "${L}" "glibc-x64-openj9-jdk25/profiler-only" "PROF-16014" "${TODAY}" "${FUT
 run_validator "${L}"
 assert_exit "overlapping globs for one scenario fail" 1
 assert_out_contains "the overlap error names both entries" "overlaps"
+
+# Two globs that meet only on an unscheduled musl/OpenJ9 cell cover disjoint
+# scheduled cells (glibc/OpenJ9 and musl/HotSpot), so neither shadows the other.
+L=$(new_list unscheduled-overlap)
+add "${L}" "*-x64-openj9-jdk17/profiler-only" "PROF-16618" "${TODAY}" "${FUTURE}"
+add "${L}" "musl-x64-*-jdk17/profiler-only" "PROF-16014" "${TODAY}" "${FUTURE}"
+run_validator "${L}"
+assert_exit "globs meeting only on an unscheduled cell do not overlap" 0
+assert_out_contains "both disjoint globs validate" "2 quarantined scenario(s), all valid"
 
 # --- different scenarios on the same cell do not overlap ---
 

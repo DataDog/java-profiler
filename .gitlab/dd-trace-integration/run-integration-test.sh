@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright 2026, Datadog, Inc.
 
 set -euo pipefail
 
