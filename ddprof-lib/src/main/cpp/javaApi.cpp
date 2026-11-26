@@ -32,6 +32,8 @@
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
+#include "signalSafety.h"
+#include "taskBlockRecorder.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -388,6 +390,59 @@ Java_com_datadoghq_profiler_JavaProfiler_isThreadRegistryActiveForTest0(
 #endif // DEBUG
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordUnownedWallTailAcrossDumpForTest0(
+    JNIEnv *env, jclass unused, jthread thread, jstring snapshot,
+    jboolean dump_after_primary, jboolean reset_before_tail) {
+#ifdef DEBUG
+  JniString path(env, snapshot);
+  const char* failure = BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
+      thread, path.c_str(), path.length(), dump_after_primary == JNI_TRUE,
+      reset_before_tail == JNI_TRUE);
+  if (failure != nullptr) {
+    throwNew(env, "java/lang/IllegalStateException", failure);
+    return JNI_FALSE;
+  }
+  return JNI_TRUE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_exchangeUnownedWallTailAcrossDumpDropsForTest0(
+    JNIEnv *env, jclass unused, jint step, jint drops) {
+#ifdef DEBUG
+  return BaseWallClock::exchangeUnownedWallTailAcrossDumpDropsForTest(
+      static_cast<BaseWallClock::TailDropStep>(step), drops);
+#else
+  return 0;
+#endif
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_withUnownedWallTailForTest0(
+    JNIEnv *env, jclass unused, jthread thread, jobject transition) {
+#ifdef DEBUG
+  SignalBlocker blocker;
+  const char* failure = BaseWallClock::seedUnownedWallTailForTest(thread, OSThreadState::CONDVAR_WAIT);
+  if (failure != nullptr) {
+    throwNew(env, "java/lang/IllegalStateException", failure);
+    return JNI_FALSE;
+  }
+  jclass runnable = env->GetObjectClass(transition);
+  if (runnable == nullptr) return JNI_FALSE;
+  jmethodID run = env->GetMethodID(runnable, "run", "()V");
+  env->DeleteLocalRef(runnable);
+  if (run == nullptr) return JNI_FALSE;
+  // Seeding released every stripe before Java can wait for a controller's dump.
+  env->CallVoidMethod(transition, run);
+  return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
@@ -482,11 +537,11 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   profiler->recordQueueTime(tid, &event);
 }
 
-extern "C" DLLEXPORT void JNICALL
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
-    return;
+    return JNI_FALSE;
   }
 
   bool first_park = current->parkEnter();
@@ -499,6 +554,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
           tracker->enterBlockedRun(tf, slot_id, OSThreadState::CONDVAR_WAIT));
     }
   }
+  return first_park ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -534,6 +590,26 @@ static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
   return false;
 }
 
+// beginTaskBlock0/endTaskBlock0 accept an explicit jthread for stack-walking and
+// classification; verify it actually identifies the calling thread, since the two
+// could otherwise diverge (e.g. a stale or mismatched jthread handle).
+static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
+  if (thread == nullptr) return false;
+  jthread current_thread = nullptr;
+  if (VM::jvmti()->GetCurrentThread(&current_thread) != JVMTI_ERROR_NONE) {
+    return false;
+  }
+  bool same = env->IsSameObject(thread, current_thread);
+  env->DeleteLocalRef(current_thread);
+  return same;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_taskBlockSupportedForTest0(
+    JNIEnv* env, jclass unused, jthread thread) {
+  return Profiler::instance()->taskBlockSupportedForTest(env, thread) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
@@ -541,20 +617,25 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (current == nullptr) {
     return 0;
   }
-
   OSThreadState decoded;
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (!tf->registryActive()) {
+  u64 span_id = 0, root_span_id = 0;
+  ContextApi::get(span_id, root_span_id);
+  if (span_id != 0) {
+    return 0;
+  }
+  Profiler *profiler = Profiler::instance();
+  ThreadFilter *tf = profiler->threadFilter();
+  if (!profiler->taskBlockEnabled() && !tf->registryActive()) {
     return 0;
   }
   ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
   if (slot_id < 0) {
     return 0;
   }
-  WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
+  WallClockBlockTracker *tracker = profiler->blockTracker();
   return static_cast<jlong>(tracker->enterBlockedRun(tf, slot_id, decoded));
 }
 
@@ -580,6 +661,106 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     WallClockBlockTracker *tracker = Profiler::instance()->blockTracker();
     tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(block_token));
   }
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
+    JNIEnv *env, jclass unused, jthread thread) {
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  Profiler *profiler = Profiler::instance();
+  if (current == nullptr || !profiler->isRunning() ||
+      !profiler->taskBlockEnabled()) {
+    return 0;
+  }
+  ThreadFilter *tf = profiler->threadFilter();
+  if (!tf->unfilteredWallTrackingActive()) return 0;
+  if (!isCurrentJniThread(env, thread)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_THREAD_MISMATCH);
+    return 0;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return 0;
+  }
+  ThreadFilter::SlotID slot_id = tf->ensureOwnerSlot(*current);
+  if (slot_id < 0) return 0;
+
+  Context context = ContextApi::snapshot();
+  if (context.spanId != 0) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    return 0;
+  }
+  WallClockBlockTracker *tracker = profiler->blockTracker();
+#if defined(DEBUG) || defined(UNIT_TEST)
+  TaskBlockDiagnosticRecord diagnostic{};
+  TaskBlockDiagnosticRecord* diagnostic_ptr = &diagnostic;
+#endif
+  u64 token = tracker->enterBlockedRun(
+      tf, slot_id, OSThreadState::SLEEPING, BlockRunOwner::TASK_BLOCK TASK_BLOCK_DIAGNOSTIC_ONLY(, diagnostic_ptr));
+  if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
+    if (token != 0) {
+      tracker->exitBlockedRun(slot_id,
+                              WallClockBlockTracker::tokenGeneration(token));
+    }
+    return 0;
+  }
+#ifdef DEBUG
+  current->setTaskBlockDiagnosticOrigin(diagnostic);
+#endif
+  return static_cast<jlong>(token);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
+    JNIEnv *env, jclass unused, jthread thread, jlong token, jlong blocker,
+    jlong unblockingSpanId) {
+  u64 block_token = static_cast<u64>(token);
+  ThreadFilter::SlotID slot_id = -1;
+  u64 generation = 0;
+  if (!WallClockBlockTracker::decodeBlockRunToken(block_token, slot_id,
+                                                  generation)) {
+    return JNI_FALSE;
+  }
+  if (!isCurrentJniThread(env, thread)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_THREAD_MISMATCH);
+    return JNI_FALSE;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return JNI_FALSE;
+  }
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) return JNI_FALSE;
+
+  Profiler *profiler = Profiler::instance();
+  bool recorded = recordTaskBlockAtExit(
+      current, profiler->threadFilter(), profiler->blockTracker(), thread, 1,
+      block_token, static_cast<u64>(blocker),
+      static_cast<u64>(unblockingSpanId));
+  return recorded ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_endTaskBlockAtTicksForTest0(
+    JNIEnv* env, jclass unused, jthread thread, jlong token, jlong start_ticks,
+    jlong end_ticks, jlong blocker, jlong unblocking_span_id) {
+#ifdef DEBUG
+  if (!isCurrentJniThread(env, thread) ||
+      !JVMSupport::isPlatformThread(env, thread)) return JNI_FALSE;
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) return JNI_FALSE;
+  u64 original_start = 0;
+  Context context{};
+  if (!current->taskBlockExit(static_cast<u64>(token), original_start, context)) {
+    return JNI_FALSE;
+  }
+  Profiler* profiler = Profiler::instance();
+  return finishTaskBlockAtExit(
+      current, profiler->threadFilter(), profiler->blockTracker(), thread, 1,
+      static_cast<u64>(token), static_cast<u64>(start_ticks), context,
+      static_cast<u64>(blocker), static_cast<u64>(unblocking_span_id),
+      static_cast<u64>(end_ticks)) ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
 }
 
 extern "C" DLLEXPORT jlong JNICALL
@@ -1971,4 +2152,86 @@ Java_com_datadoghq_profiler_JavaProfiler_testIsContextValid0(JNIEnv* env, jclass
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testTlsPrimingAvailable(JNIEnv* env, jclass unused) {
   return ThreadLocalDataPool::isInitialized() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_wallclock_TaskBlockRecorderTestSupport_cursor0(JNIEnv* env, jclass unused) {
+#ifdef DEBUG
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  return static_cast<jlong>(TaskBlockDiagnostics::instance().cursor());
+#else
+  return -1;
+#endif
+}
+
+extern "C" DLLEXPORT jobjectArray JNICALL
+Java_com_datadoghq_profiler_wallclock_TaskBlockRecorderTestSupport_stageNames0(JNIEnv* env, jclass unused) {
+#ifdef DEBUG
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  jclass string_class = env->FindClass("java/lang/String");
+  if (string_class == nullptr) return nullptr;
+  jobjectArray names = env->NewObjectArray(TaskBlockDiagnostics::STAGES, string_class, nullptr);
+  env->DeleteLocalRef(string_class);
+  if (names == nullptr) return nullptr;
+  for (size_t i = 0; i < TaskBlockDiagnostics::STAGES; ++i) {
+    jstring name = env->NewStringUTF(TaskBlockDiagnostics::stageName(i));
+    if (name == nullptr) return nullptr;
+    env->SetObjectArrayElement(names, i, name);
+    env->DeleteLocalRef(name);
+    if (env->ExceptionCheck()) return nullptr;
+  }
+  return names;
+#else
+  return nullptr;
+#endif
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_wallclock_TaskBlockRecorderTestSupport_snapshot0(JNIEnv* env, jclass unused, jlong cursor) {
+#ifdef DEBUG
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  auto& diagnostics = TaskBlockDiagnostics::instance();
+  const u64 high = diagnostics.cursor();
+  if (cursor < 0 || static_cast<u64>(cursor) > high) {
+    throwNew(env, "java/lang/IllegalArgumentException", "Invalid TaskBlock diagnostic cursor");
+    return nullptr;
+  }
+  const u64 oldest = TaskBlockDiagnostics::oldestRetained(high);
+  const u64 first = std::max(static_cast<u64>(cursor) + 1, oldest);
+  constexpr size_t header = 13;
+  constexpr size_t width = TaskBlockDiagnosticRecord::WIDTH + 1;
+  std::vector<jlong> words(header + TaskBlockDiagnostics::STAGES + (high - first + 1) * width, 0);
+  words[0] = 1;
+  words[1] = width;
+  words[2] = TaskBlockDiagnostics::CAPACITY;
+  words[3] = cursor;
+  words[4] = oldest;
+  words[5] = high;
+  words[9] = TSC::frequency();
+  words[10] = TSC::ticks();
+  words[11] = TaskBlockDiagnostics::STAGES;
+  words[12] = OS::micros();
+  size_t offset = header + TaskBlockDiagnostics::STAGES;
+  for (u64 ticket = first; ticket <= high; ++ticket) {
+    TaskBlockDiagnosticRecord record{};
+    if (diagnostics.read(ticket, record)) {
+      words[offset] = ticket;
+      for (size_t field = 0; field < record.words.size(); ++field) {
+        words[offset + 1 + field] = static_cast<jlong>(record.words[field]);
+      }
+    }
+    offset += width;
+  }
+  words[6] = diagnostics.reservationLosses();
+  words[7] = diagnostics.cellLosses();
+  words[8] = diagnostics.exhausted() ? 1 : 0;
+  for (size_t stage = 0; stage < TaskBlockDiagnostics::STAGES; ++stage) {
+    words[header + stage] = diagnostics.stageTotal(static_cast<TaskBlockStage>(stage));
+  }
+  jlongArray result = env->NewLongArray(words.size());
+  if (result != nullptr) env->SetLongArrayRegion(result, 0, words.size(), words.data());
+  return result;
+#else
+  return nullptr;
+#endif
 }

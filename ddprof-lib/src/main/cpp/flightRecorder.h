@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "arch.h"
+#include "taskBlockDiagnostics.h"
 #include "arguments.h"
 #include "buffers.h"
 #include "common.h"
@@ -266,10 +267,8 @@ class Recording {
   friend ObjectSampler;
   friend Profiler;
   friend Lookup;
-  // Grants gtest access to the private countSerializableChildren() helper below,
-  // since Recording itself can't be constructed in a plain gtest binary (its
-  // constructor needs a live JVMTI environment). Same pattern as
-  // VMTestAccessor/ProfilerTestAccessor in the test sources.
+  // Gtest access to private serializer invariants; the production constructor
+  // requires a live JVMTI environment.
   friend class RecordingTestAccessor;
 
 private:
@@ -310,6 +309,9 @@ private:
   // we have a second dimension to allow a switch in the active table
   ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2];
   std::atomic<int> _active_index{0};  // 0 or 1 globally
+  std::atomic<u32> _thread_table_overflow{0};
+  // Stop archives full tables before reusing their slots; writeThreads unions the saved IDs.
+  std::vector<int, CountingAllocator<int, NM_JFR_BUFFERS>> _archived_thread_ids;
 
   int _fd;
   off_t _chunk_start;
@@ -382,6 +384,10 @@ private:
 
 public:
   Recording(int fd, Arguments &args);
+#ifdef UNIT_TEST
+  // Buffer/table-only recording for serializer tests without a live JVM.
+  Recording() : _fd(-1), _bytes_written(0) {}
+#endif
   ~Recording();
 
   void copyTo(int target_fd);
@@ -516,6 +522,7 @@ public:
   }
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
+  void recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
   void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
@@ -534,7 +541,9 @@ public:
   void recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
                      float machine_total);
 
-  void addThread(int lock_index, int tid);
+  bool addThread(int lock_index, int tid);
+  // Normal thread, exclusive recording lock: preserve old event references before clearing capacity.
+  bool recoverThreadTableCapacity();
 
 private:
   void cleanupUnreferencedMethods();
@@ -687,6 +696,7 @@ public:
 class FlightRecorder {
   friend Profiler;
 #ifdef UNIT_TEST
+  friend class FlightRecorderTestAccessor;
   friend class ProfilerTestAccessor;
 #endif
 
@@ -698,6 +708,7 @@ private:
   Recording* _rec;
 
   Error newRecording(bool reset);
+  bool recoverThreadTableCapacity();
 
 public:
   FlightRecorder() : _rec(NULL) {}
@@ -709,6 +720,9 @@ public:
   void pruneWallEpochs(const WallClockBlockTracker::EpochStarts& pending);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
+  bool recordTaskBlock(int lock_index, int tid, TaskBlockEvent *event
+                       TASK_BLOCK_DIAGNOSTIC_ONLY(, const TaskBlockDiagnosticRecord* diagnostic = nullptr,
+                                                  TaskBlockStage* rejection = nullptr));
 
   bool active() const { return _rec != NULL; }
 

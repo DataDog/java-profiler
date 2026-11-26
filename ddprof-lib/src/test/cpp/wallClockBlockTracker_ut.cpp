@@ -67,6 +67,13 @@ protected:
         restoreDefaultSignalHandlers();
     }
 
+    void markCurrentGenerationSampled(ThreadFilter::SlotID slot_id) {
+        auto* block = tracker->slotForId(slot_id);
+        ASSERT_NE(nullptr, block);
+        block->markBlockGenerationSampled(block->blockGeneration());
+        ASSERT_NE(0ULL, block->sampledBlockGeneration());
+    }
+
     std::unique_ptr<ThreadFilter> filter;
     std::unique_ptr<WallClockBlockTracker> tracker;
 };
@@ -83,8 +90,6 @@ TEST_F(WallClockBlockTrackerTest, GenerationCheckedExitDoesNotClearAnotherOwner)
     ASSERT_NE(nullptr, block_slot);
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
 
-    EXPECT_FALSE(tracker->exitBlockedRun(slot_id, 0));
-    EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
     EXPECT_FALSE(tracker->exitBlockedRun(slot_id, WallClockBlockTracker::tokenGeneration(first_token) + 1));
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
 
@@ -125,15 +130,17 @@ TEST_F(WallClockBlockTrackerTest, RegisterThreadReuseResetsBlockState) {
     int slot_id = filter->registerThread(1001);
     ASSERT_GE(slot_id, 0);
     ASSERT_NE(0ULL, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
-    tracker->slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+    markCurrentGenerationSampled(slot_id);
+    const u64 prior_generation = tracker->slotForId(slot_id)->blockGeneration();
 
     filter->unregisterThread(slot_id);
     int reused_id = filter->registerThread(1002);
     ASSERT_EQ(slot_id, reused_id);
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(reused_id);
+    EXPECT_GE(block_slot->blockGeneration(), prior_generation);
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(0ULL, block_slot->sampledBlockGeneration());
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
@@ -143,7 +150,7 @@ TEST_F(WallClockBlockTrackerTest, RegisterThreadNewSlotStartsWithClearBlockState
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     ASSERT_NE(nullptr, block_slot);
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(0ULL, block_slot->sampledBlockGeneration());
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
@@ -151,13 +158,13 @@ TEST_F(WallClockBlockTrackerTest, UnregisterThreadResetsBlockState) {
     int slot_id = filter->registerThread(4001);
     ASSERT_GE(slot_id, 0);
     ASSERT_NE(0ULL, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
-    tracker->slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+    markCurrentGenerationSampled(slot_id);
 
     filter->unregisterThread(slot_id);
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(0ULL, block_slot->sampledBlockGeneration());
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
@@ -169,27 +176,27 @@ TEST_F(WallClockBlockTrackerTest, NewRecordingRefreshesBlockStateLazily) {
     int slot_id = registry.registerThread(5001);
     ASSERT_GE(slot_id, 0);
     ASSERT_NE(0u, tracker->enterBlockedRun(&registry, slot_id, OSThreadState::SLEEPING));
-    tracker->slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+    markCurrentGenerationSampled(slot_id);
 
     ThreadFilter::Slot* identity = registry.slotForId(slot_id);
     ThreadEntry stale{5001, identity, slot_id, identity->lifecycleGeneration(),
                       identity->recordingEpoch()};
-    ASSERT_TRUE(tracker->shouldSuppressOwnedBlock(&registry, stale));
+    ASSERT_TRUE(tracker->isOwnedBlockSuppressionCandidate(&registry, stale));
 
     // Epoch invalidation makes retained payload ineligible before its owner
     // refreshes. No other thread resets an owner's live block state on restart.
     registry.init("", true);
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(&registry, stale));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(&registry, stale));
     EXPECT_EQ(identity, registry.lookupByTid(5001));
     EXPECT_EQ(nullptr, registry.activeSlotForId(slot_id, 5001));
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
-    EXPECT_TRUE(block_slot->sampledThisRun());
+    EXPECT_NE(0ULL, block_slot->sampledBlockGeneration());
 
     ASSERT_EQ(slot_id, registry.registerThread(5001));
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(0ULL, block_slot->sampledBlockGeneration());
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
@@ -198,13 +205,13 @@ TEST_F(WallClockBlockTrackerTest, ClearActiveResetsBlockState) {
     ASSERT_GE(slot_id, 0);
     filter->add(6001, slot_id);
     ASSERT_NE(0ULL, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
-    tracker->slotForId(slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+    markCurrentGenerationSampled(slot_id);
 
     filter->clearActive();
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_EQ(0ULL, block_slot->sampledBlockGeneration());
 }
 
 // Re-entry clears missed owned exits without losing an unowned origin's fields.
@@ -220,8 +227,8 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryClearsStuckActiveBlockRunButPreser
 
     WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
     ASSERT_NE(nullptr, block_slot);
-    block_slot->markSampledThisRun(OSThreadState::SLEEPING);
-    ASSERT_TRUE(block_slot->sampledThisRun());
+    block_slot->markBlockGenerationSampled(block_slot->blockGeneration());
+    ASSERT_TRUE((block_slot->sampledBlockGeneration() != 0));
 
     // Accumulate unowned-blocked fallback weight/state, independent of the
     // owned block run above -- this must survive the context re-entry below.
@@ -236,8 +243,7 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryClearsStuckActiveBlockRunButPreser
 
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-    EXPECT_FALSE(block_slot->sampledThisRun());
-    EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->lastSampledState());
+    EXPECT_FALSE((block_slot->sampledBlockGeneration() != 0));
 
     u64 call_trace_id = 0, weight = 0;
     OSThreadState state = OSThreadState::UNKNOWN;
@@ -345,7 +351,7 @@ TEST_F(WallClockBlockTrackerTest, ContextEntryWithoutActiveBlockRunIsANoop) {
 
     EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
     EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-    EXPECT_FALSE(block_slot->sampledThisRun());
+    EXPECT_FALSE((block_slot->sampledBlockGeneration() != 0));
 }
 
 TEST(WallClockBlockTrackerNativeMemTest, StorageIsAllocatedLazilyAndAccounted) {
@@ -359,7 +365,7 @@ TEST(WallClockBlockTrackerNativeMemTest, StorageIsAllocatedLazilyAndAccounted) {
         EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
         EXPECT_EQ(nullptr, local_tracker.slotForId(0));
         local_tracker.resetAll();                          // null-safe
-        local_tracker.resetSlot(0, OSThreadState::UNKNOWN);  // no-op
+        local_tracker.resetSlot(0);  // no-op
         EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
 
         // Declared after the tracker so it is destroyed first.
@@ -376,7 +382,7 @@ TEST(WallClockBlockTrackerNativeMemTest, StorageIsAllocatedLazilyAndAccounted) {
         ASSERT_NE(nullptr, block_slot);
         EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
         EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
-        EXPECT_FALSE(block_slot->sampledThisRun());
+        EXPECT_FALSE((block_slot->sampledBlockGeneration() != 0));
         EXPECT_EQ(0u, reinterpret_cast<uintptr_t>(block_slot) % DEFAULT_CACHE_LINE_SIZE);
         local_filter.deactivateRecording();
         local_filter.init("", true);
@@ -445,7 +451,7 @@ TEST_F(WallClockBlockTrackerTest, AllocationFailureKeepsRegistrationAndSuppressi
     auto* identity = filter->slotForId(slot_id);
     ThreadEntry entry{9002, identity, slot_id, identity->lifecycleGeneration(),
                       identity->recordingEpoch()};
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
     EXPECT_FALSE(tracker->exitBlockedRun(slot_id, 1));
     EXPECT_TRUE(filter->add(9002, slot_id));
     filter->remove(slot_id);
@@ -457,7 +463,7 @@ TEST_F(WallClockBlockTrackerTest, AllocationFailureKeepsRegistrationAndSuppressi
     // Hot lookups must stay allocation-free even when allocation could succeed.
     EXPECT_EQ(nullptr, tracker->slotForId(slot_id));
     EXPECT_EQ(0u, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
     EXPECT_EQ(before, NativeMem::live(NM_WALL_BLOCK_TRACKER));
     ASSERT_EQ(slot_id, filter->registerThread(9002));
     ASSERT_NE(nullptr, tracker->slotForId(slot_id));
@@ -489,8 +495,7 @@ TEST_F(WallClockBlockTrackerTest, ContextBoundariesClearEveryDirtyOwnedPayloadFi
     const Dirty dirty_fields[] = {
         [](Block* b) { b->active_block_owner.store(static_cast<int>(BlockRunOwner::JAVA)); },
         [](Block* b) { b->active_block_state.store(OSThreadState::SLEEPING); },
-        [](Block* b) { b->sampled_this_run.store(true); },
-        [](Block* b) { b->last_sampled_state.store(OSThreadState::RUNNABLE); },
+        [](Block* b) { b->sampled_block_generation.store(1); },
     };
     for (size_t field = 0; field < std::size(dirty_fields); ++field) {
         SCOPED_TRACE(field);
@@ -498,12 +503,12 @@ TEST_F(WallClockBlockTrackerTest, ContextBoundariesClearEveryDirtyOwnedPayloadFi
         u64 before = Block::clear_count_for_test.load();
         ASSERT_TRUE(filter->add(9004, slot_id));
         EXPECT_EQ(before + 1, Block::clear_count_for_test.load());
-        EXPECT_FALSE(block->needsActiveBlockRunClear(OSThreadState::UNKNOWN));
+        EXPECT_FALSE(block->needsActiveBlockRunClear());
         dirty_fields[field](block);
         before = Block::clear_count_for_test.load();
         filter->remove(slot_id);
         EXPECT_EQ(before + 1, Block::clear_count_for_test.load());
-        EXPECT_FALSE(block->needsActiveBlockRunClear(OSThreadState::UNKNOWN));
+        EXPECT_FALSE(block->needsActiveBlockRunClear());
     }
 }
 
@@ -604,7 +609,7 @@ TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFiel
         if (transition == 2) ASSERT_TRUE(filter->add(tid, id));
         if (transition == 0) {
             ASSERT_NE(0ULL, tracker->enterBlockedRun(filter.get(), id, OSThreadState::SLEEPING));
-            block->markSampledThisRun(OSThreadState::SLEEPING);
+            block->markBlockGenerationSampled(block->blockGeneration());
         }
         CallTraceStorage traces;
         ASSERT_TRUE(traces.acquire());
@@ -618,7 +623,7 @@ TEST_F(UnownedContextSidecarTest, ContextBoundariesRetainOriginalUnownedTailFiel
         if (transition == 2) filter->remove(id);
         else ASSERT_TRUE(filter->add(tid, id));
         EXPECT_EQ(BlockRunOwner::NONE, block->activeBlockOwner());
-        EXPECT_FALSE(block->sampledThisRun());
+        EXPECT_FALSE((block->sampledBlockGeneration() != 0));
         Context retained{};
         u64 publication = 0;
         ASSERT_TRUE(tracker->readUnownedContext(id, retained, publication));
@@ -905,6 +910,7 @@ TEST_F(UnownedContextSidecarTest, ContextChunksAccountOnceAcrossBoundaries) {
             ASSERT_TRUE(local.ensureUnownedContextAllocated(last));
             EXPECT_TRUE(local.canPublishUnownedContext(first));
             EXPECT_TRUE(local.canPublishUnownedContext(last));
+            EXPECT_TRUE(local.canPublishUnownedContext(first + 128));
             EXPECT_EQ(before + allocated, NativeMem::live(NM_WALL_BLOCK_TRACKER));
         }
         const long long full = before + storage_bytes + ThreadFilter::kMaxChunks * chunk_bytes;
@@ -1139,7 +1145,7 @@ TEST(WallClockProductionRootsTest, PrunedRootIsIndexedAgainOnPublication) {
     const u64 first = storage->put(1, &frame, false, 1);
     tracker->publishUnownedTrace(slot_id, first, OSThreadState::SLEEPING);
     profiler->processCallTraces([](const CallTraceSet&) {});
-    tracker->resetSlot(slot_id, OSThreadState::UNKNOWN);
+    tracker->resetSlot(slot_id);
     profiler->processCallTraces([](const CallTraceSet&) {});
     const u64 second = storage->put(1, &frame, false, 1);
     ASSERT_NE(first, second);
@@ -1187,14 +1193,17 @@ public:
     ~ScopedUnownedAttributionOwner() {
         WallClockCounters::beginSamplingEpoch(previous_sampling_epoch);
         BaseWallClock::setUnownedContextProbeHookForTest(nullptr, nullptr);
-        profiler->sampleWriteHookForTest = previous_write;
-        profiler->sampleWriteHookArgForTest = previous_write_arg;
+        // Cleanup emits retained fixture tails before restoring the external writer.
+        profiler->sampleWriteHookForTest = acceptWrite;
+        profiler->sampleWriteHookArgForTest = nullptr;
         BaseWallClock::exchangeThreadStateReaderForTest(previous_reader);
         profiler->exchangeNumContextAttributesForTest(previous_attributes);
         if (owner != nullptr) {
             profiler->threadFilter()->unregisterThread(owner->filterSlotId(), owner->tid());
         }
         profiler->threadFilter()->deactivateRecording();
+        profiler->sampleWriteHookForTest = previous_write;
+        profiler->sampleWriteHookArgForTest = previous_write_arg;
         profiler->blockTracker()->setUnownedContextSnapshotsNeeded(false);
         if (acquired_storage) profiler->callTraceStorageForTest()->release();
         ProfiledThread::release();
@@ -1717,7 +1726,7 @@ public:
 
     void primeRoot(int observations) {
         auto* tracker = profiler->blockTracker();
-        tracker->resetSlot(request.slot_id, OSThreadState::UNKNOWN);
+        tracker->resetSlot(request.slot_id);
         ASSERT_TRUE(block()->shouldRecordUnownedBlockedSample());
         ASSERT_TRUE(tracker->publishUnownedTrace(
             request.slot_id, id, OSThreadState::SLEEPING, origin));
@@ -2083,16 +2092,22 @@ TEST_F(WallClockSampleTransactionTest, StaleIdentityCannotConsumeOrPublish) {
     EXPECT_EQ(id, block()->unowned_blocked_call_trace_id.load());
 }
 
-TEST_F(WallClockSampleTransactionTest, ResetDuringFailedWriteDoesNotRestorePredecessorWeight) {
+TEST_F(WallClockSampleTransactionTest, TeardownDuringFailedWriteRetainsPredecessorUntilFlushed) {
     request.flush_tail = false;
     request.unowned_sample = true;
     ordinary_ok = false;
     during_write = +[](WallClockSampleTransactionTest* self) {
         auto* registry = self->profiler->threadFilter();
         registry->unregisterThread(self->request.slot_id, self->request.tid);
-        EXPECT_EQ(self->request.slot_id, registry->registerThread(self->request.tid + 1));
+        EXPECT_NE(self->request.slot_id, registry->registerThread(self->request.tid + 1));
     };
     EXPECT_FALSE(sample().ordinary_recorded);
+    expectTailRetained();
+    EXPECT_EQ(0ULL, emitted_weight);
+    during_write = nullptr;
+    ASSERT_TRUE(profiler->threadFilter()->flushUnownedTails());
+    EXPECT_EQ(2ULL, emitted_weight);
+    ASSERT_EQ(request.slot_id, profiler->threadFilter()->registerThread(request.tid + 2));
     EXPECT_EQ(0ULL, block()->unowned_blocked_pending_weight.load());
     EXPECT_EQ(0ULL, block()->unowned_blocked_call_trace_id.load());
     EXPECT_EQ(0ULL, block()->unowned_blocked_decision_count.load());
@@ -2175,15 +2190,16 @@ TEST_F(WallClockSampleTransactionTest, DumpExcludesDeferredConsumeAndEmission) {
 }
 
 TEST_F(WallClockBlockTrackerTest, SameIdentityExitAndReentryInvalidatesFinalValidation) {
+    filter->init(nullptr, true);
     int slot_id = filter->registerThread(8001);
     u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0u, token);
     auto* block = tracker->slotForId(slot_id);
-    block->markSampledThisRun(OSThreadState::SLEEPING);
+    block->markBlockGenerationSampled(block->blockGeneration());
     auto* identity = filter->slotForId(slot_id);
     ThreadEntry entry{8001, identity, slot_id, identity->lifecycleGeneration(),
                       identity->recordingEpoch()};
-    ASSERT_TRUE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    ASSERT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
     struct Reentry {
         ThreadFilter* registry;
         WallClockBlockTracker* tracker;
@@ -2195,15 +2211,16 @@ TEST_F(WallClockBlockTrackerTest, SameIdentityExitAndReentryInvalidatesFinalVali
                 self->slot_id, WallClockBlockTracker::tokenGeneration(self->token)));
             self->token = self->tracker->enterBlockedRun(
                 self->registry, self->slot_id, OSThreadState::SLEEPING);
-            self->tracker->slotForId(self->slot_id)->markSampledThisRun(OSThreadState::SLEEPING);
+            auto* block = self->tracker->slotForId(self->slot_id);
+            block->markBlockGenerationSampled(block->blockGeneration());
         }
     } reentry{filter.get(), tracker.get(), slot_id, token};
     tracker->setSuppressionSnapshotHookForTest(Reentry::replace, &reentry);
-    EXPECT_FALSE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
     tracker->setSuppressionSnapshotHookForTest(nullptr, nullptr);
     EXPECT_NE(token, reentry.token);
     EXPECT_EQ(identity->lifecycleGeneration(), entry.lifecycle_generation);
-    EXPECT_TRUE(tracker->shouldSuppressOwnedBlock(filter.get(), entry));
+    EXPECT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
 }
 
 // Derive each scale from the actual filtered population and production reservoir.
@@ -2357,6 +2374,298 @@ TEST(UnownedWallAttributionTest, MissingSamplingEpochCannotAccumulateUnscaledWei
         EXPECT_EQ(0ULL, block->unowned_blocked_pending_weight.load());
     });
     worker.get();
+}
+
+
+TEST_F(WallClockBlockTrackerTest, SaturatedGenerationIsCountedAndRecoversAfterSlotReuse) {
+    int slot_id = filter->registerThread(3333);
+    ASSERT_GE(slot_id, 0);
+    filter->add(3333, slot_id);
+
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    block_slot->setBlockGenerationForTest(WallClockBlockTracker::kMaxBlockRunGeneration);
+
+#ifdef COUNTERS
+    long long saturated_before =
+        Counters::getCounter(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED);
+#endif
+    EXPECT_EQ(0ULL, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
+#ifdef COUNTERS
+    EXPECT_EQ(saturated_before + 1,
+              Counters::getCounter(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED));
+#endif
+
+    filter->unregisterThread(slot_id);
+    int reused_slot_id = filter->registerThread(3334);
+    ASSERT_EQ(slot_id, reused_slot_id)
+        << "test relies on the free list handing back the just-freed slot";
+    filter->add(3334, reused_slot_id);
+
+    EXPECT_EQ(0ULL, tracker->slotForId(reused_slot_id)->blockGeneration());
+
+    u64 token = tracker->enterBlockedRun(filter.get(), reused_slot_id, OSThreadState::SLEEPING);
+    EXPECT_NE(0ULL, token);
+    EXPECT_TRUE(tracker->exitBlockedRun(reused_slot_id,
+                                        WallClockBlockTracker::tokenGeneration(token)));
+}
+
+
+TEST_F(WallClockBlockTrackerTest, UnregisterWhileBlockRunActiveIsCounted) {
+    int slot_id = filter->registerThread(4444);
+    ASSERT_GE(slot_id, 0);
+    filter->add(4444, slot_id);
+
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+
+#ifdef COUNTERS
+    long long before =
+        Counters::getCounter(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN);
+#endif
+    filter->unregisterThread(slot_id);
+#ifdef COUNTERS
+    EXPECT_EQ(before + 1,
+              Counters::getCounter(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN));
+#endif
+}
+
+
+TEST_F(WallClockBlockTrackerTest, TokenRoundTripPreservesNegativeJavaLongBitPattern) {
+    ThreadFilter::SlotID slot_id = 7;
+    u64 generation = 1ULL << 52;
+    u64 token = WallClockBlockTracker::encodeBlockRunToken(slot_id, generation);
+    int64_t java_token = static_cast<int64_t>(token);
+
+    EXPECT_LT(java_token, 0);
+    ThreadFilter::SlotID decoded_slot = -1;
+    u64 decoded_generation = 0;
+    EXPECT_TRUE(WallClockBlockTracker::decodeBlockRunToken(
+        static_cast<u64>(java_token), decoded_slot, decoded_generation));
+    EXPECT_EQ(slot_id, decoded_slot);
+    EXPECT_EQ(generation, decoded_generation);
+}
+
+
+TEST_F(WallClockBlockTrackerTest, TokenRoundTripCoversSlotAndGenerationBoundaries) {
+    ThreadFilter::SlotID decoded_slot = -1;
+    u64 decoded_generation = 0;
+
+    u64 first = WallClockBlockTracker::encodeBlockRunToken(0, 1);
+    ASSERT_TRUE(WallClockBlockTracker::decodeBlockRunToken(
+        first, decoded_slot, decoded_generation));
+    EXPECT_EQ(0, decoded_slot);
+    EXPECT_EQ(1ULL, decoded_generation);
+
+    u64 last = WallClockBlockTracker::encodeBlockRunToken(
+        ThreadFilter::kMaxThreads - 1, WallClockBlockTracker::kMaxBlockRunGeneration);
+    EXPECT_EQ(UINT64_MAX, last);
+    ASSERT_TRUE(WallClockBlockTracker::decodeBlockRunToken(
+        last, decoded_slot, decoded_generation));
+    EXPECT_EQ(ThreadFilter::kMaxThreads - 1, decoded_slot);
+    EXPECT_EQ(WallClockBlockTracker::kMaxBlockRunGeneration, decoded_generation);
+
+    EXPECT_FALSE(WallClockBlockTracker::decodeBlockRunToken(
+        0, decoded_slot, decoded_generation));
+    EXPECT_FALSE(WallClockBlockTracker::decodeBlockRunToken(
+        static_cast<u64>(ThreadFilter::kMaxThreads - 1),
+        decoded_slot, decoded_generation));
+}
+
+
+TEST_F(WallClockBlockTrackerTest, SaturatedGenerationRefusesEntryWithoutClaimingSlot) {
+    int slot_id = filter->registerThread(8001);
+    ASSERT_GE(slot_id, 0);
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    block_slot->setBlockGenerationForTest(WallClockBlockTracker::kMaxBlockRunGeneration - 1);
+
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+    EXPECT_EQ(WallClockBlockTracker::kMaxBlockRunGeneration,
+              WallClockBlockTracker::tokenGeneration(token));
+    ASSERT_TRUE(tracker->exitBlockedRun(
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
+
+    EXPECT_EQ(0ULL, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
+    EXPECT_EQ(0ULL, tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING));
+    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->activeBlockState());
+    EXPECT_EQ(WallClockBlockTracker::kMaxBlockRunGeneration, block_slot->blockGeneration());
+}
+
+
+TEST_F(WallClockBlockTrackerTest, SnapshotCapturesOwnedLifecycle) {
+    int slot_id = filter->registerThread(8002);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* identity_slot = filter->slotForId(slot_id);
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, identity_slot);
+    ASSERT_NE(nullptr, block_slot);
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+
+    BlockRunSnapshot snapshot = block_slot->snapshotBlockRun(identity_slot);
+    EXPECT_EQ(OSThreadState::SLEEPING, snapshot.active_state);
+
+    ASSERT_TRUE(tracker->snapshotAndExitBlockedRun(
+        filter.get(), slot_id, WallClockBlockTracker::tokenGeneration(token), &snapshot));
+    EXPECT_EQ(OSThreadState::SLEEPING, snapshot.active_state);
+    EXPECT_EQ(OSThreadState::UNKNOWN, block_slot->snapshotBlockRun(identity_slot).active_state);
+}
+
+
+TEST_F(WallClockBlockTrackerTest, OwnedBlockSuppressesOnlyAfterSuccessfulWallSample) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, slot, slot_id, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
+    u64 generation = 0;
+    bool already_sampled = true;
+    EXPECT_TRUE(tracker->ownedBlockDecision(filter.get(), entry, already_sampled, generation));
+    EXPECT_FALSE(already_sampled);
+    EXPECT_EQ(WallClockBlockTracker::tokenGeneration(token), generation);
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+
+    block_slot->markBlockGenerationSampled(generation);
+    EXPECT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(
+        filter.get(),
+        {1235, slot, slot_id, slot->lifecycleGeneration(), slot->recordingEpoch()}));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(
+        filter.get(),
+        {1234, slot, slot_id, slot->lifecycleGeneration() + 1, slot->recordingEpoch()}));
+
+    ASSERT_TRUE(tracker->exitBlockedRun(
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+}
+
+
+TEST_F(WallClockBlockTrackerTest, ExitingOwnedBlockReenablesUnownedBlockedFallback) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+    ASSERT_TRUE(block_slot->unownedBlockedFallbackEnabled());
+
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+    EXPECT_FALSE(block_slot->unownedBlockedFallbackEnabled());
+
+    ASSERT_TRUE(tracker->exitBlockedRun(
+        slot_id, WallClockBlockTracker::tokenGeneration(token)));
+    EXPECT_TRUE(block_slot->unownedBlockedFallbackEnabled());
+}
+
+
+TEST_F(WallClockBlockTrackerTest, StaleSampleCompletionCannotSuppressNewBlockGeneration) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+
+    u64 first_token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, first_token);
+    u64 first_generation = WallClockBlockTracker::tokenGeneration(first_token);
+    ASSERT_TRUE(tracker->exitBlockedRun(slot_id, first_generation));
+
+    u64 second_token =
+        tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::CONDVAR_WAIT);
+    ASSERT_NE(0ULL, second_token);
+    u64 second_generation = WallClockBlockTracker::tokenGeneration(second_token);
+    ASSERT_GT(second_generation, first_generation);
+
+    ThreadEntry entry{1234, slot, slot_id, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
+    block_slot->markBlockGenerationSampled(first_generation);
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+
+    block_slot->markBlockGenerationSampled(second_generation);
+    EXPECT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+
+    // A delayed completion from the first run must not overwrite the newer mark.
+    block_slot->markBlockGenerationSampled(first_generation);
+    EXPECT_EQ(second_generation, block_slot->sampledBlockGeneration());
+    EXPECT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+}
+
+
+TEST_F(WallClockBlockTrackerTest, ContextScopeNeverSuppressesOwnedBlock) {
+    filter->init("0", false);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    filter->add(1234, slot_id);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    ASSERT_NE(0ULL, tracker->enterBlockedRun(
+        filter.get(), slot_id, OSThreadState::CONDVAR_WAIT));
+
+    ThreadEntry entry{1234, slot, slot_id, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
+    block_slot->markBlockGenerationSampled(block_slot->blockGeneration());
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+}
+
+
+TEST_F(WallClockBlockTrackerTest, ContextEpochDisablesOwnedBlockSuppression) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    ASSERT_NE(0ULL, tracker->enterBlockedRun(
+        filter.get(), slot_id, OSThreadState::CONDVAR_WAIT));
+    ThreadEntry entry{1234, slot, slot_id, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
+    block_slot->markBlockGenerationSampled(block_slot->blockGeneration());
+    ASSERT_TRUE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+
+    filter->add(1234, slot_id);
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+    filter->remove(slot_id);
+    EXPECT_FALSE(tracker->isOwnedBlockSuppressionCandidate(filter.get(), entry));
+}
+
+
+TEST_F(WallClockBlockTrackerTest, ContextEntryPreservesActiveTaskBlockRunForCrossingDetection) {
+    constexpr int tid = 7003;
+    int slot_id = filter->registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+
+    u64 token = tracker->enterBlockedRun(filter.get(), slot_id, OSThreadState::SLEEPING,
+                                         BlockRunOwner::TASK_BLOCK);
+    ASSERT_NE(0ULL, token);
+    u64 generation = WallClockBlockTracker::tokenGeneration(token);
+
+    WallClockBlockTracker::BlockState* block_slot = tracker->slotForId(slot_id);
+    ASSERT_NE(nullptr, block_slot);
+
+    EXPECT_TRUE(filter->add(tid, slot_id));
+    EXPECT_EQ(BlockRunOwner::TASK_BLOCK, block_slot->activeBlockOwner())
+        << "context entry must not clear an in-flight TASK_BLOCK run";
+    EXPECT_EQ(OSThreadState::SLEEPING, block_slot->activeBlockState());
+    filter->remove(slot_id);
+
+    BlockRunSnapshot snapshot;
+    EXPECT_TRUE(tracker->snapshotAndExitBlockedRun(filter.get(), slot_id, generation,
+                                                   &snapshot));
+    EXPECT_FALSE(snapshot.context_eligible)
+        << "a run that crossed a context-window entry/exit must be reported "
+           "ineligible instead of silently discarded";
+    EXPECT_EQ(BlockRunOwner::NONE, block_slot->activeBlockOwner());
 }
 
 TEST(UnownedWallAttributionTest, StripeContentionFailsOpenWithoutDeferringWeight) {
