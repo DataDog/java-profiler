@@ -683,6 +683,12 @@ Entry requires no active span and no context window. Exit requires the same
 recording slot and token, no context-window crossing, and at least 1 ms duration.
 Rejected eligibility still clears the exiting owner's lifecycle.
 
+Interval payloads live in per-owner block slots. The first enter that holds an
+owner registry slot allocates them on the owner thread, outside signal handlers. A park
+without an owner registry slot sets only the parked flag; its exit records nothing. If that allocation fails, the enter
+is dropped like a rejected admission and increments `task_block_state_alloc_failed`.
+See [ProfilerMemoryRequirements](../reference/ProfilerMemoryRequirements.md#9-native-owners-and-retained-context-storage).
+
 The exit captures the workload stack synchronously and writes blocker,
 unblocking span, entry context, duration and observed state. `OBJECT_WAIT`
 serializes as `WAITING`; monitor contention serializes as `CONTENDED`.

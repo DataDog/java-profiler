@@ -623,14 +623,15 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
   // may race admission, but only this thread refreshes its retained identity.
   current->refreshBlockState(slot_id >= 0
       ? tf->slotForId(slot_id)->recordingEpoch() : tf->recordingEpoch());
+  if (slot_id < 0) {
+    // No owned run can open, so the exit needs no payload.
+    return current->parkEnterWithoutPayload() ? JNI_TRUE : JNI_FALSE;
+  }
   if (!current->parkEnter(TSC::ticks(), context)) {
     return JNI_FALSE;
   }
-
-  if (slot_id >= 0) {
-    current->setParkBlockToken(
-        enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT));
-  }
+  current->setParkBlockToken(
+      enterOwnedBlockRun(current, slot_id, OSThreadState::CONDVAR_WAIT));
   return JNI_TRUE;
 }
 

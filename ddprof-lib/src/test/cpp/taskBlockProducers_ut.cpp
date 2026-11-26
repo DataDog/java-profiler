@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "guards.h"
+#include "nativeMem.h"
 #include "javaApi.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
@@ -464,6 +465,66 @@ TEST_P(MonitorTaskBlockHashTest, ShortBlockSkipsHashAndNextEligibleBlockHashesOn
     exitMonitor();
     EXPECT_EQ(1, hash_calls);
     EXPECT_EQ(1, record_calls);
+}
+
+// Each producer drops its interval and releases the run it acquired; the monitor
+// hook must not retry and count the failed allocation twice.
+TEST_F(TaskBlockProducersTest, BlockSlotsAllocationFailureDropsEveryProducerInterval) {
+    long long failed_before = Counters::getCounter(TASK_BLOCK_STATE_ALLOC_FAILED);
+    ProfiledThread::failBlockSlotsAllocationForTest = true;
+    u64 paired = begin();
+    u64 generic = Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
+        &jni, nullptr, JNI_FALSE, static_cast<jint>(OSThreadState::SLEEPING));
+    jboolean parked = Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+        &jni, nullptr, testThread(), JNI_FALSE);
+    MonitorContendedEnter(&jvmti, &jni, testThread(), nullptr);
+    ProfiledThread::failBlockSlotsAllocationForTest = false;
+
+    EXPECT_EQ(0u, paired);
+    EXPECT_EQ(0u, generic);
+    EXPECT_EQ(JNI_FALSE, parked);
+    EXPECT_EQ(failed_before + 4, Counters::getCounter(TASK_BLOCK_STATE_ALLOC_FAILED));
+    EXPECT_FALSE(current->hasBlockSlots());
+    ASSERT_NE(nullptr, block());
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
+
+    u64 token = begin();
+    ASSERT_NE(0u, token) << "a later begin must retry the allocation";
+    end(token);
+}
+
+TEST_F(TaskBlockProducersTest, ParkWithoutOwnerSlotAllocatesNoBlockSlots) {
+    ProfilerTestAccessor::setProducerState(profiler, false);
+    registry->deactivateRecording();
+    long long live_before = NativeMem::live(NM_THREAD_LOCAL);
+    long long emitted_before = Counters::getCounter(TASK_BLOCK_EMITTED);
+    EXPECT_EQ(JNI_TRUE, Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+        &jni, nullptr, testThread(), JNI_FALSE));
+    EXPECT_EQ(JNI_FALSE, Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+        &jni, nullptr, testThread(), JNI_FALSE));
+    EXPECT_FALSE(current->hasBlockSlots());
+    Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+        &jni, nullptr, testThread(), JNI_FALSE, 0, 0);
+    EXPECT_EQ(0u, current->snapshotForTest().misc_flags & ProfiledThread::FLAG_PARKED);
+    EXPECT_FALSE(current->hasBlockSlots());
+    EXPECT_EQ(live_before, NativeMem::live(NM_THREAD_LOCAL));
+    EXPECT_EQ(emitted_before, Counters::getCounter(TASK_BLOCK_EMITTED));
+}
+
+TEST_F(TaskBlockProducersTest, ParkWithOwnerSlotAllocatesAndOpensOwnedRun) {
+    long long live_before = NativeMem::live(NM_THREAD_LOCAL);
+    ASSERT_EQ(JNI_TRUE, Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+        &jni, nullptr, testThread(), JNI_FALSE));
+    EXPECT_TRUE(current->hasBlockSlots());
+    EXPECT_EQ(live_before + static_cast<long long>(ProfiledThread::blockSlotsBytesForTest()),
+              NativeMem::live(NM_THREAD_LOCAL));
+    EXPECT_NE(0u, current->snapshotForTest().park_slot.block_token);
+    ASSERT_NE(nullptr, block());
+    EXPECT_EQ(BlockRunOwner::JAVA, block()->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::CONDVAR_WAIT, block()->activeBlockState());
+    Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+        &jni, nullptr, testThread(), JNI_FALSE, 0, 0);
+    EXPECT_EQ(BlockRunOwner::NONE, block()->activeBlockOwner());
 }
 
 TEST_F(TaskBlockProducersTest, ParkLifecycleDoesNotRequireRegistryAdmission) {
