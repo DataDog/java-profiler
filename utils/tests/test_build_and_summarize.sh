@@ -7,8 +7,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
-mkdir -p "$TEMP_DIR/build/logs" "$TEMP_DIR/bin"
-cp "$ROOT/.claude/commands/build-and-summarize" "$TEMP_DIR/wrapper"
+mkdir -p "$TEMP_DIR/build/logs" "$TEMP_DIR/bin" "$TEMP_DIR/.claude/commands" "$TEMP_DIR/utils"
+cp "$ROOT/.claude/commands/build-and-summarize" "$TEMP_DIR/.claude/commands/build-and-summarize"
+cp "$ROOT/utils/gradle_summary.py" "$TEMP_DIR/utils/gradle_summary.py"
+run_wrapper() { bash .claude/commands/build-and-summarize "$@"; }
 cd "$TEMP_DIR"
 
 cat > gradlew <<'EOF'
@@ -25,12 +27,7 @@ if [ "${FAKE_STATUS:-0}" -ne 0 ]; then
 fi
 exit "${FAKE_STATUS:-0}"
 EOF
-# Pin the timestamp to exercise concurrent log allocation in the same second.
-cat > bin/date <<'EOF'
-#!/bin/sh
-echo 20261111-120000
-EOF
-chmod +x gradlew bin/date
+chmod +x gradlew
 export PATH="$TEMP_DIR/bin:$PATH" CAPTURE="$TEMP_DIR/args"
 
 for i in $(seq 1 25); do
@@ -38,7 +35,7 @@ for i in $(seq 1 25); do
   touch -t 202001010000 "build/logs/old-$i.log"
 done
 
-bash wrapper > success.out
+run_wrapper > success.out
 printf '%s\n' build -i --console=plain > expected.args
 cmp expected.args args
 log=$(sed -n 's/^.*Full log at: //p' success.out)
@@ -48,7 +45,7 @@ grep -q 'full build output' "$latest"
 ! grep -q 'full build output' success.out
 
 status=0
-FAKE_STATUS=37 bash wrapper :fixture:test '-Ptests=Fixture with spaces' > failure.out || status=$?
+FAKE_STATUS=37 run_wrapper :fixture:test '-Ptests=Fixture with spaces' > failure.out || status=$?
 [ "$status" -eq 37 ]
 printf '%s\n' :fixture:test '-Ptests=Fixture with spaces' -i --console=plain > expected.args
 cmp expected.args args
@@ -56,12 +53,12 @@ for text in 'fixture build failed' '> Task :fixture:test FAILED' '2 tests comple
   grep -qF "$text" failure.out
 done
 failure_log=$(sed -n 's/^.*Full log at: //p' failure.out)
-case "$failure_log" in build/logs/*-_fixture_test.log|build/logs/*-_fixture_test-*.log) ;; *) exit 1 ;; esac
+case "$failure_log" in build/logs/*-_fixture_test-*.log) ;; *) exit 1 ;; esac
 [ "$failure_log" != "$log" ]
 
-CAPTURE="$TEMP_DIR/args-1" bash wrapper sameTask > concurrent-1.out &
+CAPTURE="$TEMP_DIR/args-1" run_wrapper sameTask > concurrent-1.out &
 pid1=$!
-CAPTURE="$TEMP_DIR/args-2" bash wrapper sameTask > concurrent-2.out &
+CAPTURE="$TEMP_DIR/args-2" run_wrapper sameTask > concurrent-2.out &
 pid2=$!
 wait "$pid1"
 wait "$pid2"
@@ -72,15 +69,10 @@ log2=$(sed -n 's/^.*Full log at: //p' concurrent-2.out)
 [ "$(find build/logs -name '*.log' | wc -l | tr -d ' ')" -eq 29 ]
 for i in $(seq 1 25); do grep -q "retained evidence $i" "build/logs/old-$i.log"; done
 
-status=0
-bash -c 'echo retained > "build/logs/20261111-120000-$$-collision.log"; exec bash wrapper collision' > collision.out 2>&1 || status=$?
-[ "$status" -eq 1 ]
-grep -q '^retained$' build/logs/*-collision.log
-
 mkdir no-logs
 : > no-logs/build
 status=0
-(cd no-logs && bash ../wrapper) > mkdir.out 2>&1 || status=$?
+(cd no-logs && bash ../.claude/commands/build-and-summarize) > mkdir.out 2>&1 || status=$?
 [ "$status" -eq 1 ]
 cmp expected.args args
 

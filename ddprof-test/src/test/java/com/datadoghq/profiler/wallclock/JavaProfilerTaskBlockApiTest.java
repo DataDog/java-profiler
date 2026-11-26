@@ -8,6 +8,7 @@ package com.datadoghq.profiler.wallclock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -129,11 +130,15 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         NativeBuildConfig.isDebugInstrumented(), "native timestamp seam requires DEBUG");
     AtomicBoolean recorded = new AtomicBoolean(true);
     AtomicLong secondToken = new AtomicLong();
+    AtomicLong tooShortDelta = new AtomicLong(-1L);
     runWorker(
         () -> {
           long token = profiler.beginTaskBlock();
           assertTrue(token != 0);
           Thread.sleep(schedulingPauseMillis);
+          // The counter is JVM-wide: the worker's own exit can contend with the
+          // coordinator's synchronized Thread.join, so count only this window.
+          long before = tooShortCount();
           recorded.set(
               ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
                   token, 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
@@ -142,12 +147,22 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
           assertFalse(
               ProfilerOwnedBlockHooks.endTaskBlockAtTicks(
                   secondToken.get(), 100L, 101L, BLOCKER, UNBLOCKING_SPAN_ID));
+          tooShortDelta.set(tooShortCount() - before);
         });
 
     assertFalse(recorded.get());
     assertTrue(secondToken.get() != 0);
+    assertEquals(2L, tooShortDelta.get(), "each too-short paired end must count exactly once");
     stopProfiler();
-    assertEquals(2L, getRecordedCounterValue("task_block_skipped_too_short"));
+    assertTrue(
+        getRecordedCounterValue("task_block_skipped_too_short") >= 2L,
+        "the JFR counter must include both too-short paired ends");
+  }
+
+  private long tooShortCount() {
+    Long count = profiler.getDebugCounters().get("task_block_skipped_too_short");
+    assertNotNull(count, "DEBUG builds must expose task_block_skipped_too_short");
+    return count;
   }
 
   @Test
@@ -202,8 +217,8 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   @Test
   public void traceContextRejectionKeepsOpenInterval() throws Exception {
-    // A traced-begin rejection that dropped the open interval returns an unaccounted false.
     recordWithinAttempts(
+        "a begin rejected for an active trace context must keep the open interval",
         () -> {
           AtomicLong nested = new AtomicLong(-1L);
           AtomicBoolean recorded = new AtomicBoolean();
@@ -231,33 +246,72 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   @Test
   public void mismatchedThreadIsRejectedAtBeginAndEnd() throws Exception {
-    AtomicLong beginToken = new AtomicLong(-1L);
-    AtomicBoolean endResult = new AtomicBoolean(true);
-    AtomicLong ownToken = new AtomicLong();
     Thread other = new Thread(() -> {}, "taskblock-mismatch-other");
 
-    runWorker(
+    recordWithinAttempts(
+        "A mismatched end must leave the real owner's interval usable",
         () -> {
-          beginToken.set(ProfilerOwnedBlockHooks.beginTaskBlockForThread(profiler, other));
+          AtomicLong beginToken = new AtomicLong(-1L);
+          AtomicBoolean endResult = new AtomicBoolean(true);
+          AtomicBoolean recorded = new AtomicBoolean();
+          runWorker(
+              () -> {
+                beginToken.set(ProfilerOwnedBlockHooks.beginTaskBlockForThread(profiler, other));
 
-          ownToken.set(profiler.beginTaskBlock());
-          assertTrue(ownToken.get() != 0);
-          endResult.set(
-              ProfilerOwnedBlockHooks.endTaskBlockForThread(
-                  profiler, other, ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID));
-          profiler.endTaskBlock(ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+                long ownToken = profiler.beginTaskBlock();
+                assertTrue(ownToken != 0);
+                endResult.set(
+                    ProfilerOwnedBlockHooks.endTaskBlockForThread(
+                        profiler, other, ownToken, BLOCKER, UNBLOCKING_SPAN_ID));
+                Thread.sleep(50L);
+                recorded.set(profiler.endTaskBlock(ownToken, BLOCKER, UNBLOCKING_SPAN_ID));
+                // The first end consumes the token even when the recorder rejects it.
+                assertFalse(profiler.endTaskBlock(ownToken, BLOCKER, UNBLOCKING_SPAN_ID));
+              });
+          assertEquals(
+              0L,
+              beginToken.get(),
+              "beginTaskBlock0 must reject a jthread that does not identify the calling thread");
+          assertFalse(
+              endResult.get(),
+              "endTaskBlock0 must reject a jthread that does not identify the calling thread");
+          return recorded.get();
         });
-
-    assertEquals(
-        0L,
-        beginToken.get(),
-        "beginTaskBlock0 must reject a jthread that does not identify the calling thread");
-    assertFalse(
-        endResult.get(),
-        "endTaskBlock0 must reject a jthread that does not identify the calling thread");
 
     stopProfiler();
     assertTrue(getRecordedCounterValue("task_block_skipped_thread_mismatch") > 0);
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    assertEquals(1, TaskBlockAssertions.countBlockerEvents(events, BLOCKER));
+    TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
+    TaskBlockAssertions.assertNoCorrelationId(events);
+  }
+
+  /** Null is safe JNI input and must not clear an already armed own-thread interval. */
+  @Test
+  public void nullThreadIsRejectedWithoutConsumingOwnToken() throws Exception {
+    recordWithinAttempts(
+        "a null-thread end must leave the own-thread interval usable",
+        () -> {
+          AtomicBoolean recorded = new AtomicBoolean();
+          runWorker(
+              () -> {
+                assertEquals(0L, ProfilerOwnedBlockHooks.beginTaskBlockForThread(profiler, null));
+                long token = profiler.beginTaskBlock();
+                assertTrue(token != 0);
+                assertFalse(
+                    ProfilerOwnedBlockHooks.endTaskBlockForThread(
+                        profiler, null, token, BLOCKER, UNBLOCKING_SPAN_ID));
+                Thread.sleep(50L);
+                recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+                assertFalse(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+              });
+          return recorded.get();
+        });
+    stopProfiler();
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    assertEquals(1, TaskBlockAssertions.countBlockerEvents(events, BLOCKER));
+    TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
+    TaskBlockAssertions.assertNoCorrelationId(events);
   }
 
   @Test
@@ -270,67 +324,134 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       return;
     }
 
-    AtomicLong token = new AtomicLong(-1L);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    long virtualBlocker = BLOCKER + 1;
     Thread virtual =
         (Thread)
-            startVirtualThread.invoke(null, (Runnable) () -> token.set(profiler.beginTaskBlock()));
+            startVirtualThread.invoke(
+                null,
+                (Runnable)
+                    () -> {
+                      try {
+                        assertEquals(0L, profiler.beginTaskBlock());
+                        Thread.sleep(20L);
+                        assertEquals(
+                            0L, profiler.beginTaskBlock(), "Rejection must survive remount");
+                        assertFalse(profiler.endTaskBlock(1L, virtualBlocker, UNBLOCKING_SPAN_ID));
+                      } catch (Throwable error) {
+                        failure.set(error);
+                      }
+                    });
     virtual.join(5_000L);
     assertFalse(virtual.isAlive());
-    assertEquals(0L, token.get());
+    if (failure.get() != null) throw new AssertionError(failure.get());
 
-    AtomicLong platformToken = new AtomicLong();
-    runWorker(
+    recordWithinAttempts(
+        "virtual-thread rejection must leave the platform interval usable",
         () -> {
-          platformToken.set(profiler.beginTaskBlock());
-          profiler.endTaskBlock(platformToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+          AtomicBoolean recorded = new AtomicBoolean();
+          runWorker(
+              () -> {
+                long platformToken = profiler.beginTaskBlock();
+                assertTrue(
+                    platformToken != 0,
+                    "virtual-thread rejection must not strand carrier ownership");
+                Thread.sleep(50L);
+                recorded.set(profiler.endTaskBlock(platformToken, BLOCKER, UNBLOCKING_SPAN_ID));
+              });
+          return recorded.get();
         });
-    assertTrue(
-        platformToken.get() != 0, "virtual-thread rejection must not strand carrier ownership");
-  }
-
-  @Test
-  public void liveDumpPreservesTaskBlockAfterEntrySample() throws Exception {
-    recordWithinAttempts(this::runLiveDumpBlock);
     stopProfiler();
-    TaskBlockAssertions.assertContainsStackTrace(verifyEvents("datadog.TaskBlock"));
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    assertFalse(TaskBlockAssertions.containsBlocker(events, virtualBlocker));
+    assertEquals(1, TaskBlockAssertions.countBlockerEvents(events, BLOCKER));
+    TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
+    TaskBlockAssertions.assertNoCorrelationId(events);
   }
 
-  /** Dumps while the interval is armed, then reports whether its completion was recorded. */
-  private boolean runLiveDumpBlock() throws Exception {
+  /** Dump rotation preserves the full interval until its single exit-time TaskBlock. */
+  @Test
+  public void liveDumpPreservesCompletedTaskBlockInterval() throws Exception {
+    String workerName = "taskblock-live-dump";
+    AtomicLong logicalDuration = new AtomicLong();
+    recordWithinAttempts("live-dump interval", () -> runLiveDumpBlock(workerName, logicalDuration));
+
+    stopProfiler();
+    JfrEvents suffix = verifyEvents("datadog.TaskBlock");
+    assertEquals(1, TaskBlockAssertions.countEventsForThread(suffix, workerName));
+    TaskBlockAssertions.assertContainsStackTrace(suffix);
+    TaskBlockAssertions.assertNoCorrelationId(suffix);
+
+    TaskBlockAssertions.assertContains(suffix, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
+    double completedDuration = TaskBlockAssertions.durationNanosForThread(suffix, workerName);
+    assertTrue(
+        completedDuration >= logicalDuration.get() * 0.75,
+        "rotation lost TaskBlock duration: completed="
+            + completedDuration
+            + ", logical="
+            + logicalDuration.get());
+    assertTrue(
+        completedDuration <= logicalDuration.get() * 1.25,
+        "rotation duplicated TaskBlock duration: completed="
+            + completedDuration
+            + ", logical="
+            + logicalDuration.get());
+  }
+
+  /**
+   * Dumps while one interval is armed and reports whether its completion was recorded. A rejected
+   * attempt writes no event, so the exactly-one suffix check spans all attempts.
+   */
+  private boolean runLiveDumpBlock(String workerName, AtomicLong logicalDuration) throws Exception {
     CountDownLatch armed = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
+    AtomicLong logicalStart = new AtomicLong();
+    AtomicLong logicalEnd = new AtomicLong();
     AtomicReference<Throwable> error = new AtomicReference<>();
     long before = profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
     Thread worker =
         new Thread(
             () -> {
               try {
+                logicalStart.set(System.nanoTime());
                 long token = profiler.beginTaskBlock();
                 assertTrue(token != 0);
                 armed.countDown();
                 assertTrue(release.await(5, TimeUnit.SECONDS));
                 recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+                logicalEnd.set(System.nanoTime());
               } catch (Throwable t) {
                 error.set(t);
               }
             },
-            "taskblock-live-dump");
+            workerName);
 
     worker.start();
     assertTrue(armed.await(5, TimeUnit.SECONDS));
     waitForCounterAbove("wc_signals_suppressed_owned_block", before, 5_000L);
-    Path snapshot = Files.createTempFile("taskblock-live-dump-", ".jfr");
+    Thread.sleep(150L);
+    Path snapshot =
+        Files.createTempFile(
+            java.nio.file.Paths.get("/tmp/recordings"), "taskblock-live-dump-", ".jfr");
     try {
       dump(snapshot);
+      JfrEvents prefix = verifyEvents(snapshot, "datadog.TaskBlock", false);
+      assertEquals(0, TaskBlockAssertions.countEventsForThread(prefix, workerName));
+
+      Thread.sleep(150L);
+      release.countDown();
+      worker.join(5_000L);
+      assertFalse(worker.isAlive());
+      if (error.get() != null) throw new AssertionError(error.get());
+      logicalDuration.set(logicalEnd.get() - logicalStart.get());
+      return recorded.get();
     } finally {
-      Files.deleteIfExists(snapshot);
+      release.countDown();
+      worker.join(5_000L);
+      if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) Files.deleteIfExists(snapshot);
+      else System.out.println("TASK_BLOCK snapshot recording=" + snapshot.toAbsolutePath());
     }
-    release.countDown();
-    worker.join(5_000L);
-    assertFalse(worker.isAlive());
-    if (error.get() != null) throw new AssertionError(error.get());
-    return recorded.get();
   }
 
   @Override
@@ -358,8 +479,18 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         });
   }
 
+  /** JVM-wide monitor TaskBlocks share task_block_record_failed, so credit is a lower bound. */
   private void recordWithinAttempts(TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
-    TaskBlockRecorderTestSupport.recordWithinAttempts(profiler::getDebugCounters, attempt);
+    recordWithinAttempts("eligible interval", attempt);
+  }
+
+  private void recordWithinAttempts(
+      String description, TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
+    TaskBlockRecorderTestSupport.recordWithinAttempts(
+        profiler::getDebugCounters,
+        TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+        description,
+        attempt);
   }
 
   private void runWorker(ThrowingRunnable action) throws Exception {

@@ -21,16 +21,24 @@ import org.junit.jupiter.api.Test;
 public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
   private static final long BLOCKER = 0x7401L;
   private static final long UNBLOCKING_SPAN_ID = 0x7402L;
+  private static final String WORKER = "taskblock-lightweight";
 
   @Test
   public void suppressedWallSamplesAreReplacedByAStacklessTaskBlock() throws Exception {
     long suppressedBefore =
         profiler.getDebugCounters().getOrDefault("wc_signals_suppressed_owned_block", 0L);
+    // JVMTI monitor TaskBlocks on other threads share task_block_record_failed.
     TaskBlockRecorderTestSupport.recordWithinAttempts(
-        profiler::getDebugCounters, this::runSuppressedBlock);
+        profiler::getDebugCounters,
+        TaskBlockRecorderTestSupport.Credit.LOWER_BOUND,
+        "stackless interval",
+        this::runSuppressedBlock);
 
     stopProfiler();
-    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    // JVM-wide monitor TaskBlocks can share the recording; scope exact checks to the worker.
+    JfrEvents events =
+        verifyEvents("datadog.TaskBlock")
+            .filter(event -> WORKER.equals(event.getThreadName("eventThread")));
     assertEquals(1L, events.count());
     TaskBlockAssertions.assertContainsNoStackTrace(events);
     TaskBlockAssertions.assertNoAnchorFields(events);
@@ -41,13 +49,13 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
     // bound covers the 5 s waits and rejects a start/end mix-up in encoding.
     TaskBlockAssertions.assertContainsDuration(events, 10L, 15_000L);
     assertTrue(getRecordedCounterValue("wc_signals_suppressed_owned_block") > suppressedBefore);
-    assertEquals(1L, getRecordedCounterValue("task_block_emitted"));
+    assertTrue(getRecordedCounterValue("task_block_emitted") >= 1L);
     assertEquals(0L, getRecordedCounterValue("task_block_stack_capture_failed"));
   }
 
   /**
    * Runs one suppressed interval and returns endTaskBlock's result. A rejected attempt emits no
-   * event and no task_block_emitted, so the exact counts after stop span all attempts.
+   * event, so the worker's exactly-one event check after stop spans all attempts.
    */
   private boolean runSuppressedBlock() throws Exception {
     CountDownLatch armed = new CountDownLatch(1);
@@ -69,7 +77,7 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
                 error.set(t);
               }
             },
-            "taskblock-lightweight");
+            WORKER);
 
     worker.start();
     assertTrue(armed.await(5, TimeUnit.SECONDS));

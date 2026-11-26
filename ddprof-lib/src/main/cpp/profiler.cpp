@@ -992,7 +992,7 @@ void Profiler::flushUnownedTailsAtStop() {
   constexpr int max_backoffs = 3;
   constexpr u64 backoff_ns = 1000000;
   int backoffs = 0;
-  for (int retry = 0; !flushed && retry < max_capacity_retries; ++retry) {
+  for (int retry = 0; !flushed && !_jfr.outputQuarantined() && retry < max_capacity_retries; ++retry) {
     if (!_jfr.recoverThreadTableCapacity()) {
       if (++backoffs > max_backoffs) break;
 #ifdef UNIT_TEST
@@ -1002,7 +1002,8 @@ void Profiler::flushUnownedTailsAtStop() {
     }
     flushed = _thread_filter.flushUnownedTails(true);
   }
-  if (!flushed) {
+  // Retained quarantined output keeps tail custody; stop() also skips the memory release then.
+  if (!flushed && !_jfr.outputQuarantined()) {
     // Every stripe excludes a concurrent retirement flush, so no tail is both written and dropped.
     AllStripesLock stripes(this);
     u64 dropped = _block_tracker.resetUnownedBlockedTails();
@@ -1015,28 +1016,8 @@ bool Profiler::flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID
   auto* block = _block_tracker.slotForId(slot_id);
   if (block == nullptr ||
       block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0) return true;
-  u64 trace_id = 0, weight = 0, publication = 0;
-  OSThreadState state = OSThreadState::UNKNOWN;
-  Context origin{};
-  if (!block->peekUnownedBlockedTail(trace_id, weight, state) ||
-      !_block_tracker.readUnownedContext(slot_id, origin, publication)) return false;
-  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
-  size_t count = _block_tracker.copyUnownedWeightSegments(slot_id, segments);
-  bool all_recorded = count != 0;
-  for (size_t i = 0; i < count; ++i) {
-    ExecutionEvent deferred;
-    deferred._thread_state = state;
-    deferred._execution_mode = ExecutionMode::UNKNOWN;
-    deferred._weight = segments[i].weight;
-    deferred._sample_ticks = segments[i].epoch_start;
-    atomicIncRelaxed(_total_samples);
-    if (writeSampleEvent(lock_index, tid, trace_id, BCI_WALL, &deferred, &origin)) {
-      _block_tracker.commitUnownedWeightSegment(slot_id, segments[i]);
-      Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
-    } else {
-      all_recorded = false;
-    }
-  }
+  // Retired slots retain custody without an active identity to revalidate.
+  bool all_recorded = writeUnownedBlockedTail(lock_index, tid, slot_id, block, nullptr);
   bool complete = all_recorded &&
       block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
   if (complete) {
@@ -1044,6 +1025,56 @@ bool Profiler::flushWallTailLocked(u32 lock_index, int tid, ThreadFilter::SlotID
     else block->resetUnownedBlockedSampling();
   }
   return complete;
+}
+
+// Caller owns the recording stripe. Commit only successful epoch segments so
+// retries preserve the original context and never replay already-delivered units.
+bool Profiler::writeUnownedBlockedTail(u32 lock_index, int tid, ThreadFilter::SlotID slot_id,
+                                      WallClockBlockTracker::BlockState* block,
+                                      const WallSampleRequest* request) {
+  Context origin{};
+  u64 publication = 0, tail_id = 0, tail_weight = 0;
+  OSThreadState tail_state = OSThreadState::UNKNOWN;
+  if (!_block_tracker.readUnownedContext(slot_id, origin, publication) ||
+      !block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state)) return false;
+  WallClockBlockTracker::WeightSegment segments[WallClockBlockTracker::kMaxWeightSegments];
+  size_t count = _block_tracker.copyUnownedWeightSegments(slot_id, segments);
+  bool all_recorded = count != 0;
+  for (size_t i = 0; i < count; ++i) {
+    ExecutionEvent deferred;
+    deferred._thread_state = tail_state;
+    deferred._execution_mode = ExecutionMode::UNKNOWN;
+    deferred._weight = segments[i].weight;
+    deferred._sample_ticks = segments[i].epoch_start;
+    atomicIncRelaxed(_total_samples);
+    bool recorded = writeSampleEvent(lock_index, tid, tail_id,
+                                    BCI_WALL, &deferred, &origin);
+    if (request != nullptr && wallSampleSlot(*request) != block) return false;
+    if (recorded) {
+      _block_tracker.commitUnownedWeightSegment(slot_id, segments[i]);
+      Counters::increment(WC_UNOWNED_BLOCKED_TAIL_RECORDED);
+    } else {
+      all_recorded = false;
+    }
+  }
+  return all_recorded &&
+      block->unowned_blocked_pending_weight.load(std::memory_order_acquire) == 0;
+}
+
+bool Profiler::recordUnownedBlockedTail(int tid, ThreadFilter::SlotID slot_id) {
+  auto* identity = _thread_filter.activeSlotForId(slot_id, tid);
+  if (identity == nullptr) return false;
+  WallSampleRequest request{};
+  request.tid = tid;
+  request.slot_id = slot_id;
+  request.lifecycle_generation = identity->lifecycleGeneration();
+  request.registry_epoch = identity->recordingEpoch();
+  RecordingStripe stripe(_locks, getLockIndex(tid));
+  if (!stripe.owned()) return false;
+  auto* block = wallSampleSlot(request);
+  if (block == nullptr || !writeUnownedBlockedTail(stripe.index(), tid, slot_id, block, &request)) return false;
+  block->resetUnownedBlockedSampling();
+  return true;
 }
 
 WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 call_trace_id,
@@ -1103,9 +1134,15 @@ WallSampleResult Profiler::recordWallSample(void* ucontext, u64 counter, u64 cal
   bool has_tail = block->peekUnownedBlockedTail(tail_id, tail_weight, tail_state);
   if (!matching_periodic && origin_readable && has_tail &&
       (request.flush_tail || request.unowned_sample)) {
-    result.tail_recorded = flushWallTailLocked(stripe.index(), request.tid,
-                                              request.slot_id, request.unowned_sample);
+    result.tail_recorded = writeUnownedBlockedTail(stripe.index(), request.tid, request.slot_id, block, &request);
     if (wallSampleSlot(request) != block) return result;
+    if (result.tail_recorded) {
+      if (request.unowned_sample) {
+        block->clearUnownedBlockedTailKeepingCadence();
+      } else {
+        block->resetUnownedBlockedSampling();
+      }
+    }
   }
   if (request.unowned_sample && result.ordinary_recorded) {
     // Never replace A's positive tail merely because B's ordinary write worked.
@@ -1223,9 +1260,11 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   // JVM (as user_data) and to our own event.
   u64 correlation_id = atomicIncRelaxed(_sample_seq);
 
-  Counters::increment(JVMTI_STACKS_REQUESTED);
   jvmtiError rc = VM::requestStackTrace(ucontext, (jlong)correlation_id);
   if (rc != JVMTI_ERROR_NONE) {
+    if (rc == JVMTI_ERROR_INVALID_THREAD) {
+      return false; // The admission drop is counted by VM::requestStackTrace.
+    }
     if (rc == JVMTI_ERROR_WRONG_PHASE) {
       Counters::increment(JVMTI_STACKS_FAILED_WRONG_PHASE);
     } else {
@@ -1725,16 +1764,31 @@ bool Profiler::startCpuEngine(Arguments &args) {
 // thread, so no SIGVTALRM can be in flight; CPU events enable only on
 // the success path, which never rolls back. A new call site that can
 // leave signal handlers in flight MUST drain before _jfr.stop().
-void Profiler::rollBackStart() {
+Error Profiler::rollBackStart() {
   _thread_filter.deactivateRecording();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
+  Error output_error = Error::OK;
   {
     AllStripesLock stripes(this);
-    _jfr.stop();
+    output_error = _jfr.stop();
   }
   LibraryPatcher::unpatch_recording_hooks();
+  // As in stop(): retained output is terminal, so no later start() reuses its memory.
+  if (_jfr.active()) {
+    _state.store(ERROR, std::memory_order_release);
+  }
+  return output_error;
+}
+
+Profiler::RecordingMemoryScope::~RecordingMemoryScope() {
+  if (!armed) return;
+  if (_profiler->_jfr.active()) {
+    _profiler->closeInternGate();
+  } else {
+    _profiler->releaseRecordingMemory();
+  }
 }
 
 // stop() leaves an engine's per-thread resources in place (PerfEvents keeps
@@ -2140,12 +2194,15 @@ Engine *Profiler::selectCpuEngine(Arguments &args, SamplerChoice *choice) {
   }
 }
 
-bool Profiler::taskBlockSupportedForTest(JNIEnv* env, jthread thread) {
+bool Profiler::wallRegistryTrackingSupportedForTest() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   Arguments args;
   args._wall = 1000000;
-  return selectWallEngine(args)->supportsUnfilteredThreadRegistryTracking() &&
-      JVMSupport::isPlatformThread(env, thread);
+  return selectWallEngine(args)->supportsUnfilteredThreadRegistryTracking();
+}
+
+bool Profiler::taskBlockSupportedForTest(JNIEnv* env, jthread thread) {
+  return wallRegistryTrackingSupportedForTest() && JVMSupport::isPlatformThread(env, thread);
 }
 
 Engine *Profiler::selectWallEngine(Arguments &args, SamplerChoice *choice) {
@@ -2317,11 +2374,33 @@ Error Profiler::init() {
   return Error::OK;
 }
 
+void Profiler::setTaskBlockEnabled(bool enabled) {
+  if (enabled) {
+    // Keep callback admission closed until native setup has either completed
+    // or rolled back, so partial event enablement cannot create paired state.
+    bool monitor_events_enabled = setNativeMonitorTaskBlockEventsEnabled(true);
+    _task_block_monitor_events_enabled.store(monitor_events_enabled,
+                                             std::memory_order_release);
+    _task_block_enabled.store(true, std::memory_order_release);
+    return;
+  }
+
+  _task_block_enabled.store(false, std::memory_order_release);
+  // Clear callback admission before teardown. Failed setup and rollback can leave
+  // JVMTI events enabled while this flag is false, so teardown is unconditional.
+  _task_block_monitor_events_enabled.exchange(false, std::memory_order_acq_rel);
+  setNativeMonitorTaskBlockEventsEnabled(false);
+}
+
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   Error error = checkState();
   if (error) {
     return error;
+  }
+  // Reject before resetRecordingState() can clear roots retained by failed output.
+  if (_jfr._rec != nullptr || _jfr._uncertain_create_fd >= 0) {
+    return Error("Previous recording output is still owned");
   }
   _task_block_enabled.store(false, std::memory_order_release);
   // A previous mixed-success or failed start must not leave a stale mask that a
@@ -2417,20 +2496,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (!acquireRecordingMemory()) {
     return Error("Failed to allocate call trace storage; retry start()");
   }
-  // Every failed start() from here on gives the recording memory back (and
-  // closes the intern gate); disarmed once the recording runs.
-  struct RecordingMemoryScope {
-    Profiler *profiler;
-    bool armed;
-    explicit RecordingMemoryScope(Profiler *p) : profiler(p), armed(true) {}
-    RecordingMemoryScope(const RecordingMemoryScope &) = delete;
-    RecordingMemoryScope &operator=(const RecordingMemoryScope &) = delete;
-    ~RecordingMemoryScope() {
-      if (armed) {
-        profiler->releaseRecordingMemory();
-      }
-    }
-  } recording_memory(this);
+  // Covers every failed start() from here on; disarmed once the recording runs.
+  RecordingMemoryScope recording_memory(this);
   // Before any engine starts, so no call trace id is cached under the old value.
   __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
   // Defensive: a cached tail id names call-trace storage released at stop();
@@ -2508,6 +2575,16 @@ Error Profiler::start(Arguments &args, bool reset) {
   __atomic_store_n(&_wall_engine, selectWallEngine(args, &wall_choice), __ATOMIC_RELEASE);
   // Before _jfr.start(): Recording::writeSettings() records the result.
   reportJ9SamplerRisks(cpu_choice, wall_choice);
+
+  // Java API starts opt in after the bridge's startup-argument probe has run.
+  // Enable the extension before a selected delegated engine can request stacks.
+  if (args._jvmtistacks &&
+      (((_event_mask & EM_CPU) &&
+        (_cpu_engine == &ctimer_jvmti || _cpu_engine == &itimer_jvmti)) ||
+       ((_event_mask & EM_WALL) && _wall_engine == &wall_jvmti_engine)) &&
+      !VM::initializeRequestStackTrace()) {
+    return Error("Failed to initialize JVM delegated stack traces");
+  }
 
   const char *filter = args._filter != nullptr ? args._filter : "0";
   _block_tracker.setUnownedContextSnapshotsNeeded(
@@ -2643,8 +2720,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (state() == ERROR) {
     // startCpuEngine() could not close the registration gate after the CPU
     // engine failed. Nothing else has started; undo the setup above.
-    rollBackStart();
-    return Error("thread hook calls did not drain; the profiler is disabled");
+    Error retained = rollBackStart();
+    return retained ? retained : Error("thread hook calls did not drain; the profiler is disabled");
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
     // Enable wall clock BEFORE starting its pthread: timerLoopCommon() checks
@@ -2707,8 +2784,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
-        rollBackStart();
-        return error;
+        Error retained = rollBackStart();
+        return retained ? retained : error;
       }
       error = Error::OK; // recoverable when other modes are also active
     } else {
@@ -2764,9 +2841,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it only if the CPU engine itself started.
     enableCpuEngine(activated);
 
-    _task_block_enabled.store(
-        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
-        std::memory_order_release);
+    setTaskBlockEnabled(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     // What the recording allocated on top of "before start".
@@ -2775,10 +2851,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
-  rollBackStart();
-
-  return Error(
-      "Neither CPU, wallclock nor allocation profiling could be started");
+  Error retained = rollBackStart();
+  return retained ? retained
+                  : Error("Neither CPU, wallclock nor allocation profiling could be started");
 }
 
 Error Profiler::stop() {
@@ -2786,7 +2861,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
-  _task_block_enabled.store(false, std::memory_order_release);
+  setTaskBlockEnabled(false);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
@@ -2967,11 +3042,15 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  rotateDictsAndRun([&]{ _jfr.stop(); });
+  Error output_error = rotateDictsAndRun([&]{ return _jfr.stop(); });
   // The final chunk is written: nothing reads the call traces or the
-  // dictionaries until the next start(). TaskBlock admission stays closed
-  // until the memory is released.
-  releaseRecordingMemory();
+  // dictionaries until the next start(). Retained output keeps them: start() is
+  // refused while it is owned, and the release would also drop uncommitted tails.
+  if (!output_error && !_jfr.outputQuarantined()) {
+    releaseRecordingMemory();
+  } else {
+    closeInternGate();
+  }
   endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
@@ -2979,7 +3058,10 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_recording_hooks();
 
-  if (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop()) {
+  // Quarantined output cannot recover: stop producers but retain the recording
+  // and its roots, and prevent a later start from reusing their state.
+  if (_jfr.outputQuarantined() ||
+      (!hooks_drained && _cpu_engine->keepsThreadStateAcrossStop())) {
     _state.store(ERROR, std::memory_order_release);
   } else {
     _state.store(IDLE, std::memory_order_release);
@@ -2987,7 +3069,7 @@ Error Profiler::stop() {
   if (!hooks_drained) {
     return Error("thread hook calls did not drain; the profiler is stopped");
   }
-  return Error::OK;
+  return output_error;
 }
 
 Error Profiler::check(Arguments &args) {
@@ -3135,10 +3217,11 @@ Error Profiler::dump(const char *path, const int length) {
     if (beginTaskBlockRotation()) {
       {
         auto epoch_lock = BaseWallClock::samplingEpochLock();
-        rotateDictsAndRun([&]{
+        err = rotateDictsAndRun([&]{
           BaseWallClock::settleSamplingEpoch();
-          err = _jfr.dump(path, length);
+          Error delivered = _jfr.dump(path, length);
           __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+          return delivered;
         });
       }
       endTaskBlockRotation();
@@ -3149,7 +3232,7 @@ Error Profiler::dump(const char *path, const int length) {
       TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
     }
 
-    _thread_info.clearAll(thread_ids);
+    if (!err) _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
 
     // reset unwinding counters
@@ -3330,15 +3413,18 @@ void Profiler::shutdown(Arguments &args) {
   _state.store(TERMINATED, std::memory_order_release);
 }
 
-void Profiler::releaseRecordingMemory() {
+void Profiler::closeInternGate() {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  // Close the intern gate first (_state is still RUNNING during stop()): new
-  // callers see the flag; the exclusive acquire waits for those holding the
+  // New callers see the flag; the exclusive acquire waits for those holding the
   // lock, and a later acquirer re-checks the flag under it.
   _intern_open.store(false, std::memory_order_seq_cst);
-  {
-    ExclusiveLockGuard drain(&_intern_lock);
-  }
+  ExclusiveLockGuard drain(&_intern_lock);
+}
+
+void Profiler::releaseRecordingMemory() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  // Before any release: _state is still RUNNING during stop().
+  closeInternGate();
 
   // First, while getLiveTraceIds() is no longer consulted (the final chunk is
   // written) and the reference-chain BFS thread is joined. A no-op if nothing

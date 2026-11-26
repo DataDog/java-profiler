@@ -22,7 +22,7 @@ import java.util.List;
 import java.util.Set;
 
 /** Assertions for the synchronous {@code datadog.TaskBlock} event contract. */
-final class TaskBlockAssertions {
+public final class TaskBlockAssertions {
   private static final String BLOCKER = "blocker";
   private static final String UNBLOCKING_SPAN_ID = "unblockingSpanId";
   private static final String ANCHOR_SAMPLE_ID = "anchorSampleId";
@@ -31,7 +31,38 @@ final class TaskBlockAssertions {
   private static final String CORRELATION_ID = "correlationId";
   private static final String DURATION = "duration";
 
-  private TaskBlockAssertions() {}
+  /** Counts events with the expected blocker identity. */
+  static int countBlockerEvents(JfrEvents events, long blocker) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Counts events attributed to the named worker. */
+  static int countEventsForThread(JfrEvents events, String threadName) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Sums segment duration across rotations for the named worker. */
+  static double durationNanosForThread(JfrEvents events, String threadName) {
+    double durationNanos = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        durationNanos += item.getLong("duration", 0L);
+      }
+    }
+    return durationNanos;
+  }
 
   /** Probes native engine support without turning library-load failures into skips. */
   static boolean isSupported() {
@@ -43,6 +74,18 @@ final class TaskBlockAssertions {
   }
 
   /**
+   * Probes the wall engine's unfiltered owner tracking that park producers need; unlike {@link
+   * #isSupported()}, it does not require JNI platform-thread classification.
+   */
+  static boolean parkSupported() {
+    try {
+      return ProfilerOwnedBlockHooks.wallRegistryTrackingSupported(JavaProfiler.getInstance());
+    } catch (IOException e) {
+      throw new IllegalStateException("Could not load profiler for park capability probe", e);
+    }
+  }
+
+  /**
    * Value of {@code OSThreadState::SLEEPING} in {@code ddprof-lib/src/main/cpp/threadState.h}. Keep
    * in sync with that enum: the native {@code blockEnter0} decodes this int via {@code
    * decodeJavaBlockState}, so a renumbered enum would silently arm a different OS thread state
@@ -50,24 +93,18 @@ final class TaskBlockAssertions {
    */
   static final int OSTHREAD_STATE_SLEEPING = 7;
 
-  /**
-   * {@code java.vm.name} substrings that the native {@code VM::initShared()} (vmEntry.cpp) uses to
-   * set {@code VM::isHotspot()}. Keep this list in sync with that check.
-   */
+  /** {@code java.vm.name} substrings that native {@code VM::initShared()} treats as HotSpot. */
   private static final String[] HOTSPOT_VM_NAME_MARKERS = {
     "OpenJDK", "HotSpot", "GraalVM", "Dynamic Code Evolution"
   };
 
+  private TaskBlockAssertions() {}
+
   /**
-   * Returns whether the native layer can classify the current thread as a platform thread on this
-   * JVM. At JDK 19+, {@code JVMSupport::isPlatformThread()} fails closed when {@code
-   * !VM::isHotspot()}, so {@code beginTaskBlock()} always returns {@code 0} there.
-   *
-   * <p>This predicate must not report support on a JVM that the native check rejects. It therefore
-   * applies the same {@code java.vm.name} test as {@code VM::isHotspot()} instead of listing known
-   * non-HotSpot JVMs: J9, Zing, and any unrecognized VM name are reported as unsupported.
+   * Whether native {@code JVMSupport::isPlatformThread()} can accept a thread on this JVM: it fails
+   * closed on non-HotSpot JVMs at JDK 19+, and any unrecognized VM name counts as non-HotSpot.
    */
-  static boolean platformThreadClassificationSupported() {
+  public static boolean platformThreadClassificationSupported() {
     return !Platform.isJavaVersionAtLeast(19)
         || isHotspotVmName(System.getProperty("java.vm.name"));
   }
@@ -76,6 +113,15 @@ final class TaskBlockAssertions {
     if (vmName == null) return false;
     for (String marker : HOTSPOT_VM_NAME_MARKERS) {
       if (vmName.contains(marker)) return true;
+    }
+    return false;
+  }
+
+  static boolean containsBlocker(JfrEvents events, long blocker) {
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
+        return true;
+      }
     }
     return false;
   }

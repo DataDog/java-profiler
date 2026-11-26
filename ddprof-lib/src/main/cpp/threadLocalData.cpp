@@ -180,13 +180,13 @@ void ProfiledThread::unclaimAndReset() {
   _wall_epoch = 0;
   _call_trace_id = 0;
   _recording_epoch = 0;
-  _park_block_token = 0;
-  _task_block_start_ticks = 0;
-  _task_block_token = 0;
+  _park_slot = {};
+  _task_block_slot = {};
+  _monitor_slot = {};
+  _block_recording_epoch = 0;
 #if defined(DEBUG) || defined(UNIT_TEST)
   _task_block_diagnostic_origin = {};
 #endif
-  _task_block_context = {};
   _filter_slot_id = -1;
   _logical_context_window_state.store(0, std::memory_order_release);
   _init_window = 0;

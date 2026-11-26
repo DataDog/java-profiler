@@ -138,6 +138,11 @@ Profiler::start()
    socket sampler, wall-clock and CPU teardown. Engine stops use `_activated_mask`,
    not the requested mask: a mixed-success start must not stop an engine that failed.
 
+Output quarantine does not skip engine teardown. After teardown, stop latches
+`ERROR` and retains the recording, dictionary roots and uncommitted wall tails,
+but closes the intern gate. A new start or resume cannot reuse this state. A failed
+start whose rollback cannot deliver the recording ends the same way and returns that error.
+
 Stop deactivates the thread-registry recording projection after engine teardown.
 `rollBackStart()` also deactivates it on each post-JFR start failure, including a
 CPU registration-drain failure; its existing signal-drain preconditions still apply.
@@ -159,6 +164,11 @@ Recording-scoped memory is freed at the end of `stop()` by
 - the `_class_map` and `_string_label_map` storage (`StringDictionary::release()`,
   which keeps the id counter, so an old id cannot alias a new key);
 - the `LivenessTracker` state (`LivenessTracker::release()`).
+
+A stop whose JFR output failed or is quarantined skips this release: the retained
+recording still owns these roots and uncommitted wall tails, and `start()` refuses to
+run while it is owned. A failed start whose rollback leaves the recording owned also
+keeps them.
 
 Malloc hooks are restored as well. What an idle profiler holds afterwards is listed in
 [ProfilerMemoryRequirements](../reference/ProfilerMemoryRequirements.md#idle-profiler-after-stop).
@@ -616,7 +626,10 @@ requiring a dump; retries are bounded by registry and table capacity. Other fail
 such as a retiring thread that has not yet published its TID, get three 1 ms backoffs.
 After the retries, stop discards the remaining tails under every stripe, adds their
 weight to `wc_unowned_tail_dropped_at_stop`, and continues teardown.
-No owned TaskBlock duration is synthesized.
+
+Quarantined output skips capacity recovery and the drop: stop completes producer teardown
+and retains uncommitted segments in non-restartable `ERROR`. No stop path synthesizes an
+owned TaskBlock duration.
 
 `stop()` clears `_running`, wakes the thread with `pthread_kill(WAKEUP_SIGNAL)`
 (`SIGIO`, `os.h`), and joins only a timer thread that was successfully created.
@@ -645,8 +658,39 @@ common skeleton and then:
   `RUNNABLE`.
 - Calls `recordSample(..., BCI_WALL, ...)`.
 
-`WallClockJvmti` is identical except that it calls `recordSampleDelegated()`
-with `ucontext = nullptr` and has no collapsing (`wallClock.cpp:448-493`).
+`WallClockJvmti` passes the interrupted `ucontext` to `recordSampleDelegated()`.
+HotSpot needs that context when the thread has no last-Java-frame anchor.
+This engine has no collapsing or cached-stack replay; unowned samples keep unit weight.
+
+### TaskBlock producer contract
+
+`wallprecheck=true` with unfiltered wall tracking enables completed-at-exit
+`datadog.TaskBlock` events. Java park hooks own park intervals. Java generic
+hooks own `SLEEPING` and `OBJECT_WAIT`; the public paired API owns `SLEEPING`.
+
+Native JVMTI callbacks own monitor contention. They also own `Object.wait`
+unless the Java bridge delegates monitor wait events to Java instrumentation.
+This process-wide setting does not disable native contention callbacks.
+
+Each platform thread has one token-qualified blocked-run owner. Nested or
+mismatched exits cannot consume it. Virtual-thread hooks and monitor callbacks
+are excluded; they cannot clear a platform thread's owner on its carrier.
+
+Entry requires no active span and no context window. Exit requires the same
+recording slot and token, no context-window crossing, and at least 1 ms duration.
+Rejected eligibility still clears the exiting owner's lifecycle.
+
+The exit captures the workload stack synchronously and writes blocker,
+unblocking span, entry context, duration and observed state. `OBJECT_WAIT`
+serializes as `WAITING`; monitor contention serializes as `CONTENDED`.
+
+A live dump does not emit a prefix for an open interval. A later eligible exit
+writes one completed event, so its start may precede an earlier dump. Stop/start
+invalidates open owners instead of attributing them to a new recording.
+
+HotSpot sends `MonitorWaited` before monitor reacquisition completes. A native
+wait event ends at that callback and excludes the subsequent reacquisition time.
+A delegated Java wait ends at the instrumented return from `Object.wait`.
 
 ### `J9WallClock` (`j9/j9WallClock.cpp`)
 

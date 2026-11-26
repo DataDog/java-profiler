@@ -106,4 +106,78 @@ class TaskBlockRecordAttemptsTest {
     assertTrue(failure.getMessage().contains("bounded attempts"), failure.getMessage());
     assertEquals(TaskBlockRecorderTestSupport.MAX_RECORD_ATTEMPTS, attempts.get());
   }
+
+  private void lowerBound(TaskBlockRecorderTestSupport.Attempt attempt) throws Exception {
+    TaskBlockRecorderTestSupport.recordWithinAttempts(
+        () -> counters, TaskBlockRecorderTestSupport.Credit.LOWER_BOUND, "lower bound", attempt);
+  }
+
+  @Test
+  void lowerBoundAcceptsForeignFailuresAroundSuccess() throws Exception {
+    lowerBound(
+        () -> {
+          reject(true);
+          reject(true);
+          return attempts.incrementAndGet() > 1;
+        });
+    assertEquals(2, attempts.get());
+  }
+
+  @Test
+  void lowerBoundStillRejectsUncountedFalse() {
+    AssertionFailedError failure =
+        assertThrows(
+            AssertionFailedError.class,
+            () ->
+                lowerBound(
+                    () -> {
+                      attempts.incrementAndGet();
+                      return false;
+                    }));
+    assertTrue(failure.getMessage().contains("not accounted"), failure.getMessage());
+    assertEquals(1, attempts.get());
+  }
+
+  @Test
+  void lowerBoundRequiresCreditForEveryRejection() {
+    assertThrows(
+        AssertionFailedError.class,
+        () ->
+            lowerBound(
+                () -> {
+                  if (attempts.incrementAndGet() == 1) reject(true);
+                  return false;
+                }));
+    assertEquals(2, attempts.get());
+  }
+
+  @Test
+  void lowerBoundAttemptsAreBounded() {
+    AssertionFailedError failure =
+        assertThrows(
+            AssertionFailedError.class,
+            () ->
+                lowerBound(
+                    () -> {
+                      attempts.incrementAndGet();
+                      reject(true);
+                      return false;
+                    }));
+    assertTrue(failure.getMessage().contains("bounded attempts"), failure.getMessage());
+    assertEquals(TaskBlockRecorderTestSupport.MAX_RECORD_ATTEMPTS, attempts.get());
+  }
+
+  @Test
+  void exactModeRejectsForeignFailureOnRejection() {
+    assertThrows(
+        AssertionFailedError.class,
+        () ->
+            TaskBlockRecorderTestSupport.recordWithinAttempts(
+                () -> counters,
+                () -> {
+                  reject(true);
+                  reject(true);
+                  return false;
+                }));
+  }
 }
