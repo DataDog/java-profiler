@@ -75,12 +75,13 @@ public:
 };
 
 using KernelSigaction = SignalFrame::KernelSigaction;
-// Reserved for the restorer tests: OS::installSignalHandler keeps per-signal state for good.
 const int kernel_query_signal = SIGRTMIN + 7;
+// Reserved for one test: OS::installSignalHandler keeps per-signal state for good.
 const int install_signal = SIGRTMIN + 8;
 
 void ignoreSignal(int, siginfo_t*, void*) {}
 void otherSignal(int, siginfo_t*, void*) {}
+void ignoreSimpleSignal(int) {}
 
 class SignalFrameTest : public ::testing::Test {
     VMTestAccessor _vm_kind{true, false};
@@ -314,10 +315,14 @@ TEST_F(SignalFrameTest, InstallingAHandlerTrustsOnlyAReportedRestorer) {
     struct sigaction old{};
     ASSERT_EQ(0, sigaction(signo, nullptr, &old));
     TrustedRestorerScope trusted(kernel_restorer + 1);
+    // A 1-arg handler is never trusted, whatever restorer the kernel holds for it.
+    OS::installSignalHandler(signo, nullptr, ignoreSimpleSignal);
+    EXPECT_EQ(static_cast<const void*>(kernel_restorer + 1), SignalFrame::trustedRestorer());
     OS::installSignalHandler(signo, ignoreSignal);
     const void* restorer = SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(ignoreSignal));
     ASSERT_EQ(0, sigaction(signo, &old, nullptr));
     // musl reports its own restorer; glibc arm64 returns through the vDSO and reports none.
+    ASSERT_EQ(OS::isMusl(), restorer != nullptr);
     EXPECT_EQ(restorer != nullptr ? restorer : static_cast<const void*>(kernel_restorer + 1),
               SignalFrame::trustedRestorer());
 }
