@@ -111,6 +111,7 @@ If either step fails, profiling is disabled.
 | Function | HotSpot | J9 / Zing |
 |---|---|---|
 | `initialize()` | shared (`JVMThread` + `ProfiledThread` TLS) | shared |
+| `isPlatformThread(jni, thread)` | positive JNI < 19: true; JNI >= 19: runtime `IsVirtualThread` check | positive JNI < 19: true; JNI >= 19: false without reading the virtual-thread slot |
 | `initExecution(args, jvmti, jni)` | selects `Fully_loaded`, `Partial_loaded`, or `Lazy_loaded` via `HotspotSupport::shouldPreloadJmethodIDs` / `canResolveLazily` / `initLazyResolution` (`jvmSupport.cpp:79-94`) | always `Fully_loaded`. `fjmethodid=lazy` only logs a warning (`jvmSupport.cpp:95-97`) |
 | `walkJavaStack(request)` | `HotspotSupport::walkJavaStack` | ASGCT through `asyncGetCallTrace()`. Debug builds assert that the event is CPU, wall, native malloc, or native socket (`jvmSupport.cpp:112-117`) |
 | `walkCurrentJavaStack(request)` | anchor-seeded `walkVM`; returns 0 for failed or unsafe allocation stacks | returns 0 for JVMTI retry |
@@ -144,6 +145,28 @@ Callers in shared code:
 independently of the headers used to build the library. `vmEntry.h` defines the
 `JMETHODID_NOT_WALKABLE` frame sentinel; allocation capture retries with JVMTI
 rather than retaining unresolved Java frames.
+
+### Platform-thread classification
+
+The paired Java TaskBlock hooks use carrier-local TLS. They verify the supplied
+`jthread` against JVMTI `GetCurrentThread()` with JNI `IsSameObject()` before
+classification. See [TLSContext](TLSContext.md#paired-taskblock-intervals).
+
+`JVMSupport::isPlatformThread()` rejects null JNI or thread arguments and
+nonpositive `GetVersion()` results. A positive JNI version below 19 classifies
+the thread as platform without reading a virtual-thread function-table entry.
+
+On HotSpot reporting JNI 19 or later, classification calls `IsVirtualThread`
+through runtime JNI slot 234. A missing function or a virtual-thread result
+rejects the thread. This path does not depend on the build JDK's JNI headers.
+
+On non-HotSpot VMs reporting JNI 19 or later, classification returns false before
+reading slot 234 because this classifier trusts that offset only on HotSpot.
+The paired API therefore returns zero from begin and false from end on those VMs.
+
+This restriction applies to the paired Java TaskBlock API, not all profiling.
+`jvmSupport_ut.cpp` covers the JNI-version boundary, missing functions, virtual
+threads and rejection on non-HotSpot without calling the virtual-thread entry.
 
 ## `jvmThread.h` / `jvmThread.cpp`: the `JVMThread` facade
 

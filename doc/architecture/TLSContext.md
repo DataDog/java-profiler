@@ -181,6 +181,32 @@ Owner allocations and pool backing remain charged by their actual
 initialization can allocate and active cold registration can lock; this is not
 a JavaCritical-safety guarantee.
 
+## Paired TaskBlock Intervals
+
+`JavaProfiler.beginTaskBlock()` stores one pending token, start tick and captured
+context in the calling native owner's `ProfiledThread`. A token belongs to that
+thread; callers must pass it to `endTaskBlock()` in a `finally` block.
+
+Begin checks recording activity, unfiltered wall tracking, caller identity,
+[platform-thread classification](JvmSupportLayer.md#platform-thread-classification),
+owner-slot binding and active span context before it attempts recovery.
+
+These early rejections return zero without discarding the pending interval.
+A later failure to arm a replacement can also return zero, after recovery has
+already discarded the old interval. Zero alone does not imply preservation.
+
+A begin that reaches `recoverAbandonedTaskBlock()` discards any pending interval
+without an event, whether nested or abandoned. Recovery clears its TLS token and
+closes the tracker run only if the token matches the current slot and generation.
+
+Recovery increments `task_block_recovered_abandoned` when a pending token exists.
+A later end with the discarded token returns false. Repeated begins under an
+active span defer recovery because a nested live interval is indistinguishable.
+
+`JavaProfilerTaskBlockApiTest` covers replacement, abandoned-token rejection and
+active-span preservation. Native `taskBlockRecorder_ut.cpp` tests protect newer
+runs and foreign slots from stale-token recovery.
+
 ## Retained Unowned Wall Context
 
 ASGCT wall precheck captures one normalized `Context` after the known-span and

@@ -457,10 +457,24 @@ public final class JavaProfiler {
    * Begins an explicitly instrumented {@link Thread#sleep(long) sleeping} interval on the current
    * platform thread. The resulting {@code TaskBlock} event is classified as {@code SLEEPING}. The
    * returned token is bound to the current thread and must be passed to {@link #endTaskBlock(long,
-   * long, long)}.
+   * long, long)}. Call {@code endTaskBlock} in a {@code finally} block so that the interval is
+   * closed on every exit path, including exceptions.
+   *
+   * <p>A thread has at most one active interval. If an interval is still open when this method is
+   * called again on the same thread (a nested call, or a previous interval whose {@code
+   * endTaskBlock} was never reached), the open interval is discarded without an event and this call
+   * proceeds as if no interval were open. A later {@code endTaskBlock} with the discarded token
+   * returns {@code false}. The open interval is kept only when this call returns {@code 0} because
+   * TaskBlock recording is inactive, the current thread is not classified as a platform thread, the
+   * profiler cannot track or verify the current thread, or a trace context is active on the current
+   * thread.
+   *
+   * <p>On non-HotSpot JVMs running JDK 19 or later, no thread is classified as a platform thread,
+   * so this method always returns {@code 0} there.
    *
    * @return an opaque token, or {@code 0} when the interval could not be armed or the current
-   *     thread is virtual; any non-zero value, including a negative value, is valid
+   *     thread is not classified as a platform thread; any non-zero value, including a negative
+   *     value, is valid
    */
   public long beginTaskBlock() {
     return beginTaskBlock0(Thread.currentThread());
@@ -484,6 +498,11 @@ public final class JavaProfiler {
   /** Test-only probe of default wall-engine and current platform-thread support. */
   boolean taskBlockSupportedForTest() {
     return taskBlockSupportedForTest0(Thread.currentThread());
+  }
+
+  /** Test-only probe of the native platform-thread classification of the calling thread. */
+  boolean platformThreadForTest() {
+    return platformThreadForTest0(Thread.currentThread());
   }
 
   /**
@@ -604,6 +623,8 @@ public final class JavaProfiler {
   private static native void blockExit0(long token);
 
   private static native boolean taskBlockSupportedForTest0(Thread thread);
+
+  private static native boolean platformThreadForTest0(Thread thread);
 
   private static native long beginTaskBlock0(Thread thread);
 
