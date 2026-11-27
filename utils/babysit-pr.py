@@ -19,7 +19,6 @@ import functools
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -52,6 +51,20 @@ class EnvError(Exception):
     pass
 
 
+class OutOfTime(EnvError):
+    """The wait slice's budget ran out. started tells whether the call reached the
+    subprocess, i.e. whether a write may have been applied."""
+
+    def __init__(self, started):
+        super().__init__("wait slice budget exhausted")
+        self.started = started
+
+
+# Wall-clock end of the current wait slice, or None outside `wait`. Every subprocess
+# attempt is capped at the time left, so one slice cannot overrun the bash tool timeout.
+_budget_end = None
+
+
 def emit(obj):
     print(json.dumps(obj, indent=1, sort_keys=True))
 
@@ -64,10 +77,18 @@ def run(cmd, timeout, retries=1, stdin=None, cwd=None):
     """(rc, stdout, stderr). A timeout counts as a failed attempt; after the last attempt
     it raises EnvError so no caller mistakes a hung call for an answer."""
     for attempt in range(retries):
+        limit = timeout
+        if _budget_end is not None:
+            left = _budget_end - time.time()
+            if left < 1:
+                raise OutOfTime(started=attempt > 0)
+            limit = min(timeout, left)
         try:
             res = subprocess.run(cmd, input=stdin, capture_output=True, text=True,
-                                 timeout=timeout, cwd=cwd, errors="replace")
+                                 timeout=limit, cwd=cwd, errors="replace")
         except subprocess.TimeoutExpired:
+            if limit < timeout:
+                raise OutOfTime(started=True)
             if attempt + 1 == retries:
                 raise EnvError("timed out after %ds: %s" % (timeout, " ".join(cmd[:4])))
         else:
@@ -298,16 +319,19 @@ def poll_once(pr_number, now):
         for act in d["actions"]:
             if act[0] == "rerun":
                 # Saved before the POST: a failed or interrupted rerun must not become one
-                # rerun per poll. "already running" means GitHub did nothing: retry later.
+                # rerun per poll. "already running" or an unsent request: GitHub did nothing.
                 st["retried_runs"].append(act[1])
                 save(st)
                 try:
                     gh_api("repos/%s/actions/runs/%d/rerun-failed-jobs" % (REPO, act[1]), "POST")
                 except EnvError as e:
-                    if "already running" not in str(e):
+                    unsent = isinstance(e, OutOfTime) and not e.started
+                    if not unsent and "already running" not in str(e):
                         raise
                     st["retried_runs"].remove(act[1])
                     save(st)
+                    if unsent:
+                        raise
                     continue
                 changed = True
                 log(st, "retried", "%s (run %d)" % (act[2], act[1]))
@@ -331,7 +355,8 @@ def poll_once(pr_number, now):
             st["inbox"][ev["key"]] = ev
         st["idle_polls"] = 0 if changed else st["idle_polls"] + 1
         st["next_poll_at"] = now + policy.next_interval(st["idle_polls"])
-        if d["outcome"] in ("stop", "green_done"):
+        # Inbox events still need the worker; reviews and comments are not open_threads.
+        if d["outcome"] == "stop" or (d["outcome"] == "green_done" and not st["inbox"]):
             reason = d["facts"].get("reason") or "CI green, Bits passed, threads answered"
             summary = finish(st, reason)
             save(st)
@@ -351,7 +376,19 @@ def inbox_result(st):
 
 
 def cmd_wait(a):
+    global _budget_end
     end = time.time() + min(a.max_wait, MAX_WAIT_S)
+    _budget_end = time.time() + MAX_WAIT_S
+    try:
+        return wait_loop(a, end)
+    except OutOfTime:
+        emit({"outcome": "continue", "next_poll_in_s": 0})
+        return 0
+    finally:
+        _budget_end = None
+
+
+def wait_loop(a, end):
     immediate = a.immediate
     while True:
         now = time.time()
@@ -367,7 +404,7 @@ def cmd_wait(a):
                 emit(inbox_result(st))
                 return 0
             due = st["next_poll_at"]
-        if immediate or now >= due:
+        if immediate or (due <= now < end):
             immediate = False
             res = poll_once(a.pr, now)
             if res:
@@ -569,7 +606,7 @@ def cmd_apply_handoff(a):
         git("apply", "--index", h["patch"])
         try:
             h["commit"] = commit_handoff(h)
-        except Refused:
+        except (Refused, EnvError):
             # Restore the base tree so the next apply-handoff starts clean.
             git("reset", "-q", "--soft", h["base_head"])
             git("apply", "-R", "--index", h["patch"])
@@ -595,7 +632,8 @@ def same_patch(base, commit, patch):
 
 def is_signed(commit):
     """True when the commit object carries a signature header (gpgsig covers GPG and SSH)."""
-    return "\ngpgsig " in git("cat-file", "commit", commit)
+    headers = git("cat-file", "commit", commit).split("\n\n", 1)[0]
+    return "\ngpgsig " in headers
 
 
 def commit_handoff(h):
@@ -634,6 +672,8 @@ def cmd_push_and_reply(a):
         if h["phase"] in ("staged", "committed") and not (h["kind"] == "fix" and h["phase"] == "staged"):
             if st["fix_rounds_used"] >= MAX_ROUNDS:
                 raise Refused("fix-push round cap (%d) reached" % MAX_ROUNDS)
+            if time.time() >= st["deadline_at"]:
+                raise Refused("the run's two-hour cap has passed; start a new run to push")
             if gh_api("repos/%s/pulls/%d" % (REPO, a.pr))["state"] != "open":
                 raise Refused("PR is no longer open")
             if git("symbolic-ref", "-q", "--short", "HEAD", check=False) != st["branch"]:
@@ -642,6 +682,8 @@ def cmd_push_and_reply(a):
             if not fresh:
                 raise Refused("review marker not fresh for HEAD; run pre-pr-review first: " + why)
             head = git("rev-parse", "HEAD")
+            if h["kind"] == "rebase":
+                git("fetch", "-q", st["remote"], st["base"], timeout=PUSH_TIMEOUT_S)
             if h["kind"] == "rebase" and (head == h["base_head"] or run(
                     ["git", "merge-base", "--is-ancestor", "refs/remotes/%s/%s" % (st["remote"], st["base"]), head],
                     GIT_TIMEOUT_S)[0] != 0):

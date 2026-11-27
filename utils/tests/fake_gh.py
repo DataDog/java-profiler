@@ -41,7 +41,8 @@ if key not in routes:
     if method == "GET":
         sys.stderr.write("gh: Not Found (HTTP 404)\n")
         sys.exit(1)
-    n = len(open(os.path.join(d, "calls.jsonl")).read().splitlines())
+    with open(os.path.join(d, "calls.jsonl")) as f:
+        n = len(f.read().splitlines())
     print(json.dumps({"id": 900000 + n}))
     sys.exit(0)
 resp = routes[key]

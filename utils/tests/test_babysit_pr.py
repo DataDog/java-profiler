@@ -1,6 +1,9 @@
 # Copyright 2026, Datadog, Inc.
 """Tests for utils/babysit_pr_policy.py and utils/babysit-pr.py (run by test_babysit_pr.sh)."""
 
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -184,6 +187,12 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(sorted(e["key"] for e in d["events"]), ["review:30", "thread:10"])
         self.assertEqual([u["id"] for u in d["untrusted"]], [11])
         self.assertEqual(d["facts"]["open_threads"], 1)
+
+    def test_events_carry_full_body(self):
+        long = "preamble " * 40 + "the finding"
+        d = P.decide(base_state(), snap(inline_comments=[{"id": 10, "user": WRITER, "body": long}]), trusted, 0)
+        ev = d["events"][0]
+        self.assertEqual((ev["body"], len(ev["gist"])), (long, 200))
 
     def test_open_thread_blocks_green_done(self):
         inline = [{"id": 10, "user": WRITER, "body": "bug"}]
@@ -568,6 +577,113 @@ class CliTest(unittest.TestCase):
         self.cli("wait", "--immediate", "--max-wait", "0")
         self.cli("ack", "thread:10")
         self.assertIn("thread:10", self.cli("stop", "--reason", "x")["summary"]["acked"])
+
+    def test_green_done_waits_for_inbox(self):
+        self.cli("start")
+        green = {"GET repos/o/r/commits/%s/check-runs" % self.head:
+                 {"check_runs": [{"name": "b", "status": "completed", "conclusion": "success"}]},
+                 "GET repos/o/r/commits/%s/status" % self.head:
+                 {"statuses": [{"context": P.BITS_CONTEXT, "state": "success"}]}}
+        self.routes(dict(green, **{"GET repos/o/r/issues/1/comments": [{"id": 20, "user": AUTHOR, "body": "q?"}]}))
+        self.assertEqual(self.cli("wait", "--immediate", "--max-wait", "0")["outcome"], "action_needed")
+        out = self.cli("wait", "--immediate", "--max-wait", "0")
+        self.assertEqual((out["outcome"], self.cli("status")["status"]), ("action_needed", "running"))
+        self.cli("ack", "comment:20")
+        self.assertEqual(self.cli("wait", "--immediate", "--max-wait", "0")["outcome"], "green_done")
+
+    def test_signature_in_message_is_not_a_signature(self):
+        self.cli("start")
+        self.stage_fix(self.worker())
+        with open(self.state_path()) as f:
+            st = json.load(f)
+        st["pending_handoff"]["message"] = "Fix a\n\ngpgsig fake\n"
+        with open(self.state_path(), "w") as f:
+            json.dump(st, f)
+        self.git("config", "commit.gpgsign", "false")
+        self.assertIn("unsigned", self.cli("apply-handoff", rc=1)["reason"])
+
+    def test_push_refused_after_cap(self):
+        self.cli("start")
+        self.stage_fix(self.worker())
+        self.cli("apply-handoff")
+        self.write_marker()
+        self.edit_state(deadline_at=1)
+        self.assertIn("two-hour cap", self.cli("push-and-reply", rc=1)["reason"])
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/topic").split()[0], self.head)
+
+    def test_no_poll_once_slice_ended(self):
+        self.cli("start")
+        self.edit_state(next_poll_at=0)
+        n = len(self.calls())
+        self.assertEqual(self.cli("wait", "--max-wait", "0")["outcome"], "continue")
+        self.assertEqual(self.calls()[n:], [])
+
+    def load_cli(self):
+        spec = importlib.util.spec_from_file_location("babysit_pr_cli", os.path.join(UTILS, "babysit-pr.py"))
+        mod = importlib.util.module_from_spec(spec)
+        old = dict(os.environ)
+        os.environ.update(self.env)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(old)))
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, cwd)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_budget_caps_every_call(self):
+        mod = self.load_cli()
+        mod._budget_end = mod.time.time() + 1.5
+        with self.assertRaises(mod.OutOfTime) as cm:
+            mod.run(["sleep", "5"], 60)
+        self.assertTrue(cm.exception.started)
+        mod._budget_end = mod.time.time() - 1
+        with self.assertRaises(mod.OutOfTime) as cm:
+            mod.run(["true"], 60)
+        self.assertFalse(cm.exception.started)
+
+    def test_budget_exhaustion_ends_slice_and_keeps_rerun_retriable(self):
+        self.cli("start")
+        runs = [{"name": "j", "status": "completed", "conclusion": "failure",
+                 "details_url": "https://github.com/o/r/actions/runs/77/job/1"}]
+        self.routes({"GET repos/o/r/commits/%s/check-runs" % self.head: {"check_runs": runs}})
+        mod = self.load_cli()
+        real = mod.gh_api
+
+        def gh_api(path, method="GET", **kw):
+            if path.endswith("/rerun-failed-jobs"):
+                raise mod.OutOfTime(started=False)
+            return real(path, method, **kw)
+        mod.gh_api = gh_api
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(mod.main(["wait", "--pr", "1", "--immediate", "--max-wait", "0"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["outcome"], "continue")
+        with open(self.state_path()) as f:
+            self.assertEqual(json.load(f)["retried_runs"], [])
+
+    def test_commit_timeout_restores_base_tree(self):
+        self.cli("start")
+        self.stage_fix(self.worker())
+        mod = self.load_cli()
+
+        def timed_out(h):
+            raise mod.EnvError("timed out after 120s: git commit")
+        mod.commit_handoff = timed_out
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(mod.main(["apply-handoff", "--pr", "1"]), 2)
+        self.assertEqual((self.git("rev-parse", "HEAD"), self.git("status", "--porcelain", "--untracked-files=no")),
+                         (self.head, ""))
+
+    def test_rebase_check_fetches_base(self):
+        self.cli("start")
+        other = os.path.join(self.tmp, "other")
+        sh("git", "clone", "-q", self.origin, other, cwd=self.tmp)
+        sh("git", "-c", "user.email=x@x", "-c", "user.name=x", "commit", "-q", "--allow-empty", "-m", "x", cwd=other)
+        sh("git", "push", "-q", "origin", "main", cwd=other)
+        self.write(os.path.join(self.tmp, "sum"), "conflict\n", root="/")
+        self.cli("stage-handoff", "--kind", "rebase", "--summary-file", os.path.join(self.tmp, "sum"))
+        self.git("commit", "-q", "--allow-empty", "-m", "rebased onto the stale base")
+        self.write_marker()
+        self.assertIn("not rebased", self.cli("push-and-reply", rc=1)["reason"])
 
     def test_reply_refuses_commit_placeholder(self):
         self.cli("start")

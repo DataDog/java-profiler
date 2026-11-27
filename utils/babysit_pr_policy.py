@@ -197,12 +197,13 @@ def decide(state, snap, trusted, now):
             out["untrusted"].append(_brief(t["root"]))
             continue
         open_threads += 1
-        surface(_event("thread", "thread:%d" % tid, **_brief(t["root"])))
+        surface(_event("thread", "thread:%d" % tid, body=t["root"].get("body") or "", **_brief(t["root"])))
     for r in snap["reviews"]:
         if (r.get("body") or r.get("state") == "CHANGES_REQUESTED") and not is_own(r, self_id) \
                 and r["id"] not in state["replied"]:
             if trusted(r.get("user")):
-                surface(_event("review", "review:%d" % r["id"], state=r.get("state"), **_brief(r)))
+                surface(_event("review", "review:%d" % r["id"], state=r.get("state"), body=r.get("body") or "",
+                               **_brief(r)))
             else:
                 out["untrusted"].append(_brief(r))
     for c in snap["issue_comments"]:
@@ -210,7 +211,7 @@ def decide(state, snap, trusted, now):
         if is_own(c, self_id) or body == BITS_TRIGGER or c["id"] in state["replied"]:
             continue
         if trusted(c.get("user")):
-            surface(_event("comment", "comment:%d" % c["id"], **_brief(c)))
+            surface(_event("comment", "comment:%d" % c["id"], body=c.get("body") or "", **_brief(c)))
         else:
             out["untrusted"].append(_brief(c))
 
