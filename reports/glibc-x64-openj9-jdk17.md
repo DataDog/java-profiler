@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-11-27 11:28:40 EST
+**Date:** 2026-11-27 11:54:56 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 50 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 22 |
+| CPU Cores (end) | 22 |
 | Throttling | 0% |
 
 ### Test Results
@@ -31,7 +31,7 @@ title: glibc-x64-openj9-jdk17
 | CPU Samples | 24 |
 | Sample Rate | 0.40/sec |
 | Health Score | 25% |
-| Threads | 6 |
+| Threads | 4 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk17
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (3 unique values: 50-66 cores)</summary>
+<summary>CPU Timeline (1 unique values: 22-22 cores)</summary>
 
 ```
-1795796649 50
-1795796654 50
-1795796659 50
-1795796664 50
-1795796669 50
-1795796674 50
-1795796679 50
-1795796684 50
-1795796690 50
-1795796695 50
-1795796700 66
-1795796705 66
-1795796710 64
-1795796715 64
-1795796720 64
-1795796725 64
-1795796730 64
-1795796735 64
-1795796740 64
-1795796745 64
+1795798264 22
+1795798269 22
+1795798274 22
+1795798279 22
+1795798284 22
+1795798289 22
+1795798294 22
+1795798299 22
+1795798304 22
+1795798309 22
+1795798314 22
+1795798319 22
+1795798324 22
+1795798329 22
+1795798334 22
+1795798339 22
+1795798344 22
+1795798349 22
+1795798354 22
+1795798359 22
 ```
 </details>
 
