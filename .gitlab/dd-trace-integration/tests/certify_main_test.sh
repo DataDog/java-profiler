@@ -24,7 +24,7 @@ trap 'rm -rf "${WORK}"' EXIT
 : > "${WORK}/attacker-quarantine.txt"
 printf '%s\n' 'glibc-*-jdk25/profiler-only' > "${WORK}/attacker-quarantine.txt"
 
-SHA=0123456789abcdef0123456789abcdef01234567
+SHA=$(git -C "$HERE" rev-parse HEAD)
 printf '%s\n' "${SHA}" > "${WORK}/ddprof-commit-sha.txt"
 
 # The job runs with the pipeline workdir as its cwd: the prepared-SHA artifact
@@ -76,7 +76,7 @@ expect_fail "incomplete results fail closed" \
       QUARANTINE_LIST="${WORK}/attacker-quarantine.txt" \
   bash "${SCRIPT}"
 assert_output "the checked-in list is validated, not the override" \
-  "dd-trace-integration/quarantine.txt" "${WORK}/stdout.log" "${WORK}/stderr.log"
+  "/quarantine.txt" "${WORK}/stdout.log" "${WORK}/stderr.log"
 if grep -qF "attacker-quarantine.txt" "${WORK}/stdout.log" "${WORK}/stderr.log"; then
   echo "FAIL: attacker-supplied QUARANTINE_LIST reached the gate scripts"
   FAILED=1

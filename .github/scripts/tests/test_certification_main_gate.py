@@ -12,7 +12,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE_DIR = ROOT / ".gitlab/dd-trace-integration"
-SHA = "a" * 40
 PLATFORMS = (
     "glibc-x64-hotspot", "glibc-x64-openj9", "glibc-arm64-hotspot", "glibc-arm64-openj9",
     "musl-x64-hotspot", "musl-x64-openj9", "musl-arm64-hotspot", "musl-arm64-openj9",
@@ -25,19 +24,16 @@ class MainIntegrationGateTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="main-integration-gate-")
         self.addCleanup(directory.cleanup)
         self.work = Path(directory.name)
-        # The gate resolves its default quarantine list next to its own scripts,
-        # and ignores QUARANTINE_LIST by design, so the fixtures point the gate
-        # at a copied script tree instead of the repository checkout.
-        self.gate = self.work / "dd-trace-integration"
-        self.gate.mkdir()
+        self.gate = self.work / ".gitlab/dd-trace-integration"
+        self.gate.mkdir(parents=True)
         for name in ("certify-main.sh", "validate-quarantine.sh",
                      "post-pr-comment.sh", "quarantine-lib.sh"):
             shutil.copy(SOURCE_DIR / name, self.gate / name)
         # post-pr-comment.sh resolves its comment poster relative to the copied
         # tree, so the poster must be copied at the same relative depth.
-        (self.work / "scripts").mkdir()
+        (self.gate.parent / "scripts").mkdir()
         shutil.copy(SOURCE_DIR.parent / "scripts/upsert-github-pr-comment.sh",
-                    self.work / "scripts/upsert-github-pr-comment.sh")
+                    self.gate.parent / "scripts/upsert-github-pr-comment.sh")
         self.results = self.work / "integration-test-results"
         for platform in PLATFORMS:
             for jdk in JDKS:
@@ -47,7 +43,6 @@ class MainIntegrationGateTest(unittest.TestCase):
                 for scenario in ("profiler-only", "tracer-profiler"):
                     (cell / f"{scenario}-{config}.log").write_text("SUCCESS: validated\n")
         self.prepared = self.work / "ddprof-commit-sha.txt"
-        self.prepared.write_text(SHA + "\n")
         self.quarantine = self.gate / "quarantine.txt"
         self.quarantine.write_text("")
         self.body = self.work / "body.md"
@@ -59,12 +54,26 @@ class MainIntegrationGateTest(unittest.TestCase):
             stub.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$NETWORK_ATTEMPT_MARKER"\nexit 97\n')
             stub.chmod(0o700)
         self.env = dict(os.environ, PATH=str(binary) + os.pathsep + os.defpath,
-                        CI_PIPELINE_SOURCE="push", CI_COMMIT_BRANCH="main", CI_COMMIT_SHA=SHA,
+                        CI_PIPELINE_SOURCE="push", CI_COMMIT_BRANCH="main",
                         CANCELLED="", QUARANTINE_LIST=str(self.work / "attacker-quarantine-list"),
                         COMMENT_BODY_FILE=str(self.body), NETWORK_ATTEMPT_MARKER=str(self.network),
                         DDPROF_COMMIT_BRANCH="incorrect-inherited-branch", DDPROF_COMMIT_SHA="f" * 40)
         for token in ("GITHUB_TOKEN", "GH_TOKEN", "DDOCTOSTS_ID_TOKEN"):
             self.env.pop(token, None)
+        self.git("init", "-q")
+        self.commit_policy()
+
+    def git(self, *args):
+        env = dict(self.env, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        return subprocess.check_output(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                                        *args], cwd=self.work, env=env, text=True).strip()
+
+    def commit_policy(self):
+        self.git("add", "-A", "--", str(self.quarantine))
+        self.git("commit", "-qm", "fixture policy")
+        self.sha = self.git("rev-parse", "HEAD")
+        self.env["CI_COMMIT_SHA"] = self.sha
+        self.prepared.write_text(self.sha + "\n")
 
     def run_gate(self, **changes):
         env = dict(self.env)
@@ -97,13 +106,14 @@ class MainIntegrationGateTest(unittest.TestCase):
         review = today + datetime.timedelta(days=-1 if expired else 7)
         self.quarantine.write_text(
             f"{config}/profiler-only | PROF-16810 | {added} | {review} | confirmed flake\n")
+        self.commit_policy()
 
     def test_main_push_with_real_complete_results_succeeds_without_posting(self):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("All 30 integration tests passed", self.body.read_text())
         self.assertIn("10 not applicable", self.body.read_text())
-        self.assertIn("`" + SHA[:8] + "`", self.body.read_text())
+        self.assertIn("`" + self.sha[:8] + "`", self.body.read_text())
         self.assertNotIn("`" + "f" * 8 + "`", self.body.read_text())
         self.assertIn("Skipping PR comment for branch: main", result.stdout)
         self.assertIn("0 quarantined scenario(s), all valid", result.stdout)
@@ -138,7 +148,7 @@ class MainIntegrationGateTest(unittest.TestCase):
     def test_missing_or_mismatched_preparation_cannot_attest(self):
         self.prepared.unlink()
         self.assert_blocked("Prepared agent evidence is missing")
-        for artifact in ("", "b" * 40, SHA + "\nother-pipeline\n"):
+        for artifact in ("", "b" * 40, self.sha + "\nother-pipeline\n"):
             with self.subTest(artifact=artifact):
                 self.prepared.write_text(artifact)
                 self.assert_blocked("Prepared agent evidence is missing")
@@ -167,6 +177,12 @@ class MainIntegrationGateTest(unittest.TestCase):
         self.assertIn("Quarantined failures", self.body.read_text())
         self.assertIn(config, self.body.read_text())
 
+    def test_worktree_cannot_replace_the_committed_policy(self):
+        self.quarantine.write_text("malformed working-tree entry\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("0 quarantined scenario(s), all valid", result.stdout)
+
     def test_expired_quarantine_is_validated_even_when_all_results_pass(self):
         self.write_quarantine("glibc-x64-openj9-jdk25", expired=True)
         self.assert_blocked("review was due")
@@ -174,12 +190,14 @@ class MainIntegrationGateTest(unittest.TestCase):
 
     def test_malformed_quarantine_cannot_be_bypassed_by_passing_results(self):
         self.quarantine.write_text("not a valid quarantine entry\n")
+        self.commit_policy()
         self.assert_blocked("problem(s)")
         self.assertFalse(self.body.exists())
 
     def test_missing_quarantine_file_cannot_attest(self):
         self.quarantine.unlink()
-        self.assert_blocked("does not exist")
+        self.commit_policy()
+        self.assert_blocked("Cannot read the quarantine list from the candidate commit")
         self.assertFalse(self.body.exists())
 
 

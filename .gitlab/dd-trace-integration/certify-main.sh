@@ -23,13 +23,19 @@ if [ ! -f ddprof-commit-sha.txt ] || [ "$(<ddprof-commit-sha.txt)" != "${CI_COMM
 fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# QUARANTINE_LIST is a test hook in validate-quarantine.sh and post-pr-comment.sh;
-# a project- or group-level CI/CD variable with the same name reaches genuine
-# push pipelines too, so the certification job always validates the checked-in list.
+# Both gate scripts accept a list path. Ignore inherited paths and working-tree
+# contents: validate and aggregate with the same bytes from the candidate commit.
 unset QUARANTINE_LIST
+policy_dir=$(mktemp -d)
+trap 'rm -rf "$policy_dir"' EXIT
+export QUARANTINE_LIST="$policy_dir/quarantine.txt"
+if ! git --no-replace-objects -C "$HERE" cat-file blob "$CI_COMMIT_SHA:.gitlab/dd-trace-integration/quarantine.txt" > "$QUARANTINE_LIST"; then
+  echo '::error::Cannot read the quarantine list from the candidate commit' >&2
+  exit 1
+fi
 bash "${HERE}/validate-quarantine.sh"
 # The existing aggregator skips PR posting for main, before obtaining any token.
 # Pin its legacy metadata to this pipeline rather than an inherited environment.
 export DDPROF_COMMIT_BRANCH=main
 export DDPROF_COMMIT_SHA="${CI_COMMIT_SHA}"
-exec bash "${HERE}/post-pr-comment.sh" integration-test-results
+bash "${HERE}/post-pr-comment.sh" integration-test-results
