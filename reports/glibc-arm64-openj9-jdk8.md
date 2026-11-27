@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-11-27 08:26:51 EST
+**Date:** 2026-11-27 08:37:39 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 26 |
-| Sample Rate | 0.43/sec |
-| Health Score | 27% |
+| CPU Samples | 28 |
+| Sample Rate | 0.47/sec |
+| Health Score | 29% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 11 |
-| Sample Rate | 0.18/sec |
-| Health Score | 11% |
-| Threads | 6 |
+| CPU Samples | 17 |
+| Sample Rate | 0.28/sec |
+| Health Score | 18% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
 
 ```
-1795785674 33
-1795785679 33
-1795785684 33
-1795785689 33
-1795785694 33
-1795785699 33
-1795785705 33
-1795785710 33
-1795785715 33
-1795785720 33
-1795785725 33
-1795785730 33
-1795785735 33
-1795785740 33
-1795785745 33
-1795785750 33
-1795785755 33
-1795785760 33
-1795785765 33
-1795785770 33
+1795786398 33
+1795786403 33
+1795786408 33
+1795786413 33
+1795786418 33
+1795786423 33
+1795786428 33
+1795786433 33
+1795786438 33
+1795786443 33
+1795786448 33
+1795786453 33
+1795786458 33
+1795786463 33
+1795786468 33
+1795786473 33
+1795786478 33
+1795786484 33
+1795786489 33
+1795786494 33
 ```
 </details>
 
