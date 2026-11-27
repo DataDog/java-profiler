@@ -177,23 +177,37 @@ public:
   // without splitting a character. It is never longer than len, so callers size flushes from len.
   __attribute__((no_sanitize("bounds")))
   void putUtf8(const char *v, u32 len) {
-    u32 ascii = 0;
-    while (ascii < len && static_cast<unsigned char>(v[ascii]) < 0x80) {
-      ascii++;
-    }
-    if (ascii == len) {
-      len = len < MAX_STRING_LENGTH ? len : MAX_STRING_LENGTH;
-      put8(3);
-      putVar32(len);
-      put(v, len);
+    const u32 capped = len < MAX_STRING_LENGTH ? len : MAX_STRING_LENGTH;
+    const u32 ascii = asciiPrefixLength(v, capped);
+    put8(3);
+    if (ascii == capped) {
+      putVar32(capped);
+      put(v, capped);
       return;
     }
-    u32 out_len = static_cast<u32>(toStandardUtf8(v, len, nullptr, MAX_STRING_LENGTH));
-    put8(3);
-    putVar32(out_len);
-    assert(static_cast<int>(_offset + out_len) < limit());
-    toStandardUtf8(v, len, _data + _offset, out_len);
-    _offset += static_cast<int>(out_len);
+    // Decodes in one pass after a length field as wide as capped's varint, patched afterwards.
+    // The output is never longer than capped, so the field fits; an output that needs one varint
+    // byte less is moved back by one byte, so the length is always a minimal varint.
+    static_assert(MAX_STRING_LENGTH < (1 << 14), "the length field holds at most two varint bytes");
+    const int length_at = _offset;
+    int length_width = capped < 0x80 ? 1 : 2;
+    _offset += length_width;
+    put(v, ascii);
+    u32 out_len = ascii + static_cast<u32>(toStandardUtf8(v + ascii, len - ascii, _data + _offset,
+                                                          MAX_STRING_LENGTH - ascii));
+    _offset += static_cast<int>(out_len - ascii);
+    assert(_offset < limit());
+    if (length_width == 2 && out_len < 0x80) {
+      std::memmove(_data + length_at + 1, _data + length_at + 2, out_len);
+      _offset--;
+      length_width = 1;
+    }
+    if (length_width == 1) {
+      _data[length_at] = static_cast<char>(out_len);
+    } else {
+      _data[length_at] = static_cast<char>(out_len | 0x80);
+      _data[length_at + 1] = static_cast<char>(out_len >> 7);
+    }
   }
 
   __attribute__((no_sanitize("bounds")))
