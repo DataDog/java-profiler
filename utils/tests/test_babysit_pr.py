@@ -627,6 +627,10 @@ class CliTest(unittest.TestCase):
             mod.run(["true"], 60, whole=True)
         self.assertFalse(cm.exception.started)
         self.assertEqual(mod.run(["true"], 60)[0], 0)
+        n = len(self.calls())
+        with self.assertRaises(mod.OutOfTime) as cm:
+            mod.gh_api("repos/o/r/issues/1/comments", "POST", {"body": "x"})
+        self.assertEqual((cm.exception.started, self.calls()[n:]), (False, []))
 
     def test_no_poll_once_slice_ended(self):
         self.cli("start")

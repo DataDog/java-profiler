@@ -49,8 +49,9 @@ the worker needs:
      `--force-with-lease` against the handoff base; and only after the push succeeds,
      posts the queued replies with `{commit}` replaced by the pushed SHA and
      re-requests the listed reviewers. If it is interrupted after the push, run it
-     again, also past the caps: it does not push twice and posts only the missing replies. A lease
-     rejection means the branch moved: fetch, tell the user, do not force.
+     again, also past the caps: it does not push twice and posts only the missing
+     replies. A lease rejection means the branch moved: fetch, tell the user, do not
+     force.
 - **`decision`** — a design question with options and a recommendation. Bring it to
   the user. Post the decided reply with `reply`, or implement the choice yourself,
   then `resolve-handoff --pr <n> --note "<decision>"`.
