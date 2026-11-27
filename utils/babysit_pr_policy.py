@@ -67,8 +67,8 @@ def ci_summary(check_runs, statuses):
             failing.append({"name": name, "kind": "gha" if m else "other",
                             "run_id": int(m.group(1)) if m else None, "url": url})
     latest = {}
-    for st in statuses:  # newest first per the REST contract; keep the first per context
-        latest.setdefault(st.get("context"), st)
+    for st in sorted(statuses, key=lambda x: x.get("updated_at") or "", reverse=True):
+        latest.setdefault(st.get("context"), st)  # newest update per context; stable on ties
     for ctx, st in sorted(latest.items()):
         if ctx == BITS_CONTEXT:
             continue
@@ -83,7 +83,7 @@ def ci_summary(check_runs, statuses):
 
 def bits_state(statuses):
     """success|failure|pending|missing for the newest bits-review/head status."""
-    for st in statuses:
+    for st in sorted(statuses, key=lambda x: x.get("updated_at") or "", reverse=True):
         if st.get("context") == BITS_CONTEXT:
             s = st.get("state")
             return "failure" if s in ("failure", "error") else s

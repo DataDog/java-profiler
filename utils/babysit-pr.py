@@ -215,17 +215,24 @@ def cmd_start(a):
                       deadline_at=now + CAP_S, fix_rounds_used=0, expected_head=pr["head"]["sha"],
                       status_comment_id=None, run_log=[], surfaced=[], inbox={}, untrusted={},
                       perm_cache={}, facts={}, idle_polls=0, next_poll_at=0, pushed=[],
-                      flags=[], pending_handoff=None)
+                      flags=[], pending_handoff=None, acked={}, labeled=False)
             log(st, "started", "head `%s`" % st["expected_head"][:9])
         else:
+            st["parent_checkout"] = git("rev-parse", "--show-toplevel")
             log(st, "resumed", "worker relaunched on `%s`" % st["expected_head"][:9])
-        st["status"], st["heartbeat_at"] = "running", now
-        if fresh:
+        # Saved before any GitHub write, with heartbeat 0: if a write below fails, the
+        # next start resumes this run instead of posting a second status comment.
+        st["status"], st["heartbeat_at"] = "running", 0
+        save(st)
+        if not st["labeled"]:
             if gh_api("repos/%s/labels/%s" % (REPO, LABEL), ok404=True) is None:
                 st["flags"].append("label %s does not exist in the repo; not created" % LABEL)
             else:
                 gh_api("repos/%s/issues/%d/labels" % (REPO, a.pr), "POST", {"labels": [LABEL]})
+            st["labeled"] = True
+            save(st)
         publish_status(st)
+        st["heartbeat_at"] = now
         save(st)
     dirty = git("status", "--porcelain", "--untracked-files=no")
     emit({"result": "started" if fresh else "resumed", "branch": st["branch"],
@@ -366,38 +373,58 @@ def cmd_wait(a):
         sleep(max(1, min(due, end) - now))
 
 
+def ack_keys(st, keys):
+    """Move inbox events to surfaced; the event bodies stay in acked for the stop summary."""
+    for key in keys or []:
+        ev = st["inbox"].pop(key, None)
+        if ev is None and key not in st["surfaced"]:
+            raise Refused("no event %s in the inbox" % key)
+        if ev is not None:
+            st["acked"][key] = ev
+        if key not in st["surfaced"]:
+            st["surfaced"].append(key)
+
+
 def cmd_ack(a):
     with locked(a.pr) as (box, save):
         st = require(box, a.pr)
-        for key in a.keys:
-            if st["inbox"].pop(key, None) is None and key not in st["surfaced"]:
-                raise Refused("no event %s in the inbox" % key)
-            if key not in st["surfaced"]:
-                st["surfaced"].append(key)
+        ack_keys(st, a.keys)
         save(st)
     emit({"result": "acked", "keys": a.keys})
     return 0
 
 
-def inline_comments(pr):
-    return gh_api("repos/%s/pulls/%d/comments?per_page=100" % (REPO, pr), jq=".[]", paginate=True)
+def comments(pr, kind):
+    path = "pulls/%d/comments" if kind == "inline" else "issues/%d/comments"
+    return gh_api("repos/%s/%s?per_page=100" % (REPO, path % pr), jq=".[]", paginate=True)
 
 
-def post_reply(st, to, kind, body, thread=None):
-    """Post one signed reply unless the thread already carries the babysitter's own;
-    records the target in replied either way. thread is the PR's inline comments, fetched
-    when None. Returns the posted id or None."""
+def reply_tag(to):
+    return "<!-- babysit-pr reply-to:%d -->" % to
+
+
+def already_replied(c, to, kind, self_id):
+    if not policy.is_own(c, self_id):
+        return False
+    return c.get("in_reply_to_id") == to if kind == "inline" else reply_tag(to) in (c.get("body") or "")
+
+
+def post_reply(st, to, kind, body, existing=None):
+    """Post one signed reply unless GitHub already holds the babysitter's reply to `to`
+    (a crash between the post and the state save); records `to` in replied either way.
+    existing is the PR's comments of that kind, fetched when None. The posted id or None."""
     if to in st["replied"]:
+        return None
+    if existing is None:
+        existing = comments(st["pr"], kind)
+    if any(already_replied(c, to, kind, st["self_id"]) for c in existing):
+        st["replied"].append(to)
         return None
     body = body.rstrip() + "\n\n" + policy.SIGNATURE
     if kind == "inline":
-        if thread is None:
-            thread = inline_comments(st["pr"])
-        if any(c.get("in_reply_to_id") == to and policy.is_own(c, st["self_id"]) for c in thread):
-            st["replied"].append(to)
-            return None
         res = gh_api("repos/%s/pulls/%d/comments/%d/replies" % (REPO, st["pr"], to), "POST", {"body": body})
     else:
+        body = body[:-len(policy.SIGNATURE)] + reply_tag(to) + "\n" + policy.SIGNATURE
         res = gh_api("repos/%s/issues/%d/comments" % (REPO, st["pr"]), "POST", {"body": body})
     st["replied"].append(to)
     return res["id"]
@@ -411,12 +438,10 @@ def cmd_reply(a):
                       "never posted before the push")
     with locked(a.pr) as (box, save):
         st = require(box, a.pr)
+        ack_keys(st, a.ack)
         posted = post_reply(st, a.to, a.kind, body)
-        for key in a.ack or []:
-            st["inbox"].pop(key, None)
-            if key not in st["surfaced"]:
-                st["surfaced"].append(key)
         log(st, "answered", "%s %d" % (a.kind, a.to))
+        save(st)
         publish_status(st)
         save(st)
     emit({"result": "posted" if posted else "already_replied", "id": posted})
@@ -477,9 +502,13 @@ def cmd_stage_handoff(a):
                               "on top of it, never a commit" % st["expected_head"][:9])
             git("add", "-A")
             files = git("diff", "--cached", "--name-only", "--no-renames", st["expected_head"]).splitlines()
-            if not files:
-                raise Refused("no changes to hand off")
-            check_files(files, a.scope)
+            try:
+                if not files:
+                    raise Refused("no changes to hand off")
+                check_files(files, a.scope)
+            except Refused:
+                git("reset", "-q")  # leave the edits unstaged, so a corrected retry sees only them
+                raise
             patch = os.path.join(state_dir(), "pr-%d-%s.patch" % (a.pr, st["expected_head"][:12]))
             rc, out, err = run(["git", "diff", "--cached", "--binary", "--full-index", st["expected_head"]],
                                GIT_TIMEOUT_S)
@@ -489,10 +518,7 @@ def cmd_stage_handoff(a):
                 f.write(out)
             with open(a.message_file) as f:
                 handoff.update(message=f.read(), files=files, scope=a.scope, patch=patch)
-        for key in handoff["acks"]:
-            st["inbox"].pop(key, None)
-            if key not in st["surfaced"]:
-                st["surfaced"].append(key)
+        ack_keys(st, handoff["acks"])
         st["status"], st["pending_handoff"] = "waiting_parent", handoff
         st["heartbeat_at"] = 0  # the worker exits now; a later start must resume, not see it live
         log(st, "handoff", "%s for the session: %s" % (a.kind, summary.strip().splitlines()[0][:120]))
@@ -525,7 +551,8 @@ def cmd_apply_handoff(a):
             # A crash after the commit but before the save leaves HEAD one signed commit
             # past the base with exactly the handoff's files: adopt it instead of stranding it.
             if git("rev-parse", "-q", "--verify", "HEAD^", check=False) == h["base_head"] \
-                    and committed_files(h["base_head"], head) == sorted(h["files"]) and is_signed(head):
+                    and committed_files(h["base_head"], head) == sorted(h["files"]) and is_signed(head) \
+                    and same_patch(h["base_head"], head, h["patch"]):
                 h["phase"], h["commit"] = "committed", head
                 save(st)
                 emit({"result": "adopted", "commit": head, "review_range": "%s..%s" % (h["base_head"], head)})
@@ -548,6 +575,12 @@ def cmd_apply_handoff(a):
 
 def committed_files(base, commit):
     return sorted(git("diff", "--name-only", "--no-renames", base, commit).splitlines())
+
+
+def same_patch(base, commit, patch):
+    rc, out, _ = run(["git", "diff", "--binary", "--full-index", base, commit], GIT_TIMEOUT_S)
+    with open(patch) as f:
+        return rc == 0 and out == f.read()
 
 
 def is_signed(commit):
@@ -599,11 +632,17 @@ def cmd_push_and_reply(a):
             if not fresh:
                 raise Refused("review marker not fresh for HEAD; run pre-pr-review first: " + why)
             head = git("rev-parse", "HEAD")
-            rc, _, err = run(["git", "push", st["remote"],
-                              "--force-with-lease=refs/heads/%s:%s" % (st["branch"], h["base_head"]),
-                              "HEAD:refs/heads/%s" % st["branch"]], PUSH_TIMEOUT_S)
-            if rc != 0:
-                raise Refused("push refused; no reply was posted: " + err.strip()[-500:])
+            if h["kind"] == "rebase" and (head == h["base_head"] or run(
+                    ["git", "merge-base", "--is-ancestor", "refs/remotes/%s/%s" % (st["remote"], st["base"]), head],
+                    GIT_TIMEOUT_S)[0] != 0):
+                raise Refused("HEAD is not rebased onto %s/%s; rebase first" % (st["remote"], st["base"]))
+            remote_tip = git("ls-remote", st["remote"], "refs/heads/" + st["branch"], timeout=GH_TIMEOUT_S)
+            if remote_tip.split("\t")[0] != head:  # equal: pushed before a crash lost the save
+                rc, _, err = run(["git", "push", st["remote"],
+                                  "--force-with-lease=refs/heads/%s:%s" % (st["branch"], h["base_head"]),
+                                  "HEAD:refs/heads/%s" % st["branch"]], PUSH_TIMEOUT_S)
+                if rc != 0:
+                    raise Refused("push refused; no reply was posted: " + err.strip()[-500:])
             h["phase"], h["pushed"] = "pushed", head
             st["expected_head"], st["fix_rounds_used"] = head, st["fix_rounds_used"] + 1
             st["pushed"].append(head)
@@ -613,9 +652,9 @@ def cmd_push_and_reply(a):
             raise Refused("handoff phase %s cannot be pushed; run apply-handoff first" % h["phase"])
         short = h["pushed"][:9]
         todo = [r for r in h["replies"] if r["to"] not in h["posted"]]
-        thread = inline_comments(a.pr) if any(r["kind"] == "inline" for r in todo) else []
+        existing = {k: comments(a.pr, k) for k in {r["kind"] for r in todo}}
         for r in todo:
-            post_reply(st, r["to"], r["kind"], r["body"].replace("{commit}", short), thread)
+            post_reply(st, r["to"], r["kind"], r["body"].replace("{commit}", short), existing[r["kind"]])
             h["posted"].append(r["to"])
             save(st)
         for login in h["reviewers"]:
@@ -655,7 +694,8 @@ def finish(st, reason):
         gh_api("repos/%s/issues/%d/labels/%s" % (REPO, st["pr"], LABEL), "DELETE", ok404=True)
         log(st, "stopped", reason)
         publish_status(st)
-    return {k: st.get(k) for k in CARRIED + ("pushed", "flags", "untrusted", "stop_reason", "pending_handoff")}
+    return {k: st.get(k) for k in CARRIED + ("pushed", "flags", "untrusted", "stop_reason", "pending_handoff",
+                                               "acked", "inbox")}
 
 
 def cmd_stop(a):

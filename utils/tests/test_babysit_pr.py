@@ -66,6 +66,18 @@ class PolicyTest(unittest.TestCase):
         self.assertNotIn("· f4\n", body)
         self.assertIn("· f%d\n" % (P.LOG_ENTRIES + 4), body)
 
+    def test_log_bound_is_exclusive(self):
+        st = {"run_log": [{"t": "00:00", "tag": "CI", "fact": "f"}] * P.LOG_ENTRIES,
+              "status": "running", "started_hhmm": "00:00", "replied": [], "facts": {}}
+        self.assertNotIn("earlier entries", P.render_status(st, "00:00"))
+
+    def test_newest_status_per_context_wins(self):
+        sts = [{"context": "dd-gitlab/x", "state": "failure", "updated_at": "1"},
+               {"context": "dd-gitlab/x", "state": "success", "updated_at": "2"},
+               {"context": P.BITS_CONTEXT, "state": "failure", "updated_at": "1"},
+               {"context": P.BITS_CONTEXT, "state": "success", "updated_at": "3"}]
+        self.assertEqual((P.ci_summary([], sts)["state"], P.bits_state(sts)), ("green", "success"))
+
     def test_failing_kinds(self):
         runs = [{"name": "g", "status": "completed", "conclusion": "failure",
                  "details_url": "https://github.com/o/r/actions/runs/123/job/9"}]
@@ -285,7 +297,8 @@ class CliTest(unittest.TestCase):
         wt = self.worker()
         out = self.stage_fix(wt, path="AGENTS.md", rc=1)
         self.assertIn("allowlist", out["reason"])
-        self.git("reset", "-q", "--hard", cwd=wt)
+        self.assertEqual(self.git("diff", "--cached", "--name-only", cwd=wt), "")
+        self.git("checkout", "-q", "--", "AGENTS.md", cwd=wt)
         out = self.stage_fix(wt, scope=["other.cpp"], rc=1)
         self.assertIn("declared scope", out["reason"])
         self.assertEqual(self.cli("status")["status"], "running")
@@ -430,11 +443,58 @@ class CliTest(unittest.TestCase):
         out = self.cli("stop", "--reason", "x")
         self.assertTrue(os.path.exists(out["summary"]["pending_handoff"]["patch"]))
 
-    def test_non_404_error_naming_404_is_not_not_found(self):
+    def test_failed_start_resumes_with_one_status_comment(self):
         with open(os.path.join(self.gh_dir, "fail.json"), "w") as f:
             json.dump({"GET repos/o/r/labels/dog-sitter": ["gh: id 404 rate limited (HTTP 403)", 3]}, f)
         self.assertEqual(self.cli("start", rc=2)["result"], "error")
-        self.assertFalse(os.path.exists(self.state_path()))
+        st = self.cli("status")
+        self.assertEqual((st["status"], st["heartbeat_at"], st["flags"]), ("running", 0, []))
+        self.assertEqual(self.cli("start")["result"], "resumed")
+        keys = [c["key"] for c in self.calls()]
+        self.assertEqual(keys.count("POST repos/o/r/issues/1/comments"), 1)
+        self.assertIn("POST repos/o/r/issues/1/labels", keys)
+
+    def test_push_already_landed_is_adopted(self):
+        self.cli("start")
+        self.stage_fix(self.worker())
+        commit = self.cli("apply-handoff")["commit"]
+        self.write_marker()
+        self.git("push", "-q", "origin", "HEAD:topic")
+        self.assertEqual(self.cli("push-and-reply")["commit"], commit)
+        self.assertIn("POST repos/o/r/pulls/1/comments/10/replies", [c["key"] for c in self.calls()])
+
+    def test_rebase_handoff_requires_rebase(self):
+        self.cli("start")
+        self.write(os.path.join(self.tmp, "sum"), "conflict\n", root="/")
+        self.cli("stage-handoff", "--kind", "rebase", "--summary-file", os.path.join(self.tmp, "sum"))
+        self.write_marker()
+        self.assertIn("not rebased", self.cli("push-and-reply", rc=1)["reason"])
+
+    def test_adoption_rejects_different_content(self):
+        self.cli("start")
+        self.stage_fix(self.worker())
+        self.write("ddprof-lib/src/main/cpp/a.cpp", "int a = 3;\n")
+        self.git("commit", "-qam", "other")
+        self.assertIn("not the handoff base", self.cli("apply-handoff", rc=1)["reason"])
+
+    def test_issue_reply_is_idempotent(self):
+        self.cli("start")
+        own = {"id": 50, "user": {"id": SELF}, "body": "x <!-- babysit-pr reply-to:20 -->\n" + P.SIGNATURE}
+        self.routes({"GET repos/o/r/issues/1/comments": [own]})
+        self.write(os.path.join(self.tmp, "b"), "answer", root="/")
+        out = self.cli("reply", "--to", "20", "--kind", "issue", "--body-file", os.path.join(self.tmp, "b"))
+        self.assertEqual(out["result"], "already_replied")
+        self.routes({})
+        self.cli("reply", "--to", "21", "--kind", "issue", "--body-file", os.path.join(self.tmp, "b"))
+        posted = [c for c in self.calls() if c["key"] == "POST repos/o/r/issues/1/comments"][-1]
+        self.assertIn("reply-to:21 -->\n" + P.SIGNATURE, posted["body"]["body"])
+
+    def test_stop_summary_lists_acked_events(self):
+        self.cli("start")
+        self.routes({"GET repos/o/r/pulls/1/comments": [{"id": 10, "user": AUTHOR, "body": "bug"}]})
+        self.cli("wait", "--immediate", "--max-wait", "0")
+        self.cli("ack", "thread:10")
+        self.assertIn("thread:10", self.cli("stop", "--reason", "x")["summary"]["acked"])
 
     def test_reply_refuses_commit_placeholder(self):
         self.cli("start")
