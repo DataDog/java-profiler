@@ -22,11 +22,15 @@ struct StackContext {
     uintptr_t sp;
     uintptr_t fp;
     u64 cpu;
+    // A context restored at a signal frame has its own LR, which Java walkers that fall
+    // back to frame.link() need; 0 keeps the sampled context's LR.
+    uintptr_t lr;
 
-    void set(const void* pc, uintptr_t sp, uintptr_t fp) {
+    void set(const void* pc, uintptr_t sp, uintptr_t fp, uintptr_t lr = 0) {
         this->pc = pc;
         this->sp = sp;
         this->fp = fp;
+        this->lr = lr;
     }
 };
 

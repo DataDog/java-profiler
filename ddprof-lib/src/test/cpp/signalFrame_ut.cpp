@@ -1,0 +1,424 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <gtest/gtest.h>
+#include "codeCache.h"
+#include "dwarfStep.inline.h"
+#include "libraries.h"
+#include <array>
+#include <cstddef>
+#include <new>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include "os.h"
+
+#if defined(__linux__) && defined(__aarch64__)
+class VMTestAccessor {
+    bool _old_hotspot = VM::_hotspot;
+    bool _old_openj9 = VM::_openj9;
+
+public:
+    VMTestAccessor(bool hotspot, bool openj9) { VM::_hotspot = hotspot; VM::_openj9 = openj9; }
+    ~VMTestAccessor() { VM::_hotspot = _old_hotspot; VM::_openj9 = _old_openj9; }
+    VMTestAccessor(const VMTestAccessor&) = delete;
+    VMTestAccessor& operator=(const VMTestAccessor&) = delete;
+};
+
+namespace {
+alignas(16) uint32_t trampoline_code[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+alignas(16) uint32_t custom_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+alignas(16) uint32_t other_syscall_code[] = {0xd503201f, 0xd2801588, 0xd4000001, 0xd503201f}; // getpid
+alignas(16) uint32_t unregistered_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+alignas(16) uint32_t kernel_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+alignas(16) uint32_t leaf_code[] = {0xd503201f, 0xd65f03c0};
+alignas(16) uint32_t cfi_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+const void* const caller_pc = reinterpret_cast<const void*>(0x5a5f00000108ULL);
+
+void registerLibraries() {
+    static const bool registered = [] {
+        static CodeCache vdso("[vdso]", -1, reinterpret_cast<const char*>(trampoline_code),
+                              reinterpret_cast<const char*>(trampoline_code + 4));
+        static CodeCache custom("custom-restorer", -1, reinterpret_cast<const char*>(custom_restorer),
+                                reinterpret_cast<const char*>(custom_restorer + 4));
+        static CodeCache leaf("native-clock-leaf", -1, reinterpret_cast<const char*>(leaf_code),
+                              reinterpret_cast<const char*>(leaf_code + 2));
+        static CodeCache other_syscall("other-syscall", -1, reinterpret_cast<const char*>(other_syscall_code),
+                                       reinterpret_cast<const char*>(other_syscall_code + 4));
+        static CodeCache cfi("[vdso]", -1, reinterpret_cast<const char*>(cfi_restorer),
+                             reinterpret_cast<const char*>(cfi_restorer + 4));
+        static const FrameDesc cfi_row{0, (16 << 8) | DW_REG_SP, DW_SAME_FP, -8, FrameDesc::FLAG_SIGNAL_FRAME};
+        cfi.setDwarfTable(nullptr, 0, cfi_row);
+        static const FrameDesc leaf_row{0, DW_REG_SP, DW_SAME_FP, DW_LINK_REGISTER};
+        leaf.setDwarfTable(nullptr, 0, leaf_row);
+        other_syscall.setDwarfTable(nullptr, 0, leaf_row);
+        bool ok = Libraries::instance()->addLibraryForTest(&vdso);
+        ok = Libraries::instance()->addLibraryForTest(&custom) && ok;
+        ok = Libraries::instance()->addLibraryForTest(&other_syscall) && ok;
+        ok = Libraries::instance()->addLibraryForTest(&cfi) && ok;
+        return Libraries::instance()->addLibraryForTest(&leaf) && ok;
+    }();
+    ASSERT_TRUE(registered);
+}
+
+// Restores the decoder's trusted restorer, which the tests replace.
+class TrustedRestorerScope {
+    const void* _old = SignalFrame::trustedRestorer();
+
+public:
+    explicit TrustedRestorerScope(const void* restorer) { SignalFrame::trustRestorer(restorer); }
+    ~TrustedRestorerScope() { SignalFrame::trustRestorer(_old); }
+    TrustedRestorerScope(const TrustedRestorerScope&) = delete;
+    TrustedRestorerScope& operator=(const TrustedRestorerScope&) = delete;
+};
+
+using KernelSigaction = SignalFrame::KernelSigaction;
+const int kernel_query_signal = SIGRTMIN + 7;
+// Reserved for one test: OS::installSignalHandler keeps per-signal state for good.
+const int install_signal = SIGRTMIN + 8;
+
+void ignoreSignal(int, siginfo_t*, void*) {}
+void otherSignal(int, siginfo_t*, void*) {}
+void ignoreSimpleSignal(int) {}
+
+class SignalFrameTest : public ::testing::Test {
+    VMTestAccessor _vm_kind{true, false};
+protected:
+    static constexpr size_t context_size = sizeof(siginfo_t) + sizeof(ucontext_t);
+    using SignalStack = std::array<unsigned char, context_size + 256>;
+
+    void SetUp() override { registerLibraries(); }
+
+    // A kernel rt_sigframe precedes the interrupted stack on Linux arm64.
+    static ucontext_t* savedContext(SignalStack& stack) {
+        auto* context = new (stack.data() + sizeof(siginfo_t)) ucontext_t{};
+        context->uc_mcontext.pc = reinterpret_cast<uintptr_t>(leaf_code);
+        context->uc_mcontext.sp = reinterpret_cast<uintptr_t>(stack.data() + context_size);
+        context->uc_mcontext.regs[29] = 1; // compiled Java can use FP as a general register
+        context->uc_mcontext.regs[30] = reinterpret_cast<uintptr_t>(caller_pc);
+        return context;
+    }
+
+    static bool step(WalkPc& pc, uintptr_t& sp, uintptr_t& fp, uintptr_t bottom,
+                     int depth, StackFrame& frame, bool* truncated = nullptr) {
+        return advanceDwarfFrame(pc, sp, fp, bottom, depth, frame, Profiler::instance(), truncated);
+    }
+};
+
+TEST_F(SignalFrameTest, RestoresExactPcAndRegistersThenUsesInterruptedLr) {
+    for (int instruction : {1, 2}) {
+        alignas(16) SignalStack stack{};
+        auto* saved = savedContext(stack);
+        ucontext_t sampled{};
+        sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(trampoline_code + instruction);
+        sampled.uc_mcontext.regs[30] = 0x5a5f00000908ULL; // handler LR must not escape
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(trampoline_code + instruction);
+        uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+        uintptr_t bottom = reinterpret_cast<uintptr_t>(stack.data() + stack.size());
+        bool truncated = false;
+        ASSERT_TRUE(step(pc, sp, fp, bottom, 2, frame, &truncated));
+        EXPECT_FALSE(truncated);
+        EXPECT_EQ(static_cast<const void*>(leaf_code), pc.raw());
+        EXPECT_FALSE(pc.isReturnAddress());
+        EXPECT_EQ(saved->uc_mcontext.sp, sp);
+        EXPECT_EQ(1u, fp);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(caller_pc), frame.link());
+        ASSERT_TRUE(step(pc, sp, fp, bottom, 3, frame));
+        EXPECT_EQ(caller_pc, pc.raw());
+        EXPECT_TRUE(pc.isReturnAddress());
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(trampoline_code + instruction), sampled.uc_mcontext.pc);
+        EXPECT_EQ(0x5a5f00000908ULL, sampled.uc_mcontext.regs[30]);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(leaf_code), saved->uc_mcontext.pc);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(stack.data() + context_size), saved->uc_mcontext.sp);
+        EXPECT_EQ(1u, saved->uc_mcontext.regs[29]);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(caller_pc), saved->uc_mcontext.regs[30]);
+    }
+}
+
+TEST_F(SignalFrameTest, ExplicitSignalCfiTakesPrecedenceOverAbiFallback) {
+    alignas(16) uintptr_t stack[4]{};
+    stack[1] = reinterpret_cast<uintptr_t>(caller_pc);
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(cfi_restorer + 1);
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setExactAddress(cfi_restorer + 1);
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stack), fp = 0;
+    bool truncated = false;
+    ASSERT_TRUE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack + 4), 2, frame, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(caller_pc, pc.raw());
+    EXPECT_FALSE(pc.isReturnAddress());
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(stack + 2), sp);
+    EXPECT_TRUE(frame.isInterruptedPC(cfi_restorer + 1));
+}
+
+TEST_F(SignalFrameTest, DecoderLeavesOutputUnchangedWhenRestorerIsInvalid) {
+    alignas(16) SignalStack stack{};
+    savedContext(stack);
+    SignalFrame result{stack.data(), caller_pc, 16, 32};
+    EXPECT_EQ(SignalFrame::Result::INVALID,
+              SignalFrame::decode(custom_restorer + 1, reinterpret_cast<uintptr_t>(stack.data()),
+                                  reinterpret_cast<uintptr_t>(stack.data() + stack.size()), nullptr, result));
+    EXPECT_EQ(stack.data(), result.context);
+    EXPECT_EQ(caller_pc, result.pc);
+    EXPECT_EQ(16u, result.sp);
+    EXPECT_EQ(32u, result.fp);
+}
+
+TEST_F(SignalFrameTest, RejectsIncompleteOrMisalignedSignalFrame) {
+    alignas(16) SignalStack stack{};
+    savedContext(stack);
+    for (int invalid : {0, 1}) {
+        ucontext_t sampled{};
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(trampoline_code + 1);
+        uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()) + invalid, fp = 0;
+        uintptr_t bottom = invalid == 0 ? sp + sizeof(siginfo_t) : reinterpret_cast<uintptr_t>(stack.data() + stack.size());
+        bool truncated = false;
+        EXPECT_FALSE(step(pc, sp, fp, bottom, 2, frame, &truncated));
+        EXPECT_TRUE(truncated);
+        EXPECT_EQ(static_cast<const void*>(trampoline_code + 1), pc.raw());
+    }
+}
+
+TEST_F(SignalFrameTest, AcceptsFrameEndingAtSavedPc) {
+    constexpr size_t required = sizeof(siginfo_t) + offsetof(ucontext_t, uc_mcontext.pc) + sizeof(uint64_t);
+    alignas(16) SignalStack stack{};
+    auto* saved = savedContext(stack);
+    uintptr_t base = reinterpret_cast<uintptr_t>(stack.data());
+    saved->uc_mcontext.sp = base + sizeof(siginfo_t); // keep the interrupted SP inside the bound
+    for (size_t span : {required, required - 1}) {
+        ucontext_t sampled{};
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(trampoline_code + 1);
+        uintptr_t sp = base, fp = 0;
+        bool truncated = false;
+        EXPECT_EQ(span == required, step(pc, sp, fp, base + span, 2, frame, &truncated));
+        EXPECT_EQ(span != required, truncated);
+    }
+}
+
+TEST_F(SignalFrameTest, RejectsBackwardMisalignedOrOutOfRangeInterruptedSp) {
+    alignas(16) SignalStack stack{};
+    auto* saved = savedContext(stack);
+    uintptr_t base = reinterpret_cast<uintptr_t>(stack.data()), bottom = base + stack.size();
+    for (uintptr_t interrupted_sp : {base, base - 16, bottom, base + context_size + 1}) {
+        saved->uc_mcontext.sp = interrupted_sp;
+        ucontext_t sampled{};
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(trampoline_code + 1);
+        uintptr_t sp = base, fp = 0;
+        EXPECT_FALSE(step(pc, sp, fp, bottom, 2, frame));
+        EXPECT_EQ(base, sp);
+    }
+}
+
+TEST_F(SignalFrameTest, RejectsMissingOrMisalignedInterruptedPc) {
+    alignas(16) SignalStack stack{};
+    auto* saved = savedContext(stack);
+    for (uintptr_t interrupted_pc : {uintptr_t(0), reinterpret_cast<uintptr_t>(leaf_code) + 1}) {
+        saved->uc_mcontext.pc = interrupted_pc;
+        ucontext_t sampled{};
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(trampoline_code + 1);
+        uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+        EXPECT_FALSE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 2, frame));
+    }
+}
+
+TEST_F(SignalFrameTest, DoesNotRestoreAtUnrecognizedVdsoInstruction) {
+    alignas(16) SignalStack stack{};
+    savedContext(stack);
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(trampoline_code + 3);
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setReturnAddress(trampoline_code + 3);
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+    EXPECT_FALSE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 2, frame));
+    EXPECT_TRUE(frame.isInterruptedPC(trampoline_code + 3));
+}
+
+TEST_F(SignalFrameTest, TruncatesAtRestorerOutsideVdso) {
+    alignas(16) SignalStack stack{};
+    savedContext(stack);
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(custom_restorer + 1);
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setReturnAddress(custom_restorer + 1);
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+    bool truncated = false;
+    EXPECT_FALSE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 2, frame, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_TRUE(frame.isInterruptedPC(custom_restorer + 1));
+}
+
+TEST_F(SignalFrameTest, RecoversAtTheTrustedRestorerOutsideVdso) {
+    TrustedRestorerScope trusted(kernel_restorer + 1);
+    for (int instruction : {1, 2}) {
+        alignas(16) SignalStack stack{};
+        auto* saved = savedContext(stack);
+        ucontext_t sampled{};
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(kernel_restorer + instruction);
+        ASSERT_EQ(nullptr, Profiler::instance()->findLibraryByAddress(pc.attribution()));
+        uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+        bool truncated = false;
+        ASSERT_TRUE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 2, frame, &truncated));
+        EXPECT_FALSE(truncated);
+        EXPECT_EQ(static_cast<const void*>(leaf_code), pc.raw());
+        EXPECT_EQ(saved->uc_mcontext.sp, sp);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(caller_pc), frame.link());
+    }
+    // The same instruction pair elsewhere, or a pair starting one word before the trusted address, truncates.
+    for (bool shifted : {false, true}) {
+        TrustedRestorerScope moved(shifted ? kernel_restorer + 2 : kernel_restorer + 1);
+        alignas(16) SignalStack stack{};
+        savedContext(stack);
+        SignalFrame result{};
+        EXPECT_EQ(SignalFrame::Result::INVALID,
+                  SignalFrame::decode(shifted ? kernel_restorer + 1 : custom_restorer + 1,
+                                      reinterpret_cast<uintptr_t>(stack.data()),
+                                      reinterpret_cast<uintptr_t>(stack.data() + stack.size()), nullptr, result));
+    }
+}
+
+TEST_F(SignalFrameTest, ReportsTheRestorerTheKernelHoldsForASignal) {
+    const int signo = kernel_query_signal;
+    const void* handler = reinterpret_cast<const void*>(ignoreSignal);
+    KernelSigaction old{};
+    ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, nullptr, &old, sizeof(old.mask)));
+    for (unsigned long flags : {SA_SIGINFO | SignalFrame::KERNEL_SA_RESTORER, static_cast<unsigned long>(SA_SIGINFO)}) {
+        KernelSigaction action{const_cast<void*>(handler), flags, kernel_restorer + 1, 0};
+        ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &action, nullptr, sizeof(action.mask)));
+        EXPECT_EQ(flags & SignalFrame::KERNEL_SA_RESTORER ? static_cast<const void*>(kernel_restorer + 1) : nullptr,
+                  SignalFrame::kernelRestorer(signo, handler));
+        // A restorer registered with someone else's handler is not reported.
+        EXPECT_EQ(nullptr, SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(otherSignal)));
+    }
+    // Nor one registered with SIG_DFL, which a 1-arg install's NULL action would match.
+    KernelSigaction default_action{nullptr, SignalFrame::KERNEL_SA_RESTORER, kernel_restorer + 1, 0};
+    ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &default_action, nullptr, sizeof(default_action.mask)));
+    EXPECT_EQ(nullptr, SignalFrame::kernelRestorer(signo, nullptr));
+    ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &old, nullptr, sizeof(old.mask)));
+}
+
+TEST_F(SignalFrameTest, InstallingAHandlerTrustsOnlyAReportedRestorer) {
+    const int signo = install_signal;
+    struct sigaction old{};
+    ASSERT_EQ(0, sigaction(signo, nullptr, &old));
+    const void* sentinel = kernel_restorer + 1;
+    TrustedRestorerScope trusted(sentinel);
+    // The 3-arg install comes first, so the original action is the one kept for chaining.
+    OS::installSignalHandler(signo, ignoreSignal);
+    const void* restorer = SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(ignoreSignal));
+    const void* after_3arg = SignalFrame::trustedRestorer();
+    SignalFrame::trustRestorer(sentinel);
+    // musl reports a restorer for a 1-arg handler too; it is not trusted.
+    OS::installSignalHandler(signo, nullptr, ignoreSimpleSignal);
+    const void* after_1arg = SignalFrame::trustedRestorer();
+    ASSERT_EQ(0, sigaction(signo, &old, nullptr));
+    // musl reports its own restorer; glibc arm64 returns through the vDSO and reports none.
+    ASSERT_EQ(OS::isMusl(), restorer != nullptr);
+    EXPECT_EQ(restorer != nullptr ? restorer : sentinel, after_3arg);
+    EXPECT_EQ(sentinel, after_1arg);
+}
+
+TEST_F(SignalFrameTest, SuccessfulRecoveryPreservesPriorTruncation) {
+    alignas(16) SignalStack stack{};
+    savedContext(stack);
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(trampoline_code + 1);
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setReturnAddress(trampoline_code + 1);
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+    bool truncated = true;
+    EXPECT_TRUE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 2, frame, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(static_cast<const void*>(leaf_code), pc.raw());
+}
+
+TEST_F(SignalFrameTest, OtherSyscallsRetainNormalCfiWithoutTruncation) {
+    alignas(16) SignalStack stack{};
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(other_syscall_code + 1);
+    sampled.uc_mcontext.regs[30] = reinterpret_cast<uintptr_t>(caller_pc);
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setExactAddress(other_syscall_code + 1);
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+    bool truncated = false;
+    EXPECT_TRUE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 1, frame, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(caller_pc, pc.raw());
+    EXPECT_TRUE(frame.isInterruptedPC(other_syscall_code + 1));
+}
+
+TEST_F(SignalFrameTest, UnregisteredRestorersStopWithTruncationOnRecoveringVms) {
+    for (bool hotspot : {true, false}) {
+        VMTestAccessor vm_kind(hotspot, !hotspot);
+        for (int instruction : {1, 2}) {
+            alignas(16) uintptr_t stack[32]{};
+            uintptr_t sp = reinterpret_cast<uintptr_t>(stack), fp = reinterpret_cast<uintptr_t>(stack + 4);
+            stack[4] = fp + 16;
+            stack[5] = reinterpret_cast<uintptr_t>(caller_pc);
+            ucontext_t sampled{};
+            sampled.uc_mcontext.pc = reinterpret_cast<uintptr_t>(unregistered_restorer + instruction);
+            StackFrame frame(&sampled);
+            WalkPc pc;
+            pc.setExactAddress(unregistered_restorer + instruction);
+            ASSERT_EQ(nullptr, Profiler::instance()->findLibraryByAddress(pc.attribution()));
+            bool truncated = false;
+            EXPECT_FALSE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack + 32), 2, frame, &truncated));
+            EXPECT_TRUE(truncated);
+            EXPECT_EQ(unregistered_restorer + instruction, pc.raw());
+        }
+    }
+}
+
+TEST_F(SignalFrameTest, NonRecoveringVmsDoNotProbeUnmappedCode) {
+    VMTestAccessor vm_kind(false, false);
+    alignas(16) uintptr_t stack[32]{};
+    uintptr_t sp = reinterpret_cast<uintptr_t>(stack), fp = reinterpret_cast<uintptr_t>(stack + 4);
+    stack[4] = fp + 16;
+    stack[5] = reinterpret_cast<uintptr_t>(caller_pc);
+    ucontext_t sampled{};
+    sampled.uc_mcontext.pc = 0x5a5f00000908ULL; // deliberately has no readable backing
+    StackFrame frame(&sampled);
+    WalkPc pc;
+    pc.setExactAddress(reinterpret_cast<const void*>(sampled.uc_mcontext.pc));
+    ASSERT_EQ(nullptr, Profiler::instance()->findLibraryByAddress(pc.attribution()));
+    bool truncated = false;
+    EXPECT_TRUE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack + 32), 2, frame, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(caller_pc, pc.raw());
+}
+} // namespace
+#else
+TEST(SignalFrameTest, UnsupportedAbiDoesNotProbeOrChangeOutput) {
+    void* sentinel = reinterpret_cast<void*>(uintptr_t(1));
+    SignalFrame result{sentinel, sentinel, 16, 32};
+    EXPECT_EQ(SignalFrame::Result::NOT_SIGNAL,
+              SignalFrame::decode(sentinel, 1, 0, nullptr, result));
+    EXPECT_EQ(sentinel, result.context);
+    EXPECT_EQ(sentinel, result.pc);
+    EXPECT_EQ(16u, result.sp);
+    EXPECT_EQ(32u, result.fp);
+}
+
+TEST(SignalFrameTest, RequiresLinuxAarch64SignalAbi) {
+    GTEST_SKIP() << "Linux arm64 signal trampoline ABI";
+}
+#endif

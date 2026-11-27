@@ -472,7 +472,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
         bool in_entry_nm = continuation_entry_nm != nullptr
                 && CodeHeap::findNMethod(walk_pc.raw()) == continuation_entry_nm;
-        bool sampled_entry = depth == 0 && !walk_pc.isReturnAddress() && in_entry_nm;
+        bool sampled_entry = !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()) && in_entry_nm;
         // A remount samples enterSpecial before thaw while its callers are still frozen,
         // so no PC sampled inside it proves the stack complete, its exception exit included.
         if (sampled_entry && truncated != nullptr) *truncated = true;
@@ -774,7 +774,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     }
                 }
 
-                if (depth == 0 && !seeded_from_anchor) {
+                if (!seeded_from_anchor && !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw())) {
                     VMMethod* method = (VMMethod*)frame.method();
                     jmethodID method_id = getMethodId(method);
                     if (method_id != JMETHODID_NOT_WALKABLE) {
@@ -830,7 +830,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 if (nm->isFrameCompleteAt(walk_pc.raw())) {
                     const void* epilogue_pc = walk_pc.raw();
-                    if (!seeded_from_anchor && depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)epilogue_pc, sp, fp)) {
+                    if (!seeded_from_anchor && !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw()) && frame.unwindEpilogue(nm, reinterpret_cast<uintptr_t&>(epilogue_pc), sp, fp)) {
                         walk_pc.setReturnAddress(epilogue_pc);
                         continue;
                     }
@@ -905,7 +905,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 continue;
             } else {
                 // Reserve against max_depth: the truncation clamp drops the slot past it.
-                if (nm->isVTableStub() && depth == 0 && !walk_pc.isReturnAddress()
+                if (nm->isVTableStub() && !walk_pc.isReturnAddress() && frame.isInterruptedPC(walk_pc.raw())
                         && depth + 1 < max_depth) {
                     VMSymbol* symbol = captureVtableReceiver(frame, reinterpret_cast<uintptr_t>(walk_pc.raw()), sp, fp, features);
                     if (symbol != nullptr) {
@@ -1145,7 +1145,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         have_prev_native_pc = true;
 
         if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
-                               profiler)) {
+                               profiler, truncated)) {
             break;
         }
     }
@@ -1264,7 +1264,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   HotspotStackFrame frame(ucontext);
-  // ctx_snapshot (passed in by the caller) snapshotted pc/sp/fp before this
+  // ctx_snapshot (passed in by the caller) snapshotted pc/sp/fp and LR before this
   // function starts feeding them to HotSpot's own AsyncGetCallTrace below (it
   // mutates them in place via frame.restore() / frame.unwindStub() /
   // frame.unwindCompiled() to try alternate frames), so they can be put back
@@ -1308,6 +1308,8 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   if (in_java && java_ctx->sp != 0) {
     // skip ahead to the Java frames before calling AGCT.
     frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
+    // ASGCT retries read frame.link(); ctx_snapshot restores the signal context's own LR.
+    if (java_ctx->lr != 0) frame.setLink(java_ctx->lr);
   } else if (state != _thread_uninitialized) {
     VMJavaFrameAnchor* a = vm_thread->anchor();
     if (a == nullptr || a->lastJavaSP() == 0) {
@@ -1503,7 +1505,7 @@ int HotspotSupport::asyncJavaTraceWithPostProcessing(void* ucontext, ASGCT_CallF
                                                       bool* truncated, ProfiledThread* prof_thread) {
   // getJavaTraceAsync() dereferences VMThread/anchor state directly, calls
   // into HotSpot's own AsyncGetCallTrace, and mutates the real ucontext's
-  // pc/sp/fp (and, via saveJavaAnchor(), the JavaThread anchor) in place
+  // pc/sp/fp and LR (and, via saveJavaAnchor(), the JavaThread anchor) in place
   // while doing so, with no crash protection of its own. withUcontextFaultRecovery()
   // installs a jmp ctx around just that path, so a SIGSEGV there (except
   // inside HotSpot's own AsyncGetCallTrace call) is caught by

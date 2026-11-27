@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -25,6 +26,12 @@ class StackFrame {
         _ucontext = (ucontext_t*)ucontext;
     }
 
+    // True only for the interrupted instruction in the current register context.
+    // Signal-frame recovery can replace this view without modifying either context.
+    bool isInterruptedPC(const void* address) {
+        return _ucontext != nullptr && pc() == reinterpret_cast<uintptr_t>(address);
+    }
+
     void restore(uintptr_t saved_pc, uintptr_t saved_sp, uintptr_t saved_fp) {
         if (_ucontext != nullptr) {
             pc() = saved_pc;
@@ -33,13 +40,13 @@ class StackFrame {
         }
     }
 
-    // Captures pc/sp/fp for a later restore() -- the null-safe save/restore
-    // boilerplate needed around code that mutates the real ucontext in place
+    // Captures pc/sp/fp and the link register for a later restore() -- the null-safe
+    // save/restore boilerplate needed around code that mutates the real ucontext in place
     // (e.g. HotspotSupport::getJavaTraceAsync()'s PROBE_SP loop, or
     // unwindStub()/unwindCompiled() writing pc()/sp()/fp() by reference).
     // Capturing is a no-op when ucontext is null (pc()/sp()/fp() themselves
-    // are not null-safe); restore() delegates to StackFrame::restore() above,
-    // which already is.
+    // are not null-safe); restore() delegates to StackFrame::restore() above
+    // and setLink(), which already are.
     //
     // Must be restored via an explicit restore() call on recovery path.
     // Profiler::checkFault()'s siglongjmp bypasses destructors, so RAII alone
@@ -53,6 +60,7 @@ class StackFrame {
                 _pc = frame.pc();
                 _sp = frame.sp();
                 _fp = frame.fp();
+                _lr = frame.link();
             }
         }
         virtual ~RegisterSnapshot() {
@@ -60,7 +68,9 @@ class StackFrame {
         }
 
        virtual void restore() {
-            StackFrame(_ucontext).restore(_pc, _sp, _fp);
+            StackFrame frame(_ucontext);
+            frame.restore(_pc, _sp, _fp);
+            frame.setLink(_lr);
         }
 
         uintptr_t pc() const { return _pc; }
@@ -69,7 +79,7 @@ class StackFrame {
 
       private:
         void* _ucontext;
-        uintptr_t _pc = 0, _sp = 0, _fp = 0;
+        uintptr_t _pc = 0, _sp = 0, _fp = 0, _lr = 0;
     };
 
     uintptr_t stackAt(int slot) {
@@ -82,6 +92,9 @@ class StackFrame {
 
     uintptr_t& retval();
     uintptr_t link() const;
+    // Writes the link register where the ABI has one (null-safe); x64 keeps return addresses
+    // on the stack.
+    void setLink(uintptr_t value);
     uintptr_t arg0() const;
     uintptr_t arg1() const;
     uintptr_t arg2() const;

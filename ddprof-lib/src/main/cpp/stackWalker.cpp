@@ -178,14 +178,15 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     while (depth < actual_max_depth) {
         if (JVMSupport::isJitCode(walk_pc.raw())) {
             const void* unwound_pc = walk_pc.raw();
-            if (depth == 0 && JVMSupport::canUnwind(frame, unwound_pc)) {
+            // A context restored at a signal frame can also sit on an atomic stub.
+            if ((depth == 0 || atInterruptedContext(frame, walk_pc)) && JVMSupport::canUnwind(frame, unwound_pc)) {
                 // unwindAtomicStub rewrites the pc to the link register, i.e.
                 // to a genuine return address, so the flag travels with it.
                 walk_pc.setReturnAddress(unwound_pc);
             } else if (JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
                 // Don't dereference pc as it may point to unreadable memory
                 // frame.adjustSP(page_start, pc, sp);
-                java_ctx->set(walk_pc.raw(), sp, fp);
+                java_ctx->set(walk_pc.raw(), sp, fp, restoredLink(frame, walk_pc, depth));
                 break;
             }
         }
@@ -194,7 +195,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         callchain[depth++] = attribution_pc;
 
         if (!advanceDwarfFrame(walk_pc, sp, fp, bottom, depth, frame,
-                               profiler)) {
+                               profiler, truncated)) {
             break;
         }
     }

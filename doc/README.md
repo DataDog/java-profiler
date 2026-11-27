@@ -27,7 +27,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; gated thread registration; the persistent `pthread_create` hook (loader-binding rule, pending entries, foreign wrappers left alone); recording-scoped liveness; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
-- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness, entry phases, validated OSR/return-barrier recovery, anchor retirement and vtable receiver frames
+- [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness, entry/OSR/carrier recovery, anchor retirement, vtable receiver frames, native DWARF, arm64 JNI wrappers and per-OS signal-restorer decoding
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
 - [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching (persistent sigaction/pthread_create hooks)
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, release, and rotation protocols; lazy storage
@@ -39,9 +39,9 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
 - [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
 - [MemoryOverheadCheck](building/MemoryOverheadCheck.md) - Per-PR native-memory budget check on GitLab and how to recalibrate it
-- [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
+- [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin and Google Test archive dependency ordering
 - [ReleaseTrain](building/ReleaseTrain.md) - Automated release train: nightly certification, Friday minor release, dd-trace-java bump
-- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, integration runtime applicability and JVM identity checks, local workflows and pre-setup CStack exclusions
+- [TestingGuide](building/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, integration runtime applicability and JVM identity checks, shared virtual-thread chaos coverage, local workflows and pre-setup CStack exclusions
 - [Versioning](building/Versioning.md) - Version computation from git tags
 
 ### Reference
