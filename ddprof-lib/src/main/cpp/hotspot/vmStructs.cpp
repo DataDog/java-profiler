@@ -10,11 +10,13 @@
 #include <stdarg.h>
 #include "common.h"
 #include "hotspot/vmStructs.inline.h"
+#include "hotspot/hotspotStackFrame.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
+#include "signalSafety.h"
 #include "spinLock.h"
 #include "threadLocalData.inline.h"
 #include "threadState.h"
@@ -39,6 +41,7 @@ int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
 const void* VMStructs::_call_stub_return = nullptr;
 const void* VMStructs::_cont_return_barrier   = nullptr;
+int VMStructs::_cont_entry_thread_offset = -1;
 const void* VMStructs::_cont_entry_return_pc  = nullptr;
 VMNMethod*  VMStructs::_enter_special_nm       = nullptr;
 const void* VMStructs::_interpreter_start = nullptr;
@@ -70,6 +73,7 @@ DECLARE_V27_TYPES_DO(INIT_TYPE_SIZE)
 
 DECLARE_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
+DECLARE_OPTIONAL_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 
 #undef INIT_FIELD
 #undef INIT_FIELD_WITH_VERSION
@@ -184,6 +188,7 @@ void VMStructs::init_offsets_and_addresses() {
 #define END_TYPE() }
         DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
         DECLARE_V27_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
+        DECLARE_OPTIONAL_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
 #undef READ_FIELD_VALUE_WITH_VERSION
@@ -412,7 +417,7 @@ void VMStructs::resolveOffsets() {
         _cont_return_barrier = *(const void**)_cont_return_barrier_addr;
     }
     if (_cont_entry_return_pc_addr != NULL) {
-        _cont_entry_return_pc = *(const void**)_cont_entry_return_pc_addr;
+        __atomic_store_n(&_cont_entry_return_pc, *(const void**)_cont_entry_return_pc_addr, __ATOMIC_RELEASE);
     }
     // Fallback for JDK 21-26: StubRoutines::_cont_returnBarrier and
     // ContinuationEntry::_return_pc are absent from gHotSpotVMStructs before
@@ -425,7 +430,10 @@ void VMStructs::resolveOffsets() {
     }
     if (_cont_entry_return_pc == nullptr && VM::hotspot_version() >= 21) {
         const void** sym = (const void**)_libjvm->findSymbol("_ZN17ContinuationEntry10_return_pcE");
-        if (sym != nullptr) _cont_entry_return_pc = *sym;
+        if (sym != nullptr) {
+            __atomic_store_n(&_cont_entry_return_pc, *sym, __ATOMIC_RELEASE);
+            __atomic_store_n(&_cont_entry_return_pc_addr, (address)sym, __ATOMIC_RELEASE);
+        }
     }
 
     // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
@@ -476,14 +484,29 @@ void VMStructs::resolveOffsets() {
     if (_interpreter_nm == NULL && _interpreter_start != NULL) {
         _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);
     }
-    if (_enter_special_nm == NULL && _cont_entry_return_pc != NULL) {
-        // On JDK 27+, enterSpecial is a proper nmethod; findNMethod succeeds.
-        // On JDK 21-26, it is a RuntimeBlob; findNMethod returns NULL and
-        // _enter_special_nm stays NULL.  The cont_entry_return_pc boundary is
-        // then detected via isContEntryReturnPc() in the walk loop rather than
-        // nmethod identity.
-        _enter_special_nm = CodeHeap::findNMethod(_cont_entry_return_pc);
+    if (__atomic_load_n(&_enter_special_nm, __ATOMIC_ACQUIRE) == NULL && _cont_entry_return_pc != NULL) {
+        __atomic_store_n(&_enter_special_nm, CodeHeap::findNMethod(_cont_entry_return_pc), __ATOMIC_RELEASE);
     }
+    initContEntryThreadOffset();
+}
+
+void VMStructs::initContEntryThreadOffset() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+    int offset = -1;
+    unsigned char code[8];
+    uintptr_t barrier = (uintptr_t)_cont_return_barrier;
+    uint64_t thread_size = TYPE_SIZE_NAME(VMJavaThread);
+    if (VM::hotspot_version() >= 21 && barrier != 0 && CodeHeap::contains((const void*)barrier) &&
+        (uintptr_t)_code_heap_high - barrier >= sizeof(code) &&
+        SafeAccess::safeCopy(code, (const void*)barrier, sizeof(code))) {
+        int decoded = HotspotStackFrame::continuationEntryThreadOffset(code, sizeof(code));
+        if (decoded >= 0 && (decoded & (sizeof(uintptr_t) - 1)) == 0 &&
+            thread_size >= sizeof(uintptr_t) && (uint64_t)decoded <= thread_size - sizeof(uintptr_t)) {
+            offset = decoded;
+        }
+    }
+    // VM::ready can run again while an existing profiler instance is active.
+    __atomic_store_n(&_cont_entry_thread_offset, offset, __ATOMIC_RELEASE);
 }
 
 void VMStructs::initJvmFunctions() {
