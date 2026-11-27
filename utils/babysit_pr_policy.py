@@ -178,7 +178,7 @@ def decide(state, snap, trusted, now):
         else:
             surface(_event("ci_red", "ci:%s@%s" % (f["name"], head), check=f["name"], ci_kind=f["kind"],
                            run_id=f["run_id"], url=f["url"]))
-    if ci["cancelled"] and sorted(ci["pending"]) == sorted(ci["cancelled"]):
+    if ci["cancelled"] and not ci["failing"] and sorted(ci["pending"]) == sorted(ci["cancelled"]):
         # Only cancelled checks keep CI from green and no newer run replaces them.
         surface(_event("ci_cancelled", "cancelled:" + head, head=head, checks=ci["cancelled"]))
     if bits == "failure":

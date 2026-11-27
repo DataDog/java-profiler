@@ -85,6 +85,14 @@ class PolicyTest(unittest.TestCase):
         d = P.decide(base_state(), snap(check_runs=runs), trusted, 0)
         self.assertEqual((d["facts"]["ci"], d["actions"], d["events"]), ("pending", [], []))
 
+    def test_cancel_beside_failure_is_not_unreplaced(self):
+        runs = [{"name": "a", "status": "completed", "conclusion": "failure",
+                 "details_url": "https://github.com/o/r/actions/runs/5/job/1"},
+                {"name": "b", "status": "completed", "conclusion": "cancelled",
+                 "details_url": "https://github.com/o/r/actions/runs/5/job/2"}]
+        d = P.decide(base_state(), snap(check_runs=runs), trusted, 0)
+        self.assertEqual((d["actions"], d["events"]), ([("rerun", 5, "a")], []))
+
     def test_unreplaced_cancel_wakes_worker_once(self):
         runs = [{"name": "t", "status": "completed", "conclusion": "cancelled"}]
         d = P.decide(base_state(), snap(check_runs=runs), trusted, 0)

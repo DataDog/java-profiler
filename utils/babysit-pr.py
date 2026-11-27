@@ -220,7 +220,7 @@ def cmd_start(a):
             st["parent_checkout"] = git("rev-parse", "--show-toplevel")
             log(st, "resumed", "worker relaunched on `%s`" % st["expected_head"][:9])
         # Saved before the status-comment POST, with heartbeat 0: if that POST fails, the
-        # next start resumes this run (carried lists intact) instead of starting over.
+        # next start resumes this run with its deadline instead of starting a new one.
         st["status"], st["heartbeat_at"] = "running", 0
         save(st)
         publish_status(st)
@@ -294,7 +294,7 @@ def poll_once(pr_number, now):
         st["heartbeat_at"] = now
         state_view = dict(st, surfaced=st["surfaced"] + list(st["inbox"]))
         d = policy.decide(state_view, snap, make_trusted(st, snap["pr"]["author"]), now)
-        changed = bool(d["actions"] or d["events"])
+        changed = bool(d["events"])
         for act in d["actions"]:
             if act[0] == "rerun":
                 # Saved before the POST: a failed or interrupted rerun must not become one
@@ -309,6 +309,7 @@ def poll_once(pr_number, now):
                     st["retried_runs"].remove(act[1])
                     save(st)
                     continue
+                changed = True
                 log(st, "retried", "%s (run %d)" % (act[2], act[1]))
             else:
                 # Recorded after the POST: a duplicate @datadog review is cheap, a lost one
@@ -316,7 +317,9 @@ def poll_once(pr_number, now):
                 gh_api("repos/%s/issues/%d/comments" % (REPO, pr_number), "POST",
                        {"body": policy.BITS_TRIGGER})
                 st["bits_triggered"].append(act[1])
+                changed = True
                 log(st, "Bits", "review requested on `%s`" % act[1][:9])
+                save(st)
         for key in ("ci", "bits"):
             if d["facts"].get(key) and d["facts"][key] != st["facts"].get(key):
                 changed = True
