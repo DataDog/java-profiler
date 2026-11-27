@@ -233,11 +233,12 @@ Linux also permits custom restorers through `SA_RESTORER`
 svc #0` sequence outside the vDSO stops with truncation when signal CFI is
 absent, preventing the interrupted FP chain from fabricating callers.
 The kernel builds the same signal frame for these restorers. The walker does
-not trust the instruction pair alone to locate it outside the vDSO.
-musl always installs its own restorer, `__restore_rt`. On musl arm64 with
-HotSpot or OpenJ9, walks across a nested signal handler therefore stop there
-with truncation. A row
-explicitly marked as a signal frame follows its CFI instead. Other syscall
+not trust the instruction pair alone to locate it outside the vDSO. It also
+trusts the restorer the kernel reports for the profiler's own handlers:
+`OS::installSignalHandler` reads it back with `rt_sigaction` and passes it to
+`SignalFrame::trustRestorer`. musl always installs its own `__restore_rt`, so
+walks across a nested handler on musl arm64 continue through that restorer.
+A row explicitly marked as a signal frame follows its CFI instead. Other syscall
 numbers do not activate this fallback.
 Custom-restorer instruction probes, including anonymous mappings without a
 `CodeCache`, run only on HotSpot/OpenJ9, where the profiler installs safefetch

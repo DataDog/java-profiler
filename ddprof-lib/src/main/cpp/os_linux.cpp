@@ -35,6 +35,7 @@
 #include "guards.h"
 #include "log.h"
 #include "os.h"
+#include "signalFrame.h"
 
 #ifndef __musl__
 #include <malloc.h>
@@ -358,6 +359,11 @@ SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handl
 
     pthread_mutex_unlock(&installed_oldaction_mutex);
 
+    if (rc == 0 && action != NULL) {
+        // Lets walks continue past the interrupted context of a nested handler.
+        const void* restorer = SignalFrame::kernelRestorer(signo);
+        if (restorer != nullptr) SignalFrame::trustRestorer(restorer);
+    }
     return rc == 0 ? oldsa.sa_sigaction : nullptr;
 }
 

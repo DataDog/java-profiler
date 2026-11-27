@@ -11,6 +11,9 @@
 #include <cstddef>
 #include <new>
 #include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include "os.h"
 
 #if defined(__linux__) && defined(__aarch64__)
 class VMTestAccessor {
@@ -29,6 +32,7 @@ alignas(16) uint32_t trampoline_code[] = {0xd503201f, 0xd2801168, 0xd4000001, 0x
 alignas(16) uint32_t custom_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 alignas(16) uint32_t other_syscall_code[] = {0xd503201f, 0xd2801588, 0xd4000001, 0xd503201f}; // getpid
 alignas(16) uint32_t unregistered_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
+alignas(16) uint32_t kernel_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 alignas(16) uint32_t leaf_code[] = {0xd503201f, 0xd65f03c0};
 alignas(16) uint32_t cfi_restorer[] = {0xd503201f, 0xd2801168, 0xd4000001, 0xd503201f};
 const void* const caller_pc = reinterpret_cast<const void*>(0x5a5f00000108ULL);
@@ -58,6 +62,28 @@ void registerLibraries() {
     }();
     ASSERT_TRUE(registered);
 }
+
+// Restores the decoder's trusted restorer, which the tests replace.
+class TrustedRestorerScope {
+    const void* _old = SignalFrame::trustedRestorer();
+
+public:
+    explicit TrustedRestorerScope(const void* restorer) { SignalFrame::trustRestorer(restorer); }
+    ~TrustedRestorerScope() { SignalFrame::trustRestorer(_old); }
+    TrustedRestorerScope(const TrustedRestorerScope&) = delete;
+    TrustedRestorerScope& operator=(const TrustedRestorerScope&) = delete;
+};
+
+// The kernel's arm64 struct sigaction; libc's has no sa_restorer on musl.
+struct KernelSigaction {
+    void* handler;
+    unsigned long flags;
+    void* restorer;
+    uint64_t mask;
+};
+constexpr unsigned long KERNEL_SA_RESTORER = 0x04000000UL;
+
+void ignoreSignal(int, siginfo_t*, void*) {}
 
 class SignalFrameTest : public ::testing::Test {
     VMTestAccessor _vm_kind{true, false};
@@ -237,6 +263,62 @@ TEST_F(SignalFrameTest, TruncatesAtRestorerOutsideVdso) {
     EXPECT_FALSE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 2, frame, &truncated));
     EXPECT_TRUE(truncated);
     EXPECT_TRUE(frame.isInterruptedPC(custom_restorer + 1));
+}
+
+TEST_F(SignalFrameTest, RecoversAtTheTrustedRestorerOutsideVdso) {
+    TrustedRestorerScope trusted(kernel_restorer + 1);
+    for (int instruction : {1, 2}) {
+        alignas(16) SignalStack stack{};
+        auto* saved = savedContext(stack);
+        ucontext_t sampled{};
+        StackFrame frame(&sampled);
+        WalkPc pc;
+        pc.setReturnAddress(kernel_restorer + instruction);
+        ASSERT_EQ(nullptr, Profiler::instance()->findLibraryByAddress(pc.attribution()));
+        uintptr_t sp = reinterpret_cast<uintptr_t>(stack.data()), fp = 0;
+        bool truncated = false;
+        ASSERT_TRUE(step(pc, sp, fp, reinterpret_cast<uintptr_t>(stack.data() + stack.size()), 2, frame, &truncated));
+        EXPECT_FALSE(truncated);
+        EXPECT_EQ(static_cast<const void*>(leaf_code), pc.raw());
+        EXPECT_EQ(saved->uc_mcontext.sp, sp);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(caller_pc), frame.link());
+    }
+    // The same instruction pair elsewhere, or a pair starting one word before the trusted address, truncates.
+    for (bool shifted : {false, true}) {
+        TrustedRestorerScope moved(shifted ? kernel_restorer + 2 : kernel_restorer + 1);
+        alignas(16) SignalStack stack{};
+        savedContext(stack);
+        SignalFrame result{};
+        EXPECT_EQ(SignalFrame::Result::INVALID,
+                  SignalFrame::decode(shifted ? kernel_restorer + 1 : custom_restorer + 1,
+                                      reinterpret_cast<uintptr_t>(stack.data()),
+                                      reinterpret_cast<uintptr_t>(stack.data() + stack.size()), nullptr, result));
+    }
+}
+
+TEST_F(SignalFrameTest, ReportsTheRestorerTheKernelHoldsForASignal) {
+    const int signo = SIGRTMIN + 7;
+    KernelSigaction old{};
+    ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, nullptr, &old, sizeof(old.mask)));
+    for (unsigned long flags : {SA_SIGINFO | KERNEL_SA_RESTORER, static_cast<unsigned long>(SA_SIGINFO)}) {
+        KernelSigaction action{reinterpret_cast<void*>(ignoreSignal), flags, kernel_restorer + 1, 0};
+        ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &action, nullptr, sizeof(action.mask)));
+        EXPECT_EQ(flags & KERNEL_SA_RESTORER ? static_cast<const void*>(kernel_restorer + 1) : nullptr,
+                  SignalFrame::kernelRestorer(signo));
+    }
+    ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &old, nullptr, sizeof(old.mask)));
+}
+
+TEST_F(SignalFrameTest, InstallingAHandlerTrustsItsKernelRestorer) {
+    const int signo = SIGRTMIN + 8;
+    struct sigaction old{};
+    ASSERT_EQ(0, sigaction(signo, nullptr, &old));
+    TrustedRestorerScope trusted(nullptr);
+    OS::installSignalHandler(signo, ignoreSignal);
+    const void* restorer = SignalFrame::kernelRestorer(signo);
+    ASSERT_EQ(0, sigaction(signo, &old, nullptr));
+    if (restorer == nullptr) GTEST_SKIP() << "this libc returns through the vDSO restorer";
+    EXPECT_EQ(restorer, SignalFrame::trustedRestorer());
 }
 
 TEST_F(SignalFrameTest, SuccessfulRecoveryPreservesPriorTruncation) {

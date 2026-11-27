@@ -17,7 +17,39 @@
 #include "safeAccess.h"
 #include "stackWalker.h"
 #include "vmEntry.h"
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
+
+static const void* trusted_restorer = nullptr;
+
+void SignalFrame::trustRestorer(const void* restorer) {
+    __atomic_store_n(&trusted_restorer, restorer, __ATOMIC_RELEASE);
+}
+
+const void* SignalFrame::trustedRestorer() {
+    return __atomic_load_n(&trusted_restorer, __ATOMIC_ACQUIRE);
+}
+
+const void* SignalFrame::kernelRestorer(int signo) {
+#ifdef __aarch64__
+    // The kernel's struct sigaction, not libc's: musl fills in sa_restorer itself.
+    struct {
+        void* handler;
+        unsigned long flags;
+        void* restorer;
+        uint64_t mask;
+    } action{};
+    constexpr unsigned long KERNEL_SA_RESTORER = 0x04000000UL;
+    if (syscall(SYS_rt_sigaction, signo, nullptr, &action, sizeof(action.mask)) != 0 ||
+        (action.flags & KERNEL_SA_RESTORER) == 0) {
+        return nullptr;
+    }
+    return action.restorer;
+#else
+    return nullptr;
+#endif
+}
 
 SignalFrame::Result SignalFrame::decode(const void* pc, uintptr_t sp, uintptr_t bottom,
                                         const CodeCache* library, SignalFrame& result) {
@@ -36,10 +68,11 @@ SignalFrame::Result SignalFrame::decode(const void* pc, uintptr_t sp, uintptr_t 
     trampoline |= instruction == 0xd4000001U &&
                   (SafeAccess::safeFetch32(reinterpret_cast<int*>(ip - 1), 0) & 0x7fffffffU) == 0x52801168U;
     if (!trampoline) return Result::NOT_SIGNAL;
-    // SA_RESTORER trampolines (musl's __restore_rt, user code) get the same
-    // rt_sigframe, but only the vDSO restorer is the kernel's own return path.
-    // Others truncate rather than let their FP chain fabricate callers.
-    if (!vdso) return Result::INVALID;
+    // Any SA_RESTORER trampoline gets the same rt_sigframe. Trust only the vDSO's and
+    // the one the kernel reports for our handlers (musl's __restore_rt); others truncate
+    // rather than let their FP chain fabricate callers.
+    auto* trusted = static_cast<const uint32_t*>(trustedRestorer());
+    if (!vdso && (trusted == nullptr || (ip != trusted && ip != trusted + 1))) return Result::INVALID;
 
     // Linux arm64 rt_sigframe contains siginfo_t followed by ucontext_t.
     // Use safefetch for saved registers so the helper needs no sanitizer exemption.
