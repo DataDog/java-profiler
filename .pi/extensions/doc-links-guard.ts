@@ -22,10 +22,10 @@ export default function (pi: ExtensionAPI) {
     });
     // git reports the symlink-resolved root (macOS /var → /private/var); the tool's
     // cwd may be the symlinked form, so both sides go through realpathSync before the
-    // containment comparison.
-    const root = res.status === 0 ? realpathSync(String(res.stdout).trim()) : null;
-    rootCache.set(cwd, root);
-    return root;
+    // containment comparison. A failed lookup is never cached: a transient git error
+    // must disable the guard for one call, not for the session.
+    if (res.status !== 0) return null;
+    return realpathSync(String(res.stdout).trim());
   }
 
   pi.on("tool_call", async (event, ctx) => {
@@ -38,7 +38,12 @@ export default function (pi: ExtensionAPI) {
     // Check the document the call would produce, never just the introduced fragment:
     // a fragment's code fences balance against the surrounding file, so fragment-only
     // checking false-blocks valid edits and misses breaks formed by the combination.
-    const cwd = realpathSync(ctx.cwd);
+    let cwd: string;
+    try {
+      cwd = realpathSync(ctx.cwd);
+    } catch {
+      return undefined; // vanished cwd: allow, the tool call itself will fail
+    }
     const root = repoRoot(cwd);
     if (!root) return undefined; // not a checkout: nothing to check against
     let abs = isAbsolute(p) ? p : resolve(cwd, p);

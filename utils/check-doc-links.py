@@ -92,7 +92,7 @@ def _inline_links(line):
                 depth -= 1
             j += 1
         if depth or j >= n or line[j] != "(":
-            i = j + 1
+            i = j  # resume after the closed bracket: inside it nothing is a link
             continue
         k = j + 1
         while k < n and line[k] in " \t":
@@ -100,7 +100,7 @@ def _inline_links(line):
         if k < n and line[k] == "<":
             end = line.find(">", k + 1)
             if end == -1:
-                i = j + 1
+                i = i + 1
                 continue
             yield line[i + 1:j - 1], line[k + 1:end]
             i = end + 1
@@ -120,7 +120,23 @@ def _inline_links(line):
                 break  # whitespace ends the destination; a title may follow
             k2 += 1
         if paren != 0:
-            i = j + 1
+            # whitespace ended the destination at depth 1: a title follows up to the
+            # ")" that closes the link's own opening parenthesis
+            depth2, k3 = 1, k2
+            while k3 < n:
+                c = line[k3]
+                if c == "(":
+                    depth2 += 1
+                elif c == ")":
+                    depth2 -= 1
+                    if depth2 == 0:
+                        break
+                k3 += 1
+            if depth2 != 0:
+                i = i + 1
+                continue
+            yield line[i + 1:j - 1], line[k:k2]
+            i = k3 + 1
             continue
         yield line[i + 1:j - 1], line[k:k2]
         i = k2 + 1
@@ -214,6 +230,7 @@ def self_test():
             "[known](Old.md) [deep](../deep/x) [gone2](absent(2).md)",  # EXPECT absent(2).md
             "``[spanskip](Nope2.md)`` [spanbad](Missing3.md) [deep2](doc((1)).md)",  # EXPECT Missing3, doc((1)).md
             "[enc](missing%23x.md)",                    # EXPECT missing%23x.md (decoded to missing#x.md)
+            '[titled](Missing4.md "the title") [t2](B.md "t") [esc]\\[skip](Nope4.md)\\]',  # EXPECT Missing4
         ]),
         "doc/B.md": "",
     }
@@ -228,6 +245,7 @@ def self_test():
             "doc/A.md:11: broken link 'Missing3.md' (link text 'spanbad') (no such path in the repository)",
             "doc/A.md:11: broken link 'doc((1)).md' (link text 'deep2') (no such path in the repository)",
             "doc/A.md:12: broken link 'missing%23x.md' (link text 'enc') (no such path in the repository)",
+            "doc/A.md:13: broken link 'Missing4.md' (link text 'titled') (no such path in the repository)",
             "doc/A.md: KNOWN_BROKEN entry 'Fixed.md' is no longer broken; remove it"]
     if got != want:
         return False, got

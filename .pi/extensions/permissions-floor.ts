@@ -14,7 +14,7 @@ const DENY_RULE = /^Bash\((.+):\*\)$/;
 const LAUNCHER = /^(?:env|exec|export|nohup|command|stdbuf|time|xargs|nice|setsid|strace|watch)\s+(?:-\S+\s+)?/;
 // Control-flow keywords that introduce a command without ending the previous one
 // (`if true; then rm y; fi`).
-const KEYWORD = /^(?:then|do|else|elif)\s+/;
+const KEYWORD = /^(?:then|do|else|elif|if|while|until)\s+/;
 // NAME=<shell word>, where the value may be quoted (containing spaces) or use
 // backslash escapes; bash concatenates adjacent quoted/bare parts into one value.
 const ASSIGN = /^\w+=(?:"(?:[^"\\]|\\.)*"|'[^']*'|(?:\\.|[^ \t"'\\]))*(?:\s+|$)/;
