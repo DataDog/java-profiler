@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk8
 ---
 
-## glibc-arm64-openj9-jdk8 - ✅ PASS
+## glibc-arm64-openj9-jdk8 - ❌ FAIL
 
-**Date:** 2026-11-27 13:25:49 EST
+**Date:** 2026-11-27 14:05:27 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 24 |
-| CPU Cores (end) | 34 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 24 |
-| Sample Rate | 0.40/sec |
-| Health Score | 25% |
-| Threads | 5 |
-| Allocations | 0 |
-
-#### Scenario 2: Tracer+Profiler ✅
-| Metric | Value |
-|--------|-------|
-| Status | PASS |
-| CPU Samples | 15 |
-| Sample Rate | 0.25/sec |
-| Health Score | 16% |
+| CPU Samples | 26 |
+| Sample Rate | 0.43/sec |
+| Health Score | 27% |
 | Threads | 6 |
 | Allocations | 0 |
 
+#### Scenario 2: Tracer+Profiler ❌
+| Metric | Value |
+|--------|-------|
+| Status | FAIL |
+| CPU Samples | 1 |
+| Sample Rate | 0.02/sec |
+| Health Score | 1% |
+| Threads | 1 |
+| Allocations | 0 |
+
 <details>
-<summary>CPU Timeline (3 unique values: 24-34 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1795803666 24
-1795803671 29
-1795803676 29
-1795803681 29
-1795803686 29
-1795803691 34
-1795803696 34
-1795803701 34
-1795803706 34
-1795803711 34
-1795803716 34
-1795803721 34
-1795803726 34
-1795803731 34
-1795803736 34
-1795803741 34
-1795803746 34
-1795803751 34
-1795803756 34
-1795803761 34
+1795806071 64
+1795806076 64
+1795806081 64
+1795806086 64
+1795806091 64
+1795806096 64
+1795806101 64
+1795806106 64
+1795806111 64
+1795806116 64
+1795806121 64
+1795806126 64
+1795806131 64
+1795806136 64
+1795806141 64
+1795806146 64
+1795806151 64
+1795806156 64
+1795806161 64
+1795806166 64
 ```
 </details>
 
