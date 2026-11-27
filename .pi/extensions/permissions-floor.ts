@@ -61,10 +61,12 @@ type Ctx = "'" | '"' | "`" | "$(";
 export function splitSegments(command: string): string[] {
   const segments: string[] = [];
   let seg = "";
-  const stack: Ctx[] = [];
-  let parenDepth = 0; // (...) nesting inside the innermost command substitution
+  // one frame per open quote/substitution; depth is per frame, so a subshell's
+  // parentheses inside one substitution never close another's
+  const stack: { ctx: Ctx; depth: number }[] = [];
   let pendingHeredocs: { delim: string; dash: boolean }[] = [];
-  const top = () => (stack.length ? stack[stack.length - 1]! : "");
+  let wordStart = true; // a # or a command word may begin here
+  const top = () => (stack.length ? stack[stack.length - 1]!.ctx : "");
 
   // shell word at from (quote-aware, backslash escapes), for herestring data
   const skipWord = (from: number): number => {
@@ -105,39 +107,43 @@ export function splitSegments(command: string): string[] {
       if (ch === "'") stack.pop();
       continue;
     }
-    if ((ctx === "`" && ch === "`") || (ctx === "$(" && ch === ")" && parenDepth === 0)) {
+    if ((ctx === "`" && ch === "`") || (ctx === "$(" && ch === ")" && stack[stack.length - 1]!.depth === 0)) {
       // The closer is a separator, not part of the substituted command: keeping it
       // would turn a bare `echo $(cmd)` into the segment `cmd)`, which neither equals
       // the denied word nor starts with it plus a space.
       segments.push(seg);
       seg = "";
+      wordStart = true;
       stack.pop();
       continue;
     }
     if (ch === "\\") {
       if (command[i + 1] === "\n") { i++; continue; } // line continuation: remove the pair
       seg += ch;
+      wordStart = false; // the escaped character is part of the word, even a space
       if (i + 1 < command.length) seg += command[++i]!; // escaped character, verbatim
       continue;
     }
     if (ch === "`" || (ch === "$" && command[i + 1] === "(")) {
       const opener = ch === "`" ? "`" : "$(";
-      stack.push(opener as Ctx);
+      stack.push({ ctx: opener as Ctx, depth: 0 });
       segments.push(seg + opener);
       seg = "";
+      wordStart = false;
       if (opener === "$(") i++;
       continue;
     }
     if (ctx === '"') {
       seg += ch;
+      wordStart = false;
       if (ch === '"') stack.pop();
       continue;
     }
     if (ctx === "$(" || ctx === "`") {
-      if (ch === "(") { parenDepth++; segments.push(seg); seg = ""; continue; }
-      if (ch === ")" && parenDepth > 0) { parenDepth--; segments.push(seg); seg = ""; continue; }
+      const frame = stack[stack.length - 1]!;
+      if (ch === "(") { frame.depth++; segments.push(seg); seg = ""; wordStart = true; continue; }
+      if (ch === ")" && frame.depth > 0) { frame.depth--; segments.push(seg); seg = ""; wordStart = true; continue; }
     }
-    const wordStart = seg === "" || /[ \t]$/.test(seg);
     if (ch === "#" && (ctx === "" || ctx === "$(") && wordStart) {
       // comment: through the end of the line; nothing in it executes or quotes
       while (i < command.length && command[i] !== "\n") i++;
@@ -148,6 +154,7 @@ export function splitSegments(command: string): string[] {
       if (command[i + 2] === "<") { // herestring: the next word is data, never a command
         segments.push(seg + "<<<");
         seg = "";
+        wordStart = true;
         i = skipWord(i + 3) - 1;
         continue;
       }
@@ -155,38 +162,47 @@ export function splitSegments(command: string): string[] {
       const dash = command[j] === "-";
       if (dash) j++;
       while (j < command.length && /[ \t]/.test(command[j]!)) j++;
+      // bash applies quote removal to the delimiter word: <<E'OF' and <<\EOF
+      // both name the delimiter EOF
       let delim = "";
-      if (command[j] === "'" || command[j] === '"') {
-        const q = command[j]!;
-        j++;
-        while (j < command.length && command[j] !== q) { delim += command[j]!; j++; }
-        j++; // closing quote
-      } else {
-        while (j < command.length && /\S/.test(command[j]!) && !/[;&|()<>`]/.test(command[j]!)) {
-          delim += command[j]!; j++;
+      while (j < command.length) {
+        const c = command[j]!;
+        if (c === "'" || c === '"') {
+          const q = c;
+          j++;
+          while (j < command.length && command[j] !== q) { delim += command[j]!; j++; }
+          j++; // closing quote
+          continue;
         }
+        if (c === "\\") { j++; if (j < command.length) { delim += command[j]!; j++; } continue; }
+        if (/\S/.test(c) && !/[;&|()<>`]/.test(c)) { delim += c; j++; continue; }
+        break;
       }
       if (delim) {
         pendingHeredocs.push({ delim, dash });
         seg += command.slice(i, j);
+        wordStart = false;
         i = j - 1;
         continue;
       }
     }
     if (ch === "'" || ch === '"') {
-      stack.push(ch);
+      stack.push({ ctx: ch as Ctx, depth: 0 });
       seg += ch;
+      wordStart = false;
       continue;
     }
     if (/[\n;&|()]/.test(ch)) {
       segments.push(seg);
       seg = "";
+      wordStart = true;
       if (ch === "\n" && pendingHeredocs.length && stack.length === 0) {
         i = consumeHeredocs(i + 1) - 1;
       }
       continue;
     }
     seg += ch;
+    wordStart = /[ \t]/.test(ch);
   }
   segments.push(seg);
   return segments;

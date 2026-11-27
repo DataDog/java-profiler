@@ -67,7 +67,9 @@ for c in 'rm -rf build' 'rm' 'sudo ls' 'cd x && rm -f y' 'true; rm y' 'ls | sudo
          'env FOO=1 exec rm y' $'rm \
 -rf y' 'env sudo ls' \
          'echo "$( (true); rm y)"' 'if true; then rm y; fi' 'for f in y; do rm "$f"; done' \
-         'FOO="two words" rm y' $'# don\'t\nrm y' 'export FOO=1 rm y'; do
+         'FOO="two words" rm y' $'# don\'t\nrm y' 'export FOO=1 rm y' \
+         'echo "$( (echo "$(true)"); rm y)"' 'printf %s foo\ #bar; rm y' \
+         $'cat <<\\EOF\nrm y\nEOF\nrm -rf build'; do
   expect "floor denies: $c" 2 "$BLOCK_MSG" pi_hook bash "$c"
 done
 for c in 'ls -la' 'rmdir x' 'grep rm file' 'git rm --cached f' 'echo sudo' 'sudoedit f' '' \

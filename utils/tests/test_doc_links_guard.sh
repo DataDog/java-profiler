@@ -190,6 +190,11 @@ JS
   expect "pi: @-prefixed edit path is normalized" 2 "broken link" \
     node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
     "$ROOT/.pi/extensions/doc-links-guard.ts" "$TEMP_REPO" edit "$TEMP_REPO/guide.md" '[x](docs/absent.md)' atpath '[real](fenced-real.md)' 
+  # pi's write tool creates missing parent directories: the guard must check through the
+  # deepest existing ancestor, not skip the write because the directory is not on disk yet.
+  expect "pi: write into a nonexistent parent directory is checked" 2 "broken link" \
+    node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
+    "$ROOT/.pi/extensions/doc-links-guard.ts" "$TEMP_REPO" write "$TEMP_REPO/new/docs/guide.md" '[x](docs/absent.md)' content
 else
   echo "SKIP: pi doc-links-guard cases (node with --experimental-strip-types not found)"
 fi

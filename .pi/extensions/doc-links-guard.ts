@@ -52,10 +52,20 @@ export default function (pi: ExtensionAPI) {
     try {
       abs = realpathSync(abs); // pi may pass the symlinked path (macOS /var)
     } catch {
-      try {
-        abs = join(realpathSync(dirname(abs)), basename(abs)); // new file: real parent
-      } catch {
-        return undefined; // parent not resolvable: allow, the write call will fail
+      // not on disk yet: pi's write creates missing parent directories, so resolve
+      // through the deepest existing ancestor instead of skipping the check
+      const tail: string[] = [];
+      let probe = abs;
+      for (;;) {
+        try {
+          abs = join(realpathSync(dirname(probe)), ...tail.reverse(), basename(probe));
+          break;
+        } catch {
+          const parent = dirname(probe);
+          if (parent === probe) return undefined; // no existing ancestor: allow
+          tail.unshift(basename(probe));
+          probe = parent;
+        }
       }
     }
     const rel = relative(root, abs);

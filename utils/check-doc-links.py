@@ -100,6 +100,9 @@ def _inline_links(line):
         k = j + 1
         while k < n and line[k] in " \t":
             k += 1
+        if k < n and line[k] in "\"'":
+            i = i + 1  # a destination cannot start with a quote; re-parse the contents
+            continue
         if k < n and line[k] == "<":
             end = line.find(">", k + 1)
             if end == -1:
@@ -134,26 +137,17 @@ def _inline_links(line):
                 k3 += 1
                 while k3 < n and line[k3] != q:
                     k3 += 1 if line[k3] != "\\" else 2
-                if k3 < n and line[k3] == q:
-                    k3 += 1
-            depth2, k4 = 1, k3
-            while k4 < n:
-                c = line[k4]
-                if c == "\\":
-                    k4 += 1
-                elif c == "(":
-                    depth2 += 1
-                elif c == ")":
-                    depth2 -= 1
-                    if depth2 == 0:
-                        break
-                k4 += 1
-            k3 = k4
-            if depth2 != 0:
-                i = i + 1  # CommonMark re-parses an unclosed link's contents as text
+                if k3 >= n or line[k3] != q:
+                    i = i + 1  # unterminated title: CommonMark re-parses the contents
+                    continue
+                k3 += 1
+            while k3 < n and line[k3] in " \t":
+                k3 += 1
+            if k3 >= n or line[k3] != ")":
+                i = i + 1  # garbage after the title: not a link, re-parse as text
                 continue
             yield line[i + 1:j - 1], line[k:k2]
-            i = k4 + 1
+            i = k3 + 1
             continue
         yield line[i + 1:j - 1], line[k:k2]
         i = k2 + 1
@@ -251,6 +245,8 @@ def self_test():
             '[unterm](Missing5.md "open [real](Missing6.md)',  # EXPECT Missing6: the unclosed construct is text
             '[unclosed [real2](Missing7.md)',  # EXPECT Missing7: an unclosed bracket is text
             '[bracketed [link](Missing8.md) text]',  # EXPECT Missing8: a link inside prose brackets
+            '[x]( "[nested](Missing10.md)")',  # EXPECT Missing10: a quoted destination is not a destination
+            '[outer](B.md "unfinished [inner](Missing11.md "t")',  # EXPECT Missing11: the mis-quoted title is text
             "[t1](Missing9.md 'f((') [t2](B.md \"f((\")",  # EXPECT Missing9: quoted titles hide their parens
         ]),
         "doc/B.md": "",
@@ -270,7 +266,9 @@ def self_test():
             "doc/A.md:14: broken link 'Missing6.md' (link text 'real') (no such path in the repository)",
             "doc/A.md:15: broken link 'Missing7.md' (link text 'real2') (no such path in the repository)",
             "doc/A.md:16: broken link 'Missing8.md' (link text 'link') (no such path in the repository)",
-            "doc/A.md:17: broken link 'Missing9.md' (link text 't1') (no such path in the repository)",
+            "doc/A.md:17: broken link 'Missing10.md' (link text 'nested') (no such path in the repository)",
+            "doc/A.md:18: broken link 'Missing11.md' (link text 'inner') (no such path in the repository)",
+            "doc/A.md:19: broken link 'Missing9.md' (link text 't1') (no such path in the repository)",
             "doc/A.md: KNOWN_BROKEN entry 'Fixed.md' is no longer broken; remove it"]
     if got != want:
         return False, got
