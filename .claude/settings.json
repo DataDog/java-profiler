@@ -41,6 +41,10 @@
           {
             "type": "command",
             "command": "h=\"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-knowledgebase.py\"; [ -f \"$h\" ] || exit 0; exec python3 \"$h\""
+          },
+          {
+            "type": "command",
+            "command": "h=\"$CLAUDE_PROJECT_DIR/.claude/hooks/doc-links-guard.py\"; [ -f \"$h\" ] || exit 0; exec python3 \"$h\""
           }
         ]
       }

@@ -65,7 +65,7 @@ small and put frame arrays in the pre-allocated per-stripe `CallTraceBuffer`. Ma
 async-signal-unsafe functions with `DEBUG_ASSERT_NOT_IN_SIGNAL()` (`signalSafety.h`,
 active in debug and ASan builds).
 
-**Signal-handler skeleton.** New or changed handlers follow the shared skeleton in
+**Signal-handler skeleton.** `ErrnoPreserver` is the first local of the installed `sa_sigaction` entry function (wall clock: `sharedSignalHandler`, not the inner `signalHandler` helpers) and precedes every origin check, including PerfEvents' `si_code <= 0` bail. New or changed handlers follow the shared skeleton in
 [ProfilingEngines.md](/doc/architecture/ProfilingEngines.md#common-signal-handler-contract):
 `ErrnoPreserver` as the first local → origin check (`OS::shouldProcessSignal()` with a
 `SignalCookie`; forward foreign signals via `OS::forwardForeignSignal()`) →
@@ -78,6 +78,9 @@ can interrupt SIGPROF; SIGSEGV is `SA_NODEFER` and can hit inside either), so:
   atomic RMW (a handler can land between a load and a store);
 - plain fields shared that way need `volatile` or `__atomic_*` so the compiler doesn't
   cache or tear them. Hardware ordering is irrelevant on the same thread.
+  This covers Java writers of the thread-context record too: between `detach()` and
+  `attach()` use plain puts, since ordering lives only at the `valid` flag stores (see
+  [TLSContext.md](/doc/architecture/TLSContext.md#memory-ordering)).
 
 The profiling signals (SIGPROF, SIGVTALRM) are hard-coded in `SignalBlocker` and
 `blockProfilingForExit()`; a new profiling signal must be added to both.
@@ -104,6 +107,9 @@ fatal.
   must stay `NOINLINE` (the fault is matched by PC). Check an untrusted C string with
   `SafeAccess::isReadableCString()` before any `strlen`/`strncmp` on it; the check does
   not cover memory unmapped after it returns.
+- Untrusted binary images (ELF, DWARF): validate every image-supplied offset, size and index
+  in integer space before forming a pointer, and route every read through the parser's bounded
+  accessor — see [UntrustedBinaryParsing.md](/doc/architecture/UntrustedBinaryParsing.md).
 - Whole walks: `sigsetjmp` + `JmpCtxScope` (`guards.h`), used exactly as documented
   there — construct the scope before `sigsetjmp(ctx, 1)` (savemask must be 1); at the
   landing pad call `SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()` then `restore()` before
@@ -119,6 +125,9 @@ fatal.
   RAII guard, held lock, or counter may be live across it unless the landing pad
   compensates. Call `SIGNAL_HANDLER_GUARD_RELEASE()` before chaining to a foreign
   SIGSEGV handler (J9's may `siglongjmp` past us).
+- Binary-section parsers (DWARF `.eh_frame`, ELF, Mach-O) bound every read, including each
+  LEB128 byte, by the record end; check a length against the remaining bytes before forming
+  `start + length`; shift only unsigned values below their width; skip `malloc`/`memcpy` at zero length.
 
 **Lifetime under live signals.** A handler may be mid-flight on any thread when the
 profiler stops or rotates. Never free, reset, or reuse memory a handler can reach
@@ -153,14 +162,18 @@ so keep them to lock-free bookkeeping and defer the rest to a profiler thread.
 Profiler threads that need JNI use `VM::attachThread()`/`detachThread()`. Details:
 [ProfilingEngines.md](/doc/architecture/ProfilingEngines.md#jvmti-callbacks).
 
-**JNI/JVMTI resource cleanup.** Release every JNI local reference and JVMTI-allocated
+**JNI/JVMTI resource cleanup.** A JVMTI output buffer exists only after its call returned
+`JVMTI_ERROR_NONE`; on an error return leave the output pointer untouched (never `Deallocate`
+or read it). Release every JNI local reference and JVMTI-allocated
 buffer (e.g. the `GetAllThreads()` array, freed with `Deallocate`) on every exit path —
 break, early return, skip — not only on the main path. On long-lived native threads (e.g.
 the reference-chain BFS thread) local refs are not freed until detach.
 
 **Clocks.** Use a monotonic clock for deadlines, TTLs and elapsed time, and convert with
 the helper matching the clock that produced the timestamp (`OS::nanotime()` values are
-nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two.
+nanoseconds; `TSC::ticks_to_millis()` takes TSC ticks). Never mix the two. TSC ticks read
+on different CPUs are not guaranteed to be ordered: code that orders or subtracts ticks
+from different threads clamps a negative delta, or uses `OS::nanotime()`.
 
 **Recording lifecycle (stop/start/restart).** State that outlives `Profiler::stop()`
 (caches, tracking tables, cached class-map ids, clocks and deadlines, JNI global refs)
@@ -195,9 +208,10 @@ flags (e.g. `_running`) and configuration fields written in `start()` — a plai
 access emits no barrier on arm64, so use `__atomic_store_n(..., __ATOMIC_RELEASE)` and
 `__atomic_load_n(..., __ATOMIC_ACQUIRE)`. Match every release store with an acquire load of
 the same variable. Count + pointer two-phase publication: both the count load and the
-pointer load need acquire semantics. Default stance: acquire for loads, release for
+pointer load need acquire semantics, and both live in the container's accessors (e.g.
+`CodeCacheArray::count()` and `operator[]`) — call sites never load the count or a slot directly. Default stance: acquire for loads, release for
 stores; `acq_rel` only on read-modify-write operations that both consume and publish
-data; relaxed only for counters or flags with no dependent data, with a comment saying so. Beyond ordering: return addresses can carry
+data; relaxed only for counters or flags with no dependent data, with a comment saying so. Where a weaker ordering is proven sufficient, use it and state the proof in a comment: state touched only by its owning thread and handlers interrupting it needs atomicity, not ordering (relaxed `__atomic_*`, per the signal-handler rules); in a load sequence only the load that consumes published data is acquire; prefer one `seq_cst` operation over a weaker one plus a separate fence. Beyond ordering: return addresses can carry
 PAC bits — pass them through `stripPointer()` (`arch.h`) before comparing, looking up or
 recording. At the sampled leaf the return address is still in LR (take it from the
 `ucontext`). On Linux aarch64 there is no red zone, so memory below the sampled SP may be
@@ -207,7 +221,13 @@ overwritten by signal delivery.
 applies to Java code on context/sampling paths too: avoid string concatenation, boxing and
 varargs there, including when building error or label strings. O(N)
 linear scans only for small sets (cutoff ~256 elements); larger sets need an index or binary
-search. Do not resolve symbols or line tables eagerly in hot paths.
+search. Do not resolve symbols or line tables eagerly in hot paths. On JNI entry points and
+signal-reachable paths, evaluate the cheapest rejecting gates (enabled/feature flag loads)
+before any JNI down-call, context snapshot copy or stack capture, and classify shared state
+(e.g. a slot's ownership) once per call instead of re-validating it through a second helper. On per-event paths
+(context enter/exit, park/block hooks, thread start/end, `JavaCritical_*` entry points)
+the common no-op case takes no mutex, runs no CAS loop and writes no cache line another
+thread reads: test with a plain load first and write only when the state changes.
 
 **C++ exceptions.** Never write `throw`/`try`/`catch`: an uncaught exception escaping
 through a JVMTI callback terminates the JVM, and a try/catch frame on a pthread-cancel or
@@ -216,19 +236,24 @@ forced-unwind path aborts under `-static-libgcc` (`libraryPatcher_linux.cpp`). B
 task fails on any exception keyword in native sources outside the checker's exception list
 (the rule and its failure-handling convention: root `AGENTS.md`, "C++ exceptions").
 
-**Concurrent data structure iteration.** When iterating a concurrent array (e.g.
-`CodeCacheArray`), NULL-check every slot — a slot may be count-allocated but
-pointer-not-yet-stored. Never permanently advance an iteration cursor past NULL gaps; stop
-at the first NULL or track the last contiguous non-NULL entry so missing entries are
-retried.
+**Concurrent data structure iteration.** Publish concurrent arrays pointer-first, as
+`CodeCacheArray::add()` does (CAS-reserve a slot, release-store the pointer, then advance
+`count()`), so every index < `count()` is non-NULL. An array whose writer bumps the count
+before storing the pointer can expose NULL slots: NULL-check every slot, and never advance an
+iteration cursor past a NULL gap — stop at the first NULL so missing entries are retried.
 
 **Stack completeness.** A successful carrier crossing does not establish a complete
-virtual-thread stack. Preserve walker-reported truncation through JFR serialization;
+virtual-thread stack. Every capture path that stops early (the depth limit, a fault recovered
+in a walker landing pad, a JVMTI `GetStackTrace` that returns a frame past the limit) marks
+the trace truncated or fails so the caller retries; a short stack is never stored as complete.
+Preserve walker-reported truncation through JFR serialization;
 see [JvmSupportLayer.md](/doc/architecture/JvmSupportLayer.md#continuation-completeness).
 
 **JVM abstraction.** Shared code must not refer to JVM-implementation-specific code directly,
 only through the abstraction files: `jvmSupport.{h,inline.h,cpp}`, `jvmThread.{h,cpp}`,
-`vmEntry.{h,cpp}`, `javaApi.cpp`. Implementation-specific code lives under `hotspot/`,
+`vmEntry.{h,cpp}`, `javaApi.cpp`. J9 and Zing never reach `hotspot/` code: abstraction-file
+callers branch on `VM::isHotspot()` before any `VMStructs` cast — the `assert(VM::isHotspot())`
+in `cast_to`/`cast_or_null` is compiled out of release builds. Implementation-specific code lives under `hotspot/`,
 `j9/`, `zing/`. When analyzing profiler issues, consult the OpenJDK sources; for OpenJ9,
 the OpenJ9 GitHub project. A few legacy files (`profiler.cpp`, `flightRecorder.cpp`,
 `livenessTracker.cpp`, `sanityCheck.cpp`) directly include implementation headers — the

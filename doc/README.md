@@ -51,6 +51,8 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [RemoteSymbolicationFrameTypes](reference/RemoteSymbolicationFrameTypes.md) - Frame type design for symbolication
 - [SamplerPerfCounters](reference/SamplerPerfCounters.md) - Opt-in per-sampler timing counters and the stop-time report
 - [TestFlakinessAnalysis](reference/TestFlakinessAnalysis.md) - Test flakiness investigation results
+- [TestWritingRules](reference/TestWritingRules.md) - Constraints a test must satisfy to count as coverage
+- [UntrustedBinaryParsing](architecture/UntrustedBinaryParsing.md) - Rules for parsing ELF/DWARF data read from images
 
 ### Design
 

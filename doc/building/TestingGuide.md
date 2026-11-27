@@ -34,6 +34,8 @@ binaries under `ddprof-lib/build/bin/gtest/<config>_<test>/` directly from the s
 via `.gitlab/scripts/run-gtest-quarantine.sh`, because the Gradle daemon swallows
 child-process output when fd 1/2 are not a terminal.
 
+CI build images are pinned by digest (`BUILD_IMAGE_*` variables). A Dockerfile change takes effect only after a `rebuild-images` pipeline (`REBUILD_IMAGES="<image>"`) has built and pushed the image and the resulting digest has been re-pinned in the same PR. A PR that edits an image Dockerfile while still pinning the old or a placeholder digest is incomplete. Before review, check that the pinned digest comes from a rebuild that includes the change (for example, the build log shows the newly installed package).
+
 **Runs on:** amd64 and aarch64, using the standard `BUILD_IMAGE_X64` / `BUILD_IMAGE_ARM64`
 images, on every branch push. Skipped for GitLab merge-request pipelines and for
 JDK-integration triggers (`JDK_VERSION`/`DEBUG_LEVEL`/`HASH`/`DOWNSTREAM` set).
@@ -79,6 +81,8 @@ Actions' ubuntu-latest runners have `vm.mmap_rnd_bits=32` and their seccomp prof
 blocks the `personality` syscall. The Datadog GitLab runners have stable kernel
 settings tuned for benchmark workloads.
 
+**Process-wide state.** All tests in one `*_ut.cpp` file run in one binary and share its singletons (`Profiler::instance()`, `JVMThread`, `ThreadLocal` keys). A test that changes such state (e.g. latches `Profiler` into `ERROR`) restores it before each retry attempt and before it returns. State with no reset path (a created pthread key, `JVMThread::_tid`) is never forced from a test; reach the path under test without it, not through a test-only `friend` in a production header.
+
 **Key test files:**
 
 | File | Covers |
@@ -123,6 +127,11 @@ job log.
 
 **Workflows:** `.github/workflows/ci.yml` (PRs and pushes) and
 `.github/workflows/nightly.yml`, both calling the reusable `test_workflow.yml`
+
+**Action pinning:** every workflow `uses:` reference pins a full commit SHA (org
+policy: version tags are mutable); never replace it with a tag such as `@v4`. Steps of
+one action (e.g. codeql-action `init`/`analyze`) stay on the same SHA. Dependabot bumps
+them, and its PRs auto-merge when CI passes (`dependabot-automerge.yml`).
 
 **Gradle task:** `:ddprof-test:test<Config>` (or `:ddprof-test:testSlow<Config>` for
 slow tests), with `-Pskip-gtest` in the nightly runs

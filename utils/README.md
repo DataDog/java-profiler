@@ -1,5 +1,7 @@
 # Utility Scripts
 
+Scripts that produce measurements or gate CI fail loud. A failed run, an exit status above 128 (death by signal), a missing expected output line (e.g. `[metrics]`), or a tool path that cannot be resolved is reported on stderr and makes the script exit non-zero, or marks its report INVALID. Never substitute default values such as `0`, discard a child's stderr, or silently fall back to another tool on `PATH`.
+
 <!-- Copyright 2026, Datadog, Inc -->
 
 This directory contains utility scripts for managing the java-profiler project.
@@ -248,13 +250,14 @@ Standalone, stdlib-only checks over the git-tracked files. Each prints one `<pat
 | `check-knowledgebase.py` | Every tracked `.knowledgebase/memories/` file carries cairn's required memory frontmatter. |
 | `check-skills.py` | Every tracked `.agents/skills/` skill has loadable frontmatter, `.claude/skills` links to it, and `AGENTS.md` names only existing skills. |
 | `check-native-agents.py` | The native-code instruction file named in `.pi/native-agents.json` reaches Claude Code and Pi from the same directory list: each listed directory has a `CLAUDE.md` stub that imports the file, every nested `CLAUDE.md` is listed, and the root `AGENTS.md` names the file and each directory. |
+| `check-doc-links.py` | Every relative link in a tracked or untracked-but-not-ignored `*.md` file resolves to a path in the repository, apart from the shrink-only `KNOWN_BROKEN` list; each run first checks a planted-violation fixture. |
 
 `.githooks/pre-push` runs `check-copyright.py` and `check-claude-md.py` on every pushed branch commit, so a violation stops the push before CI sees it (see `review-marker.py` below for the trust model). Set `branch.<name>.gh-merge-base` for a branch stacked on another feature branch. A push to a branch with an open PR that passes those gates warns to re-verify the PR description against the pushed commits; the warning never blocks.
 
 **Usage:**
 ```bash
 ./utils/check-doc-index.py                 # any one check
-./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus all ten; run by CI (ci.yml source-invariant-checks job)
+./gradlew :ddprof-lib:qualityChecks        # signal-reachability check (+ --self-test on Linux) plus every script in the table above; run by CI (ci.yml source-invariant-checks job)
 ```
 
 CI runs every `utils/tests/*.sh` suite in the `script-tests` job of `.github/workflows/ci.yml`, with Node.js 22 for the Pi adapter cases.

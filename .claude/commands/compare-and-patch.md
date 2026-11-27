@@ -56,3 +56,4 @@ echo "  local:    $LOCAL_CANON"
 
 echo "Delegating to patch-analyst agent..."
 claude "Act as the patch-analyst agent to analyze $FILE. Use upstream file: $UP_CANON and local file: $LOCAL_CANON. Generate the required patch analysis artifacts as specified in the patch-analyst agent definition."
+```

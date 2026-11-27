@@ -258,6 +258,12 @@ Type IDs are the `JfrType` enum (`jfrMetadata.h:26-99`). Event serializers write
 the same enum value as their first field, so the enum ties each `record*()`
 function to its metadata entry.
 
+An event's name (the `type()` name string) is its consumer contract. Records carry
+only the numeric ID, and consumers match names from each chunk's metadata, so JFR has
+no alias: a second name means a second type with every sample emitted twice. The
+label is display-only. A PR that renames an event states whether the old name
+ever shipped enabled in a released integration.
+
 Element names, attribute keys and attribute values are stored as IDs into a
 static string table filled by `getId()` (`jfrMetadata.h:114-122`);
 `initialize()` drops the lookup map once the tree is built and keeps the ordered
