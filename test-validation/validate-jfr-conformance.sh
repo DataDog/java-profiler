@@ -305,8 +305,8 @@ log_info ""
 # recordings and makes registered types look absent.
 
 # jfr-shell (jafar) requires Java 25 (class file version 69.0)
-# Always use --java 25 to let jbang download the correct JDK
-unset JAVA_VERSION  # Prevent jbang from picking up test JDK version
+# Unset JAVA_HOME and JAVA_VERSION so jbang uses its managed JDK 25 rather than the test JVM
+unset JAVA_VERSION JAVA_HOME
 
 log_info "Using Java 25 for jbang (required by jfr-shell)"
 

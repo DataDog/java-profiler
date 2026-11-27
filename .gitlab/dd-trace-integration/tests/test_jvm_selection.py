@@ -463,6 +463,71 @@ class JvmSelectionTest(unittest.TestCase):
                       (ROOT / ".gitlab-ci.yml").read_text())
         self.assertIn("bash .gitlab/dd-trace-integration/verify-jvm.sh", integration_script())
 
+    def test_jbang_tooling_does_not_inherit_openj9_jdk25_java_home(self):
+        jbang_calls = self.path / "jbang-calls"
+        jbang_calls.touch()
+        self.executable(
+            self.bin / "jbang",
+            'printf "JAVA_HOME=%s args=%s\\n" "${JAVA_HOME:-<unset>}" "$*" >> "$JBANG_CALLS"\n'
+            'case "$*" in\n'
+            '  "jdk list")\n'
+            '    if [ -n "${JAVA_HOME:-}" ]; then\n'
+            '      echo "   25 (25.0.5.0.3+1-LTS)"\n'
+            '    elif [ -f "$JBANG_JDK25_MARKER" ]; then\n'
+            '      echo "   25 (25.0.5.1+2-LTS) <"\n'
+            '    else\n'
+            '      echo "   21 (21.0.3+9-LTS)"\n'
+            '    fi\n'
+            '    ;;\n'
+            '  "jdk install 25")\n'
+            '    touch "$JBANG_JDK25_MARKER"\n'
+            '    ;;\n'
+            '  run\\ --java\\ 25\\ *)\n'
+            '    if [ -n "${JAVA_HOME:-}" ]; then\n'
+            '      echo "java.lang.IllegalStateException: Flight Recorder is not supported on this VM" >&2\n'
+            '      exit 1\n'
+            '    fi\n'
+            '    out="${@: -1}"\n'
+            '    echo "synthetic-jfr" > "$out"\n'
+            '    ;;\n'
+            '  --java\\ 25\\ *probe-event-types.jfrs*)\n'
+            '    if [ -n "${JAVA_HOME:-}" ]; then\n'
+            '      echo "JAVA_HOME leaked to probe" >&2\n'
+            '      exit 1\n'
+            '    fi\n'
+            '    printf "HAS jdk.ExecutionSample 2\\nHAS datadog.ExecutionSample 3\\n'
+            'HAS datadog.Endpoint 2\\nHAS jdk.ObjectAllocationSample 0\\n'
+            'HAS jdk.ThreadAllocationStatistics 0\\nPROBE_COMPLETE\\n"\n'
+            '    ;;\n'
+            'esac\n',
+        )
+        run_dir = self.path / "prereq-work"
+        run_dir.mkdir()
+        marker = self.path / "jbang-jdk25-installed"
+        env = dict(
+            self.env,
+            JBANG_CALLS=str(jbang_calls),
+            JBANG_JDK25_MARKER=str(marker),
+            JAVA_VERSION="25",
+            FIXTURE_JAVA_VERSION="25.0.5.0.3",
+        )
+        prereq = subprocess.run(
+            ["bash", str(SCRIPTS / "install-prerequisites.sh")],
+            cwd=run_dir, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.assertEqual(prereq.returncode, 0, prereq.stdout)
+        self.assertTrue(marker.exists(), "install-prerequisites.sh must install jbang JDK 25 instead of reusing JAVA_HOME")
+        self.assertIn(f"Java found at JAVA_HOME: {self.jdk}", prereq.stdout)
+        probe = subprocess.run(
+            ["bash", str(SCRIPTS / "tests/probe_event_types_real_test.sh")],
+            cwd=run_dir, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stdout)
+        lines = jbang_calls.read_text().splitlines()
+        for line in lines:
+            if any(token in line for token in ("args=jdk ", "args=run ", "args=--java 25 ")):
+                self.assertTrue(line.startswith("JAVA_HOME=<unset> "), f"JAVA_HOME leaked to jbang: {line}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

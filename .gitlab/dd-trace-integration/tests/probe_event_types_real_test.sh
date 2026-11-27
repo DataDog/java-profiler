@@ -47,8 +47,10 @@ if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
 fi
 
 RECORDING="${WORK}/synthetic.jfr"
+# Unset JAVA_HOME so jbang uses its managed HotSpot JDK 25 rather than an
+# OpenJ9 JDK 25 under test, which lacks jdk.jfr.Recording support.
 # shellcheck disable=SC2086  # empty or one --repos option
-if ! jbang run --java 25 ${JBANG_REPOS_OPT} "${FIXTURE}" "${RECORDING}" > "${WORK}/gen.log" 2>&1; then
+if ! env -u JAVA_HOME jbang run --java 25 ${JBANG_REPOS_OPT} "${FIXTURE}" "${RECORDING}" > "${WORK}/gen.log" 2>&1; then
   cat "${WORK}/gen.log" >&2
   fail "fixture recording generation failed"
   exit 1
@@ -58,7 +60,7 @@ fi
 # stderr is not silenced: the absent-type queries print "Event type ... not
 # found" there by design; only stdout drives the HAS contract.
 # shellcheck disable=SC2086  # empty or one --repos option
-jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script "${PROBE}" "${RECORDING}" \
+env -u JAVA_HOME jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script "${PROBE}" "${RECORDING}" \
   > "${WORK}/probe-stdout.log" 2> "${WORK}/probe-stderr.log"
 PROBE_EXIT=$?
 

@@ -142,7 +142,7 @@ NOPROBE="${WORK}/noprobe"
 mkdir -p "${NOPROBE}"
 cp "${SCRIPT}" "${HERE}/../../../test-validation/validate-jfr.jfrs" "${NOPROBE}/"
 install_stub_jbang 'HAS jdk.ExecutionSample 0\nPROBE_COMPLETE'
-# shellcheck disable=SC2031  # deliberate: the stub PATH must not leak past this run
+# shellcheck disable=SC2030,SC2031  # deliberate: the stub PATH must not leak past this run
 ( export PATH="${WORK}/bin:${PATH}"
   bash "${NOPROBE}/validate-jfr-conformance.sh" "${WORK}/recording.jfr" \
     --ddprof-enabled=true --tracer-enabled=false --test-duration=60 \
@@ -165,6 +165,36 @@ for t in ${TYPES}; do
   grep -qF "echo \"HAS ${t} " "${PROBE}" || fail "probe script has no HAS line for ${t}"
 done
 pass "the probe script covers every type the conformance script checks"
+
+# 8. JAVA_HOME from the JVM under test (e.g., OpenJ9 JDK 25) must not leak to
+#    jbang, which needs its managed HotSpot JDK 25 for tooling.
+mkdir -p "${WORK}/bin-env"
+cat > "${WORK}/bin-env/jbang" <<'STUB'
+#! /bin/bash
+if [ -n "${JAVA_HOME:-}" ]; then
+  echo "ERROR: JAVA_HOME leaked to jbang: ${JAVA_HOME}" >&2
+  exit 99
+fi
+for arg in "$@"; do
+  case "${arg}" in
+    *probe-event-types.jfrs*)
+      printf 'HAS jdk.ExecutionSample 0\nHAS datadog.ExecutionSample 10\nHAS jdk.ObjectAllocationSample 0\nHAS datadog.ObjectSample 5\nHAS jdk.ThreadAllocationStatistics 1\nHAS datadog.Endpoint 0\nPROBE_COMPLETE\n'
+      exit 0
+      ;;
+  esac
+done
+echo '"SUCCESS: All validations passed"'
+exit 0
+STUB
+chmod +x "${WORK}/bin-env/jbang"
+# shellcheck disable=SC2031  # prior subshell PATH overrides are deliberately isolated
+PATH="${WORK}/bin-env:${PATH}" JAVA_HOME="/opt/java/openj9-25" \
+  bash "${SCRIPT}" "${WORK}/recording.jfr" \
+    --ddprof-enabled=true --tracer-enabled=false --test-duration=60 \
+    --arch=x64 --libc=glibc --jvm-type=openj9 \
+    --output="${WORK}/validation-out.log" > "${WORK}/stdout.log" 2>&1 \
+  || fail "JAVA_HOME leaked to jbang during conformance validation"
+pass "conformance validation unsets JAVA_HOME before invoking jbang"
 
 [ "${FAILED}" -eq 0 ] || exit 1
 echo "All validate-jfr-conformance probe tests passed."
