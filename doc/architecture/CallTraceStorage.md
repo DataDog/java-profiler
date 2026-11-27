@@ -158,9 +158,12 @@ before the first `start()`); `acquire()` is the only place they are allocated.
   `acquireRecordingMemory()`;
   `resetRecordingState()` calls it on a fresh start so the tables the new recording
   uses are counted after `Counters::reset()`. Nothing is preserved for the liveness
-  checkers: the `LivenessTracker` is released at the same boundary. Right after
-  `release()`, `releaseRecordingMemory()` drops every pending unowned wall-clock tail
-  (trace ID, weight and epoch segments), so no tail names a freed ID in a later recording.
+  checkers: the `LivenessTracker` is released at the same boundary. Just before
+  `release()`, under every recording stripe, `releaseRecordingMemory()` drops every
+  pending unowned wall-clock tail (trace ID, weight and epoch segments), so neither a
+  thread-teardown tail flush nor a later recording writes a freed ID. `stop()` writes
+  the pending tails first (`Profiler::flushUnownedTailsAtStop()`), or adds the weight of
+  the ones it cannot write to `wc_unowned_tail_dropped_at_stop`.
 - While released, `put()` finds `_active_storage == nullptr` and returns
   `DROPPED_TRACE_ID`, and `processTraces()` hands its processor a local set holding
   only the dropped-trace placeholder (a chunk written without a recording, as gtests

@@ -7,6 +7,7 @@
 #define THREAD_LOCAL_DATA_H
 
 #include "common.h"
+#include "taskBlockDiagnostics.h"
 #include "context.h"
 #include "nativeMem.h"
 #include "otel_context.h"
@@ -88,6 +89,18 @@ private:
   u32 _recording_epoch;
   volatile u32 _misc_flags;
   u64 _park_block_token;
+  u64 _task_block_start_ticks;
+  u64 _task_block_token;
+#if defined(DEBUG) || defined(UNIT_TEST)
+  struct TaskBlockDiagnosticOrigin {
+    u64 token = 0;
+    u64 lifecycle = 0;
+    u64 epoch = 0;
+    u64 owner = 0;
+    u64 state = 0;
+  } _task_block_diagnostic_origin;
+#endif
+  Context _task_block_context;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   volatile int _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -117,7 +130,9 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_block_token(0), _filter_slot_id(-1), _init_window(0),
+        _park_block_token(0), _task_block_start_ticks(0),
+        _task_block_token(0), _task_block_context{}, _filter_slot_id(-1),
+        _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0),
@@ -205,6 +220,9 @@ public:
     u32 recording_epoch;
     u32 misc_flags;
     u64 park_block_token;
+    u64 task_block_start_ticks;
+    u64 task_block_token;
+    Context task_block_context;
     int filter_slot_id;
     u64 logical_context_window_state;
     uint8_t init_window;
@@ -225,7 +243,8 @@ public:
       __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED),
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
-      _park_block_token, _filter_slot_id, logicalContextWindowState(), _init_window,
+      _park_block_token, _task_block_start_ticks, _task_block_token,
+      _task_block_context, _filter_slot_id, logicalContextWindowState(), _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
     };
@@ -453,6 +472,50 @@ public:
 
   inline void setParkBlockToken(u64 token) {
     _park_block_token = token;
+  }
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+  void setTaskBlockDiagnosticOrigin(const TaskBlockDiagnosticRecord& diagnostic) {
+    _task_block_diagnostic_origin = {diagnostic.words[TaskBlockDiagnosticRecord::TOKEN],
+        diagnostic.words[TaskBlockDiagnosticRecord::LIFECYCLE], diagnostic.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH],
+        diagnostic.words[TaskBlockDiagnosticRecord::OWNER], diagnostic.words[TaskBlockDiagnosticRecord::STATE]};
+    TaskBlockDiagnosticRecord armed = diagnostic;
+    armed.words[TaskBlockDiagnosticRecord::START] = _task_block_start_ticks;
+    TASK_BLOCK_DIAGNOSTIC(TLS_ARMED, &armed, 0);
+  }
+  TaskBlockDiagnosticRecord taskBlockDiagnosticOrigin() const {
+    TaskBlockDiagnosticRecord diagnostic{};
+    diagnostic.words[TaskBlockDiagnosticRecord::TOKEN] = _task_block_diagnostic_origin.token;
+    diagnostic.words[TaskBlockDiagnosticRecord::LIFECYCLE] = _task_block_diagnostic_origin.lifecycle;
+    diagnostic.words[TaskBlockDiagnosticRecord::ORIGIN_EPOCH] = _task_block_diagnostic_origin.epoch;
+    diagnostic.words[TaskBlockDiagnosticRecord::OWNER] = _task_block_diagnostic_origin.owner;
+    diagnostic.words[TaskBlockDiagnosticRecord::STATE] = _task_block_diagnostic_origin.state;
+    diagnostic.words[TaskBlockDiagnosticRecord::START] = _task_block_start_ticks;
+    if (_task_block_diagnostic_origin.token != 0) {
+      diagnostic.words[TaskBlockDiagnosticRecord::VALID] = TaskBlockDiagnosticRecord::HAS_IDENTITY | TaskBlockDiagnosticRecord::HAS_ORIGIN;
+    }
+    return diagnostic;
+  }
+  u64 taskBlockTokenForDiagnostic() const { return _task_block_token; }
+#endif
+  inline bool taskBlockEnter(u64 token, u64 start_ticks,
+                             const Context& context) {
+    if (token == 0 || _task_block_token != 0) return false;
+#if defined(DEBUG) || defined(UNIT_TEST)
+    _task_block_diagnostic_origin = {};
+#endif
+    _task_block_start_ticks = start_ticks;
+    _task_block_context = context;
+    _task_block_token = token;
+    return true;
+  }
+
+  inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
+    if (token == 0 || _task_block_token != token) return false;
+    start_ticks = _task_block_start_ticks;
+    context = _task_block_context;
+    _task_block_token = 0;
+    return true;
   }
 
   // Returns false if the thread was not parked (idempotent).

@@ -17,7 +17,7 @@
  *   op < 0xB0: exitBlockedRun(slot_id, generation) - generation-checked; an
  *              extra fuzzed byte decides whether the real generation is used
  *              or corrupted, to exercise the stale-token rejection path
- *   op < 0xD0: resetSlot(slot_id, RUNNABLE) - unconditional clear
+ *   op < 0xD0: resetSlot(slot_id) - unconditional clear
  *   op < 0xF0: unregisterThreadByTid(tid)
  *   op >= 0xF0: init("", true) - starts a new recording epoch while retaining
  *               native owners; their block state is refreshed on registration
@@ -37,19 +37,19 @@
  *   I2. lookupByTid(tid) retains every live owner's identity. activeSlotForId()
  *       is non-null exactly when its owner has registered in the current epoch.
  *   I3. Restart makes old block state ineligible for suppression; registering
- *       a retained owner clears its block state and sampled-this-run marker,
+ *       a retained owner clears its block state and sampled block generation,
  *       but restores the owner's logical context-window word.
  *   I4. A generation-checked exitBlockedRun() called with a generation other
  *       than the block run's current one must return false and must not
  *       change that slot's active-block-state (a stale/forged token must
  *       never clear a newer or already-cleared run). One called with the
  *       correct generation that reports an exit must leave the slot with
- *       owner NONE, active state UNKNOWN and no sampled-this-run marker.
+ *       owner NONE, active state UNKNOWN and no sampled block generation.
  *   I5. Context-window membership: add() returns true for every owned tid and
  *       leaves its block slot with owner NONE / state UNKNOWN / not sampled;
  *       after every op, inContextWindow() matches the shadow g_in_window.
  *   I6. Two-sided suppression decision: after every op, for every owned tid,
- *       shouldSuppressOwnedBlock() is true exactly when the shadow model has
+ *       isOwnedBlockSuppressionCandidate() is true exactly when the shadow model has
  *       an armed owned run (g_armed) in a precheck-suppression state for an
  *       owner registered in the current epoch (g_fresh). This relies on
  *       enterBlockedRun() refusing admission inside a context window
@@ -139,7 +139,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
           auto* block = g_tracker->slotForId(slot_id);
           if (block->activeBlockState() != OSThreadState::UNKNOWN ||
               block->activeBlockOwner() != BlockRunOwner::NONE ||
-              block->sampledThisRun()) {
+              block->sampledBlockGeneration() != 0) {
             // Newly registered or refreshed owners start with clean payload (I3).
             __builtin_trap();
           }
@@ -163,7 +163,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         if (!g_filter->add(tid, it->second)) __builtin_trap();
         auto* b = g_tracker->slotForId(it->second);
         if (b == nullptr || b->activeBlockOwner() != BlockRunOwner::NONE ||
-            b->activeBlockState() != OSThreadState::UNKNOWN || b->sampledThisRun()) {
+            b->activeBlockState() != OSThreadState::UNKNOWN || (b->sampledBlockGeneration() != 0)) {
           __builtin_trap();
         }
         if (g_in_window.insert(tid).second) {
@@ -186,7 +186,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         u64 token = g_tracker->enterBlockedRun(g_filter, it->second, state);
         if (token != 0) {
           g_last_token[it->second] = token;
-          g_tracker->slotForId(it->second)->markSampledThisRun(state);
+          g_tracker->slotForId(it->second)->markBlockGenerationSampled(
+              WallClockBlockTracker::tokenGeneration(token));
           g_armed[tid] = state;
         }
       }
@@ -196,9 +197,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto tok_it = g_last_token.find(it->second);
         if (tok_it != g_last_token.end()) {
           uint8_t corruption_byte = nextByte();
-          u32 correct_generation = WallClockBlockTracker::tokenGeneration(tok_it->second);
+          u64 correct_generation = WallClockBlockTracker::tokenGeneration(tok_it->second);
           bool corrupt = (corruption_byte & 0x1) != 0;
-          u32 generation = corrupt
+          u64 generation = corrupt
               ? correct_generation + 1 + (corruption_byte >> 1)
               : correct_generation;
 
@@ -218,7 +219,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             if (block_slot == nullptr ||
                 block_slot->activeBlockOwner() != BlockRunOwner::NONE ||
                 block_slot->activeBlockState() != OSThreadState::UNKNOWN ||
-                block_slot->sampledThisRun()) {
+                (block_slot->sampledBlockGeneration() != 0)) {
               __builtin_trap();
             }
             g_last_token.erase(it->second);
@@ -229,7 +230,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     } else if (op < 0xD0) {
       auto it = g_owner.find(tid);
       if (it != g_owner.end()) {
-        g_tracker->resetSlot(it->second, OSThreadState::RUNNABLE);
+        g_tracker->resetSlot(it->second);
         g_armed.erase(tid);
       }
     } else if (op < 0xF0) {
@@ -253,7 +254,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto* identity = g_filter->slotForId(kv.second);
         ThreadEntry stale{kv.first, identity, kv.second, identity->lifecycleGeneration(),
                           identity->recordingEpoch()};
-        if (g_tracker->shouldSuppressOwnedBlock(g_filter, stale)) {
+        if (g_tracker->isOwnedBlockSuppressionCandidate(g_filter, stale)) {
           // Retained payload from the previous epoch cannot suppress a sample (I3).
           __builtin_trap();
         }
@@ -288,7 +289,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
       auto armed = g_armed.find(kv.first);
       bool expected = armed != g_armed.end() && g_fresh.count(kv.first) != 0 &&
                       isPrecheckSuppressionState(armed->second);
-      if (g_tracker->shouldSuppressOwnedBlock(g_filter, entry) != expected) {
+      if (g_tracker->isOwnedBlockSuppressionCandidate(g_filter, entry) != expected) {
         __builtin_trap();
       }
     }

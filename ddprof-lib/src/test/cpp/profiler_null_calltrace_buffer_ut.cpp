@@ -75,7 +75,7 @@ TEST(ProfilerNullCalltraceBufferTest, RecordSampleNullBufferDropsSample) {
 
     EXPECT_FALSE(Profiler::instance()->recordSample(
         /*ucontext=*/nullptr, /*counter=*/1, /*tid=*/1, BCI_CPU,
-        /*call_trace_id=*/0, /*event=*/nullptr, /*recorded_call_trace_id=*/nullptr));
+        /*call_trace_id=*/0, /*event=*/nullptr));
 
     EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped());
 }
@@ -156,8 +156,7 @@ TEST(ProfilerNullCalltraceBufferTest, RecordSampleDropsSampleOfEarlierSession) {
 
     EXPECT_FALSE(profiler->recordSample(
         /*ucontext=*/nullptr, /*counter=*/1, /*tid=*/1, BCI_NATIVE_MALLOC,
-        /*call_trace_id=*/0, /*event=*/nullptr, /*recorded_call_trace_id=*/nullptr,
-        &stale_session));
+        /*call_trace_id=*/0, /*event=*/nullptr, &stale_session));
 
     EXPECT_EQ(skipped + 1, ProfilerTestAccessor::skipped()) << "a stale session must be dropped";
 }

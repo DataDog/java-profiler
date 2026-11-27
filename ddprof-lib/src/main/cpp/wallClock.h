@@ -32,6 +32,9 @@ enum class WallClockCandidateOutcome {
 };
 
 class BaseWallClock : public Engine {
+#ifdef UNIT_TEST
+    friend class WallClockSamplingOpportunityTestAccessor;
+#endif
   private:
     static std::atomic<bool> _enabled;
     std::atomic<bool> _running;
@@ -236,7 +239,7 @@ class BaseWallClock : public Engine {
         epoch.updateNumSuccessfulSamples(num_successful_samples);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
-        epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
+        epoch.addNumSuppressedOwnedBlock(WallClockCounters::drainSuppressedOwnedBlock());
         // The statistics that open an epoch must not close it in the same pass.
         if (opens_epoch) epoch.clean();
 #ifdef UNIT_TEST
@@ -284,7 +287,7 @@ class BaseWallClock : public Engine {
     }
 
 public:
-    // Normal timer/dump threads only. Hold through stripe acquisition and sealing.
+    // Normal threads only. Hold through stripe acquisition and chunk sealing.
     static std::unique_lock<std::mutex> samplingEpochLock();
     // Caller holds the epoch mutex and every recording stripe.
     static void settleSamplingEpoch();
@@ -325,6 +328,10 @@ public:
     WallSampleRequest prepareWallSampleRequestForTest(ProfiledThread* current, bool& suppressed);
 #endif
 #if defined(UNIT_TEST) || defined(DEBUG)
+    // Normal-thread drivers wait for the timer's real epoch without publishing one.
+    static bool awaitInitialSamplingEpochForTest(u64 timeout_nanos);
+    // Keep the genuine nonempty window stable until the driver publishes its units.
+    static std::unique_lock<std::mutex> samplingOpportunityLockForTest(u64 timeout_nanos);
     static void setForceStartFailureForTest(bool force) {
         _force_start_failure_for_test.store(force, std::memory_order_release);
     }
@@ -335,7 +342,65 @@ public:
     static std::atomic<bool> _force_start_failure_for_test;
   public:
 #endif
+#ifdef UNIT_TEST
+    // Exercises precheck decisions and successful/failed recording completion
+    // with controlled thread states, without a JVM or signal delivery.
+    static bool wallPrecheckForTest(
+        ProfiledThread* current, bool unowned_fallback, OSThreadState observed_state,
+        u64& weight, bool recorded = false);
+#endif
+#ifdef DEBUG
+    // Drives the real precheck/recording path with controlled OS-state inputs
+    // and an intervening JFR dump; returns the failed step, or null. Called
+    // synchronously from the JNI test hook.
+    static const char* recordUnownedWallTailAcrossDumpForTest(
+        jthread thread, const char* path, int path_length, bool dump_after_primary,
+        bool reset_before_tail);
+    enum class TailDropStep { CAPTURE = 0, WRITE = 1, DEFERRAL = 2 };
+    // Makes the driver's next `drops` passes through `step` fail as a dropped
+    // try-and-drop acquisition; returns the previously unused count.
+    static int exchangeUnownedWallTailAcrossDumpDropsForTest(TailDropStep step, int drops);
+    // Seeds a real cached stack and five same-epoch deferred units; returns the
+    // failed step, or null. The caller blocks profiling signals until the tested
+    // ownership transition finishes.
+    static const char* seedUnownedWallTailForTest(
+        jthread thread, OSThreadState state = OSThreadState::SLEEPING);
+private:
+    static const char* recordUnownedWallTailAcrossDumpOnceForTest(
+        jthread thread, const char* path, int path_length, bool dump_after_primary,
+        bool reset_before_tail);
+    static const char* seedUnownedWallTailOnceForTest(jthread thread, OSThreadState state);
+#endif
 };
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+// Serializes the synchronous driver with timer epoch writes, but not its dumps:
+// Profiler::dump acquires the same epoch mutex before locking recording stripes.
+class WallClockTestEpochGuard {
+    std::unique_lock<std::mutex> _lock;
+
+    class ScopedUnlock {
+        std::unique_lock<std::mutex>& _lock;
+    public:
+        explicit ScopedUnlock(std::unique_lock<std::mutex>& lock) : _lock(lock) { _lock.unlock(); }
+        ~ScopedUnlock() { _lock.lock(); }
+        ScopedUnlock(const ScopedUnlock&) = delete;
+        ScopedUnlock& operator=(const ScopedUnlock&) = delete;
+    };
+
+  public:
+    explicit WallClockTestEpochGuard(u64 timeout_nanos);
+    WallClockTestEpochGuard(const WallClockTestEpochGuard&) = delete;
+    WallClockTestEpochGuard& operator=(const WallClockTestEpochGuard&) = delete;
+    bool ownsLock() const { return _lock.owns_lock(); }
+
+    template <typename Action>
+    void withoutEpochLock(Action action) {
+        ScopedUnlock unlock(_lock);
+        action();
+    }
+};
+#endif
 
 class WallClockASGCT : public BaseWallClock {
   private:

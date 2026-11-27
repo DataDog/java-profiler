@@ -40,7 +40,7 @@ std::unique_lock<std::mutex> BaseWallClock::samplingEpochLock() {
 
 void BaseWallClock::closeSamplingEpoch(u64 end, bool stripes_held) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  _sampling_epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
+  _sampling_epoch.addNumSuppressedOwnedBlock(WallClockCounters::drainSuppressedOwnedBlock());
   _sampling_epoch.endEpoch(TSC::ticks_to_millis(end - _sampling_epoch._start_time));
 #ifdef UNIT_TEST
   observeClosedEpochForTest(_sampling_epoch);
@@ -98,36 +98,33 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
 struct WallPrecheckResult {
   WallSampleRequest transaction;
   bool suppress = false;
-  WallClockBlockTracker::BlockState* slot_to_arm = nullptr;
-  OSThreadState state_to_arm = OSThreadState::UNKNOWN;
+  WallClockBlockTracker::BlockState* owned_block_slot = nullptr;
+  u64 owned_block_generation = 0;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   bool observed_state_valid = false;
-  WallClockBlockTracker::BlockState* unowned_weight_slot = nullptr;
-  u64 unowned_weight = 1;
-  bool flush_unowned_tail = false;
-  u64 flush_call_trace_id = 0;
-  u64 flush_weight = 0;
-  OSThreadState flush_state = OSThreadState::UNKNOWN;
 };
 
-static inline void incrementSuppressedSampledRun() {
-  Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
-  WallClockCounters::incrementSuppressedSampledRun();
+static inline void incrementSuppressedOwnedBlock() {
+  Counters::increment(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK);
+  WallClockCounters::incrementSuppressedOwnedBlock();
 }
 
 bool BaseWallClock::suppressAlreadySampled(const ThreadEntry& entry) {
   ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
   WallClockBlockTracker* tracker = Profiler::instance()->blockTracker();
-  if (!tracker->shouldSuppressOwnedBlock(thread_filter, entry)) {
-    return false;
+  if (tracker->isOwnedBlockSuppressionCandidate(thread_filter, entry)) {
+    incrementSuppressedOwnedBlock();
+    return true;
   }
-  incrementSuppressedSampledRun();
-  return true;
+  return false;
 }
 
-static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
-                                                     bool precheck,
-                                                     bool transactional = false) {
+static inline WallPrecheckResult prepareWallPrecheck(
+    ProfiledThread* current, bool precheck, bool transactional = false
+#if defined(DEBUG) || defined(UNIT_TEST)
+    , OSThreadState observed_state_for_test = OSThreadState::UNKNOWN
+#endif
+    ) {
   WallPrecheckResult result;
   result.transaction.tid = current != nullptr ? current->tid() : -1;
   result.transaction.trace_epoch = Profiler::instance()->recordingEpoch();
@@ -161,46 +158,46 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
-  OSThreadState active_block_state = block_slot->activeBlockState();
-  BlockRunOwner active_block_owner = block_slot->activeBlockOwner();
-  bool has_owned_block =
-      active_block_owner != BlockRunOwner::NONE &&
-      isPrecheckSuppressionState(active_block_state) &&
-      (!registry->unfilteredWallTrackingActive() ||
-       block_slot->activeBlockRemainedOutsideContextWindow(slot));
-  if (has_owned_block) {
-    if (block_slot->sampledThisRun() &&
-        active_block_state == block_slot->lastSampledState()) {
-      incrementSuppressedSampledRun();
+  ThreadEntry entry{current->tid(), slot, slot_id, slot->lifecycleGeneration(),
+                    slot->recordingEpoch()};
+  u64 block_generation = 0;
+  bool already_sampled = false;
+  if (tracker->ownedBlockDecision(registry, entry, already_sampled,
+                                  block_generation)) {
+    if (already_sampled) {
+      incrementSuppressedOwnedBlock();
       result.suppress = true;
       return result;
     }
-    // Arm only after the MethodSample has been successfully recorded. If the
-    // JFR write is skipped due to lock contention, the next signal must retry
-    // instead of losing the only stack for this blocked run.
-    result.slot_to_arm = block_slot;
-    result.state_to_arm = active_block_state;
-    result.transaction.arm_state = active_block_state;
-    result.transaction.block_generation = block_slot->blockGeneration();
+    // Arm only after recordSample succeeds. A skipped JFR write must leave the
+    // run eligible so the next signal retries instead of losing its only stack.
+    result.owned_block_slot = block_slot;
+    result.owned_block_generation = block_generation;
+    result.transaction.arm_state = block_slot->activeBlockState();
+    result.transaction.block_generation = block_generation;
+    return result;
+  }
+  // Delegated and lightweight samples have no reusable local trace ID for
+  // replaying a weighted tail. Keep unit-weight sampling for unowned blocks.
+  if (!transactional || Profiler::instance()->omitStacktraces() ||
+      !block_slot->unownedBlockedFallbackEnabled()) {
     return result;
   }
 
-  // Unfiltered tracking exists only to support explicit context and owned-block
-  // hooks. Keep unowned observations on ordinary per-signal sampling: the JVMTI
-  // path has no call_trace_id with which to replay a suppressed tail.
-  if (registry->unfilteredWallTrackingActive()) {
-    return result;
-  }
-
+#if defined(DEBUG) || defined(UNIT_TEST)
+  result.observed_state = observed_state_for_test != OSThreadState::UNKNOWN
+      ? observed_state_for_test :
 #ifdef UNIT_TEST
-  auto reader = thread_state_reader_for_test.load(std::memory_order_acquire);
-  result.observed_state = reader != nullptr ? reader() : getOSThreadState();
+      thread_state_reader_for_test.load(std::memory_order_acquire) != nullptr
+          ? thread_state_reader_for_test.load(std::memory_order_acquire)() :
+#endif
+      getOSThreadState();
 #else
   result.observed_state = getOSThreadState();
 #endif
   result.observed_state_valid = true;
   bool force_ordinary = false;
-  if (transactional) {
+  {
     result.transaction.context = ContextApi::snapshot();
     result.transaction.context_captured = true;
     Context origin{};
@@ -232,25 +229,17 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     result.transaction.force_unowned_ordinary = force_ordinary;
   }
   if (isPrecheckSuppressionState(result.observed_state)) {
-    bool record = block_slot->shouldRecordUnownedBlockedSample(force_ordinary, !transactional);
-    if (!record && (!transactional || Profiler::instance()->deferUnownedWallSample(result.transaction))) {
+    bool record = block_slot->shouldRecordUnownedBlockedSample(force_ordinary, false);
+    if (!record && Profiler::instance()->deferUnownedWallSample(result.transaction)) {
       Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
       result.suppress = true;
       return result;
     }
     result.transaction.unowned_sample = true;
     result.transaction.observed_state = result.observed_state;
-    result.transaction.flush_tail = transactional && force_ordinary;
-    if (!transactional) {
-      result.unowned_weight_slot = block_slot;
-      result.unowned_weight = block_slot->consumeUnownedBlockedWeight();
-    }
-  } else if (transactional) {
-    // Only the ASGCT transaction may peek/write/commit a reusable real trace.
-    result.transaction.flush_tail = true;
+    result.transaction.flush_tail = force_ordinary;
   } else {
-    result.flush_unowned_tail = block_slot->flushUnownedBlockedTail(
-        result.flush_call_trace_id, result.flush_weight, result.flush_state);
+    result.transaction.flush_tail = true;
   }
   return result;
 }
@@ -265,22 +254,241 @@ WallSampleRequest BaseWallClock::prepareWallSampleRequestForTest(ProfiledThread*
 #endif
 
 static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
-                                      bool recorded,
-                                      u64 recorded_call_trace_id = 0) {
-  if (!recorded && precheck.unowned_weight_slot != nullptr) {
-    precheck.unowned_weight_slot->restoreUnownedBlockedWeight(
-        precheck.unowned_weight);
-  } else if (recorded && precheck.unowned_weight_slot != nullptr) {
-    Counters::increment(WC_UNOWNED_BLOCKED_RECORDED);
-    if (recorded_call_trace_id != 0) {
-      precheck.unowned_weight_slot->recordUnownedBlockedSample(
-          recorded_call_trace_id, precheck.observed_state);
-    }
-  }
-  if (recorded && precheck.slot_to_arm != nullptr) {
-    precheck.slot_to_arm->markSampledThisRun(precheck.state_to_arm);
+                                      bool recorded) {
+  if (recorded && precheck.owned_block_slot != nullptr) {
+    precheck.owned_block_slot->markBlockGenerationSampled(
+        precheck.owned_block_generation);
   }
 }
+
+#ifdef UNIT_TEST
+bool BaseWallClock::wallPrecheckForTest(
+    ProfiledThread* current, bool unowned_fallback, OSThreadState observed_state,
+    u64& weight, bool recorded) {
+  WallPrecheckResult result =
+      prepareWallPrecheck(current, true, unowned_fallback, observed_state);
+  weight = 1;
+  finishWallPrecheck(result, recorded);
+  return result.suppress;
+}
+#endif
+
+#if defined(DEBUG) || defined(UNIT_TEST)
+bool BaseWallClock::awaitInitialSamplingEpochForTest(u64 timeout_nanos) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  u64 start = OS::nanotime();
+  while (WallClockCounters::samplingEpochStart() == 0) {
+    if (OS::nanotime() - start >= timeout_nanos) return false;
+    OS::sleep(1000000);
+  }
+  return true;
+}
+
+std::unique_lock<std::mutex> BaseWallClock::samplingOpportunityLockForTest(u64 timeout_nanos) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  const u64 start = OS::nanotime();
+  for (;;) {
+    {
+      auto lock = samplingEpochLock();
+      if (_active_epoch_timer != nullptr && _active_epoch_timer->_have_epoch_stats &&
+          _active_epoch_timer->_sampling_epoch._num_successful_samples > 0) return lock;
+    }
+    if (OS::nanotime() - start >= timeout_nanos) return {};
+    OS::sleep(1000000);
+  }
+}
+
+WallClockTestEpochGuard::WallClockTestEpochGuard(u64 timeout_nanos) {
+  if (BaseWallClock::awaitInitialSamplingEpochForTest(timeout_nanos)) {
+    _lock = BaseWallClock::samplingEpochLock();
+  }
+}
+#endif
+
+#ifdef DEBUG
+// Only the synchronous JNI test driver supplies this argument. It inserts a
+// real dump at a boundary outside the profiler stripe locks, without waiting
+// inside a signal handler or adding hooks to release builds.
+struct WallPrecheckDumpTest {
+  jthread thread;
+  const char* path;
+  int path_length;
+  bool dump_after_primary;
+  WallClockTestEpochGuard& epoch_guard;
+  Error error = Error::OK;
+
+  void dumpAtBoundary(bool publication) {
+    if (publication == dump_after_primary) {
+      epoch_guard.withoutEpochLock([&] {
+        error = Profiler::instance()->dump(path, path_length);
+      });
+    }
+  }
+};
+
+// Capture, write and deferral take a stripe or the JFR lock by try-and-drop, so a
+// sample signal on another thread can make one attempt fail; those failures retry.
+static const char* const kTailStackDropped = "JVMTI stack capture dropped";
+static const char* const kTailSampleDropped = "ordinary wall sample dropped";
+static const char* const kTailNotDeferred = "blocked observation was not deferred";
+// Only the synchronous test driver thread reads or writes these.
+static std::atomic<int> forced_tail_drop_step{-1};
+static std::atomic<int> forced_tail_drops{0};
+
+int BaseWallClock::exchangeUnownedWallTailAcrossDumpDropsForTest(TailDropStep step, int drops) {
+  forced_tail_drop_step.store(static_cast<int>(step), std::memory_order_release);
+  return forced_tail_drops.exchange(drops, std::memory_order_acq_rel);
+}
+
+static bool forcedTailDropForTest(BaseWallClock::TailDropStep step) {
+  if (forced_tail_drop_step.load(std::memory_order_acquire) != static_cast<int>(step) ||
+      forced_tail_drops.load(std::memory_order_acquire) <= 0) return false;
+  forced_tail_drops.fetch_sub(1, std::memory_order_acq_rel);
+  return true;
+}
+
+static const char* recordAsgctWallSampleForTest(
+    ExecutionEvent* event, WallSampleRequest request, WallPrecheckDumpTest& dump_test) {
+  using Step = BaseWallClock::TailDropStep;
+  Profiler* profiler = Profiler::instance();
+  // Capture on the synchronous JNI thread, outside the signal handler and stripe.
+  u64 trace_id = forcedTailDropForTest(Step::CAPTURE) ? 0 : profiler->recordJVMTISample(
+      1, request.tid, dump_test.thread, BCI_WALL, event, true, profiler->recordingSession());
+  if (trace_id == 0) return kTailStackDropped;
+  request.trace_epoch = profiler->recordingEpoch();
+  if (forcedTailDropForTest(Step::WRITE) ||
+      !profiler->recordWallSample(nullptr, 1, trace_id, event, request).ordinary_recorded) {
+    return kTailSampleDropped;
+  }
+  return nullptr;
+}
+
+const char* BaseWallClock::recordUnownedWallTailAcrossDumpForTest(
+    jthread thread, const char* path, int path_length, bool dump_after_primary,
+    bool reset_before_tail) {
+  SignalBlocker blocker;
+  constexpr u64 kRetryNanos = 2 * NANOTIME_FREQ;
+  const u64 start = OS::nanotime();
+  for (;;) {
+    const char* failure = recordUnownedWallTailAcrossDumpOnceForTest(
+        thread, path, path_length, dump_after_primary, reset_before_tail);
+    if ((failure != kTailStackDropped && failure != kTailSampleDropped &&
+         failure != kTailNotDeferred) || OS::nanotime() - start >= kRetryNanos) {
+      return failure;
+    }
+    OS::sleep(1000000);
+  }
+}
+
+// Each attempt resets the slot first, so a dropped attempt leaves no pending tail behind.
+const char* BaseWallClock::recordUnownedWallTailAcrossDumpOnceForTest(
+    jthread thread, const char* path, int path_length, bool dump_after_primary,
+    bool reset_before_tail) {
+  Profiler* profiler = Profiler::instance();
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  ThreadFilter* registry = profiler->threadFilter();
+  if (current == nullptr) return "no ProfiledThread";
+  if (!profiler->isRunning() || !registry->unfilteredWallTrackingActive()) {
+    return "profiler or unfiltered wall tracking inactive";
+  }
+  ThreadFilter::SlotID slot_id = registry->ensureOwnerSlot(*current);
+  auto* tracker = profiler->blockTracker();
+  WallClockBlockTracker::BlockState* slot = tracker->slotForId(slot_id);
+  if (slot == nullptr) return "no block slot";
+  if (slot->activeBlockOwner() != BlockRunOwner::NONE) return "owned block active";
+  // The timer's epoch writer takes the recorder exclusively; this synchronous
+  // driver needs deterministic writes, unlike try-and-drop signal sampling.
+  WallClockTestEpochGuard epoch_guard(5 * NANOTIME_FREQ);
+  if (!epoch_guard.ownsLock()) return "no sampling epoch within 5s";
+  tracker->resetSlot(slot_id);
+
+  WallPrecheckDumpTest dump_test{thread, path, path_length, dump_after_primary, epoch_guard};
+  ExecutionEvent event;
+  event._thread_state = OSThreadState::SLEEPING;
+  event._execution_mode = ExecutionMode::JAVA;
+  WallPrecheckResult first = prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING);
+  if (first.suppress) return "precheck suppressed the first sample";
+  if (!first.transaction.unowned_sample) return "precheck did not select an unowned sample";
+  const char* failure = recordAsgctWallSampleForTest(&event, first.transaction, dump_test);
+  if (failure != nullptr) return failure;
+  // Publication is stripe-atomic; dump can run only after the whole transaction.
+  dump_test.dumpAtBoundary(true);
+  if (dump_test.error) return "dump after the primary sample failed";
+
+  // Deferral takes the stripe by try-and-drop; a busy stripe leaves it unsuppressed.
+  if (forcedTailDropForTest(TailDropStep::DEFERRAL) ||
+      !prepareWallPrecheck(current, true, true, OSThreadState::SLEEPING).suppress) {
+    return kTailNotDeferred;
+  }
+  WallPrecheckResult tail = prepareWallPrecheck(current, true, true, OSThreadState::RUNNABLE);
+  if (!tail.transaction.flush_tail) return "runnable precheck did not flush the tail";
+  if (slot->unowned_blocked_pending_weight.load() != 1) return "pending tail weight is not 1";
+  dump_test.dumpAtBoundary(false);
+  if (dump_test.error) return "dump before the tail failed";
+  if (reset_before_tail) tracker->resetSlot(slot_id);
+  event._thread_state = OSThreadState::RUNNABLE;
+  return recordAsgctWallSampleForTest(&event, tail.transaction, dump_test);
+}
+
+// Recording takes its stripe and the JFR lock by try-and-drop, so a sample
+// signal on another thread can make one attempt fail; those failures retry.
+static const char* const kSeedStackDropped = "JVMTI stack capture dropped";
+static const char* const kSeedSampleDropped = "ordinary wall sample dropped";
+
+const char* BaseWallClock::seedUnownedWallTailForTest(jthread thread, OSThreadState state) {
+  constexpr u64 kRetryNanos = 2 * NANOTIME_FREQ;
+  const u64 start = OS::nanotime();
+  for (;;) {
+    const char* failure = seedUnownedWallTailOnceForTest(thread, state);
+    if ((failure != kSeedStackDropped && failure != kSeedSampleDropped) ||
+        OS::nanotime() - start >= kRetryNanos) {
+      return failure;
+    }
+    OS::sleep(1000000);
+  }
+}
+
+// Each attempt resets the slot first, so a dropped attempt leaves no state behind.
+const char* BaseWallClock::seedUnownedWallTailOnceForTest(jthread thread, OSThreadState state) {
+  Profiler* profiler = Profiler::instance();
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  ThreadFilter* registry = profiler->threadFilter();
+  if (current == nullptr) return "no ProfiledThread";
+  if (!profiler->isRunning() || !registry->registryActive()) return "profiler or registry inactive";
+  ThreadFilter::SlotID slot_id = registry->ensureOwnerSlot(*current);
+  WallClockBlockTracker::BlockState* slot = profiler->blockTracker()->slotForId(slot_id);
+  if (slot == nullptr) return "no block slot";
+  if (slot->activeBlockOwner() != BlockRunOwner::NONE) return "owned block active";
+  if (!awaitInitialSamplingEpochForTest(5 * NANOTIME_FREQ)) return "no sampling epoch within 5s";
+  {
+    auto locks = profiler->recordingLocksForTest();
+    profiler->blockTracker()->resetSlot(slot_id);
+  }
+  ExecutionEvent event;
+  event._thread_state = state;
+  event._execution_mode = ExecutionMode::JAVA;
+  WallPrecheckResult first = prepareWallPrecheck(current, true, true, state);
+  if (first.suppress) return "precheck suppressed the first sample";
+  if (!first.transaction.unowned_sample) return "precheck did not select an unowned sample";
+  u64 trace_id = profiler->recordJVMTISample(
+      1, current->tid(), thread, BCI_WALL, &event, true, profiler->recordingSession());
+  if (trace_id == 0) return kSeedStackDropped;
+  first.transaction.trace_epoch = profiler->recordingEpoch();
+  if (!profiler->recordWallSample(nullptr, 1, trace_id, &event, first.transaction).ordinary_recorded) {
+    return kSeedSampleDropped;
+  }
+  finishWallPrecheck(first, true);
+  auto epoch_lock = samplingOpportunityLockForTest(5 * NANOTIME_FREQ);
+  if (!epoch_lock.owns_lock()) return "no successful sampling opportunity within 5s";
+  auto locks = profiler->recordingLocksForTest();
+  const u64 epoch = WallClockCounters::samplingEpochStart();
+  for (int i = 0; i < 5; i++) {
+    if (!profiler->blockTracker()->deferUnownedWeight(slot_id, epoch)) return "deferral rejected";
+    Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
+  }
+  return nullptr;
+}
+#endif
 
 bool BaseWallClock::inSyscall(void *ucontext) {
   StackFrame frame(ucontext);
@@ -353,12 +561,10 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   if (tickInitWindowIfNeeded(current)) {
     return;
   }
-  // Once-per-run filter (wallprecheck=true): for untraced threads, exact
-  // suppression is only valid while an explicit lifecycle hook owns the blocked
-  // interval. Raw OS thread state is only an observation; it cannot distinguish
-  // one long sleep from several short sleeps separated by runnable gaps between
-  // signals. Unowned blocked observations therefore use weighted fallback
-  // sampling instead of arming sampled_this_run.
+  // Once-per-run filter (wallprecheck=true): an explicitly owned block keeps
+  // its first successful MethodSample and suppresses subsequent signals.
+  // Unowned blocked observations use weighted fallback sampling because raw OS
+  // state cannot distinguish one long sleep from several shorter runs.
   WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck, true);
   if (precheck.suppress) {
     return;
@@ -399,7 +605,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     }
     event._thread_state = state;
     event._execution_mode = mode;
-    event._weight = precheck.unowned_weight;
+    event._weight = 1;
     Profiler::instance()->recordWallSample(ucontext, last_sample, call_trace_id,
                                            &event, precheck.transaction);
   }
@@ -636,7 +842,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     return;
   }
 
-  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
+  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck, false);
   if (precheck.suppress) {
     return;
   }
@@ -658,12 +864,12 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     }
     event._thread_state = state;
     event._execution_mode = mode;
-    event._weight = precheck.unowned_weight;
+    event._weight = 1;
     // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
     // Passing the signal-frame PC causes the extension to reject samples where
     // the thread is currently inside JVM-internal (non-Java) code.
-    // JVMTI-delegated samples carry a correlation_id, not a call_trace_id, so
-    // unowned tail flushing remains limited to the ASGCT wall engine.
+    // Unowned observations retain unit weight: this engine cannot replay a
+    // cached blocked stack to account for suppressed tail observations.
     bool recorded = Profiler::instance()->recordSampleDelegated(
         nullptr, last_sample, tid, BCI_WALL, &event);
     finishWallPrecheck(precheck, recorded);
