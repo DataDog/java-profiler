@@ -195,7 +195,7 @@ as artifacts.
 [Upstream OpenJ9 platform support](https://github.com/eclipse-openj9/openj9-docs/blob/e2f1f05b69b04b45c262ea9ed3527e1bb861df08/docs/openj9_support.md)
 requires glibc on Linux for all five JDK lines. Upstream publishes no musl runtime.
 
-The CI applicability rule does not schedule the ten musl/OpenJ9 combinations.
+The musl integration matrices omit OpenJ9, so those ten combinations are not scheduled.
 The PR reporter counts them as not applicable, not as passes, failures or missing results.
 The other 30 configurations still require validation logs; missing results fail the report.
 

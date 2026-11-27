@@ -458,10 +458,15 @@ The serializer applies a separate buffer-safe hop cap. `totalHops` records the u
 length. Edge labels are emitted only when all emitted hops have labels.
 
 Callbacks queue bounded, exact-source-tag invalidations under a pending spin lock, not a
-lock-free protocol. Candidate polling and dump snapshots drain them; a dump can drain
-while traversal is active. On overflow, the next drain clears the whole cache and increments
-`REFERENCE_CHAIN_EVENTS_DROPPED` for each removed chain, including unaffected cached chains.
-Callbacks do not acquire the resolved-cache lock.
+lock-free protocol. Each invalidation is an EVICT (noise eviction) or a REBUILD (improved path,
+root-kind change, or a just-correlated leak tag on a cached chain's frontier entry). Dump drains
+apply only EVICT; the BFS-thread poll applies EVICT and rebuilds REBUILD entries from the intact
+frontier, at most 8 rebuilds per poll, keeping the old chain when a rebuild fails. On overflow the
+two kinds differ: a REBUILD is dropped (self-healing), while an EVICT fails closed - the next drain
+clears the whole cache and increments `REFERENCE_CHAIN_EVENTS_DROPPED` for each removed chain,
+including unaffected cached chains, because a dropped eviction would leave a live rejected source
+re-emitting its rejected chain until the recording ends. Callbacks do not acquire the resolved-cache
+lock.
 
 Dump and stop write `datadog.ReferenceChain` events; the traversal thread does not write
 JFR events directly. Stop joins that thread and emits pending output before clearing
