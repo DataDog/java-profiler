@@ -154,6 +154,7 @@ shell-unit-tests:
     - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
     - python3 .gitlab/dd-trace-integration/tests/test_jvm_selection.py
     - bash .gitlab/dd-trace-integration/tests/validate_quarantine_test.sh
+    - bash .gitlab/dd-trace-integration/tests/certify_main_test.sh
     - bash .gitlab/dd-trace-integration/tests/newest_jfr_test.sh
     - bash .gitlab/dd-trace-integration/tests/validate_conformance_probe_test.sh
 

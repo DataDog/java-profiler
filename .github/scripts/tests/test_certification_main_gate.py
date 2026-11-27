@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / ".gitlab/dd-trace-integration/certify-main.sh"
+SOURCE_DIR = ROOT / ".gitlab/dd-trace-integration"
 SHA = "a" * 40
 PLATFORMS = (
     "glibc-x64-hotspot", "glibc-x64-openj9", "glibc-arm64-hotspot", "glibc-arm64-openj9",
@@ -25,6 +25,19 @@ class MainIntegrationGateTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="main-integration-gate-")
         self.addCleanup(directory.cleanup)
         self.work = Path(directory.name)
+        # The gate resolves its default quarantine list next to its own scripts,
+        # and ignores QUARANTINE_LIST by design, so the fixtures point the gate
+        # at a copied script tree instead of the repository checkout.
+        self.gate = self.work / "dd-trace-integration"
+        self.gate.mkdir()
+        for name in ("certify-main.sh", "validate-quarantine.sh",
+                     "post-pr-comment.sh", "quarantine-lib.sh"):
+            shutil.copy(SOURCE_DIR / name, self.gate / name)
+        # post-pr-comment.sh resolves its comment poster relative to the copied
+        # tree, so the poster must be copied at the same relative depth.
+        (self.work / "scripts").mkdir()
+        shutil.copy(SOURCE_DIR.parent / "scripts/upsert-github-pr-comment.sh",
+                    self.work / "scripts/upsert-github-pr-comment.sh")
         self.results = self.work / "integration-test-results"
         for platform in PLATFORMS:
             for jdk in JDKS:
@@ -35,7 +48,7 @@ class MainIntegrationGateTest(unittest.TestCase):
                     (cell / f"{scenario}-{config}.log").write_text("SUCCESS: validated\n")
         self.prepared = self.work / "ddprof-commit-sha.txt"
         self.prepared.write_text(SHA + "\n")
-        self.quarantine = self.work / "quarantine.txt"
+        self.quarantine = self.gate / "quarantine.txt"
         self.quarantine.write_text("")
         self.body = self.work / "body.md"
         self.network = self.work / "network-attempt"
@@ -47,7 +60,7 @@ class MainIntegrationGateTest(unittest.TestCase):
             stub.chmod(0o700)
         self.env = dict(os.environ, PATH=str(binary) + os.pathsep + os.defpath,
                         CI_PIPELINE_SOURCE="push", CI_COMMIT_BRANCH="main", CI_COMMIT_SHA=SHA,
-                        CANCELLED="", QUARANTINE_LIST=str(self.quarantine),
+                        CANCELLED="", QUARANTINE_LIST=str(self.work / "attacker-quarantine-list"),
                         COMMENT_BODY_FILE=str(self.body), NETWORK_ATTEMPT_MARKER=str(self.network),
                         DDPROF_COMMIT_BRANCH="incorrect-inherited-branch", DDPROF_COMMIT_SHA="f" * 40)
         for token in ("GITHUB_TOKEN", "GH_TOKEN", "DDOCTOSTS_ID_TOKEN"):
@@ -60,7 +73,7 @@ class MainIntegrationGateTest(unittest.TestCase):
                 env.pop(key, None)
             else:
                 env[key] = value
-        result = subprocess.run(["bash", str(SCRIPT)], cwd=self.work, env=env,
+        result = subprocess.run(["bash", str(self.gate / "certify-main.sh")], cwd=self.work, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, timeout=30)
         self.assertFalse(self.network.exists(), "Certification attempted a network operation")
@@ -88,7 +101,8 @@ class MainIntegrationGateTest(unittest.TestCase):
     def test_main_push_with_real_complete_results_succeeds_without_posting(self):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("All 40 integration tests passed", self.body.read_text())
+        self.assertIn("All 30 integration tests passed", self.body.read_text())
+        self.assertIn("10 not applicable", self.body.read_text())
         self.assertIn("`" + SHA[:8] + "`", self.body.read_text())
         self.assertNotIn("`" + "f" * 8 + "`", self.body.read_text())
         self.assertIn("Skipping PR comment for branch: main", result.stdout)
@@ -131,7 +145,7 @@ class MainIntegrationGateTest(unittest.TestCase):
         self.assertFalse(self.body.exists())
 
     def test_incomplete_matrix_blocks_the_producer(self):
-        config = "musl-arm64-openj9-jdk25"
+        config = "musl-arm64-hotspot-jdk25"
         (self.results / config / f"tracer-profiler-{config}.log").unlink()
         result = self.assert_blocked("configuration(s) produced no result")
         self.assertIn(config, result.stdout)
