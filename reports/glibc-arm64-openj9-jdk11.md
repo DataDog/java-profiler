@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-27 11:54:55 EST
+**Date:** 2026-11-27 13:25:48 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 29 |
-| Sample Rate | 0.48/sec |
-| Health Score | 30% |
-| Threads | 8 |
+| CPU Samples | 26 |
+| Sample Rate | 0.43/sec |
+| Health Score | 27% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 9 |
-| Sample Rate | 0.15/sec |
-| Health Score | 9% |
-| Threads | 6 |
+| CPU Samples | 5 |
+| Sample Rate | 0.08/sec |
+| Health Score | 5% |
+| Threads | 5 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
 
 ```
-1795798262 33
-1795798267 33
-1795798272 33
-1795798277 33
-1795798282 33
-1795798287 33
-1795798292 33
-1795798297 33
-1795798302 33
-1795798307 33
-1795798312 33
-1795798317 33
-1795798322 33
-1795798327 33
-1795798332 33
-1795798337 33
-1795798342 33
-1795798347 33
-1795798352 33
-1795798357 33
+1795803755 33
+1795803760 33
+1795803765 33
+1795803770 33
+1795803775 33
+1795803780 33
+1795803785 33
+1795803790 33
+1795803795 33
+1795803800 33
+1795803805 33
+1795803810 33
+1795803815 33
+1795803820 33
+1795803825 33
+1795803830 33
+1795803835 33
+1795803840 33
+1795803845 33
+1795803850 33
 ```
 </details>
 
