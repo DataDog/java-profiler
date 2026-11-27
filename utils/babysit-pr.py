@@ -31,7 +31,6 @@ import babysit_pr_policy as policy  # noqa: E402
 REPO = os.environ.get("BABYSIT_REPO", "datadog/java-profiler")
 GH = os.environ.get("BABYSIT_GH") or (
     "/opt/dogbrew/shims/bin/gh" if os.access("/opt/dogbrew/shims/bin/gh", os.X_OK) else "gh")
-LABEL = "dog-sitter"
 CAP_S = 2 * 3600
 MAX_ROUNDS = 2
 # A worker calls `wait` at least every few minutes while idle but may spend longer on one
@@ -215,7 +214,7 @@ def cmd_start(a):
                       deadline_at=now + CAP_S, fix_rounds_used=0, expected_head=pr["head"]["sha"],
                       status_comment_id=None, run_log=[], surfaced=[], inbox={}, untrusted={},
                       perm_cache={}, facts={}, idle_polls=0, next_poll_at=0, pushed=[],
-                      flags=[], pending_handoff=None, acked={}, labeled=False)
+                      flags=[], pending_handoff=None, acked={})
             log(st, "started", "head `%s`" % st["expected_head"][:9])
         else:
             st["parent_checkout"] = git("rev-parse", "--show-toplevel")
@@ -224,13 +223,6 @@ def cmd_start(a):
         # next start resumes this run instead of posting a second status comment.
         st["status"], st["heartbeat_at"] = "running", 0
         save(st)
-        if not st["labeled"]:
-            if gh_api("repos/%s/labels/%s" % (REPO, LABEL), ok404=True) is None:
-                st["flags"].append("label %s does not exist in the repo; not created" % LABEL)
-            else:
-                gh_api("repos/%s/issues/%d/labels" % (REPO, a.pr), "POST", {"labels": [LABEL]})
-            st["labeled"] = True
-            save(st)
         publish_status(st)
         st["heartbeat_at"] = now
         save(st)
@@ -304,15 +296,23 @@ def poll_once(pr_number, now):
         d = policy.decide(state_view, snap, make_trusted(st, snap["pr"]["author"]), now)
         changed = bool(d["actions"] or d["events"])
         for act in d["actions"]:
+            # Recorded and saved before the POST: a failed or interrupted POST must not
+            # turn a once-per-run (or once-per-head) action into one per poll.
             if act[0] == "rerun":
-                gh_api("repos/%s/actions/runs/%d/rerun-failed-jobs" % (REPO, act[1]), "POST")
                 st["retried_runs"].append(act[1])
                 log(st, "retried", "%s (run %d)" % (act[2], act[1]))
+                save(st)
+                try:
+                    gh_api("repos/%s/actions/runs/%d/rerun-failed-jobs" % (REPO, act[1]), "POST")
+                except EnvError as e:
+                    if "already running" not in str(e):
+                        raise
             else:
-                gh_api("repos/%s/issues/%d/comments" % (REPO, pr_number), "POST",
-                       {"body": policy.BITS_TRIGGER})
                 st["bits_triggered"].append(act[1])
                 log(st, "Bits", "review requested on `%s`" % act[1][:9])
+                save(st)
+                gh_api("repos/%s/issues/%d/comments" % (REPO, pr_number), "POST",
+                       {"body": policy.BITS_TRIGGER})
         for key in ("ci", "bits"):
             if d["facts"].get(key) and d["facts"][key] != st["facts"].get(key):
                 changed = True
@@ -691,10 +691,9 @@ def cmd_resolve_handoff(a):
 
 
 def finish(st, reason):
-    """Flip the run to stopped: remove the label, close the status comment. Idempotent."""
+    """Flip the run to stopped and close the status comment. Idempotent."""
     if st["status"] != "stopped":
         st["status"], st["stop_reason"], st["stopped_at"] = "stopped", reason, hhmm()
-        gh_api("repos/%s/issues/%d/labels/%s" % (REPO, st["pr"], LABEL), "DELETE", ok404=True)
         log(st, "stopped", reason)
         publish_status(st)
     return {k: st.get(k) for k in CARRIED + ("pushed", "flags", "untrusted", "stop_reason", "pending_handoff",

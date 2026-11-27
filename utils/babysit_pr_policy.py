@@ -59,7 +59,9 @@ def ci_summary(check_runs, statuses):
     A failing entry carries name, kind (gha|gitlab|other), run_id (gha only) and url."""
     failing, pending = [], []
     for name, run in sorted(dedupe_checks(check_runs).items()):
-        if run.get("status") != "completed":
+        # cancelled counts as not-yet-green, never as a failure: the CI workflow's
+        # concurrency group cancels superseded runs, and rerunning those cancels the live one.
+        if run.get("status") != "completed" or run.get("conclusion") == "cancelled":
             pending.append(name)
         elif run.get("conclusion") not in ("success", "neutral", "skipped"):
             url = run.get("details_url") or ""
@@ -158,9 +160,12 @@ def decide(state, snap, trusted, now):
         surface(_event("head_moved", "head:" + head, head=head, expected=state["expected_head"]))
     if pr.get("mergeable_state") == "dirty":
         surface(_event("conflict", "conflict:" + head, head=head))
+    rerun = set()
     for f in ci["failing"]:
         if f["kind"] == "gha" and f["run_id"] not in state["retried_runs"]:
-            out["actions"].append(("rerun", f["run_id"], f["name"]))
+            if f["run_id"] not in rerun:  # one rerun per workflow run, not per failing job
+                rerun.add(f["run_id"])
+                out["actions"].append(("rerun", f["run_id"], f["name"]))
         else:
             surface(_event("ci_red", "ci:%s@%s" % (f["name"], head), check=f["name"], ci_kind=f["kind"],
                            run_id=f["run_id"], url=f["url"]))

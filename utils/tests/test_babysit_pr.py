@@ -78,6 +78,12 @@ class PolicyTest(unittest.TestCase):
                {"context": P.BITS_CONTEXT, "state": "success", "updated_at": "3"}]
         self.assertEqual((P.ci_summary([], sts)["state"], P.bits_state(sts)), ("green", "success"))
 
+    def test_cancelled_is_pending_not_failing(self):
+        runs = [{"name": "t", "status": "completed", "conclusion": "cancelled",
+                 "details_url": "https://github.com/o/r/actions/runs/9/job/1"}]
+        d = P.decide(base_state(), snap(check_runs=runs), trusted, 0)
+        self.assertEqual((d["facts"]["ci"], d["actions"], d["events"]), ("pending", [], []))
+
     def test_failing_kinds(self):
         runs = [{"name": "g", "status": "completed", "conclusion": "failure",
                  "details_url": "https://github.com/o/r/actions/runs/123/job/9"}]
@@ -225,7 +231,7 @@ class CliTest(unittest.TestCase):
     def routes(self, extra, head=None, pr_state="open"):
         pr = {"state": pr_state, "merged": False, "head": {"sha": head or self.head, "ref": "topic"},
               "base": {"ref": "main"}, "user": {"login": "alice"}, "mergeable_state": "clean", "draft": False}
-        r = {"GET repos/o/r/pulls/1": pr, "GET user": {"id": SELF}, "GET repos/o/r/labels/dog-sitter": {},
+        r = {"GET repos/o/r/pulls/1": pr, "GET user": {"id": SELF},
              "GET repos/o/r/pulls/1/comments": [], "GET repos/o/r/pulls/1/reviews": [],
              "GET repos/o/r/issues/1/comments": [],
              "GET repos/o/r/commits/%s/check-runs" % (head or self.head): {"check_runs": []},
@@ -279,18 +285,8 @@ class CliTest(unittest.TestCase):
 
     def test_start_dedupes_live_run(self):
         self.assertEqual(self.cli("start")["result"], "started")
-        self.assertIn("POST repos/o/r/issues/1/labels", [c["key"] for c in self.calls()])
+        self.assertFalse([c for c in self.calls() if "/labels" in c["key"]])
         self.assertEqual(self.cli("start", rc=3)["result"], "live")
-
-    def test_start_flags_missing_label_without_creating_it(self):
-        with open(os.path.join(self.gh_dir, "routes.json")) as f:
-            r = json.load(f)
-        del r["GET repos/o/r/labels/dog-sitter"]
-        with open(os.path.join(self.gh_dir, "routes.json"), "w") as f:
-            json.dump(r, f)
-        self.cli("start")
-        self.assertNotIn("POST repos/o/r/issues/1/labels", [c["key"] for c in self.calls()])
-        self.assertTrue(self.cli("status")["flags"])
 
     def test_stage_rejects_outside_allowlist_and_scope(self):
         self.cli("start")
@@ -445,14 +441,35 @@ class CliTest(unittest.TestCase):
 
     def test_failed_start_resumes_with_one_status_comment(self):
         with open(os.path.join(self.gh_dir, "fail.json"), "w") as f:
-            json.dump({"GET repos/o/r/labels/dog-sitter": ["gh: id 404 rate limited (HTTP 403)", 3]}, f)
+            json.dump({"POST repos/o/r/issues/1/comments": ["gh: HTTP 502", 1]}, f)
         self.assertEqual(self.cli("start", rc=2)["result"], "error")
         st = self.cli("status")
-        self.assertEqual((st["status"], st["heartbeat_at"], st["flags"]), ("running", 0, []))
+        self.assertEqual((st["status"], st["heartbeat_at"], st["status_comment_id"]), ("running", 0, None))
         self.assertEqual(self.cli("start")["result"], "resumed")
+        self.assertTrue(self.cli("status")["status_comment_id"])
+
+    def test_non_404_error_naming_404_is_not_not_found(self):
+        self.cli("start")
+        with open(os.path.join(self.gh_dir, "fail.json"), "w") as f:
+            json.dump({"GET repos/o/r/collaborators/bob/permission": ["gh: id 404 rate limited (HTTP 403)", 3]}, f)
+        self.routes({"GET repos/o/r/pulls/1/comments": [{"id": 10, "user": WRITER, "body": "bug"}]})
+        self.assertEqual(self.cli("wait", "--immediate", "--max-wait", "0", rc=2)["result"], "error")
+
+    def test_rerun_once_per_run_and_recorded_on_failure(self):
+        self.cli("start")
+        url = "https://github.com/o/r/actions/runs/77/job/%d"
+        runs = [{"name": "j%d" % i, "status": "completed", "conclusion": "failure", "details_url": url % i}
+                for i in range(3)]
+        self.routes({"GET repos/o/r/commits/%s/check-runs" % self.head: {"check_runs": runs}})
+        with open(os.path.join(self.gh_dir, "fail.json"), "w") as f:
+            json.dump({"POST repos/o/r/actions/runs/77/rerun-failed-jobs":
+                       ["gh: This workflow is already running (HTTP 403)", 1]}, f)
+        self.assertEqual(self.cli("wait", "--immediate", "--max-wait", "0")["outcome"], "continue")
+        self.assertEqual(self.cli("status")["retried_runs"], [77])
+        out = self.cli("wait", "--immediate", "--max-wait", "0")
+        self.assertEqual(sorted(e["check"] for e in out["events"]), ["j0", "j1", "j2"])
         keys = [c["key"] for c in self.calls()]
-        self.assertEqual(keys.count("POST repos/o/r/issues/1/comments"), 1)
-        self.assertIn("POST repos/o/r/issues/1/labels", keys)
+        self.assertEqual(keys.count("POST repos/o/r/actions/runs/77/rerun-failed-jobs"), 1)
 
     def test_push_already_landed_is_adopted(self):
         self.cli("start")
@@ -526,7 +543,7 @@ class CliTest(unittest.TestCase):
         self.routes({}, pr_state="closed")
         out = self.cli("wait", "--immediate", "--max-wait", "0")
         self.assertEqual((out["outcome"], out["summary"]["stop_reason"]), ("stop", "PR closed"))
-        self.assertIn("DELETE repos/o/r/issues/1/labels/dog-sitter", [c["key"] for c in self.calls()])
+        self.assertFalse([c for c in self.calls() if "/labels" in c["key"]])
         self.assertEqual(self.cli("start", rc=1)["result"], "refused")
 
     def test_worker_marker_written_in_worktree_only(self):
