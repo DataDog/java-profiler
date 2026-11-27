@@ -38,9 +38,9 @@ QUARANTINE_PLATFORMS=(
 )
 QUARANTINE_JDKS=(8 11 17 21 25)
 
-# Platforms the .integration_test_base rules never schedule. The gate renders
-# them as N/A; they are not cells, so no quarantine glob can match them.
-# test_jvm_selection.py fails if this and the CI rules: entry disagree.
+# Platforms omitted from the CI integration matrices. The gate renders them
+# as N/A; they are not cells, so no quarantine glob can match them.
+# test_jvm_selection.py fails if this and the CI matrices disagree.
 quarantine_platform_not_applicable() {
   case "$1" in
     musl-x64-openj9|musl-arm64-openj9) return 0 ;;

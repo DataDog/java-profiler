@@ -716,8 +716,13 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
       // Lock order (enforced, asymmetric): this call runs under THIS tracker's
       // SHARED _table_lock and takes ReferenceChainTracker-internal locks
       // (FrontierTable's SpinLock - held only inside individual
-      // insert/lookup/setLeakTag method bodies - and _resolved_chains_lock
-      // inside invalidateResolvedChain()). Every direction that could invert
+      // insert/lookup/setLeakTag method bodies - _resolved_chains_lock inside
+      // invalidateResolvedChain() and the correlation's cache-presence check, and then
+      // _pending_chain_invalidations_lock ALONE when the correlation queues a rebuild (the
+      // cache lock is released before queueChainInvalidation() runs; the
+      // pending-inside-cache nesting exists only in applyPendingChainInvalidations() and
+      // clearPendingChainInvalidations(), on the BFS and dump threads).
+      // Every direction that could invert
       // this is excluded today: RCT entry points into LT
       // (resolveCandidateRepresentative, selectLeakCandidates,
       // tagLeakInstances from pollWatchedTargets) take the table lock before

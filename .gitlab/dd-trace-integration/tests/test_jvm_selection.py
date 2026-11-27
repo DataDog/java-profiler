@@ -395,66 +395,138 @@ class JvmSelectionTest(unittest.TestCase):
         self.assertEqual(config.count("verify-jvm.sh"), 1)
         self.assertNotIn("verify-jvm.sh", (SCRIPTS / "run-integration-test.sh").read_text())
 
-    def test_openj9_musl_cells_are_not_applicable_by_effective_ci_rules(self):
+    def test_openj9_musl_cells_are_omitted_from_ci_matrices(self):
         config = (SCRIPTS / ".gitlab-ci.yml").read_text()
-        base = config.split(".integration_test_base:\n", 1)[1].split("\n  script:", 1)[0]
-        rule = re.search(
-            r"    - if: '([^'\n]+)'\n      when: (never)\n    - when: on_success\n",
-            base,
-        )
-        self.assertIsNotNone(rule, "Require a not-applicable skip rule before the terminal rule")
-        terms = re.fullmatch(r'\$(\w+) == "(\w+)" && \$(\w+) == "(\w+)"', rule[1])
-        self.assertIsNotNone(terms, "Expected a conjunction of matrix-variable equalities")
-        condition = ((terms[1], terms[2]), (terms[3], terms[4]))
-        skipped = 0
+        expected_versions = sorted(VERSIONS)
+        omitted = 0
         scheduled = 0
         for arch in ("x64", "arm64"):
             for libc in ("glibc", "musl"):
                 job = config.split(f"\nintegration-test-{arch}-{libc}:\n", 1)[1].split("\n\n", 1)[0]
-                self.assertNotIn("rules:", job, "Cell override must not bypass the base applicability rule")
+                self.assertNotIn("rules:", job, "Cell job must inherit .integration_test_base rules")
                 self.assertIn("extends: .integration_test_base", job)
+                self.assertIn(f"LIBC_VARIANT: {libc}", job)
+                self.assertIn(f"ARCH: {arch}", job)
+                matrix_entries = re.findall(
+                    r"- JVM_TYPE: (\w+)\n\s+JAVA_VERSION: \[([^\]]+)\]",
+                    job,
+                )
+                declared = {
+                    vm: sorted(int(v.strip()) for v in versions.split(","))
+                    for vm, versions in matrix_entries
+                }
+                self.assertEqual(len(declared), len(matrix_entries), f"Duplicate JVM_TYPE in {arch}-{libc}")
+                expected_vms = ["hotspot", "openj9"] if libc == "glibc" else ["hotspot"]
+                self.assertEqual(sorted(declared), sorted(expected_vms))
+                for vm in expected_vms:
+                    self.assertEqual(declared[vm], expected_versions)
                 for vm in ("hotspot", "openj9"):
-                    for major in VERSIONS:
+                    for major in expected_versions:
                         with self.subTest(arch=arch, libc=libc, vm=vm, major=major):
-                            variables = {"JVM_TYPE": vm, "LIBC_VARIANT": libc}
-                            matches = all(variables.get(key) == value for key, value in condition)
-                            effective = rule[2] if matches else "on_success"
-                            self.assertEqual(effective, "never" if vm == "openj9" and libc == "musl"
-                                             else "on_success")
+                            in_matrix = major in declared.get(vm, [])
+                            self.assertEqual(in_matrix, not (vm == "openj9" and libc == "musl"))
                             platform = f"{libc}-{arch}-{vm}"
                             lib = subprocess.run(
                                 ["bash", "-c", '. "$1"; quarantine_platform_not_applicable "$2"', "_",
                                  str(SCRIPTS / "quarantine-lib.sh"), platform])
-                            self.assertEqual(lib.returncode == 0, effective == "never",
-                                             f"quarantine-lib.sh disagrees with the CI rule for {platform}")
-                            skipped += effective == "never"
-                            scheduled += effective == "on_success"
-        self.assertEqual(skipped, 10)
+                            self.assertEqual(lib.returncode == 0, not in_matrix,
+                                             f"quarantine-lib.sh disagrees with the CI matrix for {platform}")
+                            omitted += not in_matrix
+                            scheduled += in_matrix
+        self.assertEqual(omitted, 10)
         self.assertEqual(scheduled, 30)
 
-    def test_applicability_keeps_existing_pipeline_exclusions_and_failure_policy(self):
+    def test_integration_base_keeps_pipeline_exclusions_without_cell_filtering(self):
         config = (SCRIPTS / ".gitlab-ci.yml").read_text()
         base = config.split(".integration_test_base:\n", 1)[1].split("\n  script:", 1)[0]
-        exclusions = [
+        rules = base.split("  rules:\n", 1)[1].split("\n  interruptible:", 1)[0]
+        expected_rules = "\n".join([
             "    - !reference [.skip-on-release, rules]",
             "    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'\n      when: never",
             '    - if: \'$CI_PIPELINE_SOURCE == "merge_request_event"\'\n      when: never',
-        ]
-        positions = [base.index(exclusion) for exclusion in exclusions]
-        self.assertEqual(positions, sorted(positions))
-        self.assertLess(positions[-1], base.index('$JVM_TYPE == "openj9"'))
+            "    - when: on_success",
+        ])
+        # Cell-level `when: never` rules drop matrix jobs that downstream `needs:` still expand.
+        self.assertEqual(rules, expected_rules)
         self.assertRegex(base, r"(?m)^  allow_failure: true$")
         self.assertNotIn("allow_failure: false", base)
+        for consumer in ("report-dd-trace-results", "post-pr-comment", "notify-slack-dd-trace-integration"):
+            block = config.split(f"\n{consumer}:\n", 1)[1].split("\n\n", 1)[0]
+            needs = block.split("  needs:\n", 1)[1].split("\n  rules:", 1)[0]
+            for dep in ("integration-test-x64-glibc", "integration-test-x64-musl",
+                        "integration-test-arm64-glibc", "integration-test-arm64-musl"):
+                self.assertIn(f"- job: {dep}", needs)
+            self.assertNotIn("optional:", needs)
 
-    def test_ci_keeps_all_labeled_cells_and_runs_regression_tests(self):
-        config = (SCRIPTS / ".gitlab-ci.yml").read_text()
-        for platform in ("x64-glibc", "x64-musl", "arm64-glibc", "arm64-musl"):
-            job = config.split(f"\nintegration-test-{platform}:\n", 1)[1].split("\n\n", 1)[0]
-            self.assertEqual(re.findall(r"JVM_TYPE: (\w+)", job), ["hotspot", "openj9"])
-            self.assertEqual(job.count("JAVA_VERSION: [8, 11, 17, 21, 25]"), 2)
+    def test_ci_runs_regression_tests(self):
         self.assertIn("python3 .gitlab/dd-trace-integration/tests/test_jvm_selection.py",
                       (ROOT / ".gitlab-ci.yml").read_text())
         self.assertIn("bash .gitlab/dd-trace-integration/verify-jvm.sh", integration_script())
+
+    def test_jbang_tooling_does_not_inherit_openj9_jdk25_java_home(self):
+        jbang_calls = self.path / "jbang-calls"
+        jbang_calls.touch()
+        self.executable(
+            self.bin / "jbang",
+            'printf "JAVA_HOME=%s args=%s\\n" "${JAVA_HOME:-<unset>}" "$*" >> "$JBANG_CALLS"\n'
+            'case "$*" in\n'
+            '  "jdk list")\n'
+            '    if [ -n "${JAVA_HOME:-}" ]; then\n'
+            '      echo "   25 (25.0.5.0.3+1-LTS)"\n'
+            '    elif [ -f "$JBANG_JDK25_MARKER" ]; then\n'
+            '      echo "   25 (25.0.5.1+2-LTS) <"\n'
+            '    else\n'
+            '      echo "   21 (21.0.3+9-LTS)"\n'
+            '    fi\n'
+            '    ;;\n'
+            '  "jdk install 25")\n'
+            '    touch "$JBANG_JDK25_MARKER"\n'
+            '    ;;\n'
+            '  run\\ --java\\ 25\\ *)\n'
+            '    if [ -n "${JAVA_HOME:-}" ]; then\n'
+            '      echo "java.lang.IllegalStateException: Flight Recorder is not supported on this VM" >&2\n'
+            '      exit 1\n'
+            '    fi\n'
+            '    out="${@: -1}"\n'
+            '    echo "synthetic-jfr" > "$out"\n'
+            '    ;;\n'
+            '  --java\\ 25\\ *probe-event-types.jfrs*)\n'
+            '    if [ -n "${JAVA_HOME:-}" ]; then\n'
+            '      echo "JAVA_HOME leaked to probe" >&2\n'
+            '      exit 1\n'
+            '    fi\n'
+            '    printf "HAS jdk.ExecutionSample 2\\nHAS datadog.ExecutionSample 3\\n'
+            'HAS datadog.Endpoint 2\\nHAS jdk.ObjectAllocationSample 0\\n'
+            'HAS jdk.ThreadAllocationStatistics 0\\nPROBE_COMPLETE\\n"\n'
+            '    ;;\n'
+            'esac\n',
+        )
+        run_dir = self.path / "prereq-work"
+        run_dir.mkdir()
+        marker = self.path / "jbang-jdk25-installed"
+        env = dict(
+            self.env,
+            JBANG_CALLS=str(jbang_calls),
+            JBANG_JDK25_MARKER=str(marker),
+            JAVA_VERSION="25",
+            FIXTURE_JAVA_VERSION="25.0.5.0.3",
+        )
+        prereq = subprocess.run(
+            ["bash", str(SCRIPTS / "install-prerequisites.sh")],
+            cwd=run_dir, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.assertEqual(prereq.returncode, 0, prereq.stdout)
+        self.assertTrue(marker.exists(), "install-prerequisites.sh must install jbang JDK 25 instead of reusing JAVA_HOME")
+        self.assertIn(f"Java found at JAVA_HOME: {self.jdk}", prereq.stdout)
+        probe = subprocess.run(
+            ["bash", str(SCRIPTS / "tests/probe_event_types_real_test.sh")],
+            cwd=run_dir, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stdout)
+        lines = jbang_calls.read_text().splitlines()
+        for line in lines:
+            if any(token in line for token in ("args=jdk ", "args=run ", "args=--java 25 ")):
+                self.assertTrue(line.startswith("JAVA_HOME=<unset> "), f"JAVA_HOME leaked to jbang: {line}")
 
 
 if __name__ == "__main__":

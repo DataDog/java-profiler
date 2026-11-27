@@ -69,10 +69,12 @@ fi
 log_info "Adding jbang trust for btraceio catalog..."
 jbang trust add https://github.com/btraceio/ 2>/dev/null || true
 
-# Pre-install JDK 25 for jbang (required by jfr-shell)
-# First check if JDK 25 is already available (e.g., Java 25 test jobs)
+# Pre-install JDK 25 for jbang (required by jfr-shell and JFR fixture generation).
+# Unset JAVA_HOME so jbang installs its own HotSpot JDK 25 instead of reusing an
+# OpenJ9 JDK 25 under test, which does not support jdk.jfr.Recording.
 log_info "Checking if JDK 25 is available for jbang..."
-if jbang jdk list 2>&1 | grep -q "25"; then
+JBANG_JDKS=$(env -u JAVA_HOME jbang jdk list 2>&1 || true)
+if printf '%s\n' "${JBANG_JDKS}" | grep -Eq '^[[:space:]]*25([[:space:]]|$)'; then
     log_info "JDK 25 already available for jbang"
     JDK25_INSTALLED=true
 else
@@ -82,7 +84,7 @@ else
     # Try jbang's built-in install first
     for attempt in $(seq 1 $MAX_RETRIES); do
         log_info "JDK 25 installation attempt $attempt of $MAX_RETRIES (via jbang)..."
-        if jbang jdk install 25 2>&1; then
+        if env -u JAVA_HOME jbang jdk install 25 2>&1; then
             JDK25_INSTALLED=true
             log_info "JDK 25 installed for jbang"
             break
@@ -161,7 +163,7 @@ if [ ! -f /tmp/skip-jfr-validation ] && command -v jbang &> /dev/null; then
     else
         JBANG_REPOS_OPT=""
     fi
-    if PREWARM_OUT=$(jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script /dev/null 2>&1); then
+    if PREWARM_OUT=$(env -u JAVA_HOME jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script /dev/null 2>&1); then
         log_info "jfr-shell ready"
     else
         log_warn "jfr-shell failed to start (io.btrace:jafar-shell not resolvable from Maven)"
@@ -218,7 +220,7 @@ log_info "✓ Prerequisites installation complete"
 log_info ""
 log_info "Installed tools:"
 log_info "  - jbang: $(command -v jbang || echo 'not in PATH')"
-log_info "  - jbang JDKs: $(jbang jdk list 2>&1 | grep -v '^$' | tr '\n' ' ')"
+log_info "  - jbang JDKs: $(env -u JAVA_HOME jbang jdk list 2>&1 | grep -v '^$' | tr '\n' ' ')"
 log_info "  - java: $(command -v java || echo 'not in PATH')"
 log_info "  - javac: $(command -v javac || echo 'not in PATH')"
 log_info ""
