@@ -471,9 +471,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // VM_INIT has not fired yet, so VMStructs would otherwise stay uninitialized until
   // VM::VMInit() runs -- but CodeHeap::available()/VMFlag::find() below are used
   // synchronously in this function. Get VMStructs (and crash-protection signal
-  // handlers) ready now; the later VM::VMInit() call re-resolves the JVM runtime
-  // state that HotSpot has not set up yet at Agent_OnLoad. With attach == true,
-  // this call reruns the one made by VM::initLibrary().
+  // handlers) ready now. With attach == false, the later VM::VMInit() call runs it
+  // again and resolves the JVM runtime state that HotSpot has not set up yet; with
+  // attach == true, this call reruns the one made by VM::initLibrary().
   ready(jvmti(), jni());
 
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {
@@ -594,9 +594,9 @@ void VM::installClassRedefinitionHooks(JVMTIFunctions *functions) {
   functions->RetransformClasses = RetransformClassesHook;
 }
 
-// Called from initLibrary(), initProfilerBridge() and VMInit, possibly while a profiler
-// instance samples. VMStructs parses its tables on the first call only; every call
-// re-resolves JVM runtime state, which HotSpot has not set up yet at Agent_OnLoad.
+// Called from initLibrary(), initProfilerBridge() and VMInit, so possibly more than once
+// per library image. Only the signal-handler setup runs once; the VMStructs init and
+// resolution below rerun on every call.
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   // Hotspot specific
   static bool init_signal = false;

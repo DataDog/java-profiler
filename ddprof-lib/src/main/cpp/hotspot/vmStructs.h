@@ -290,7 +290,7 @@ typedef void* address;
     type_begin(VMCodeHeap, MATCH_SYMBOLS("CodeHeap"))                                                               \
         field(_code_heap_memory_offset, offset, MATCH_SYMBOLS("_memory"))                                           \
         field(_code_heap_segmap_offset, offset, MATCH_SYMBOLS("_segmap"))                                           \
-        field(_code_heap_log2_segment_size_offset, offset, MATCH_SYMBOLS("_log2_segment_size"))                     \
+        field(_code_heap_segment_shift, offset, MATCH_SYMBOLS("_log2_segment_size"))                                \
     type_end()                                                                                                      \
     type_begin(VMHeapBlock, MATCH_SYMBOLS("HeapBlock::Header"))                                                     \
         field(_heap_block_used_offset, offset, MATCH_SYMBOLS("_used"))                                              \
@@ -402,7 +402,6 @@ class VMStructs {
     enum { MONITOR_BIT = 2, LOCK_MASK = 3 };
 
     static CodeCache* _libjvm;
-    static bool _initialized;
 
     static bool _has_class_names;
     static bool _has_method_structs;
@@ -439,7 +438,6 @@ class VMStructs {
     
     static int _narrow_klass_shift;
     static char* _code_heap[3];
-    static int _code_heap_segment_shift;
     static const void* _code_heap_low;
     static const void* _code_heap_high;
     static char* _narrow_klass_base;

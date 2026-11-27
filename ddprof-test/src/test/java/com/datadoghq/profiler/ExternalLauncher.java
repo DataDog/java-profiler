@@ -10,7 +10,6 @@ import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
 import com.datadoghq.profiler.referencechains.StaticFieldGrowingCollectionScenario;
 import com.datadoghq.profiler.referencechains.ThreadLocalLeakScenario;
 import java.io.IOException;
-import java.lang.instrument.Instrumentation;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
@@ -38,9 +37,6 @@ import java.util.regex.Pattern;
  *   <li>profiler [comma delimited profiler command list] - starts the profiler
  *   <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the
  *       profiler and runs a CPU-intensive task
- *   <li>profiler-at &lt;library path&gt; - loads the library from that path between {@code
- *       [getInstance-begin]} and {@code [getInstance-done]}, burns CPU, then retransforms a class
- *       when {@link RetransformAgent} is loaded; see {@code VMReadyRerunTest}
  *   <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from
  *       a virtual thread
  *   <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
@@ -402,28 +398,6 @@ public class ExternalLauncher {
     }
   }
 
-  /**
-   * Burns 500 ms of thread CPU time, so a throttled container still gets CPU samples, or 500 ms of
-   * wall time without thread CPU time; 10 s of wall time at most. Its frame marks post-reload
-   * samples.
-   */
-  static long spinAfterReload() {
-    ThreadMXBean threads = ManagementFactory.getThreadMXBean();
-    boolean cpuTime = threads.isCurrentThreadCpuTimeSupported() && threads.isThreadCpuTimeEnabled();
-    long cpuStart = cpuTime ? threads.getCurrentThreadCpuTime() : 0;
-    long start = System.nanoTime();
-    long acc = 0;
-    while (System.nanoTime() - start < 10_000_000_000L) {
-      long spent =
-          cpuTime ? threads.getCurrentThreadCpuTime() - cpuStart : System.nanoTime() - start;
-      if (spent >= 500_000_000L) {
-        break;
-      }
-      acc = acc * 31 + System.nanoTime();
-    }
-    return acc;
-  }
-
   public static void main(String[] args) throws Exception {
     Thread worker = null;
     try {
@@ -432,19 +406,6 @@ public class ExternalLauncher {
       }
       if (args[0].equals("library")) {
         JVMAccess.getInstance();
-      } else if (args[0].equals("profiler-at")) {
-        System.out.println("[getInstance-begin]");
-        System.out.flush();
-        JavaProfiler.getInstance(args[1], null);
-        System.out.println("[getInstance-done]");
-        System.out.println("[spin-done] " + spinAfterReload());
-        Instrumentation inst = RetransformAgent.instrumentation();
-        if (inst != null) {
-          inst.retransformClasses(ExternalLauncher.class);
-          System.out.println("[retransform-done]");
-        } else {
-          System.out.println("[retransform-agent-missing]");
-        }
       } else if (args[0].equals("profiler-virtual-thread")) {
         Thread vt =
             startVirtualThread(

@@ -44,9 +44,9 @@ load path goes through this function:
 
 | Load path | Entry point | Calls |
 |---|---|---|
-| `-agentpath` at JVM start | `Agent_OnLoad` (`vmEntry.cpp`) | `VM::initProfilerBridge(vm, false)` (`vmEntry.cpp`) |
-| `System.loadLibrary` | `JNI_OnLoad` (`vmEntry.cpp`) | `VM::initLibrary(vm)` → `initShared()` + `ready()` (`vmEntry.cpp`) |
-| `JavaProfiler.init0()` | `Java_com_datadoghq_profiler_JavaProfiler_init0` (`javaApi.cpp`) | `VM::initProfilerBridge(nullptr, true)` (`javaApi.cpp`) |
+| `-agentpath` at JVM start | `Agent_OnLoad` (`vmEntry.cpp:737`) | `VM::initProfilerBridge(vm, false)` (`vmEntry.cpp:747`) |
+| `System.loadLibrary` | `JNI_OnLoad` (`vmEntry.cpp:755`) | `VM::initLibrary(vm)` → `initShared()` + `ready()` (`vmEntry.cpp:389-396`) |
+| `JavaProfiler.init0()` | `javaApi.cpp:71` | `VM::initProfilerBridge(nullptr, true)` (`javaApi.cpp:80`) |
 
 `initShared()` returns early once `_jvmti` is set, so the detection runs only once.
 
@@ -77,14 +77,9 @@ The result is available through `VM::isHotspot()`, `VM::isOpenJ9()`, and
 `VM::isZing()` (`vmEntry.h:216-221`). The abstraction files branch on these
 predicates. More detection-dependent setup:
 
-- `VM::ready()` initializes `VMStructs` only on HotSpot (`vmEntry.cpp`).
-  It can be called more than once, also while a profiler instance samples. A
-  static flag ensures that the signal handlers are installed only once.
-  `VMStructs::init()` parses the vmStructs tables and looks up JVM symbols on
-  the first call only.
-  `VMStructs::ready()` resolves the JVM runtime state on every call. Under
-  `Agent_OnLoad`, the first call runs before HotSpot sets up its code heaps and
-  stubs, so the `VMInit` call resolves them.
+- `VM::ready()` initializes `VMStructs` only on HotSpot (`vmEntry.cpp:605-612`).
+  It can be called more than once. A static flag ensures that the signal
+  handlers are installed only once.
 - JVMTI event enabling is split. `VM::initProfilerBridge()` enables only
   `VM_DEATH` and `NATIVE_METHOD_BIND` (a native binds once and bindings cannot be
   replayed, so `getMemoryUsage0`'s binding must be seen from agent load). The
@@ -142,8 +137,8 @@ Callers in shared code:
 - The JFR writer calls `resolve`, `beginDump`, and `endDump`
   (`flightRecorder.cpp:764`, `flightRecorder.cpp:1035-1037`).
 - The class hooks in `vmEntry.cpp` call the load and redefinition functions:
-  `VM::ClassPrepare`, and the `RedefineClasses`/`RetransformClasses` hooks
-  `VM::RedefineClassesHook` and `VM::RetransformClassesHook` (all in `vmEntry.cpp`).
+  `ClassPrepare` at `vmEntry.cpp:641-645`, and the
+  `RedefineClasses`/`RetransformClasses` hooks at `vmEntry.cpp:687-731`.
 
 `jniHelper.h` calls `IsVirtualThread` through JNI slot 234 on JDK 21+,
 independently of the headers used to build the library. `vmEntry.h` defines the
@@ -161,7 +156,7 @@ thread in a `ThreadLocal`. It also keeps the `java.lang.Thread.tid` field ID.
   - Zing: `ZingSupport::initialize(thread)`, which reads `Thread.eetop`
     (`zing/zingSupport.cpp:21-27`)
   - HotSpot: `VMThread::initialize(thread)`, which also reads `eetop` and
-    calibrates `VMThread` offsets (`hotspot/vmStructs.cpp`)
+    calibrates `VMThread` offsets (`hotspot/vmStructs.cpp:650-670`)
 - `current()` / `key()` give access to the cached pointer and its pthread key.
   `perfEvents_linux.cpp:177` compares this key with its own.
 - `nativeThreadId(jni, thread)` (`jvmThread.cpp:32-34`) calls
@@ -300,7 +295,7 @@ behavior is shared code that branches on `VM::isZing()`:
 Caveat: `JVMThread::nativeThreadId()` sends Zing to
 `VMThread::nativeThreadId()`. That function returns -1 unless
 `_has_native_thread_id` is set (`hotspot/vmStructs.inline.h:77-83`). The flag is
-set only in `VMThread::initialize()` (`hotspot/vmStructs.cpp`), and Zing
+set only in `VMThread::initialize()` (`hotspot/vmStructs.cpp:667`), and Zing
 never calls that function. This is from reading the code and has not been
 checked on a Zing JVM. Zing is also currently disabled in the CI JDK matrix
 (`.github/workflows/test_workflow.yml:54-56`).
