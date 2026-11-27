@@ -61,7 +61,7 @@ git remote add origin "$TEMP_DIR/origin.git" && git push -q origin main && git f
 
 BLOCK_MSG="denies Bash("
 for c in 'rm -rf build' 'rm' 'sudo ls' 'cd x && rm -f y' 'true; rm y' 'ls | sudo tee f' \
-         'FOO=1 rm y' '(rm y)' 'echo $(rm y)' 'echo `rm y`' $'ls\nrm y' 'false || rm y' \
+         'FOO=1 rm y' '(rm y)' 'echo $(rm y)' 'echo `rm y`' 'echo $(rm)' 'echo `rm`' $'ls\nrm y' 'false || rm y' \
          'env rm y' 'exec rm y' 'nohup rm y' 'command rm y' 'xargs rm < list' \
          'env -i rm y' 'time -p rm y' 'xargs -0 rm < list' 'nice rm y' 'setsid rm y' \
          'env FOO=1 exec rm y' $'rm \
@@ -91,8 +91,10 @@ eq("printf 'a\\\nb'", ["printf 'a\\\nb'"]); // single quotes: literal pair kept
 eq('echo "x\\\ny"', ['echo "xy"']);      // double quotes: bash removes the pair
 eq("grep 'rm;rm y' f", ["grep 'rm;rm y' f"]); // quoted separators do not split
 eq('echo "a && rm b"', ['echo "a && rm b"']); // double-quoted metacharacters are text
-eq("echo $(rm y) end", ["echo $(", "rm y)", " end"]); // substitution executes: split
-eq("echo `rm y`", ["echo `", "rm y`", ""]);     // backtick substitution executes: split
+eq("echo $(rm y) end", ["echo $(", "rm y", " end"]); // substitution executes: split
+eq("echo `rm y`", ["echo `", "rm y", ""]);     // backtick substitution executes: split
+eq("echo $(rm)", ["echo $(", "rm", ""]);        // bare form keeps the exact deny match
+eq("rm -rf y\\", ["rm -rf y\\"]);              // trailing backslash without newline stays
 eq("(rm y)", ["", "rm y", ""]);               // subshell parens split as separators
 JS
 expect "splitSegments quote handling" 0 "" \

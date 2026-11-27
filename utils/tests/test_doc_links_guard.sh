@@ -79,6 +79,8 @@ expect "claude: write outside the checkout is not checked" 0 "" \
   claude '{"tool_name":"Write","tool_input":{"file_path":"/tmp/elsewhere/README.md","content":"[x](docs/absent.md)"}}'
 expect "claude: malformed payload is allowed" 0 "" \
   claude 'not-json'
+expect "claude: non-string write content is allowed" 0 "" \
+  claude '{"tool_name":"Write","tool_input":{"file_path":"'"$ROOT"'/README.md","content":123}}'
 
 # Edit that inserts a link INSIDE an existing fenced code block of the file being
 # edited: the resulting document keeps the fence, so the link is inside code and the

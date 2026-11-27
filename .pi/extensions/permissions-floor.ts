@@ -64,7 +64,10 @@ export function splitSegments(command: string): string[] {
       continue;
     }
     if ((ctx === "`" && ch === "`") || (ctx === "$(" && ch === ")")) {
-      segments.push(seg + ch);
+      // The closer is a separator, not part of the substituted command: keeping it
+      // would turn a bare `echo $(cmd)` into the segment `cmd)`, which neither equals
+      // the denied word nor starts with it plus a space.
+      segments.push(seg);
       seg = "";
       stack.pop();
       continue;
