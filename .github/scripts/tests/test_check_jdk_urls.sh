@@ -215,6 +215,13 @@ unset PROBE_DEADLINE_SECONDS
 assert_contains "${CURL_OPTS[*]}" "--retry-max-time 30" "curl retry window is bounded"
 assert_contains "${CURL_OPTS[*]}" "--max-time 30" "each curl transfer is bounded"
 
+# Every alert-side request is bounded: a stalled Jira or Slack endpoint must
+# fail fast into the warning paths, not eat the job's timeout.
+for f in "$CHECK" "$FILE_JIRA" "$RESOLVE_JIRA"; do
+  unbounded=$(awk '/curl / && !/max-time|CURL_OPTS/ && !/^[[:space:]]*#/ { n++ } END { print n + 0 }' "$f")
+  assert_eq 0 "$unbounded" "every curl in $(basename "$f") is bounded"
+done
+
 assert_eq 8.0.8.75 "$(pinned_ibm_version "$IBM_PIN")" "pinned_ibm_version"
 assert_eq "" "$(pinned_ibm_version "https://example.invalid/jdk.tgz")" "pinned_ibm_version without a release directory"
 assert_eq "$IBM_NEXT" "$(ibm_candidate_url 8.0.8.80)" "ibm_candidate_url"

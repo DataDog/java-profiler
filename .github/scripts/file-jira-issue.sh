@@ -99,12 +99,14 @@ JQL="project = $PROJECT AND summary ~ \"\\\"$JQL_SUMMARY\\\"\" AND resolution = 
 if [ "$ON_DUPLICATE" = "skip" ]; then
   JQL="$JQL AND statusCategory != Done"
 fi
+# Every Jira request is bounded (--max-time 60): a stalled Jira server
+# must fail fast instead of eating the caller's job timeout.
 if [ "$ON_DUPLICATE" = "skip" ]; then
   # skip must not dedupe onto a ticket whose summary merely contains the
   # phrase, so it post-filters to an exact, case-insensitive summary match.
   # Anything it cannot verify is not a proven duplicate: a failed lookup or an
   # unsummarized response files nothing, matched-but-not-exact files new.
-  SEARCH=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
+  SEARCH=$(curl -fsS --connect-timeout 15 --max-time 60 -u "$AUTH" -H 'Content-Type: application/json' \
     -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 100, fields: ["key", "summary"]}')" \
     "$API/search/jql") || {
     echo "ERROR: dedupe lookup failed; not filing a possible duplicate" >&2
@@ -125,7 +127,7 @@ if [ "$ON_DUPLICATE" = "skip" ]; then
     fi
   fi
 else
-  EXISTING_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
+  EXISTING_KEY=$(curl -fsS --connect-timeout 15 --max-time 60 -u "$AUTH" -H 'Content-Type: application/json' \
     -X POST --data "$(jq -n --arg jql "$JQL" '{jql: $jql, maxResults: 1, fields: ["key"]}')" \
     "$API/search/jql" | jq -r '.issues[0].key // .issueKeys[0] // empty') || {
     echo "WARNING: dedupe lookup failed; creating a new issue" >&2
@@ -145,7 +147,7 @@ if [ -n "$EXISTING_KEY" ]; then
   fi
   COMMENT_PAYLOAD=$(jq -n --arg body "$BODY" \
     '{body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: ("Recurring failure. Details:\n\n" + $body)}]}]}}')
-  curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
+  curl -fsS --connect-timeout 15 --max-time 60 -u "$AUTH" -H 'Content-Type: application/json' \
     -X POST --data "$COMMENT_PAYLOAD" "$API/issue/$EXISTING_KEY/comment" >/dev/null
   echo "$EXISTING_KEY"
   exit 0
@@ -168,7 +170,7 @@ ISSUE_PAYLOAD=$(jq -n --arg project "$PROJECT" --arg summary "$SUMMARY" --arg pr
     labels: $labels
   } + (if ($components | length) > 0 then {components: $components} else {} end))}')
 
-ISSUE_KEY=$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
+ISSUE_KEY=$(curl -fsS --connect-timeout 15 --max-time 60 -u "$AUTH" -H 'Content-Type: application/json' \
   -X POST --data "$ISSUE_PAYLOAD" "$API/issue" | jq -r '.key')
 
 if [ -n "$STATUS_FILE" ]; then

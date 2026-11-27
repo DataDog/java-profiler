@@ -56,11 +56,13 @@ AUTH="$ATLASSIAN_USER_EMAIL:$ATLASSIAN_API_TOKEN"
 API="$BASE/rest/api/3"
 
 # jira <exit code> <curl args...>: maps a curl failure to the given code;
-# curl's own exit codes overlap the ones above.
+# curl's own exit codes overlap the ones above. Every request is bounded
+# (--max-time 60): a stalled Jira server must fail fast into the warning
+# paths, not eat the caller's job timeout.
 jira() {
   local code=$1
   shift
-  curl -fsS -u "$AUTH" -H 'Content-Type: application/json' "$@" || {
+  curl -fsS --connect-timeout 15 --max-time 60 -u "$AUTH" -H 'Content-Type: application/json' "$@" || {
     echo "ERROR: Jira API call failed: ${*: -1}" >&2
     exit "$code"
   }
@@ -110,6 +112,6 @@ jira 5 -X POST --data "$(jq -n --arg id "$TRANSITION_ID" '{transition: {id: $id}
 COMMENT_PAYLOAD=$(jq -n --rawfile body "$COMMENT_FILE" \
   '{body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: $body}]}]}}')
 # The issue is already closed here; a failed comment must not report it open.
-curl -fsS -u "$AUTH" -H 'Content-Type: application/json' -X POST --data "$COMMENT_PAYLOAD" \
+curl -fsS --connect-timeout 15 --max-time 60 -u "$AUTH" -H 'Content-Type: application/json' -X POST --data "$COMMENT_PAYLOAD" \
   "$API/issue/$EXISTING_KEY/comment" >/dev/null ||
   echo "WARNING: $EXISTING_KEY resolved, but the comment failed" >&2

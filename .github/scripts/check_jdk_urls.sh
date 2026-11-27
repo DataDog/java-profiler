@@ -341,11 +341,12 @@ post_slack() {
     return 0
   fi
   # Same fields as certification.yml: one webhook receiver serves both, and
-  # a plain incoming webhook ignores the extras.
+  # a plain incoming webhook ignores the extras. Bounded like the probes: a
+  # stalled Slack endpoint must not eat the job's timeout.
   local payload
   payload=$(jq -n --rawfile text "$text_file" --arg run "$RUN_URL" \
     '{text: $text, scenarios: $text, failed_run_url: $run}')
-  if ! curl -fsS -X POST -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK" >/dev/null; then
+  if ! curl -fsS --connect-timeout 15 --max-time 60 -X POST -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK" >/dev/null; then
     echo "::warning::Slack notification failed"
   fi
 }
