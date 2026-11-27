@@ -281,6 +281,11 @@
    * bounded cache or queue was full, or invalidation overflow cleared the    \
    * resolved-chain cache to avoid emitting stale output. */                  \
   X(REFERENCE_CHAIN_EVENTS_DROPPED, "reference_chain_events_dropped")         \
+  /* A deferred REBUILD invalidation was dropped because the pending buffer   \
+   * was full - unlike an EVICT, this is self-healing (a later path change or \
+   * correlation re-queues it) and keeps the cached chain, so it is counted   \
+   * separately from REFERENCE_CHAIN_EVENTS_DROPPED. */                      \
+  X(REFERENCE_CHAIN_REBUILDS_DROPPED, "reference_chain_rebuilds_dropped")     \
   /* ReferenceChainTracker::releaseSearchTags() (referenceChains.cpp) failed  \
    * to call GetObjectsWithTags() for at least one batch - the search's tag   \
    * release is retried on a later call rather than proceeding, but this     \

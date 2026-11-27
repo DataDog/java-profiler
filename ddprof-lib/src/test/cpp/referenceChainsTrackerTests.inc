@@ -611,6 +611,32 @@ TEST_F(ResolvedChainCacheTest, DeferredInvalidationFiltersDeduplicatesAndDrainsE
               ReferenceChainsTestAccessor::drainingChainInvalidationCount());
 }
 
+TEST_F(ResolvedChainCacheTest, DeferredInvalidationNeverQueuesNegativeTag) {
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(0, makeEvent(10), 0, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(1, makeEvent(11), 1, 0));
+    std::vector<jlong> snapshot{-1, -2};
+
+    // REBUILD of -2 would encode to ~(-2) == 1: an EVICT of cached tag 1.
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(-2, snapshot, true);
+    // EVICT of -1 would encode to -1 == ~0: a REBUILD of cached tag 0.
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(-1, snapshot);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "a negative source tag must never be queued";
+
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1))
+        << "negative REBUILD aliased tag 1's EVICT";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(0));
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // Tag 0 is a legal frontier tag (the encoding is unambiguous from 0 up): a deferral of the
+    // boundary value must still be queued, not silently dropped by the negative-tag guard.
+    snapshot.assign(1, 0);
+    ReferenceChainsTestAccessor::deferResolvedChainInvalidation(0, snapshot, true);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingChainInvalidationCount())
+        << "tag 0 is a legal cache key and must survive the negative-tag guard";
+}
+
 TEST_F(ResolvedChainCacheTest, DeferredInvalidationIsBoundedByCacheAndKeepsCapacity) {
     const int cap = ReferenceChainsTestAccessor::maxResolvedChains();
     for (int i = 0; i < cap; i++) {
@@ -679,6 +705,55 @@ TEST_F(ResolvedChainCacheTest, DeferredInvalidationOverflowClearsCacheOnNextDrai
               Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
 }
 
+// The overflow policy is asymmetric: a REBUILD queued onto a full buffer is dropped (self-healing -
+// the next path change or correlation re-queues it), the cache stays intact, and only
+// REFERENCE_CHAIN_REBUILDS_DROPPED moves; an EVICT queued onto a full buffer still fails closed
+// (clears the cache on the next drain).
+TEST_F(ResolvedChainCacheTest, RebuildOverflowDroppedButEvictOverflowFailsClosed) {
+    const int cap = ReferenceChainsTestAccessor::maxPendingChainInvalidations();
+    const long long dropped_before =
+        Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED);
+    const long long rebuilds_dropped_before =
+        Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED);
+    for (int i = 1; i <= cap; i++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::cacheChain(i, makeEvent(i), i, 0));
+        ReferenceChainsTestAccessor::queueChainInvalidationForTest(i, /*rebuild=*/true);
+    }
+    ASSERT_EQ((size_t)cap,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    // A duplicate REBUILD is deduped, not an overflow.
+    ReferenceChainsTestAccessor::queueChainInvalidationForTest(1, /*rebuild=*/true);
+    EXPECT_EQ((size_t)cap,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(rebuilds_dropped_before,
+              Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED));
+
+    // REBUILD overflow: dropped, logged, counted as a rebuild drop - the cache and the EVICT-side
+    // drop counter stay untouched.
+    ReferenceChainsTestAccessor::queueChainInvalidationForTest(cap + 1, /*rebuild=*/true);
+    EXPECT_EQ((size_t)cap,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(rebuilds_dropped_before + 1,
+              Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED));
+    EXPECT_EQ(dropped_before,
+              Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
+    EXPECT_EQ(cap, ReferenceChainsTestAccessor::resolvedChainCount());
+
+    // EVICT overflow: fails closed - the next drain clears every cached chain.
+    ReferenceChainsTestAccessor::queueChainInvalidationForTest(cap + 2, /*rebuild=*/false);
+    EXPECT_EQ((size_t)cap,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(rebuilds_dropped_before + 1,
+              Counters::getCounter(REFERENCE_CHAIN_REBUILDS_DROPPED));
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount());
+    EXPECT_EQ(0u,
+              ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+    EXPECT_EQ(dropped_before + cap,
+              Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
+}
+
 TEST_F(ResolvedChainCacheTest, RestartDropsPendingTagsBeforeNumericTagReuse) {
     ReferenceChainsTestAccessor::cacheChain(1, makeEvent(1), 1, 0);
     std::vector<jlong> snapshot =
@@ -695,6 +770,41 @@ TEST_F(ResolvedChainCacheTest, RestartDropsPendingTagsBeforeNumericTagReuse) {
     ReferenceChainsTestAccessor::drain(&dump);
     ASSERT_EQ(1u, dump.size());
     EXPECT_EQ(101u, dump[0]._target_tag);
+}
+
+// A REBUILD still pending at a restart must not survive as a stale cached chain: the restart
+// resets the frontier and the tag namespace, so the deferred rebuild could never run, and dump()
+// re-emits every cached chain regardless of generation. The restart-clear evicts the affected
+// chain; an EVICT entry stays inert (a restarted search may already have re-cached the reused
+// tag - see the test above).
+TEST_F(ResolvedChainCacheTest, RestartEvictsChainOfUndrainedRebuild) {
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(1), 1, 0);
+    ReferenceChainsTestAccessor::cacheChain(2, makeEvent(2), 2, 0);
+    ReferenceChainsTestAccessor::queueChainInvalidationForTest(1, /*rebuild=*/true);
+    ReferenceChainsTestAccessor::queueChainInvalidationForTest(2, /*rebuild=*/false);
+    ASSERT_EQ(2u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    ReferenceChainsTestAccessor::restartSearchForTest();
+    // The undrained REBUILD's chain is gone; the undrained EVICT's chain stays.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(2));
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingChainInvalidationCount());
+
+    // The restarted search re-caching tag 1 (fresh generation) is not disturbed: the eviction
+    // happened at the restart, so the later drain has nothing left to erase.
+    ReferenceChainsTestAccessor::cacheChain(1, makeEvent(101), 1, 1);
+    ReferenceChainsTestAccessor::drainPendingChainInvalidations();
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(1));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainSearchNs(1));
+    std::vector<ReferenceChainEvent> dump;
+    ReferenceChainsTestAccessor::drain(&dump);
+    ASSERT_EQ(2u, dump.size());
+    bool fresh_emitted = false;
+    for (const auto &event : dump) {
+        fresh_emitted = fresh_emitted || event._target_tag == 101u;
+    }
+    EXPECT_TRUE(fresh_emitted)
+        << "the restarted search's chain must be the one re-emitted for tag 1";
 }
 
 // At MAX_RESOLVED_CHAINS a brand-new klass is dropped and counted in
