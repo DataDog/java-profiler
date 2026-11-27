@@ -34,7 +34,8 @@ const void* SignalFrame::trustedRestorer() {
 const void* SignalFrame::kernelRestorer(int signo, const void* handler) {
 #ifdef __aarch64__
     KernelSigaction action{};
-    if (syscall(SYS_rt_sigaction, signo, nullptr, &action, sizeof(action.mask)) != 0 ||
+    // NULL is SIG_DFL, which runs no handler and so returns through no restorer.
+    if (handler == nullptr || syscall(SYS_rt_sigaction, signo, nullptr, &action, sizeof(action.mask)) != 0 ||
         action.handler != handler || (action.flags & KERNEL_SA_RESTORER) == 0) {
         return nullptr;
     }

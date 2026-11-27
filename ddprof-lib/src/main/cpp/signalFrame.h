@@ -35,7 +35,7 @@ struct SignalFrame {
     static constexpr unsigned long KERNEL_SA_RESTORER = 0x04000000UL;
 
     // The SA_RESTORER trampoline the kernel returns through after signo's handler, if that
-    // handler is still `handler`; nullptr otherwise or where the decoder cannot use it.
+    // handler is still a non-null `handler`; nullptr otherwise or where the decoder cannot use it.
     static const void* kernelRestorer(int signo, const void* handler);
     // decode() recovers at the vDSO restorer and at this one (nullptr: none). One slot
     // suffices: every handler installed through the same libc shares its restorer.

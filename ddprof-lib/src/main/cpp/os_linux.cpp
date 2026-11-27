@@ -357,9 +357,9 @@ SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handl
         __atomic_store_n(&installed_oldaction_valid[signo], true, __ATOMIC_RELEASE);
     }
 
-    // Lets walks continue past a nested 3-arg handler's interrupted context. Checking the
-    // handler rejects one installed outside this mutex since our sigaction(); a 1-arg
-    // install leaves action NULL, which a registered handler never matches.
+    // Lets walks continue past a nested 3-arg handler's interrupted context. The handler
+    // check rejects a different handler installed outside this mutex since our sigaction();
+    // a 1-arg install passes a NULL action, which kernelRestorer() never reports for.
     if (rc == 0) {
         const void* restorer = SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(action));
         if (restorer != nullptr) SignalFrame::trustRestorer(restorer);

@@ -307,6 +307,10 @@ TEST_F(SignalFrameTest, ReportsTheRestorerTheKernelHoldsForASignal) {
         // A restorer registered with someone else's handler is not reported.
         EXPECT_EQ(nullptr, SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(otherSignal)));
     }
+    // Nor one registered with SIG_DFL, which a 1-arg install's NULL action would match.
+    KernelSigaction default_action{nullptr, SignalFrame::KERNEL_SA_RESTORER, kernel_restorer + 1, 0};
+    ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &default_action, nullptr, sizeof(default_action.mask)));
+    EXPECT_EQ(nullptr, SignalFrame::kernelRestorer(signo, nullptr));
     ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &old, nullptr, sizeof(old.mask)));
 }
 
@@ -314,17 +318,21 @@ TEST_F(SignalFrameTest, InstallingAHandlerTrustsOnlyAReportedRestorer) {
     const int signo = install_signal;
     struct sigaction old{};
     ASSERT_EQ(0, sigaction(signo, nullptr, &old));
-    TrustedRestorerScope trusted(kernel_restorer + 1);
-    // A 1-arg handler is never trusted, whatever restorer the kernel holds for it.
-    OS::installSignalHandler(signo, nullptr, ignoreSimpleSignal);
-    EXPECT_EQ(static_cast<const void*>(kernel_restorer + 1), SignalFrame::trustedRestorer());
+    const void* sentinel = kernel_restorer + 1;
+    TrustedRestorerScope trusted(sentinel);
+    // The 3-arg install comes first, so the original action is the one kept for chaining.
     OS::installSignalHandler(signo, ignoreSignal);
     const void* restorer = SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(ignoreSignal));
+    const void* after_3arg = SignalFrame::trustedRestorer();
+    SignalFrame::trustRestorer(sentinel);
+    // musl reports a restorer for a 1-arg handler too; it is not trusted.
+    OS::installSignalHandler(signo, nullptr, ignoreSimpleSignal);
+    const void* after_1arg = SignalFrame::trustedRestorer();
     ASSERT_EQ(0, sigaction(signo, &old, nullptr));
     // musl reports its own restorer; glibc arm64 returns through the vDSO and reports none.
     ASSERT_EQ(OS::isMusl(), restorer != nullptr);
-    EXPECT_EQ(restorer != nullptr ? restorer : static_cast<const void*>(kernel_restorer + 1),
-              SignalFrame::trustedRestorer());
+    EXPECT_EQ(restorer != nullptr ? restorer : sentinel, after_3arg);
+    EXPECT_EQ(sentinel, after_1arg);
 }
 
 TEST_F(SignalFrameTest, SuccessfulRecoveryPreservesPriorTruncation) {
