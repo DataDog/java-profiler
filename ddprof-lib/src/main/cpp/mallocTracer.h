@@ -38,6 +38,9 @@ class MallocHooker {
     static Mutex _patch_lock;
     static int _patched_libs;
     static bool _initialized;
+#ifdef UNIT_TEST
+    friend class MallocHookerTestAccessor;
+#endif
 
     // Imports patchLibrary() hooks (malloc, calloc, realloc, posix_memalign,
     // aligned_alloc); a static_assert there keeps it equal to its table.
@@ -94,6 +97,12 @@ class MallocTracer : public Engine {
 
     static volatile bool _running;
     static PidController _pid;
+#ifdef UNIT_TEST
+    friend class MallocTracerTestAccess;
+    static void (*beforeExitCheckForTest)();
+    static void (*beforeAcquireForTest)();
+    static void (*recordSampleForTest)(int, const MallocEvent&);
+#endif
 
     static u64 nextPoissonInterval();
     static bool shouldSample(size_t size);
@@ -117,8 +126,7 @@ class MallocTracer : public Engine {
 
     static void recordMalloc(void* address, size_t size, int tid, u32 session);
 
-    // Entry point for the malloc hooks (mallocTracer.cpp): gates on the
-    // sampling decision before touching thread-local state.
+    // Rejects exiting threads before TLS acquisition; samples under the TLS reentrancy guard.
     static void maybeRecord(void* ret, size_t size);
 };
 

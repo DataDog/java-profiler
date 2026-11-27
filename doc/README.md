@@ -23,13 +23,13 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [JfrIntegration](architecture/JfrIntegration.md) - Native JFR writer: recordings, buffers, metadata, constant pools
 - [LiveHeapReferenceChainsImplementation](architecture/LiveHeapReferenceChainsImplementation.md) - Current reference-chain implementation, including root-anchor indexing and rotation, and deferred updates after JVMTI traversal
 - [MallocArenaWarning](architecture/MallocArenaWarning.md) - glibc malloc arena detector: arena walk, rule, and JFR events
-- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, startup admission, per-recording restoration and allocation sampling
-- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; gated thread registration; the persistent `pthread_create` hook (loader-binding rule, pending entries, foreign wrappers left alone); recording-scoped liveness; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
+- [NativeMemoryProfiling](architecture/NativeMemoryProfiling.md) - malloc interception, startup admission, per-recording restoration, reuse-aware exit admission and allocation sampling
+- [ProfilingEngines](architecture/ProfilingEngines.md) - CPU, wall-clock, allocation, native-memory and liveness engines; gated thread registration; the persistent `pthread_create` hook (loader-binding rule, pending entries, foreign wrappers left alone); recording-scoped liveness; filtered wall reservoir and epoch accounting; bounded timer TID prechecks; lazy wall-block backing; allocation/liveness stack capture, JVMTI retry, depth-limit truncation and verification scratch (`allocstack`)
 - [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
 - [ReferenceChainsSignalsExplained](architecture/ReferenceChainsSignalsExplained.md) - Reference-chain scheduling and cost control
 - [JvmSupportLayer](architecture/JvmSupportLayer.md) - JVM-implementation abstraction (HotSpot, J9, Zing), continuation completeness and vtable receiver frames
 - [SanityChecks](architecture/SanityChecks.md) - Startup sanity checks
-- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching (persistent sigaction/pthread_create hooks)
+- [SigsegvPatching](architecture/SigsegvPatching.md) - SIGSEGV-safe library patching (persistent sigaction/pthread_create hooks); crash-handler bootstrap (fault-PC prefilter, raw-identity thread-exit registry, Linux-only fault/profiling-mask fence)
 - [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, release, and rotation protocols; lazy storage
 - [TLSContext](architecture/TLSContext.md) - Thread-local context for distributed tracing
 

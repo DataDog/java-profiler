@@ -102,11 +102,13 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
+  // Context-filtered recordings pre-register Java threads. Unfiltered wall
+  // tracking binds lazily in context/block/park hooks, so an idle thread that
+  // never uses those hooks does not reserve one of the bounded registry slots.
+  // The wall timer only looks up entries; it never allocates them.
   if (_thread_filter.enabled()) {
-    int slot_id = _thread_filter.registerThread();
+    int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
-    _thread_filter.resetSlotRunState(slot_id);
-    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
@@ -125,7 +127,21 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   registerThread(tid);
 }
 
+#ifdef UNIT_TEST
+void (*Profiler::threadEndMarkedForTest)() = nullptr;
+void (*Profiler::crashHandlerAdmittedForTest)() = nullptr;
+#endif
+
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  // Stop sampler admission before publishing the exit identity: a marked
+  // thread's crash-handler faults chain out without SafeAccess/checkFault
+  // recovery, so a walk must never fault once the thread is marked. The
+  // pre-block window keeps only the pre-registry handler-bootstrap exposure.
+  blockProfilingForExit();
+  ThreadExitRegistry::markCurrent();
+#ifdef UNIT_TEST
+  if (threadEndMarkedForTest != nullptr) threadEndMarkedForTest();
+#endif
   // Thread teardown: no point to initialize TLS if not yet initialized
   ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
@@ -135,9 +151,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     int slot_id = current->filterSlotId();
     tid = current->tid();
     
-    if (_thread_filter.enabled()) {
-      _thread_filter.unregisterThread(slot_id);
+    if (slot_id >= 0) {
+      _thread_filter.unregisterThread(slot_id, tid);
       current->setFilterSlotId(-1);
+    } else {
+      _thread_filter.unregisterThreadByTid(tid);
     }
 
     updateThreadName(jvmti, jni, thread, false);
@@ -148,15 +166,12 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
       // comments).
       ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
     }
-    // Block profiling signals around engine unregistration + TLS release to
-    // close the window where a wall-clock/CPU signal could sample a
-    // partially-torn-down thread (PROF-14674).
-    {
-      blockProfilingForExit();
-      unregisterThread(tid);
-      LivenessTracker::instance()->releaseThreadLocalState();
-      ProfiledThread::release();
-    }
+    // Engine unregistration and TLS release run under the block taken at
+    // entry, so a sampling signal cannot observe the partially torn-down
+    // thread (PROF-14674).
+    unregisterThread(tid);
+    LivenessTracker::instance()->releaseThreadLocalState();
+    ProfiledThread::release();
     return;
   }
 
@@ -168,6 +183,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   updateThreadName(jvmti, jni, thread, false);
+  _thread_filter.unregisterThreadByTid(tid);
   if (_reference_chains_active) {
     ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
   }
@@ -848,14 +864,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
       if (truncated) num_frames = _max_stack_depth;
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
-      for (int i = 0; i < num_frames; i++) {
-        jint bci = jvmti_frames[i].location;
-        jmethodID mid = jvmti_frames[i].method;
-        frames[i].method_id = mid;
-        frames[i].bci = bci;
-        // see https://github.com/async-profiler/async-profiler/pull/1090
-        LP64_ONLY(frames[i].padding = 0;)
-      }
+      copyJvmtiFrames(frames, jvmti_frames, num_frames);
       // On JDK 21+, GetStackTrace on a virtual thread returns only the VT's
       // logical stack; it stops at the continuation boundary and never includes
       // carrier-thread frames.  Without a synthetic root the trace appears
@@ -1301,6 +1310,7 @@ bool Profiler::startCpuEngine(Arguments &args) {
 // the success path, which never rolls back. A new call site that can
 // leave signal handlers in flight MUST drain before _jfr.stop().
 void Profiler::rollBackStart() {
+  _thread_filter.deactivateRecording();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
@@ -1341,7 +1351,52 @@ void Profiler::enableCpuEngine(int activated) {
   }
 }
 
+// All-zero sigaction: sa_handler == SIG_DFL and a zeroed sa_mask is the empty
+// set on Linux and macOS (bit-array sigset_t). Zero-initialized, so building
+// it involves no runtime constructor that would be unsafe in signal context.
+static const struct sigaction kDefaultAction = {};
+
+// Early fault path (JVM-owned fault or exiting thread): hand the fault to
+// whoever owned it before us.
+// With no prior handler, the pre-profiler behavior is the default action, so
+// restore it and re-raise (both sigaction() and raise() are async-signal-safe).
+static void chainOrTerminate(int signo, siginfo_t *siginfo, void *ucontext,
+                             SigAction chain, SigAction orig) {
+  if (chain != nullptr) {
+    chain(signo, siginfo, ucontext);
+  } else if (orig != nullptr) {
+    orig(signo, siginfo, ucontext);
+  } else {
+    sigaction(signo, &kDefaultAction, nullptr);
+    raise(signo);
+  }
+}
+
+static std::atomic<uintptr_t> profiler_min_address{0};
+static std::atomic<uintptr_t> profiler_max_address{0};
+
+// Every case crashHandlerInternal() handles is identified by the fault PC; the
+// checks are address comparisons on static state, with no TLS or syscall.
+bool Profiler::isProfilerOwnedFault(uintptr_t pc) {
+  const uintptr_t min = profiler_min_address.load(std::memory_order_relaxed);
+  const uintptr_t max = profiler_max_address.load(std::memory_order_relaxed);
+  if (min == 0 || (pc >= min && pc < max)) return true;  // range unknown: stay conservative
+  if (WX_MEMORY && Trap::isFaultInstruction(pc)) return true;
+  return VM::isHotspot() && _need_JDK_8313796_workaround &&
+         VMStructs::isInterpretedFrameValidFunc(reinterpret_cast<const void*>(pc));
+}
+
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // JVM-owned faults (implicit null checks, polling pages) chain before any
+  // syscall or TLS read; chainOrTerminate keeps the no-handler default action.
+  if (!isProfilerOwnedFault(static_cast<uintptr_t>(StackFrame(ucontext).pc())) ||
+      // Raw mark, not isCurrentExiting(): its TLS read can fault during
+      // pthread teardown and re-enter this handler.
+      ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    chainOrTerminate(signo, siginfo, ucontext, OS::getSegvChainTarget(), orig_segvHandler);
+    return;
+  }
+  CrashBootstrapFence bootstrap_fence;
   // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
   // null-pointer-check faults during normal Java execution.  When we chain to
   // it, that siglongjmp unwinds past our stack frame and skips the RAII
@@ -1356,7 +1411,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
   SIGNAL_HANDLER_GUARD_NO_SAMPLE();
-  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+  if (crashHandlerInternal(signo, siginfo, ucontext, bootstrap_fence)) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
@@ -1370,10 +1425,17 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // See segvHandler: JVM-owned faults and exiting threads chain before TLS.
+  if (!isProfilerOwnedFault(static_cast<uintptr_t>(StackFrame(ucontext).pc())) ||
+      ThreadExitRegistry::contains(ThreadExitRegistry::currentId())) {
+    chainOrTerminate(signo, siginfo, ucontext, OS::getBusChainTarget(), orig_busHandler);
+    return;
+  }
+  CrashBootstrapFence bootstrap_fence;
   // See segvHandler: release before chaining in case the chained handler
   // siglongjmps through us.
   SIGNAL_HANDLER_GUARD_NO_SAMPLE();
-  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+  if (crashHandlerInternal(signo, siginfo, ucontext, bootstrap_fence)) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
@@ -1387,26 +1449,25 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
-int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
+int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext,
+                                   CrashBootstrapFence& bootstrap_fence) {
   ProfiledThread* thrd = ProfiledThread::current();
+  bool have_tls_protection = thrd != nullptr && thrd->enterCrashHandler();
+  bootstrap_fence.disarm();
+#ifdef UNIT_TEST
+  if (crashHandlerAdmittedForTest != nullptr) crashHandlerAdmittedForTest();
+#endif
 
-  // First, try to handle safefetch - this doesn't need TLS or any protection
-  // because it directly checks the PC and modifies ucontext to skip the fault.
-  // This must be checked first before any reentrancy checks.
+  // Admission is fenced, but safefetch must run before rejection: a nested
+  // recovery may occur at the crash-depth limit. Undo any successful admission.
   if (SafeAccess::handle_safefetch(signo, ucontext)) {
-    return 1;  // handled
-  }
-
-  // Reentrancy protection: use TLS-based tracking if available.
-  // If TLS is not available, the thread is not protected by
-  // siglongjmp, so bail out.
-  bool have_tls_protection = false;
-  if (thrd != nullptr) {
-    if (!thrd->enterCrashHandler()) {
-      // we are already in a crash handler; don't recurse!
-      return 0;  // not handled, safe to chain
+    if (have_tls_protection) {
+      thrd->exitCrashHandler();
     }
-    have_tls_protection = true;
+    return 1;
+  }
+  if (thrd != nullptr && !have_tls_protection) {
+    return 0;
   }
 
   StackFrame frame(ucontext);
@@ -1452,9 +1513,6 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   }
   return 0;  // not handled, safe to chain
 }
-
-static std::atomic<uintptr_t> profiler_min_address{0};
-static std::atomic<uintptr_t> profiler_max_address{0};
 
 #ifdef UNIT_TEST
 void Profiler::setAddressRangeForTest(uintptr_t min, uintptr_t max) {
@@ -2005,22 +2063,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  // TODO: Current way of setting filter is weird with the recent changes
-  _thread_filter.init(args._filter ? args._filter : "0");
-  
-  // Minor optim: Register the current thread (start thread won't be called)
-  if (_thread_filter.enabled()) {
-    _thread_filter.clearActive();
-    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-    assert(current != nullptr);
-    int slot_id = current->filterSlotId();
-    if (slot_id < 0) {
-      slot_id = _thread_filter.registerThread();
-      current->setFilterSlotId(slot_id);
-    }
-    _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
-  }
-
   // Registration stays closed until the CPU engine starts; unregistration
   // stays open (see _engines_ready). No wait here: only replaceCpuEngine() and
   // the CPU engine's table sizing touch per-thread tables, each behind its own
@@ -2038,6 +2080,35 @@ Error Profiler::start(Arguments &args, bool reset) {
   __atomic_store_n(&_wall_engine, selectWallEngine(args, &wall_choice), __ATOMIC_RELEASE);
   // Before _jfr.start(): Recording::writeSettings() records the result.
   reportJ9SamplerRisks(cpu_choice, wall_choice);
+
+  const char *filter = args._filter != nullptr ? args._filter : "0";
+  const bool track_unfiltered_wall =
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
+      args._filter != nullptr && args._filter[0] == '\0' &&
+      _wall_engine->supportsUnfilteredThreadRegistryTracking();
+  _thread_filter.init(filter, track_unfiltered_wall);
+
+  // Both modes retain native identities across recordings. Unfiltered owners
+  // refresh payload lazily against the new recording epoch; context-filtered
+  // recordings must clear membership before threads opt in again.
+  if (_thread_filter.enabled()) {
+    _thread_filter.clearActive();
+  }
+
+  // Set up the sampled thread's TLS in both modes. Context filtering also
+  // pre-registers the caller; unfiltered tracking waits for its first hook.
+  // Retained unfiltered slots remain ineligible until their owner refreshes
+  // against the new recording epoch in ensureCurrentThreadFilterSlot().
+  if (_thread_filter.registryActive()) {
+    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+    assert(current != nullptr);
+    int tid = current->tid();
+    if (_thread_filter.enabled() &&
+        _thread_filter.activeSlotForId(current->filterSlotId(), tid) == nullptr) {
+      current->setFilterSlotId(_thread_filter.registerThread(tid));
+    }
+  }
+
   _cstack = args._cstack;
   _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
@@ -2115,6 +2186,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
+    _thread_filter.deactivateRecording();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -2218,6 +2290,14 @@ Error Profiler::start(Arguments &args, bool reset) {
       activated |= EM_NATIVESOCKET;
     }
   }
+
+  // A recoverable wall-engine failure must not leave registry work enabled for
+  // unrelated engines that did start successfully.
+  if (track_unfiltered_wall && (activated & EM_WALL) == 0) {
+    _thread_filter.deactivateRecording();
+  }
+
+  _activated_mask = activated;
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -2325,7 +2405,8 @@ Error Profiler::stop() {
   // keep arriving during stop() under thread churn.
   bool hooks_drained = closeThreadRegistration();
 
-  if (_event_mask & EM_ALLOC)
+  // A requested engine may fail while another starts; stop only activated engines.
+  if (_activated_mask & EM_ALLOC)
     _alloc_engine->stop();
   if (reference_chains_was_active) {
     // The flag was flipped before the BFS join (above): new onThreadStart()/onThreadEnd() calls
@@ -2370,15 +2451,17 @@ Error Profiler::stop() {
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
   // The refresher also re-installs malloc hooks (MallocTracer::installHooks()).
-  if (_event_mask & EM_NATIVEMEM) {
+  if (_activated_mask & EM_NATIVEMEM) {
     malloc_tracer.stop();
   }
-  if (_event_mask & EM_NATIVESOCKET)
+  if (_activated_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
-  if (_event_mask & EM_WALL)
+  if (_activated_mask & EM_WALL)
     _wall_engine->stop();
-  if (_event_mask & EM_CPU)
+  if (_activated_mask & EM_CPU)
     _cpu_engine->stop();
+
+  _thread_filter.deactivateRecording();
 
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);

@@ -36,6 +36,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "profilerRangeTestSupport.h"
 #include "threadLocalData.inline.h"
 #include "profiler.h"
 
@@ -681,7 +682,7 @@ protected:
         uintptr_t self_pc = reinterpret_cast<uintptr_t>(&HotspotSupport::walkJavaStack);
         _range_lo = self_pc - kRangeMargin;
         _range_hi = self_pc + kRangeMargin;
-        Profiler::setAddressRangeForTest(_range_lo, _range_hi);
+        setProfilerRangeWithSafeAccessForTest(_range_lo, _range_hi);
 
         // Zero-initialized rather than populated via getcontext() -- musl
         // doesn't provide getcontext(), and this test only round-trips
@@ -1018,7 +1019,7 @@ protected:
         uintptr_t self_pc = reinterpret_cast<uintptr_t>(&HotspotSupport::walkJavaStack);
         _range_lo = self_pc - kRangeMargin;
         _range_hi = self_pc + kRangeMargin;
-        Profiler::setAddressRangeForTest(_range_lo, _range_hi);
+        setProfilerRangeWithSafeAccessForTest(_range_lo, _range_hi);
 
         // Zero-initialized rather than populated via getcontext(), exactly
         // as in WalkJavaStackUcontextRestoreTest::SetUp -- only pc/sp/fp

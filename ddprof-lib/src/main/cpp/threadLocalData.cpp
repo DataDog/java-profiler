@@ -4,12 +4,14 @@
  */
 
 #include "faultInjection.h"
+#include "threadExitRegistry.h"
 #include "threadLocalData.inline.h"
 #include "threadLocalDataPool.h"
 #include "context_api.h"
 #include "guards.h"
 #include "otel_context.h"
 #include "os.h"
+#include "profiler.h"
 #include <cassert>
 #include <cstring>
 #include <time.h>
@@ -71,6 +73,7 @@ ProfiledThread* ProfiledThread::initCurrentThread() {
       ThreadLocalDataPool::release(primed);
     }
     _current_thread.set(tls);
+    ThreadExitRegistry::clearCurrent();
   }
   return tls;
 }
@@ -89,10 +92,19 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
   }
 }
 
+#ifdef UNIT_TEST
+void (*ProfiledThread::beforeFreeValueForTest)() = nullptr;
+#endif
+
 void ProfiledThread::freeValue(void* value) {
-  // Block future profiling signals that prevents re-allocating
-  // ProfiledThread that cannot be released - memory leak
+  // Block before the fallback exit mark (mirrors Profiler::onThreadEnd) so no
+  // sampler can fault on the marked identity; it also keeps a signal from
+  // re-allocating a ProfiledThread that could never be released.
   blockProfilingForExit();
+#ifdef UNIT_TEST
+  if (beforeFreeValueForTest != nullptr) beforeFreeValueForTest();
+#endif
+  ThreadExitRegistry::markCurrent();
 
   // otel_thread_ctx_v1 (a genuine thread_local, not the custom ThreadLocal
   // above) is nulled by ThreadLocalDataPool::release() below -- via
@@ -101,6 +113,10 @@ void ProfiledThread::freeValue(void* value) {
   // for every teardown route (including deleteForTest()) and not just this
   // call site.
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
+  // ThreadEnd notifications are disabled between recordings. Retire the
+  // identity before pool reuse also when this pthread-key destructor is the
+  // only cleanup callback; an already retired TID is a lock-free no-op.
+  Profiler::instance()->threadFilter()->unregisterThreadByTid(pt->tid());
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
     // destructor callback), so the THREAD_LOCAL decrement belongs here. Record

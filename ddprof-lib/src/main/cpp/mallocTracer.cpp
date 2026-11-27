@@ -22,6 +22,7 @@
 #include "mallocAdmission.h"
 #include "samplerPerf.h"
 #include "symbols.h"
+#include "threadExitRegistry.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -86,6 +87,12 @@ volatile u64 MallocTracer::_last_config_update_ts;
 volatile bool MallocTracer::_running = false;
 PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
     31, 511, 3, MallocTracer::CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
+
+#ifdef UNIT_TEST
+void (*MallocTracer::beforeExitCheckForTest)() = nullptr;
+void (*MallocTracer::beforeAcquireForTest)() = nullptr;
+void (*MallocTracer::recordSampleForTest)(int, const MallocEvent&) = nullptr;
+#endif
 
 Mutex MallocHooker::_patch_lock;
 int MallocHooker::_patched_libs = 0;
@@ -493,32 +500,38 @@ bool MallocTracer::shouldSample(size_t size) {
     }
 }
 
-// acquireCurrent() runs before shouldSample() is checked, so every allocation
-// that passes the running()/ret/size gate claims a thread-local slot from the
-// fixed-size priming pool on first touch, even if shouldSample() then rejects it.
-// CriticalSection prevents reentrancy: profiler-internal allocations triggered
-// inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
-// the patched GOT; without the guard they would be double-counted.
-// Acquiring the CS here also blocks concurrent same-thread timer samples
-// (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
-// because the window is short.
+// shouldSample() reads no TLS, so unsampled allocations skip the identity syscall and TLS.
+// Exiting threads are rejected before TLS acquisition; their faults bypass recovery.
+// CriticalSection excludes recursive malloc recording and same-thread profiling samples.
 void MallocTracer::maybeRecord(void* ret, size_t size) {
     // Read before running(): a hook descheduled across a stop()/start() must not record
     // into the next recording. recordSample() drops the sample under its stripe lock if the
     // recording memory was released since.
     const u32 session = Profiler::instance()->recordingSession();
-    if (running() && ret && size) {
-        // Even we are not in a signal handler, we cannot malloc or
-        // we may get into indefinite loop
-        ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
-        if (prof_thread == nullptr) {
-            Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-            return;
-        }
-        CriticalSection cs(prof_thread);
-        if (cs.entered() && shouldSample(size)) {
-            recordMalloc(ret, size, prof_thread->tid(), session);
-        }
+    if (!running() || ret == nullptr || size == 0 || !shouldSample(size)) {
+        return;
+    }
+#ifdef UNIT_TEST
+    if (beforeExitCheckForTest != nullptr) beforeExitCheckForTest();
+#endif
+    if (ThreadExitRegistry::isCurrentExiting()) {
+        Counters::increment(MALLOC_SAMPLES_DROPPED);
+        return;
+    }
+    // The malloc hook must not allocate while acquiring TLS.
+#ifdef UNIT_TEST
+    if (beforeAcquireForTest != nullptr) beforeAcquireForTest();
+#endif
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return;
+    }
+    CriticalSection cs(prof_thread);
+    if (cs.entered()) {
+        recordMalloc(ret, size, prof_thread->tid(), session);
+    } else {
+        Counters::increment(MALLOC_SAMPLES_DROPPED);
     }
 }
 
@@ -555,8 +568,15 @@ void MallocTracer::recordMalloc(void* address, size_t size, int tid, u32 session
         event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
     }
 
-    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event, nullptr,
-                                       &session);
+#ifdef UNIT_TEST
+    if (recordSampleForTest != nullptr) {
+        recordSampleForTest(tid, event);
+    } else
+#endif
+    {
+        Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event, nullptr,
+                                           &session);
+    }
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
     if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {

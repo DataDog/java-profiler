@@ -808,6 +808,8 @@ public:
     static void setState(Profiler *p, State s) { p->_state.store(s, std::memory_order_release); }
     static int eventMask(Profiler *p) { return p->_event_mask; }
     static void setEventMask(Profiler *p, int mask) { p->_event_mask = mask; }
+    static int activatedMask(Profiler *p) { return p->_activated_mask; }
+    static void setActivatedMask(Profiler *p, int mask) { p->_activated_mask = mask; }
     static bool referenceChainsActive(Profiler *p) {
         return p->_reference_chains_active.load(std::memory_order_acquire);
     }
@@ -1867,6 +1869,7 @@ public:
           _cpu(ProfilerTestAccessor::cpuEngine(_profiler)),
           _wall(ProfilerTestAccessor::wallEngine(_profiler)),
           _mask(ProfilerTestAccessor::eventMask(_profiler)),
+          _activated(ProfilerTestAccessor::activatedMask(_profiler)),
           _active(ProfilerTestAccessor::referenceChainsActive(_profiler)),
           _thread_events(ProfilerTestAccessor::threadEventsState(_profiler)),
           _vm(VMTestAccessor::getVm()) {}
@@ -1874,6 +1877,7 @@ public:
         ProfilerTestAccessor::setState(_profiler, _state);
         ProfilerTestAccessor::setEngines(_profiler, _cpu, _wall);
         ProfilerTestAccessor::setEventMask(_profiler, _mask);
+        ProfilerTestAccessor::setActivatedMask(_profiler, _activated);
         ProfilerTestAccessor::setReferenceChainsActive(_profiler, _active);
         ProfilerTestAccessor::setThreadEventsState(_profiler, _thread_events);
         VMTestAccessor::setVm(_vm);
@@ -1885,6 +1889,7 @@ private:
     Engine *_cpu;
     Engine *_wall;
     int _mask;
+    int _activated;
     bool _active;
     jvmtiEventMode _thread_events;
     JavaVM *_vm;
@@ -1927,6 +1932,8 @@ TEST_F(ReferenceChainsBfsTest, ProfilerStopFailedJoinSkipsTeardownAndRetrySuccee
     VMTestAccessor::setVm(&mock_vm);
     ProfilerTestAccessor::setEngines(profiler, &cpu_engine, &wall_engine);
     ProfilerTestAccessor::setEventMask(profiler, EM_CPU | EM_WALL);
+    // stop() only stops engines that start() activated.
+    ProfilerTestAccessor::setActivatedMask(profiler, EM_CPU | EM_WALL);
     ProfilerTestAccessor::setThreadEventsState(profiler, JVMTI_DISABLE);
     ProfilerTestAccessor::setReferenceChainsActive(profiler, true);
     ProfilerTestAccessor::setState(profiler, RUNNING);
