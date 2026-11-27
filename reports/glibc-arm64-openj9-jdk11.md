@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-27 08:43:14 EST
+**Date:** 2026-11-27 10:30:25 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 43 |
+| CPU Cores (start) | 17 |
+| CPU Cores (end) | 17 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 6 |
-| Sample Rate | 0.10/sec |
-| Health Score | 6% |
-| Threads | 6 |
+| CPU Samples | 8 |
+| Sample Rate | 0.13/sec |
+| Health Score | 8% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 43-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1795786680 48
-1795786685 48
-1795786690 48
-1795786695 48
-1795786700 48
-1795786705 48
-1795786710 48
-1795786715 48
-1795786720 48
-1795786725 48
-1795786730 48
-1795786735 48
-1795786740 48
-1795786745 48
-1795786750 48
-1795786755 48
-1795786760 48
-1795786765 48
-1795786770 48
-1795786775 48
+1795793123 17
+1795793128 17
+1795793133 17
+1795793138 17
+1795793143 17
+1795793148 17
+1795793153 17
+1795793158 17
+1795793163 17
+1795793168 17
+1795793173 17
+1795793178 17
+1795793183 17
+1795793188 17
+1795793193 17
+1795793198 17
+1795793203 17
+1795793208 17
+1795793213 17
+1795793219 17
 ```
 </details>
 
