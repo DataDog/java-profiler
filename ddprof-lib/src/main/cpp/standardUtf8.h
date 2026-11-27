@@ -10,6 +10,26 @@
 #include <cstdint>
 #include <cstring>
 
+// Returns the length of the leading ASCII run of v[0..len). Tests 16 bytes per step as two
+// 8-byte words, several times faster than a byte loop; memcpy keeps unaligned loads defined.
+inline uint32_t asciiPrefixLength(const char *v, uint32_t len) {
+  const uint64_t high_bits = 0x8080808080808080ULL;
+  uint32_t i = 0;
+  for (; i + 16 <= len; i += 16) {
+    uint64_t w0;
+    uint64_t w1;
+    std::memcpy(&w0, v + i, 8);
+    std::memcpy(&w1, v + i + 8, 8);
+    if ((w0 | w1) & high_bits) {
+      break;
+    }
+  }
+  while (i < len && static_cast<unsigned char>(v[i]) < 0x80) {
+    i++;
+  }
+  return i;
+}
+
 // Writes in[0..len) as standard UTF-8 to out (null: measure only), at most cap bytes and never
 // splitting a character; returns the byte count. Converts JVM modified UTF-8 (C0 80, 6-byte pairs),
 // copies valid UTF-8, and writes U+FFFD or '?' for bad input, so output never exceeds input length.

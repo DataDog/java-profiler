@@ -132,6 +132,49 @@ TEST(PutUtf8Test, CapAtMaxStringLengthKeepsWholeCharacters) {
     EXPECT_EQ(std::string(MAX_STRING_LENGTH - 1, 'a'), readJfrString(*buf));
 }
 
+// Writes name with putUtf8 and checks the length field bytes and the decoded payload.
+void expectLengthField(const std::string &name, const std::string &bytes, const std::string &out) {
+    auto buf = std::make_unique<RecordingBuffer>();
+    buf->putUtf8(name.c_str());
+    EXPECT_EQ(bytes, std::string(buf->data() + 1, bytes.size()));
+    EXPECT_EQ(out, readJfrString(*buf));
+}
+
+TEST(PutUtf8Test, LengthFieldIsPatchedAfterDecodingAsAMinimalVarint) {
+    // 127 input bytes reserve one length byte; it is patched to the 126-byte output.
+    expectLengthField(std::string(125, 'a') + "\xC0\x80", "\x7E", std::string(125, 'a') + '\0');
+    // 128 input bytes reserve two length bytes; the 127-byte output is moved back to use one.
+    expectLengthField(std::string(126, 'a') + "\xC0\x80", "\x7F", std::string(126, 'a') + '\0');
+    std::string nuls;
+    for (int i = 0; i < 64; i++) {
+        nuls += "\xC0\x80";
+    }
+    expectLengthField(nuls, "\x40", std::string(64, '\0'));
+    // A 128-byte output keeps both reserved bytes.
+    expectLengthField(std::string(127, 'a') + "\xC0\x80", "\x80\x01", std::string(127, 'a') + '\0');
+}
+
+TEST(PutUtf8Test, AsciiScanStopsAtTheCap) {
+    // An ASCII run longer than the cap, then a non-ASCII byte: only the capped run is written.
+    std::string name = std::string(2 * MAX_STRING_LENGTH, 'a') + "\xC0\x80";
+    auto buf = std::make_unique<RecordingBuffer>();
+    buf->putUtf8(name.c_str());
+    EXPECT_EQ(std::string(MAX_STRING_LENGTH, 'a'), readJfrString(*buf));
+}
+
+TEST(AsciiPrefixLengthTest, StopsAtTheFirstNonAsciiByteAtEveryPosition) {
+    // Lengths and positions around the 16-byte steps, so both the word and the byte loop decide.
+    for (uint32_t len = 0; len <= 40; len++) {
+        std::string ascii(len, 'a');
+        EXPECT_EQ(len, asciiPrefixLength(ascii.data(), len));
+        for (uint32_t pos = 0; pos < len; pos++) {
+            std::string s = ascii;
+            s[pos] = '\x80';
+            EXPECT_EQ(pos, asciiPrefixLength(s.data(), len)) << "len " << len << " pos " << pos;
+        }
+    }
+}
+
 TEST(PutUtf8Test, NullIsWrittenAsNullString) {
     auto buf = std::make_unique<RecordingBuffer>();
     buf->putUtf8(nullptr);

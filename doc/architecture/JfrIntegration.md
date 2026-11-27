@@ -87,11 +87,11 @@ and the correlation ID (`flightRecorder.cpp:2914-2943`, `flightRecorder.h:646-65
 | `RECORDING_BUFFER_SIZE` | 65536 | `buffers.h:29` |
 | `RECORDING_BUFFER_LIMIT` (= `JFR_EVENT_FLUSH_THRESHOLD`) | 65536 − 4096 | `buffers.h:30`, `flightRecorder.h:44` |
 | `RECORDING_BUFFER_OVERFLOW` | 8192 bytes of slack past the buffer | `buffers.h:28` |
-| `MAX_STRING_LENGTH` | 8191; `putUtf8()` truncates to it without splitting a character | `buffers.h:31`, `177-197` |
+| `MAX_STRING_LENGTH` | 8191; `putUtf8()` truncates to it without splitting a character | `buffers.h:31`, `176-211` |
 
 The overflow area exists so that a serializer overrunning the limit corrupts
 the recording rather than the neighbouring buffer (`buffers.h:21-28`,
-`213-235`).
+`227-249`).
 
 `Recording::flushIfNeeded(buf, limit)` flushes when `offset() >= limit`, with
 `limit` defaulting to `JFR_EVENT_FLUSH_THRESHOLD` (`flightRecorder.cpp:1368-1372`).
@@ -121,7 +121,7 @@ in the order the metadata declares them. Integers are LEB128
   `profiler.Log`, debug unwind failures, the metadata and constant-pool events)
   reserve 5 bytes and patch them with the fixed-width form
   `putVar32(offset, v)`, which always writes 5 LEB128 bytes
-  (`buffers.h:203-210`, `flightRecorder.cpp:1582-1597`).
+  (`buffers.h:217-224`, `flightRecorder.cpp:1582-1597`).
 
 Every string is written by `putUtf8()` as JFR string encoding 3, a UTF-8 byte array.
 Strings from the JVM, JNI and JVMTI are modified UTF-8: U+0000 is `C0 80` and a
@@ -129,6 +129,9 @@ supplementary character is a 6-byte surrogate pair. JFR readers decode standard 
 show these bytes as replacement characters. `putUtf8()` therefore converts every string
 with `toStandardUtf8()` (`standardUtf8.h`). Valid standard UTF-8 is copied unchanged. The
 output is never longer than the input, so callers size their flushes from the input length.
+A string that is not all ASCII is decoded in one pass. Its length field is reserved at the
+varint width of the input length and patched after decoding. When the output needs one varint
+byte less, it is moved back by one byte, so the length stays a minimal varint.
 
 `datadog.UnwindFailure` events are emitted only in `DEBUG` builds.
 `Recording::writeUnwindFailureEvent()` reserves `MAX_VAR32_LENGTH` (5) bytes
