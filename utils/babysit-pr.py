@@ -579,8 +579,11 @@ def committed_files(base, commit):
 
 def same_patch(base, commit, patch):
     rc, out, _ = run(["git", "diff", "--binary", "--full-index", base, commit], GIT_TIMEOUT_S)
-    with open(patch) as f:
-        return rc == 0 and out == f.read()
+    try:
+        with open(patch) as f:
+            return rc == 0 and out == f.read()
+    except OSError:  # a missing patch proves nothing: refuse the adoption
+        return False
 
 
 def is_signed(commit):

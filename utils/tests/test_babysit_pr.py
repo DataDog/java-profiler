@@ -477,6 +477,16 @@ class CliTest(unittest.TestCase):
         self.git("commit", "-qam", "other")
         self.assertIn("not the handoff base", self.cli("apply-handoff", rc=1)["reason"])
 
+    def test_adoption_refused_without_patch_file(self):
+        self.cli("start")
+        self.stage_fix(self.worker())
+        with open(self.state_path()) as f:
+            patch = json.load(f)["pending_handoff"]["patch"]
+        self.git("apply", "--index", patch)
+        self.git("commit", "-qm", "Fix a")
+        os.unlink(patch)
+        self.assertIn("not the handoff base", self.cli("apply-handoff", rc=1)["reason"])
+
     def test_issue_reply_is_idempotent(self):
         self.cli("start")
         own = {"id": 50, "user": {"id": SELF}, "body": "x <!-- babysit-pr reply-to:20 -->\n" + P.SIGNATURE}
