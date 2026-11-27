@@ -797,15 +797,6 @@ VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     return nm;
 }
 
-// On JDK 21-25, nmethod::is_deopt_pc also accepts the return address after a JVMCI
-// handler's call, NativeCall::instruction_size bytes past the handler; rejecting it on
-// other JDKs only leaves the frame unrecovered.
-#if defined(__x86_64__)
-static constexpr uintptr_t DEOPT_HANDLER_CALL_SIZE = 5;
-#else
-static constexpr uintptr_t DEOPT_HANDLER_CALL_SIZE = 4;
-#endif
-
 const void* VMNMethod::originalPC(const void* pc, uintptr_t unextended_sp, uintptr_t low, uintptr_t frame_end) {
     if (_nmethod_orig_pc_offset < 0) return nullptr;
     const void* deopt;
@@ -821,13 +812,14 @@ const void* VMNMethod::originalPC(const void* pc, uintptr_t unextended_sp, uintp
     } else {
         return nullptr;
     }
-    // An absent handler address is null; no PC is its entry or the return after its call.
+    // A null (absent) handler takes the other's address; with both absent, no PC is a
+    // deopt entry or the return after its call.
     if (deopt == nullptr) deopt = deopt_mh;
     if (deopt_mh == nullptr) deopt_mh = deopt;
     if (deopt == nullptr) return pc;
     // Its saved original PC is not decoded, so the frame stays unrecovered and truncated.
-    if (pc == static_cast<const char*>(deopt) + DEOPT_HANDLER_CALL_SIZE ||
-            pc == static_cast<const char*>(deopt_mh) + DEOPT_HANDLER_CALL_SIZE) return nullptr;
+    if (pc == static_cast<const char*>(deopt) + deoptHandlerCallSize ||
+            pc == static_cast<const char*>(deopt_mh) + deoptHandlerCallSize) return nullptr;
     if (pc != deopt && pc != deopt_mh) return pc;
 
     // Mirrors StackChunkFrameStream::orig_pc(), including its use of unextended_sp().

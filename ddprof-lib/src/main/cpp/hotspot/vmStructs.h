@@ -1328,6 +1328,15 @@ DECLARE(VMNMethod)
 
     int findScopeOffset(const void* pc);
 
+    // On JDK 21-25, nmethod::is_deopt_pc also accepts the return address after a JVMCI
+    // handler's call, NativeCall::instruction_size bytes past the handler; rejecting it on
+    // other JDKs only leaves the frame unrecovered.
+#if defined(__x86_64__)
+    static constexpr uintptr_t deoptHandlerCallSize = 5;
+#else
+    static constexpr uintptr_t deoptHandlerCallSize = 4;
+#endif
+
     // A deoptimized frozen frame stores its original PC relative to unextended SP.
     // Returns nullptr if the saved slot or PC cannot be validated within this frame/nmethod.
     const void* originalPC(const void* pc, uintptr_t unextended_sp, uintptr_t low, uintptr_t frame_end);

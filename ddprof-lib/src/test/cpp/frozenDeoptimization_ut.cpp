@@ -23,12 +23,7 @@ public:
 
 namespace {
 
-// The size of the call in a deoptimization handler, as originalPC() assumes.
-#if defined(__x86_64__)
-constexpr uintptr_t call_size = 5;
-#else
-constexpr uintptr_t call_size = 4;
-#endif
+constexpr uintptr_t call_size = VMNMethod::deoptHandlerCallSize;
 
 // The same recovery code must handle absolute handler addresses on JDK 21/22
 // and relative offsets on JDK 23+, with a single handler entry on JDK 26+.
@@ -129,10 +124,11 @@ TEST_P(FrozenDeoptimizationTest, AbsentHandlerMatchesNoPc) {
     metadata().mh_handler = nullptr;
     EXPECT_EQ(after_null_call, resolve(after_null_call));
     EXPECT_EQ(blob + 160, resolve(blob + 256));
+    EXPECT_EQ(nullptr, resolve(blob + 256 + call_size));
     metadata().mh_handler = blob + 288;
     metadata().handler = nullptr;
-    EXPECT_EQ(after_null_call, resolve(after_null_call));
     EXPECT_EQ(blob + 160, resolve(blob + 288));
+    EXPECT_EQ(nullptr, resolve(blob + 288 + call_size));
     metadata().mh_handler = nullptr;
     EXPECT_EQ(after_null_call, resolve(after_null_call));
     EXPECT_EQ(blob + 256, resolve(blob + 256));
