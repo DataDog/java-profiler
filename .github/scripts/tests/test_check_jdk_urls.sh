@@ -379,13 +379,13 @@ env:
   JAVA_11_MUSL_URL: "https://ok.example.invalid/musl11.tar.gz"
   JAVA_21_MUSL_URL: "https://ok.example.invalid/musl21.tar.gz"
 EOF
-export FAKE_URLS="$TEMP_DIR/urls.txt" FAKE_CURL_DELAY=1 PROBE_DEADLINE_SECONDS=2
+export FAKE_URLS="$TEMP_DIR/urls.txt" FAKE_CURL_DELAY=1 PROBE_DEADLINE_SECONDS=3
 rc=0
 output=$("$CHECK" check --out "$TEMP_DIR/deadline2" --workflow "$TEMP_DIR/deadline2.yml" 2>&1) || rc=$?
 unset FAKE_CURL_DELAY PROBE_DEADLINE_SECONDS
 assert_eq 1 "$rc" "the once-only deadline test still fails on its STALE pin"
 assert_eq "JAVA_21_MUSL_URL:INCONCLUSIVE " "$(awk -F '\t' '$1 == "JAVA_21_MUSL_URL" { printf "%s:%s ", $1, $3 }' "$TEMP_DIR/deadline2/results.tsv")" "the second past-deadline pin is INCONCLUSIVE"
-assert_eq "1" "$(grep -c 'Probe deadline (2s) reached' <<<"$output")" "the deadline warning is printed exactly once"
+assert_eq "1" "$(grep -c 'Probe deadline (3s) reached' <<<"$output")" "the deadline warning is printed exactly once"
 
 # probe_once's empty-output fallback reports 000 with the URL as the final URL.
 reset_fakes
