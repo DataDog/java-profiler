@@ -48,7 +48,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 jobs:
@@ -100,6 +100,10 @@ jobs:
           # --commit selection) satisfies that via source_sha. merge-base
           # exits 1 for "not an ancestor" and >1 for errors; only 1 rejects.
           if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
+            if [[ $GITHUB_REF_TYPE != branch || $GITHUB_REF_PROTECTED != true ]]; then
+              echo "::error::Maintenance releases require a protected branch"
+              exit 1
+            fi
             if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
               echo "::error::${TYPE^} can only be performed from 'release/*' branches (format: release/X.Y._)"
               exit 1
@@ -124,7 +128,7 @@ jobs:
               exit 1
             fi
           else
-            if [ "$GITHUB_REF_NAME" != "main" ]; then
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
               echo "::error::Major or minor releases must be dispatched on the 'main' ref (got '$GITHUB_REF_NAME')"
               exit 1
             fi
@@ -289,8 +293,12 @@ jobs:
     needs: [validate-inputs, pre-release-tests, pre-release-slow-tests]
     if: always() && needs.validate-inputs.result == 'success' && (needs.pre-release-tests.result == 'success' || needs.pre-release-tests.result == 'skipped') && (needs.pre-release-slow-tests.result == 'success' || needs.pre-release-slow-tests.result == 'skipped')
     runs-on: ubuntu-latest
+    # Keep the push key in these environments, not in repository or organization secrets.
+    # Maintenance releases need independent approval before GitHub starts this job.
+    environment: ${{ (inputs.release_type == 'patch' || inputs.release_type == 'retag') && 'release-maintenance' || 'release-mainline' }}
     permissions:
-      contents: write
+      contents: read
+      attestations: read
     outputs:
       base_branch: ${{ steps.create-release.outputs.base_branch }}
       source_sha: ${{ steps.create-release.outputs.source_sha }}
@@ -303,10 +311,26 @@ jobs:
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1
 
+      - name: Check out the verifier from the dispatch revision
+        if: inputs.release_type == 'major' || inputs.release_type == 'minor'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify mainline release certification
+        if: inputs.release_type == 'major' || inputs.release_type == 'minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.validate-inputs.outputs.target_sha }}
+        run: bash .github/scripts/verify-release-certification.sh "$TARGET_SHA"
+
       - name: Setup SSH agent
+        env:
+          RELEASE_PUSH_KEY: ${{ secrets.RELEASE_ENV_PUSH_KEY }}
         run: |
-          eval $(ssh-agent -s)
-          echo "${{ secrets.SSH_PUSH_SECRET }}" | ssh-add -
+          : "${RELEASE_PUSH_KEY:?Expected an environment-scoped release push key}"
+          eval "$(ssh-agent -s)"
+          printf '%s\n' "$RELEASE_PUSH_KEY" | ssh-add -
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts
           echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV

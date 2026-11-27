@@ -4,8 +4,8 @@ set -euo pipefail
 
 # Copyright 2026, Datadog, Inc
 
-# Select the release-train candidate: the newest certified commit that the
-# release train has not released yet.
+# Select the newest noted mainline candidate not yet released. The caller
+# must verify its attestation; this script checks history, not provenance.
 #
 # Usage:
 #   pick-release-candidate.sh
@@ -38,7 +38,7 @@ if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
   fi
 fi
 
-# Certified commits known to this clone.
+# The notes index is untrusted; release authorization never reads its contents.
 CERTIFIED=$(git notes --ref=certification list 2>/dev/null | awk '{print $2}' | sort -u || true)
 if [ -z "$CERTIFIED" ]; then
   echo "none: no certified commits"

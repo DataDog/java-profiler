@@ -396,6 +396,38 @@ post-pr-comment:
   script:
     - .gitlab/dd-trace-integration/post-pr-comment.sh integration-test-results
 
+certify-dd-trace-integration:
+  extends: .retry-config
+  stage: integration-test
+  tags: [ "arch:amd64" ]
+  image: ${PREPARE_IMAGE}
+  # The default CANCELLED guard exits successfully without executing a job.
+  # Certification must run its own fail-closed checks, even after a dependency fails.
+  before_script: []
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: prepare-patched-agent
+      artifacts: true
+    - job: integration-test-x64-glibc
+      artifacts: true
+    - job: integration-test-x64-musl
+      artifacts: true
+    - job: integration-test-arm64-glibc
+      artifacts: true
+    - job: integration-test-arm64-musl
+      artifacts: true
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+      when: always
+    - when: never
+  interruptible: true
+  timeout: 5m
+  script:
+    - bash .gitlab/dd-trace-integration/certify-main.sh
+
 # Loud failure signal for scheduled/main runs, which have no PR to report back to.
 notify-slack-dd-trace-integration:
   stage: notify

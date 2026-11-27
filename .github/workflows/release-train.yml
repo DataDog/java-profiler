@@ -31,6 +31,7 @@ concurrency:
 permissions:
   contents: read
   actions: write
+  attestations: read
 
 jobs:
   release:
@@ -110,6 +111,7 @@ jobs:
             fi
           done
 
+          bash .github/scripts/verify-release-certification.sh "$CANDIDATE"
           echo "candidate=$CANDIDATE" >> "$GITHUB_OUTPUT"
           {
             echo "## Release train candidate"

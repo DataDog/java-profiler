@@ -236,6 +236,12 @@ turning the pipeline red. `validate-dd-trace-quarantine` validates the list (for
 ticket, dates, cell globs against scheduled cells only, so musl/OpenJ9 entries fail) in the same pipelines and fails
 them on a malformed, ticketless, or expired entry.
 
+The main-push-only `certify-dd-trace-integration` job validates the prepared
+SHA and quarantine list, then aggregates the same matrix artifacts. It bypasses
+the default green cancellation hook and rejects cancellation or missing evidence.
+Its mirrored GitHub status feeds [release certification](ReleaseTrain.md#nightly-certification);
+ordinary PR integration jobs keep their existing triggers.
+
 No sanitizers are applied here. The goal is compatibility verification, not crash
 or race detection.
 
