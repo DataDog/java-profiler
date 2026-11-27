@@ -121,6 +121,11 @@ expect "claude: edit replace_all introducing a broken link outside the fence is 
 expect "claude: fixing a known-broken link is allowed" 0 "" \
   env CLAUDE_PROJECT_DIR="$TEMP_REPO" bash -c "printf '%s' '{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TEMP_REPO/test-validation/README.md\",\"content\":\"[fixed](README.md)\\n\"}}' | python3 '$ROOT/.claude/hooks/doc-links-guard.py'"
 
+# A cwd outside any git checkout: the failed root lookup must fail open (exit 0), and
+# must not feed git's empty output to realpath.
+expect "claude: write from a non-repo cwd is allowed" 0 "" \
+  env CLAUDE_PROJECT_DIR="$TEMP_DIR/nonrepo" bash -c "mkdir -p $TEMP_DIR/nonrepo && printf '%s' '{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TEMP_DIR/nonrepo/x.md\",\"content\":\"[x](absent.md)\\n\"}}' | python3 '$ROOT/.claude/hooks/doc-links-guard.py'"
+
 # --check-file target resolution in the throwaway repo: a tracked target, a directory
 # holding a tracked file, and an untracked-but-not-ignored file all resolve.
 expect "claude: write targeting an untracked file is allowed" 0 "" \

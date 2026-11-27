@@ -135,7 +135,7 @@ def _inline_links(line):
                         break
                 k3 += 1
             if depth2 != 0:
-                i = n  # unterminated titled link: the rest of the line is its text
+                i = i + 1  # CommonMark re-parses an unclosed link's contents as text
                 continue
             yield line[i + 1:j - 1], line[k:k2]
             i = k3 + 1
@@ -233,7 +233,7 @@ def self_test():
             "``[spanskip](Nope2.md)`` [spanbad](Missing3.md) [deep2](doc((1)).md)",  # EXPECT Missing3, doc((1)).md
             "[enc](missing%23x.md)",                    # EXPECT missing%23x.md (decoded to missing#x.md)
             '[titled](Missing4.md "the title") [t2](B.md "t") [esc]\\[skip](Nope4.md)\\]',  # EXPECT Missing4
-            '[unterm](Missing5.md "open',  # unterminated title: the construct is skipped whole
+            '[unterm](Missing5.md "open [real](Missing6.md)',  # EXPECT Missing6: the unclosed construct is text
         ]),
         "doc/B.md": "",
     }
@@ -249,6 +249,7 @@ def self_test():
             "doc/A.md:11: broken link 'doc((1)).md' (link text 'deep2') (no such path in the repository)",
             "doc/A.md:12: broken link 'missing%23x.md' (link text 'enc') (no such path in the repository)",
             "doc/A.md:13: broken link 'Missing4.md' (link text 'titled') (no such path in the repository)",
+            "doc/A.md:14: broken link 'Missing6.md' (link text 'real') (no such path in the repository)",
             "doc/A.md: KNOWN_BROKEN entry 'Fixed.md' is no longer broken; remove it"]
     if got != want:
         return False, got

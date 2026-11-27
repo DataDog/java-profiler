@@ -13,7 +13,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 export default function (pi: ExtensionAPI) {
   // cwd → repository root. The checker lives at the root's utils/, so a session whose
   // cwd is a subdirectory resolves the root once and reuses it.
-  const rootCache = new Map<string, string | null>();
+  const rootCache = new Map<string, string>(); // failures are never stored
   function repoRoot(cwd: string): string | null {
     const cached = rootCache.get(cwd);
     if (cached !== undefined) return cached;
