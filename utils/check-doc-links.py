@@ -125,7 +125,9 @@ def _inline_links(line):
             depth2, k3 = 1, k2
             while k3 < n:
                 c = line[k3]
-                if c == "(":
+                if c == "\\":
+                    k3 += 1
+                elif c == "(":
                     depth2 += 1
                 elif c == ")":
                     depth2 -= 1
@@ -133,7 +135,7 @@ def _inline_links(line):
                         break
                 k3 += 1
             if depth2 != 0:
-                i = i + 1
+                i = n  # unterminated titled link: the rest of the line is its text
                 continue
             yield line[i + 1:j - 1], line[k:k2]
             i = k3 + 1
@@ -231,6 +233,7 @@ def self_test():
             "``[spanskip](Nope2.md)`` [spanbad](Missing3.md) [deep2](doc((1)).md)",  # EXPECT Missing3, doc((1)).md
             "[enc](missing%23x.md)",                    # EXPECT missing%23x.md (decoded to missing#x.md)
             '[titled](Missing4.md "the title") [t2](B.md "t") [esc]\\[skip](Nope4.md)\\]',  # EXPECT Missing4
+            '[unterm](Missing5.md "open',  # unterminated title: the construct is skipped whole
         ]),
         "doc/B.md": "",
     }

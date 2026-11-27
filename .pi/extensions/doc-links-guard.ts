@@ -24,8 +24,10 @@ export default function (pi: ExtensionAPI) {
     // cwd may be the symlinked form, so both sides go through realpathSync before the
     // containment comparison. A failed lookup is never cached: a transient git error
     // must disable the guard for one call, not for the session.
-    if (res.status !== 0) return null;
-    return realpathSync(String(res.stdout).trim());
+    if (res.status !== 0) return null; // a failed lookup is never cached
+    const root = realpathSync(String(res.stdout).trim());
+    rootCache.set(cwd, root);
+    return root;
   }
 
   pi.on("tool_call", async (event, ctx) => {
