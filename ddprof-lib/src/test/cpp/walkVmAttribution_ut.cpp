@@ -580,3 +580,123 @@ TEST_F(WalkVmNativePathTest, WalkDwarfRejectsAMisalignedFramePointer) {
         << "below see nothing wrong and the walk records a frame read through a "
         << "frame pointer that cannot be one";
 }
+
+// Friend of Profiler: convertNativeTrace and the remote switch are private.
+class ProfilerTestAccessor {
+  public:
+    static void setRemoteSymbolication(bool enabled) {
+        Profiler::instance()->_remote_symbolication = enabled;
+    }
+    static int convertNativeTrace(int native_frames, const void** callchain,
+                                  ASGCT_CallFrame* frames) {
+        return Profiler::instance()->convertNativeTrace(native_frames, callchain, frames,
+                                                        /*lock_index=*/0,
+                                                        /*skip_hook_prefix=*/false);
+    }
+};
+
+namespace {
+
+const char* const kMarkLibBase = reinterpret_cast<const char*>(0x5a5d00000000ULL);
+const int kContRuntimeOff = 0x100;
+const int kPlainCallerOff = 0x200;
+const int kVmRuntimeOff = 0x300;
+const int kAfterStopOff = 0x400;
+const char* const kRemoteMarkLibBase = reinterpret_cast<const char*>(0x5a5f00000000ULL);
+const char kRemoteBuildId[] = "walkvm-mark-build-id";
+
+void addMarkedSymbols(CodeCache& lib, const char* base) {
+    lib.add(base + kContRuntimeOff, kFuncLen, "walkvm_mark_cont_runtime");
+    lib.add(base + kPlainCallerOff, kFuncLen, "walkvm_mark_plain_caller");
+    lib.add(base + kVmRuntimeOff, kFuncLen, "walkvm_mark_vm_runtime");
+    lib.add(base + kAfterStopOff, kFuncLen, "walkvm_mark_after_stop");
+    lib.sort();
+    lib.mark([](const char* n) { return strcmp(n, "walkvm_mark_cont_runtime") == 0; },
+             MARK_CONT_RUNTIME);
+    lib.mark([](const char* n) { return strcmp(n, "walkvm_mark_vm_runtime") == 0; },
+             MARK_VM_RUNTIME);
+}
+
+void ensureMarkLibRegistered() {
+    static const bool registered = [] {
+        static CodeCache lib("walkvm_mark_symbols", /*lib_index=*/-1,
+                             kMarkLibBase, kMarkLibBase + kLibSpan,
+                             /*image_base=*/kMarkLibBase);
+        addMarkedSymbols(lib, kMarkLibBase);
+        static CodeCache remote_lib("walkvm_mark_remote", /*lib_index=*/-1,
+                                    kRemoteMarkLibBase, kRemoteMarkLibBase + kLibSpan,
+                                    /*image_base=*/kRemoteMarkLibBase);
+        remote_lib.setBuildId(kRemoteBuildId, sizeof(kRemoteBuildId) - 1);
+        addMarkedSymbols(remote_lib, kRemoteMarkLibBase);
+        bool ok = Libraries::instance()->addLibraryForTest(&lib);
+        return Libraries::instance()->addLibraryForTest(&remote_lib) && ok;
+    }();
+    ASSERT_TRUE(registered);
+}
+
+}  // namespace
+
+class NativeFrameMarkTest : public ::testing::Test {
+  protected:
+    static void SetUpTestSuite() { ensureMarkLibRegistered(); }
+};
+
+// walkVM sets its freeze/thaw flag from the mark, then records the frame
+// under its own symbol; only walk-control marks drop the name.
+TEST_F(NativeFrameMarkTest, ContRuntimeMarkKeepsTheSymbolForWalkVM) {
+    Profiler::NativeFrameResolution cont = Profiler::instance()->resolveNativeFrameForWalkVM(
+            reinterpret_cast<uintptr_t>(kMarkLibBase + kContRuntimeOff + 4), /*pc_is_return_address=*/false, 0);
+    EXPECT_EQ(MARK_CONT_RUNTIME, cont.mark);
+    EXPECT_EQ(BCI_NATIVE_FRAME, cont.bci);
+    EXPECT_STREQ("walkvm_mark_cont_runtime", cont.method_name);
+
+    Profiler::NativeFrameResolution vm = Profiler::instance()->resolveNativeFrameForWalkVM(
+            reinterpret_cast<uintptr_t>(kMarkLibBase + kVmRuntimeOff + 4), /*pc_is_return_address=*/false, 0);
+    EXPECT_EQ(MARK_VM_RUNTIME, vm.mark);
+    EXPECT_EQ(nullptr, vm.method_name);
+}
+
+// The FP/DWARF conversion walks through freeze/thaw frames and still stops at
+// a walk-control mark.
+TEST_F(NativeFrameMarkTest, NativeTraceContinuesThroughContRuntimeFrames) {
+    const void* callchain[] = {kMarkLibBase + kContRuntimeOff + 4, kMarkLibBase + kPlainCallerOff + 4,
+                               kMarkLibBase + kVmRuntimeOff + 4, kMarkLibBase + kAfterStopOff + 4};
+    ASGCT_CallFrame frames[4]{};
+    int depth = ProfilerTestAccessor::convertNativeTrace(4, callchain, frames);
+    ASSERT_EQ(2, depth);
+    EXPECT_EQ(BCI_NATIVE_FRAME, frames[0].bci);
+    EXPECT_STREQ("walkvm_mark_cont_runtime", reinterpret_cast<const char*>(frames[0].method_id));
+    EXPECT_EQ(BCI_NATIVE_FRAME, frames[1].bci);
+    EXPECT_STREQ("walkvm_mark_plain_caller", reinterpret_cast<const char*>(frames[1].method_id));
+}
+
+// With remote symbolication the freeze/thaw frame is packed like an unmarked
+// one, still reports its mark to walkVM, and does not end the FP/DWARF trace.
+TEST_F(NativeFrameMarkTest, RemoteContRuntimeFramesArePackedAndWalkable) {
+    ProfilerTestAccessor::setRemoteSymbolication(true);
+    const char* cont_pc = kRemoteMarkLibBase + kContRuntimeOff + 4;
+    Profiler::NativeFrameResolution cont = Profiler::instance()->resolveNativeFrameForWalkVM(
+            reinterpret_cast<uintptr_t>(cont_pc), /*pc_is_return_address=*/false, 0);
+    Profiler::NativeFrameResolution vm = Profiler::instance()->resolveNativeFrameForWalkVM(
+            reinterpret_cast<uintptr_t>(kRemoteMarkLibBase + kVmRuntimeOff + 4), false, 0);
+    const void* callchain[] = {cont_pc, kRemoteMarkLibBase + kPlainCallerOff + 4,
+                               kRemoteMarkLibBase + kVmRuntimeOff + 4,
+                               kRemoteMarkLibBase + kAfterStopOff + 4};
+    ASGCT_CallFrame frames[4]{};
+    int depth = ProfilerTestAccessor::convertNativeTrace(4, callchain, frames);
+    ProfilerTestAccessor::setRemoteSymbolication(false);
+
+    EXPECT_EQ(MARK_CONT_RUNTIME, cont.mark);
+    EXPECT_FALSE(cont.is_marked());
+    ASSERT_EQ(BCI_NATIVE_FRAME_REMOTE, cont.bci);
+    EXPECT_EQ(static_cast<uintptr_t>(kContRuntimeOff + 4),
+              Profiler::RemoteFramePacker::unpackPcOffset(cont.packed_remote_frame));
+    EXPECT_EQ(0, Profiler::RemoteFramePacker::unpackMark(cont.packed_remote_frame));
+    EXPECT_TRUE(vm.is_marked());
+    EXPECT_EQ(BCI_NATIVE_FRAME, vm.bci);
+
+    ASSERT_EQ(2, depth);
+    EXPECT_EQ(BCI_NATIVE_FRAME_REMOTE, frames[0].bci);
+    EXPECT_EQ(BCI_NATIVE_FRAME_REMOTE, frames[1].bci);
+    EXPECT_EQ(0, Profiler::RemoteFramePacker::unpackMark(frames[0].packed_remote_frame));
+}
