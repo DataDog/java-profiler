@@ -74,16 +74,13 @@ public:
     TrustedRestorerScope& operator=(const TrustedRestorerScope&) = delete;
 };
 
-// The kernel's arm64 struct sigaction; libc's has no sa_restorer on musl.
-struct KernelSigaction {
-    void* handler;
-    unsigned long flags;
-    void* restorer;
-    uint64_t mask;
-};
-constexpr unsigned long KERNEL_SA_RESTORER = 0x04000000UL;
+using KernelSigaction = SignalFrame::KernelSigaction;
+// Reserved for the restorer tests: OS::installSignalHandler keeps per-signal state for good.
+const int kernel_query_signal = SIGRTMIN + 7;
+const int install_signal = SIGRTMIN + 8;
 
 void ignoreSignal(int, siginfo_t*, void*) {}
+void otherSignal(int, siginfo_t*, void*) {}
 
 class SignalFrameTest : public ::testing::Test {
     VMTestAccessor _vm_kind{true, false};
@@ -297,28 +294,32 @@ TEST_F(SignalFrameTest, RecoversAtTheTrustedRestorerOutsideVdso) {
 }
 
 TEST_F(SignalFrameTest, ReportsTheRestorerTheKernelHoldsForASignal) {
-    const int signo = SIGRTMIN + 7;
+    const int signo = kernel_query_signal;
+    const void* handler = reinterpret_cast<const void*>(ignoreSignal);
     KernelSigaction old{};
     ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, nullptr, &old, sizeof(old.mask)));
-    for (unsigned long flags : {SA_SIGINFO | KERNEL_SA_RESTORER, static_cast<unsigned long>(SA_SIGINFO)}) {
-        KernelSigaction action{reinterpret_cast<void*>(ignoreSignal), flags, kernel_restorer + 1, 0};
+    for (unsigned long flags : {SA_SIGINFO | SignalFrame::KERNEL_SA_RESTORER, static_cast<unsigned long>(SA_SIGINFO)}) {
+        KernelSigaction action{const_cast<void*>(handler), flags, kernel_restorer + 1, 0};
         ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &action, nullptr, sizeof(action.mask)));
-        EXPECT_EQ(flags & KERNEL_SA_RESTORER ? static_cast<const void*>(kernel_restorer + 1) : nullptr,
-                  SignalFrame::kernelRestorer(signo));
+        EXPECT_EQ(flags & SignalFrame::KERNEL_SA_RESTORER ? static_cast<const void*>(kernel_restorer + 1) : nullptr,
+                  SignalFrame::kernelRestorer(signo, handler));
+        // A restorer registered with someone else's handler is not reported.
+        EXPECT_EQ(nullptr, SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(otherSignal)));
     }
     ASSERT_EQ(0, syscall(SYS_rt_sigaction, signo, &old, nullptr, sizeof(old.mask)));
 }
 
-TEST_F(SignalFrameTest, InstallingAHandlerTrustsItsKernelRestorer) {
-    const int signo = SIGRTMIN + 8;
+TEST_F(SignalFrameTest, InstallingAHandlerTrustsOnlyAReportedRestorer) {
+    const int signo = install_signal;
     struct sigaction old{};
     ASSERT_EQ(0, sigaction(signo, nullptr, &old));
-    TrustedRestorerScope trusted(nullptr);
+    TrustedRestorerScope trusted(kernel_restorer + 1);
     OS::installSignalHandler(signo, ignoreSignal);
-    const void* restorer = SignalFrame::kernelRestorer(signo);
+    const void* restorer = SignalFrame::kernelRestorer(signo, reinterpret_cast<const void*>(ignoreSignal));
     ASSERT_EQ(0, sigaction(signo, &old, nullptr));
-    if (restorer == nullptr) GTEST_SKIP() << "this libc returns through the vDSO restorer";
-    EXPECT_EQ(restorer, SignalFrame::trustedRestorer());
+    // musl reports its own restorer; glibc arm64 returns through the vDSO and reports none.
+    EXPECT_EQ(restorer != nullptr ? restorer : static_cast<const void*>(kernel_restorer + 1),
+              SignalFrame::trustedRestorer());
 }
 
 TEST_F(SignalFrameTest, SuccessfulRecoveryPreservesPriorTruncation) {

@@ -31,18 +31,11 @@ const void* SignalFrame::trustedRestorer() {
     return __atomic_load_n(&trusted_restorer, __ATOMIC_ACQUIRE);
 }
 
-const void* SignalFrame::kernelRestorer(int signo) {
+const void* SignalFrame::kernelRestorer(int signo, const void* handler) {
 #ifdef __aarch64__
-    // The kernel's struct sigaction, not libc's: musl fills in sa_restorer itself.
-    struct {
-        void* handler;
-        unsigned long flags;
-        void* restorer;
-        uint64_t mask;
-    } action{};
-    constexpr unsigned long KERNEL_SA_RESTORER = 0x04000000UL;
+    KernelSigaction action{};
     if (syscall(SYS_rt_sigaction, signo, nullptr, &action, sizeof(action.mask)) != 0 ||
-        (action.flags & KERNEL_SA_RESTORER) == 0) {
+        action.handler != handler || (action.flags & KERNEL_SA_RESTORER) == 0) {
         return nullptr;
     }
     return action.restorer;

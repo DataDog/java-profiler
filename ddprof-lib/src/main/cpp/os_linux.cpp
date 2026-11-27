@@ -357,13 +357,17 @@ SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handl
         __atomic_store_n(&installed_oldaction_valid[signo], true, __ATOMIC_RELEASE);
     }
 
-    pthread_mutex_unlock(&installed_oldaction_mutex);
-
-    if (rc == 0 && action != NULL) {
-        // Lets walks continue past the interrupted context of a nested handler.
-        const void* restorer = SignalFrame::kernelRestorer(signo);
+    // Lets walks continue past a nested handler's interrupted context. The handler check
+    // rejects a restorer that an installer outside this mutex registered in the meantime.
+    if (rc == 0) {
+        const void* installed = handler != NULL ? reinterpret_cast<const void*>(handler)
+                                                : reinterpret_cast<const void*>(action);
+        const void* restorer = SignalFrame::kernelRestorer(signo, installed);
         if (restorer != nullptr) SignalFrame::trustRestorer(restorer);
     }
+
+    pthread_mutex_unlock(&installed_oldaction_mutex);
+
     return rc == 0 ? oldsa.sa_sigaction : nullptr;
 }
 

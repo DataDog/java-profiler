@@ -234,10 +234,13 @@ svc #0` sequence outside the vDSO stops with truncation when signal CFI is
 absent, preventing the interrupted FP chain from fabricating callers.
 The kernel builds the same signal frame for these restorers. The walker does
 not trust the instruction pair alone to locate it outside the vDSO. It also
-trusts the restorer the kernel reports for the profiler's own handlers:
-`OS::installSignalHandler` reads it back with `rt_sigaction` and passes it to
-`SignalFrame::trustRestorer`. musl always installs its own `__restore_rt`, so
-walks across a nested handler on musl arm64 continue through that restorer.
+trusts the restorer the kernel reports for a handler that
+`OS::installSignalHandler` installed: it reads it back with `rt_sigaction`,
+only while that handler is still registered, and passes it to
+`SignalFrame::trustRestorer`. musl always installs its own `__restore_rt`. On
+musl arm64, once the CPU or wall-clock engine has installed its handler, walks
+across a nested handler continue through that restorer. `OS::replaceCrashHandler`
+does not set it.
 A row explicitly marked as a signal frame follows its CFI instead. Other syscall
 numbers do not activate this fallback.
 Custom-restorer instruction probes, including anonymous mappings without a
