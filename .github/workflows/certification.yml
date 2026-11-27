@@ -2,8 +2,8 @@ name: Release Certification
 run-name: "Certify ${{ github.sha }}"
 
 # Nightly certification of the main HEAD for release readiness. A green run
-# attaches a git note on the certified commit (refs/notes/certification);
-# the Friday release train releases only certified commits. A failed run
+# attests the commit SHA and indexes it with a note under refs/notes/certification.
+# The Friday train verifies the attestation before dispatch. A failed run
 # notifies Slack and files a PROF ticket immediately.
 #
 # The suite is the pre-release gate of release-validated.yml (testDebug +
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 jobs:
@@ -139,12 +139,27 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: [test-debug, test-asan, slow-test-debug, slow-test-asan, fuzz, gitlab-integration]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Push the discovery note after signing.
+      attestations: write
+      id-token: write
     outputs:
       certified_sha: ${{ steps.certify.outputs.certified_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Write release certification subject
+        id: subject
+        run: |
+          dir=$(mktemp -d)
+          printf '%s\n' "$GITHUB_SHA" > "$dir/certified-commit.txt"
+          echo "path=$dir/certified-commit.txt" >> "$GITHUB_OUTPUT"
+      - name: Attest release certification
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.subject.outputs.path }}
+          create-storage-record: false
       - name: Attach certification note
         id: certify
         env:

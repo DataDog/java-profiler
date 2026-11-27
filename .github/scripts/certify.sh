@@ -4,15 +4,15 @@ set -euo pipefail
 
 # Copyright 2026, Datadog, Inc
 
-# Mark a commit as release-certified by attaching a git note on the
-# 'certification' notes ref and pushing it to origin.
+# Index a commit for the release train after the workflow attests it.
+# This note can locate a candidate but cannot authorize its release.
 #
 # Usage:
 #   certify.sh <commit-sha> --run-url <url> [--suite <text>]
 #
 # The note body is a single-line JSON object with the commit, timestamp,
 # workflow run URL and the certification suite summary. Re-running on an
-# already-certified commit is a no-op (exit 0).
+# already-indexed commit is a no-op (exit 0).
 
 NOTES_REF="refs/notes/certification"
 
@@ -64,7 +64,7 @@ if ! git fetch origin "+$NOTES_REF:$NOTES_REF" 2>/dev/null; then
 fi
 
 if git notes --ref=certification list 2>/dev/null | awk '{print $2}' | grep -qx "$SHA"; then
-  echo "Commit $SHA is already certified; nothing to do"
+  echo "Commit $SHA is already indexed; nothing to do"
   exit 0
 fi
 
@@ -76,5 +76,5 @@ git -c user.name="Datadog Java Profiler" -c user.email="java-profiler@datadoghq.
   notes --ref=certification add -f -m "$NOTE" "$SHA"
 git push origin "$NOTES_REF"
 
-echo "Certified $SHA"
+echo "Indexed $SHA"
 echo "$NOTE"

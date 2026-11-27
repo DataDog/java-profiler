@@ -36,6 +36,7 @@ jobs:
 
       - name: Validate release automation without network access
         run: |
+          bash -n .github/scripts/verify-release-certification.sh
           bash -n \
             .github/scripts/release.sh \
             .github/scripts/certify.sh \
@@ -46,6 +47,7 @@ jobs:
             .github/scripts/tests/test_release_automation.sh \
             .github/scripts/tests/test_release_train.sh
           shellcheck \
+          .github/scripts/verify-release-certification.sh \
           .github/scripts/release.sh \
           .github/scripts/certify.sh \
           .github/scripts/pick-release-candidate.sh \
