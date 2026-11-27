@@ -12,6 +12,7 @@
 #include "threadLocalData.inline.h"
 #include "counters.h"
 
+#include <memory>
 #include <mutex>
 #include <pthread.h>
 
@@ -21,6 +22,43 @@
 // boundary checks don't interact with other tests' initialize()/acquire()/
 // release() calls.
 class ThreadLocalDataPoolTest : public ::testing::Test {};
+
+// Catches lost membership transitions or versions: owned-run admission compares
+// the complete word, so leave/re-enter cannot look like uninterrupted outside.
+TEST_F(ThreadLocalDataPoolTest, ownerLogicalWindowTransitionsAreIdempotent) {
+    std::unique_ptr<ThreadLocalDataPool, decltype(&ThreadLocalDataPool::destroyForTest)>
+        pool(ThreadLocalDataPool::createForTest(1), ThreadLocalDataPool::destroyForTest);
+    ProfiledThread* owner = pool->claimForTest(100);
+    ASSERT_NE(nullptr, owner);
+    EXPECT_EQ(0u, owner->logicalContextWindowState());
+    EXPECT_TRUE(owner->enterLogicalContextWindow());
+    EXPECT_EQ(3u, owner->logicalContextWindowState());
+    EXPECT_FALSE(owner->enterLogicalContextWindow());
+    EXPECT_EQ(3u, owner->logicalContextWindowState());
+    EXPECT_TRUE(owner->exitLogicalContextWindow());
+    EXPECT_EQ(4u, owner->logicalContextWindowState());
+    EXPECT_FALSE(owner->exitLogicalContextWindow());
+    EXPECT_EQ(4u, owner->logicalContextWindowState());
+    EXPECT_TRUE(owner->enterLogicalContextWindow());
+    EXPECT_EQ(7u, owner->logicalContextWindowState());
+}
+
+// Catches omission of the logical source from pool reset: the next native owner
+// must be able to enter its own window rather than inherit the previous one.
+TEST_F(ThreadLocalDataPoolTest, logicalWindowIsClearedBeforePoolReuse) {
+    std::unique_ptr<ThreadLocalDataPool, decltype(&ThreadLocalDataPool::destroyForTest)>
+        pool(ThreadLocalDataPool::createForTest(1), ThreadLocalDataPool::destroyForTest);
+    ProfiledThread* first = pool->claimForTest(100);
+    ASSERT_NE(nullptr, first);
+    ASSERT_TRUE(first->enterLogicalContextWindow());
+    ASSERT_TRUE(pool->unclaimForTest(first));
+    ProfiledThread* second = pool->claimForTest(200);
+    ASSERT_EQ(first, second);
+    EXPECT_EQ(200, second->tid());
+    EXPECT_EQ(0u, second->logicalContextWindowState());
+    EXPECT_TRUE(second->enterLogicalContextWindow());
+    EXPECT_EQ(3u, second->logicalContextWindowState());
+}
 
 TEST_F(ThreadLocalDataPoolTest, firstElementIsContained) {
     ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(4);
@@ -155,6 +193,7 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     ASSERT_TRUE(dirty->parkEnter());
     dirty->setParkBlockToken(0x1234);
     dirty->setFilterSlotId(42);
+    ASSERT_TRUE(dirty->enterLogicalContextWindow());
     dirty->startInitWindow();
     dirty->enterSignalScope();
     ASSERT_TRUE(dirty->tryEnterCriticalSection());
@@ -194,6 +233,7 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     EXPECT_EQ(reset_snapshot.misc_flags, fresh_snapshot.misc_flags);
     EXPECT_EQ(reset_snapshot.park_block_token, fresh_snapshot.park_block_token);
     EXPECT_EQ(reset_snapshot.filter_slot_id, fresh_snapshot.filter_slot_id);
+    EXPECT_EQ(reset_snapshot.logical_context_window_state, fresh_snapshot.logical_context_window_state);
     EXPECT_EQ(reset_snapshot.init_window, fresh_snapshot.init_window);
     EXPECT_EQ(reset_snapshot.signal_depth, fresh_snapshot.signal_depth);
     EXPECT_EQ(reset_snapshot.in_critical_section, fresh_snapshot.in_critical_section);

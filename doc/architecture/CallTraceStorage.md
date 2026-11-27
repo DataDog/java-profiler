@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # CallTraceStorage Triple-Buffer Architecture
 
 ## Overview
@@ -54,8 +56,9 @@ after:   ACTIVE = B   STANDBY = C   SCRATCH = A
 
 The steps, as implemented:
 
-1. **Liveness**: under a shared `_liveness_lock`, every registered
-   `LivenessChecker` adds the IDs of live traces to `_preserve_set_buffer`.
+1. **Liveness**: under a shared `_liveness_lock`, each `LivenessChecker` fills
+   `_collector_set_buffer`. Storage unions its nodes into `_preserve_set_buffer`
+   before invoking the next checker.
 2. **Collect STANDBY (`B`)** into `_traces_buffer`. Each trace whose ID is in
    the preserve set is copied into `C` with `putWithExistingId()`.
 3. **Reset `B`** with `clearTableOnly()`. Its chunks are detached, not freed:
@@ -67,7 +70,8 @@ The steps, as implemented:
    `put()` still holding a guard on it.
 6. **Collect `A`** into `_traces_buffer`, again copying preserved traces into
    `C`.
-7. **Re-number `A`**: `A->setInstanceId(getNextInstanceId())`.
+7. **Complete preservation and re-number `A`**: callbacks receive IDs not
+   confirmed copied from either source; then `A->setInstanceId(getNextInstanceId())`.
 8. **Process**: add the dropped-trace sentinel to `_traces_buffer` and call the
    `processor` callback.
 9. **Free `B`'s old chunks** (`LinearAllocator::freeChunks()`).
@@ -148,13 +152,15 @@ before the first `start()`); `acquire()` is the only place they are allocated.
 - **`release()`** frees all three tables (through `freeTables()`, which swaps each
   pointer to `nullptr` and deletes the table once drained, so it tolerates a
   concurrent `put()`) and
-  swaps both `processTraces()` collections with empty ones so their bucket arrays
+  swaps the `processTraces()` collections with empty ones so their bucket arrays
   are freed too. `Profiler::releaseRecordingMemory()` calls it at the end of
   `stop()`, once the final chunk is written, and on every `start()` error path after
   `acquireRecordingMemory()`;
   `resetRecordingState()` calls it on a fresh start so the tables the new recording
   uses are counted after `Counters::reset()`. Nothing is preserved for the liveness
-  checkers: the `LivenessTracker` is released at the same boundary.
+  checkers: the `LivenessTracker` is released at the same boundary. Right after
+  `release()`, `releaseRecordingMemory()` drops every pending unowned wall-clock tail
+  (trace ID, weight and epoch segments), so no tail names a freed ID in a later recording.
 - While released, `put()` finds `_active_storage == nullptr` and returns
   `DROPPED_TRACE_ID`, and `processTraces()` hands its processor a local set holding
   only the dropped-trace placeholder (a chunk written without a recording, as gtests
@@ -172,9 +178,10 @@ its stripe lock and drops the sample when its buffer is `NULL`.
 
 ## Reused Collections
 
-`processTraces()` reuses two member collections instead of allocating per call:
-`_traces_buffer` (`CallTraceSet`) and `_preserve_set_buffer` (`CallTraceIdSet`).
-Both use `CountingAllocator`, so their memory is reported under `NM_CALLTRACE`.
+`processTraces()` reuses three member collections instead of allocating per call:
+`_traces_buffer` (`CallTraceSet`), `_preserve_set_buffer` and
+`_collector_set_buffer` (`CallTraceIdSet`). All use `CountingAllocator`, so
+their memory is reported under `NM_CALLTRACE`.
 `clear()` keeps the bucket arrays; node allocation repeats on every rotation,
 and the buckets rehash when a rotation holds more traces than any earlier one.
 The bucket arrays allocate on first use, not in `acquire()`: std containers
@@ -198,6 +205,54 @@ A preserved trace is reinserted by ID (`putWithExistingId()`), not by stack
 hash, so identical stacks from different tenures keep their distinct IDs. The
 preserving table is always cleared before it becomes ACTIVE again, so ID keys
 never mix with `put()`'s stack-hash keys.
+
+### Reusable unowned wall-clock roots
+
+A reusable ASGCT blocked-stack ID remains a liveness root after its event chunk is
+dumped, including at zero pending weight and outside context membership.
+
+`WallClockBlockTracker` indexes roots in 32 atomic 64-bit words in lazy slot storage.
+`BlockState` stays one cache line. The bitmap's 256-byte payload does not bound the
+trace memory retained by those roots.
+
+`Profiler::recordWallSample()` holds one nonblocking recording stripe through
+ordinary serialization, cached-root publication and deferred-tail commit. It
+publishes the ID, state and bitmap bit before releasing the stripe.
+
+A runnable tail is only peeked until its write succeeds. Stripe exhaustion or a
+rejected write retains its ID, weight, state and cadence. Ordinary and per-epoch deferred
+writes have independent results; a failed current attempt remains a drop.
+
+A failed blocked write leaves previously suppressed epoch segments intact. The profiler
+registers its wall-root collector once in its constructor; the heap tracker
+registers its own collector per recording and unregisters it on `release()`.
+
+Each collector receives an empty reusable output set, even if a previous collector
+cleared its output. Storage merges nodes into the union and releases duplicates.
+Both sets' bucket/node allocations are charged to `NM_CALLTRACE`.
+
+Dump holds all recording stripes through collection, copying and serialization.
+Collection includes zero-weight roots without using `ThreadFilter::collect()` or
+remote TLS. Only collection under those stripes prunes zero-ID bitmap bits.
+
+Lifecycle resets clear IDs, not concurrent bitmap bits; a publisher sets its bit
+again. Fresh-recording reset clears cached state under all stripes. Chunk dumps
+do not reset sampling cadence.
+
+Exact-ID copying succeeds only if the ID already exists or its frames were copied.
+Confirmed IDs leave the preservation work set; after both source passes, completion
+callbacks receive all remaining requests, including IDs absent from both tables.
+
+One-argument checker registration remains valid. Collectors and completion
+callbacks run on normal threads and must not re-enter storage or registration.
+
+Before stripes reopen, wall completion replaces a still-matching unpreserved real
+ID with `DROPPED_TRACE_ID`, retaining weight, state and cadence. The next tail can
+use that reserved stack; `wc_unowned_blocked_trace_preservation_failed` counts it.
+
+Normal copies retain their exact ID and frames. Failed preservation reports
+attribution loss, not success; it does not make generic allocation failure or fatal
+OOM recoverable. Delegated JVMTI correlation IDs do not use this root protocol.
 
 ## 64-Bit Trace IDs
 

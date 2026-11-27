@@ -18,9 +18,14 @@
 
 #include <atomic>
 #include <array>
+#include <cassert>
 #include <cstdint>
+#include <vector>
 
 #include "arch.h"
+#include "callTraceHashTable.h"
+#include "countingAllocator.h"
+#include "context.h"
 #include "threadFilter.h"
 #include "threadState.h"
 
@@ -44,8 +49,8 @@ public:
     WallClockBlockTracker() = default;
     ~WallClockBlockTracker();
 
-    // One cache line per slot. Published backing survives registry resets and
-    // recording restarts, so captured pointers remain valid until destruction.
+    // Published backing survives registry resets and recording restarts, so
+    // captured pointers remain valid until destruction.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) BlockState {
         static constexpr u64 kUnownedBlockedFallbackRatio = 10;
 
@@ -111,13 +116,18 @@ public:
             unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
-        inline bool shouldRecordUnownedBlockedSample() {
+        inline bool shouldRecordUnownedBlockedSample(bool force_record = false, bool retain_weight = true) {
             u64 decision = unowned_blocked_decision_count.fetch_add(1, std::memory_order_relaxed) + 1;
-            if ((decision % kUnownedBlockedFallbackRatio) == 1) {
+            if (force_record || (decision % kUnownedBlockedFallbackRatio) == 1) {
                 return true;
             }
-            unowned_blocked_pending_weight.fetch_add(1, std::memory_order_relaxed);
+            if (retain_weight) unowned_blocked_pending_weight.fetch_add(1, std::memory_order_relaxed);
             return false;
+        }
+        inline void clearUnownedBlockedTailKeepingCadence() {
+            unowned_blocked_pending_weight.store(0, std::memory_order_release);
+            unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
+            unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
         inline u64 consumeUnownedBlockedWeight() {
             return unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed) + 1;
@@ -131,16 +141,32 @@ public:
             unowned_blocked_state.store(state, std::memory_order_relaxed);
             unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
         }
+        // Transactional tails commit only successful writes; lifecycle resets
+        // invalidate the payload. Context/owned-run transitions retain it.
+        // Legacy flush validates the complete tail before consuming anything.
+        inline bool peekUnownedBlockedTail(u64& call_trace_id, u64& weight,
+                                           OSThreadState& state) const {
+            call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
+            weight = unowned_blocked_pending_weight.load(std::memory_order_relaxed);
+            state = unowned_blocked_state.load(std::memory_order_relaxed);
+            return call_trace_id != 0 && weight != 0 && state != OSThreadState::UNKNOWN;
+        }
         inline bool flushUnownedBlockedTail(u64& call_trace_id, u64& weight,
                                             OSThreadState& state) {
+            // Acquire pairs with the release store in recordUnownedBlockedSample().
+            call_trace_id = unowned_blocked_call_trace_id.load(std::memory_order_acquire);
+            weight = unowned_blocked_pending_weight.load(std::memory_order_relaxed);
+            state = unowned_blocked_state.load(std::memory_order_relaxed);
+            if (call_trace_id == 0 || weight == 0 || state == OSThreadState::UNKNOWN) {
+                return false;
+            }
             call_trace_id = unowned_blocked_call_trace_id.exchange(0, std::memory_order_acq_rel);
             weight = unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed);
             state = unowned_blocked_state.exchange(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
-            if (call_trace_id == 0 || weight == 0 || state == OSThreadState::UNKNOWN) {
-                return false;
-            }
-            return true;
+            // A concurrent lifecycle reset may have intervened between the
+            // loads and the exchanges.
+            return call_trace_id != 0 && weight != 0 && state != OSThreadState::UNKNOWN;
         }
         // identity_slot supplies the context-window state, which lives on
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
@@ -164,37 +190,48 @@ public:
                 return false;
             }
             u32 generation = block_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+            // Relaxed is enough: this payload is published by the trailing
+            // active_block_state release store, and only the owner writes it.
+            // shouldSuppressOwnedBlock() and prepareWallPrecheck() acquire
+            // activeBlockState() before activeBlockRemainedOutsideContextWindow().
+            // An older state is UNKNOWN, because resetSlot() and
+            // clearActiveBlockRun() store state UNKNOWN before owner NONE. A
+            // racing context transition leaves a stale epoch that can only fail
+            // the equality check: a missed suppression, never a wrongful one.
             active_block_context_epoch.store(context_state >> 1, std::memory_order_relaxed);
-            resetUnownedBlockedSampling();
+            // Owned-run entry retains the unowned tail. Suppressible owned states
+            // bypass unowned sampling; other states fall through on the same owner.
             last_sampled_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_relaxed);
             active_block_state.store(state, std::memory_order_release);
             *generation_out = generation;
             return true;
         }
-        bool needsContextBoundaryReset() const {
-            // Generation and context epoch survive resetSlot; only its payload
-            // matters here, including deferred tails without an active owner.
-            return activeBlockOwner() != BlockRunOwner::NONE ||
-                   activeBlockState() != OSThreadState::UNKNOWN || sampledThisRun() ||
-                   last_sampled_state.load(std::memory_order_acquire) != OSThreadState::UNKNOWN ||
-                   unowned_blocked_pending_weight.load(std::memory_order_acquire) != 0 ||
-                   unowned_blocked_decision_count.load(std::memory_order_acquire) != 0 ||
-                   unowned_blocked_call_trace_id.load(std::memory_order_acquire) != 0 ||
-                   unowned_blocked_state.load(std::memory_order_acquire) != OSThreadState::UNKNOWN;
-        }
-#ifdef UNIT_TEST
-        // Counts entry into the real write path without changing BlockState's layout.
-        inline static std::atomic<u64> reset_count_for_test{0};
-#endif
         inline void resetSlot(OSThreadState state) {
-#ifdef UNIT_TEST
-            // Observation only; this counter publishes no payload.
-            reset_count_for_test.fetch_add(1, std::memory_order_relaxed);
-#endif
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
+        }
+        bool needsActiveBlockRunClear(OSThreadState state) const {
+            // Retained unowned context and epoch segments are not owned-run payload.
+            return activeBlockOwner() != BlockRunOwner::NONE ||
+                   activeBlockState() != OSThreadState::UNKNOWN || sampledThisRun() ||
+                   last_sampled_state.load(std::memory_order_acquire) != state;
+        }
+#ifdef UNIT_TEST
+        // Observation only; this counter publishes no payload or layout changes.
+        inline static std::atomic<u64> clear_count_for_test{0};
+#endif
+        // End owned suppression without discarding an unowned origin's retained
+        // context, trace or weight. Publish UNKNOWN before releasing ownership.
+        inline void clearActiveBlockRun(OSThreadState state) {
+#ifdef UNIT_TEST
+            clear_count_for_test.fetch_add(1, std::memory_order_relaxed);
+#endif
+            active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
+            active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
+            last_sampled_state.store(state, std::memory_order_relaxed);
+            sampled_this_run.store(false, std::memory_order_release);
         }
         // identity_slot supplies the context-window state, which lives on
         // ThreadFilter::Slot. See ThreadFilter::Slot::rawContextWindowState().
@@ -218,36 +255,88 @@ public:
     // failure leaves lookups inert and the next registration retries.
     bool ensureAllocated();
 
-    // Returns nullptr for an invalid slot or before backing allocation.
+    // Normal-only mode and backing preparation. The registry mutex serializes
+    // every cold allocator; published backing survives resets until destruction.
+    void setUnownedContextSnapshotsNeeded(bool needed);
+    bool ensureUnownedContextAllocated(ThreadFilter::SlotID slot_id);
+    bool readUnownedContext(ThreadFilter::SlotID slot_id, Context& context, u64& publication) const;
+    bool canPublishUnownedContext(ThreadFilter::SlotID slot_id) const;
+    static constexpr size_t kMaxWeightSegments = 4;
+    struct WeightSegment {
+        u64 epoch_start = 0;
+        u64 weight = 0;
+        size_t index = 0;
+    };
+    // The sampled owner alone accumulates; stripe-held serialization commits.
+    // A full/unavailable array fails open without discarding older units.
+    // Epoch-window starts preserve scaling when serialization is deferred.
+    bool deferUnownedWeight(ThreadFilter::SlotID slot_id, u64 epoch_start);
+    size_t copyUnownedWeightSegments(ThreadFilter::SlotID slot_id, WeightSegment* segments) const;
+    bool unownedWeightMatchesEpoch(ThreadFilter::SlotID slot_id, u64 epoch_start) const;
+    void commitUnownedWeightSegment(ThreadFilter::SlotID slot_id, const WeightSegment& segment);
+    void clearUnownedWeightSegments(ThreadFilter::SlotID slot_id);
+    struct PendingUnownedWeight {
+        u64 total = 0;
+        u64 max_segment = 0;
+    };
+    // Release-available test support: lock-free read of tid's slot in the registry's current
+    // recording epoch, all zero when the tid has no entry. Normal threads only (JNI test seam).
+    PendingUnownedWeight pendingUnownedWeightForTest(const ThreadFilter& registry, int tid) const;
+    // Publication requires a recording stripe (or a quiescent unit fixture).
+    bool publishUnownedTrace(ThreadFilter::SlotID slot_id, u64 trace_id, OSThreadState state,
+                             const Context& context);
+#ifdef UNIT_TEST
+    void publishUnownedTrace(ThreadFilter::SlotID slot_id, u64 trace_id, OSThreadState state);
+#endif
+    // Normal-thread callbacks; all recording stripes must exclude publication.
+    void collectLiveTraceIds(CallTraceIdSet& live);
+    using EpochStarts = std::vector<u64, CountingAllocator<u64, NM_WALLCLOCK>>;
+    // Appends the epoch starts of root slots' pending segments, sorted and unique.
+    void collectUnownedEpochStarts(EpochStarts& epochs) const;
+    void onUnpreservedTraceIds(const CallTraceIdSet& failed);
+
+    // Returns nullptr if slot_id is out of range or storage is not yet
+    // allocated (see ensureAllocated()).
     inline BlockState* slotForId(ThreadFilter::SlotID slot_id) const {
         if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return nullptr;
         SlotStorage* storage = _storage.load(std::memory_order_acquire);
         return storage != nullptr ? &storage->slots[slot_id] : nullptr;
     }
 
+    static constexpr ThreadFilter::SlotID kInvalidSlotId = -1;
+
     // Block-run tokens returned by enterBlockedRun() pack the generation in the
     // upper 32 bits and slot_id + 1 in the lower 32 bits, so 0 means "no run".
+    // A valid slot_id (>= 0) is never encoded to a zero low word.
     static inline u64 encodeBlockRunToken(ThreadFilter::SlotID slot_id, u32 generation) {
         return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);
     }
+    // PRECONDITION (decoders): token != 0 ("no run"). A token whose low word is
+    // 0 decodes to kInvalidSlotId (slotForId() returns nullptr for it).
     static inline ThreadFilter::SlotID tokenSlotId(u64 token) {
-        return static_cast<ThreadFilter::SlotID>(static_cast<u32>(token) - 1);
+        assert(token != 0);
+        u32 low = static_cast<u32>(token);
+        return low == 0 ? kInvalidSlotId : static_cast<ThreadFilter::SlotID>(low - 1);
     }
     static inline u32 tokenGeneration(u64 token) {
+        assert(token != 0);
         return static_cast<u32>(token >> 32);
     }
 
     u64 enterBlockedRun(ThreadFilter* registry, ThreadFilter::SlotID slot_id,
                         OSThreadState state, BlockRunOwner owner = BlockRunOwner::JAVA);
+    // Generation-checked exits preserve retained unowned tails and cannot
+    // clear another owner's run. Unconditional lifecycle cleanup uses resetSlot.
     bool exitBlockedRun(ThreadFilter::SlotID slot_id, u32 generation);
     // Clears stale suppression state so a new/reused slot cannot inherit a
     // predecessor's active block or once-per-run sampled marker. Called by
     // ThreadFilter at its own registry-lifecycle decision points.
     void resetSlot(ThreadFilter::SlotID slot_id, OSThreadState state);
     void resetAll();
-    // Clears only pending unowned tails; owned runs keep their state.
+    void clearActiveBlockRun(ThreadFilter::SlotID slot_id, OSThreadState state);
+    // Drops every pending unowned tail (trace id, weight and epoch segments);
+    // owned runs keep their state. Callers exclude signal handlers.
     void resetUnownedBlockedTails();
-    void resetAtContextBoundary(ThreadFilter::SlotID slot_id);
     // Reads the complete timer-side suppression payload and rejects it if slot
     // identity or block lifecycle changes before final validation.
     bool shouldSuppressOwnedBlock(ThreadFilter* registry, const ThreadEntry& entry) const;
@@ -258,9 +347,22 @@ public:
         _allocation_hook = hook;
         _allocation_hook_arg = arg;
     }
-
     void setAllocationFailureForTest(bool fail) {
         _allocation_failure.store(fail, std::memory_order_release);
+    }
+    static size_t storageSize();
+    static size_t unownedContextChunkSizeForTest();
+    bool exchangeUnownedContextAllocationFailureForTest(bool fail);
+    void setUnownedContextPublicationForTest(ThreadFilter::SlotID slot_id, u64 publication);
+    using UnownedContextReadHook = void (*)(void*);
+    void setUnownedContextReadHookForTest(UnownedContextReadHook hook, void* arg) {
+        _context_read_hook = hook;
+        _context_read_hook_arg = arg;
+    }
+    using UnownedContextPublicationHook = void (*)(u32 words_written, void*);
+    void setUnownedContextPublicationHookForTest(UnownedContextPublicationHook hook, void* arg) {
+        _context_publication_hook = hook;
+        _context_publication_hook_arg = arg;
     }
 
     // Pauses a JNI park/block hook after its caller resolved the registry slot,
@@ -279,15 +381,46 @@ public:
 #endif
 
 private:
+    // Span and root ids, then each pair of 32-bit tags packed into one word.
+    static constexpr int kContextIdWords = 2;
+    static constexpr int kContextTagWords = static_cast<int>(DD_TAGS_CAPACITY / 2);
+    static constexpr int kContextWords = kContextIdWords + kContextTagWords;
+    static_assert(DD_TAGS_CAPACITY % 2 == 0, "Unowned context packs tags in pairs");
+    struct alignas(DEFAULT_CACHE_LINE_SIZE) UnownedContextCell {
+        std::atomic<u64> words[kContextWords]{};
+        std::atomic<u64> publication{0};
+        struct {
+            std::atomic<u64> epoch_start{0};
+            std::atomic<u64> weight{0};
+        } segments[kMaxWeightSegments];
+    };
+    struct UnownedContextChunk {
+        UnownedContextCell cells[ThreadFilter::kChunkSize];
+    };
+    static_assert(sizeof(UnownedContextCell) == 128, "Unowned context and provenance must fit two cache lines");
+    static_assert(alignof(UnownedContextCell) == 64, "Unowned context cell must be cache aligned");
+    static_assert(std::atomic<UnownedContextChunk*>::is_always_lock_free,
+                  "Signal context chunk lookup must be lock-free");
+    UnownedContextCell* unownedContextCell(ThreadFilter::SlotID slot_id) const;
+    std::atomic<UnownedContextChunk*> _context_chunks[ThreadFilter::kMaxChunks]{};
+    std::atomic<bool> _context_snapshots_needed{false};
+
     struct SlotStorage {
         std::array<BlockState, ThreadFilter::kMaxThreads> slots;
+        std::array<std::atomic<u64>, ThreadFilter::kMaxThreads / 64> roots{};
     };
+    // Signal paths only load backing; only the destructor reclaims it.
     std::atomic<SlotStorage*> _storage{nullptr};
 
 #ifdef UNIT_TEST
     std::atomic<bool> _allocation_failure{false};
     AllocationHook _allocation_hook = nullptr;
     void* _allocation_hook_arg = nullptr;
+    std::atomic<bool> _context_allocation_failure{false};
+    UnownedContextReadHook _context_read_hook = nullptr;
+    void* _context_read_hook_arg = nullptr;
+    UnownedContextPublicationHook _context_publication_hook = nullptr;
+    void* _context_publication_hook_arg = nullptr;
     BlockAdmissionHook _block_admission_hook = nullptr;
     void* _block_admission_hook_arg = nullptr;
     SuppressionSnapshotHook _suppression_snapshot_hook = nullptr;

@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc. -->
+
 # Sampler Performance Counters
 
 Per-sampler timing instrumentation, compiled in only under an opt-in build flag.
@@ -151,6 +153,52 @@ passthrough kept only so `report()` reads the same regardless of the clock.
 `SamplerPerf::primeClock()` is called from `Profiler::start()` before any
 signal-based engine is armed, so `OS::nanotime()`'s lazy first-call setup (macOS
 `mach_timebase_info`) never runs inside a signal handler.
+
+## Wall timer cadence and phase diagnostics
+
+The shared ASGCT/JVMTI wall timer schedules opportunities against a monotonic
+nanosecond deadline. Each unchanged dithered interval advances that deadline;
+collection, selection, sends, serialization and wakeup lateness reduce the next
+wait instead of being added to every period. If work or descheduling has already
+passed the next deadline, the timer restarts at now plus that interval. It does
+not replay missed opportunities in a catch-up burst. `OS::sleepWhile` retries
+interruptions against the wait's deadline and exits when stop clears the running
+flag and wakes the timer. This adds monotonic clock reads on the timer only, not
+in signal handlers. The reservoir is consumed by reference before its next use,
+removing a backing allocation/copy/free per ordinary tick.
+
+This is an opportunity schedule, not a promise of one event per interval:
+selection, signal coalescing, end-of-recording boundaries and recording-stripe
+contention can still lose samples. Ordinary cached-stack reuse still writes
+weight 1, and neither elapsed time nor missed deadlines manufacture weight.
+Precheck suppression and its independent retained-tail conservation are unchanged.
+Ordinary unit timestamps remain actual serializer timestamps, not scheduled deadlines.
+Deferred wall-weight segments use their original sampling-epoch window start so
+consumers do not apply a later window's scale.
+
+Set `DDPROF_WALL_TIMER_DIAGNOSTICS=1` before starting a recording to collect a
+fixed-size timer-local phase ledger. Stop prints one `WallClock timer phases:`
+line to stderr after joining the timer. The disabled path makes no diagnostic
+clock reads and there is no per-tick logging or handler instrumentation.
+`collectNs`, `selectNs`, `sendNs`, `finishNs`, `requestedSleepNs` and
+`actualSleepNs` are cumulative monotonic nanoseconds, including diagnostic probe
+cost. Selection time covers reservoir sampling; callbacks count as send time.
+`selected` counts candidate callbacks (including rejections),
+`sent` counts successful signal sends, and `failed` counts callback-reported send
+failures, not handler or serializer failures. Empty/single/large count collected
+pool sizes before precheck rejection; large means above the reservoir limit. First/last
+eligible ticks are observed after collection; first/last send ticks are observed
+after the iteration's send phase. They use the reported TSC frequency, not Java's
+`nanoTime` origin. A final interrupted stop wait can make actual sleep shorter
+than requested. Join publication isolates the ledger from concurrent readers.
+
+`wallClock_ut.cpp` exercises the real timer-loop probes with ordinary and prechecked
+candidate callbacks, including empty/single/above-reservoir pools, failed sends
+and precheck rejections. It compares the joined ledger against independently
+counted callbacks and checks that a disabled recording clears an earlier enabled
+snapshot. These synthetic tests do not qualify JVM delivery or JFR serialization;
+the unchanged one-second `CollapsingSleepTest` and decoded recordings cover that
+separate boundary.
 
 ## Adding a sampler
 

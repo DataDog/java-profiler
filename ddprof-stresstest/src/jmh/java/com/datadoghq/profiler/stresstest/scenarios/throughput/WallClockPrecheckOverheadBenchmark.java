@@ -159,7 +159,12 @@ public class WallClockPrecheckOverheadBenchmark {
     // Closed in reverse order, also when a worker is stuck; later failures are suppressed.
     AutoCloseable deleteRecording =
         () -> {
-          if (recording != null) Files.deleteIfExists(recording);
+          if (recording == null) return;
+          if (Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+            System.out.println("===> benchmark recording: " + recording.toAbsolutePath());
+          } else {
+            Files.deleteIfExists(recording);
+          }
         };
     AutoCloseable stopProfiler =
         () -> {
