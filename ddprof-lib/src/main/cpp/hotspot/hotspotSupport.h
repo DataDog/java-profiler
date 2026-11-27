@@ -137,6 +137,8 @@ private:
     // pc_is_return_address describes the seed pc: a ucontext pc is the exact
     // interrupted address, while callerPC() is a real return address on every
     // architecture except the one where CALLER_PC_IS_RETURN_ADDRESS is false.
+    // ucontext is null when the walk has no interrupted registers; a non-null
+    // one must be readable, as its link register may supply the leaf's caller.
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, bool pc_is_return_address,

@@ -167,8 +167,7 @@ protected:
         uintptr_t sp = reinterpret_cast<uintptr_t>(stack + (stub ? 0 : 4));
         if (misaligned) sp++;
         thread.anchor = {sp, 0, pc(stub ? 0 : 1)};
-        ucontext_t empty{};
-        return HotspotSupportTestAccessor::walk(&empty, frames, sp, 0, thread.anchor.pc);
+        return HotspotSupportTestAccessor::walk(nullptr, frames, sp, 0, thread.anchor.pc);
     }
 };
 

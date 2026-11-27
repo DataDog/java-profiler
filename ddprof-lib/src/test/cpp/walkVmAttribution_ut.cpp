@@ -18,11 +18,13 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <ucontext.h>
 #include <sys/mman.h>
 #include "arch.h"
 #include "codeCache.h"
 #include "dwarf.h"
+#include "dwarfStep.inline.h"
 #include "event.h"
 #include "gtest_crash_handler.h"
 #include "hotspot/hotspotSupport.h"
@@ -52,6 +54,17 @@ class HotspotSupportTestAccessor {
                                       event_type, reinterpret_cast<const void *>(frame.pc()),
                                       false, frame.sp(), frame.fp(), lock_index, truncated,
                                       seeded_from_anchor);
+    }
+
+    // Seeds the walk independently of `ucontext`, which may be null, as the
+    // register-less production callers do.
+    static int walkVMFrom(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
+                          const void* pc, bool pc_is_return_address,
+                          uintptr_t sp, uintptr_t fp) {
+        StackWalkFeatures features{};
+        return HotspotSupport::walkVM(ucontext, frames, max_depth, features,
+                                      EXECUTION_SAMPLE, pc, pc_is_return_address, sp, fp,
+                                      /*lock_index=*/0, /*truncated=*/nullptr);
     }
 };
 
@@ -579,4 +592,192 @@ TEST_F(WalkVmNativePathTest, WalkDwarfRejectsAMisalignedFramePointer) {
         << "from it. fp + " << kFpGuardCfaOff << " is word-aligned, so the sp checks "
         << "below see nothing wrong and the walk records a frame read through a "
         << "frame pointer that cannot be one";
+}
+
+// ===========================================================================
+// Link-register recovery: a row with pc_off == DW_LINK_REGISTER (x30 not yet
+// saved) takes its caller from LR only while the walk stands at the
+// interrupted pc and sp of a real ucontext (LeafLink::owns()).
+// ===========================================================================
+
+namespace {
+
+#if defined(__aarch64__)
+void setLinkRegister(ucontext_t& uc, uintptr_t lr) {
+#ifdef __APPLE__
+    uc.uc_mcontext->__ss.__lr = lr;
+#else
+    uc.uc_mcontext.regs[30] = lr;
+#endif
+}
+#endif
+
+// A ucontext whose registers StackFrame can read on every platform.
+struct ReadableContext {
+    ucontext_t uc{};
+#ifdef __APPLE__
+    _STRUCT_MCONTEXT64 mc{};
+#endif
+    ReadableContext(const void* pc, uintptr_t sp) {
+#ifdef __APPLE__
+        uc.uc_mcontext = &mc;
+#endif
+        StackFrame frame(&uc);
+        frame.pc() = reinterpret_cast<uintptr_t>(pc);
+        frame.sp() = sp;
+        frame.fp() = sp;
+    }
+    ReadableContext(const ReadableContext&) = delete;
+    ReadableContext& operator=(const ReadableContext&) = delete;
+};
+
+const char* const kLrLibBase = reinterpret_cast<const char*>(0x5a5d00000000ULL);
+const int kLrLeafOff   = 0x100;
+const int kLrCallerOff = 0x200;
+const int kLrFuncLen   = 0x10;
+// Inside the caller, as the return address of a call it made.
+const int kLrReturnOff = kLrCallerOff + 8;
+// PAC/tag bits above the address, top byte included, which the walker must strip from LR.
+const uintptr_t kLrTagBits = (0xa5ULL << 56) | (0x12ULL << 48);
+// Non-zero, so the LR rule is checked against the pre-step sp, not the CFA.
+const int kLrCfaOff = 16;
+
+// Row 0: the leaf, CFA = SP + kLrCfaOff and the return address still in LR.
+// Row 1: everything above it is DW_REG_INVALID, so the walk stops one frame up.
+void ensureLrLibRegistered() {
+    static const bool registered = [] {
+        static CodeCache lr_lib("walkvm_lr", /*lib_index=*/-1,
+                                kLrLibBase, kLrLibBase + kLibSpan,
+                                /*image_base=*/kLrLibBase);
+        lr_lib.setTextBase(kLrLibBase);
+        lr_lib.add(kLrLibBase + kLrLeafOff, kLrFuncLen, "walkvm_lr_leaf");
+        lr_lib.add(kLrLibBase + kLrCallerOff, kLrFuncLen, "walkvm_lr_caller");
+        lr_lib.sort();
+
+        FrameDesc rows[2];
+        rows[0] = {static_cast<u32>(kLrLeafOff),
+                   static_cast<u32>(DW_REG_SP) | static_cast<u32>(kLrCfaOff << 8), DW_SAME_FP,
+                   DW_LINK_REGISTER, 0};
+        rows[1] = {static_cast<u32>(kLrLeafOff + kLrFuncLen), static_cast<u32>(DW_REG_INVALID),
+                   DW_SAME_FP, DW_LINK_REGISTER, 0};
+        FrameDesc* table = static_cast<FrameDesc*>(malloc(sizeof(rows)));
+        memcpy(table, rows, sizeof(rows));
+        lr_lib.setDwarfTable(table, 2);
+        return Libraries::instance()->addLibraryForTest(&lr_lib);
+    }();
+    ASSERT_TRUE(registered);
+}
+
+}  // namespace
+
+TEST(LeafLinkTest, NullContextIsInvalidAndOwnsNothing) {
+    LeafLink leaf = LeafLink::fromContext(nullptr);
+    EXPECT_FALSE(leaf.valid);
+    WalkPc walk_pc;
+    walk_pc.setExactAddress(nullptr);
+    EXPECT_FALSE(leaf.owns(walk_pc, 0))
+        << "an invalid link must not match even a walk whose pc and sp equal its zeros";
+}
+
+TEST(LeafLinkTest, CapturesTheInterruptedRegisters) {
+    static uintptr_t stack[4];
+    const void* pc = kLrLibBase + kLrLeafOff;
+    ReadableContext ctx(pc, reinterpret_cast<uintptr_t>(stack));
+#if defined(__aarch64__)
+    setLinkRegister(ctx.uc, reinterpret_cast<uintptr_t>(kLrLibBase + kLrReturnOff) | kLrTagBits);
+#endif
+    LeafLink leaf = LeafLink::fromContext(&ctx.uc);
+    EXPECT_TRUE(leaf.valid);
+    EXPECT_EQ(pc, leaf.pc);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(stack), leaf.sp);
+#if defined(__aarch64__)
+    EXPECT_EQ(static_cast<const void*>(kLrLibBase + kLrReturnOff), leaf.lr);
+#endif
+}
+
+class WalkVmLinkRegisterTest : public WalkVmNativePathTest {
+  protected:
+    void SetUp() override {
+        WalkVmNativePathTest::SetUp();
+        if (EMPTY_FRAME_SIZE > 0) {
+            GTEST_SKIP() << "the return address is always on the stack here: "
+                         << "EMPTY_FRAME_SIZE > 0 compiles the link-register rule out";
+        }
+        ensureLrLibRegistered();
+        memset(_stack, 0, sizeof(_stack));
+        _sp = reinterpret_cast<uintptr_t>(&_stack[16]);
+    }
+
+    // Walks from the leaf with `ctx` as the sample's registers. The seed is
+    // passed separately, as walkVM's register-less callers do.
+    int walkFromLeaf(void* ctx, const void* seed_pc, bool seed_is_return_address,
+                     uintptr_t seed_sp) {
+        memset(_frames, 0, sizeof(_frames));
+        return HotspotSupportTestAccessor::walkVMFrom(ctx, _frames, kMaxDepth, seed_pc,
+                                                      seed_is_return_address, seed_sp,
+                                                      seed_sp);
+    }
+
+    ReadableContext* leafContext(const void* pc, uintptr_t sp) {
+        _ctx.reset(new ReadableContext(pc, sp));
+#if defined(__aarch64__)
+        setLinkRegister(_ctx->uc,
+                        reinterpret_cast<uintptr_t>(kLrLibBase + kLrReturnOff) | kLrTagBits);
+#endif
+        return _ctx.get();
+    }
+
+    bool anyErrorFrame(int depth) const {
+        for (int i = 0; i < depth; i++) {
+            if (_frames[i].bci == BCI_ERROR) return true;
+        }
+        return false;
+    }
+
+    const void* leafPc() const { return kLrLibBase + kLrLeafOff; }
+
+    uintptr_t _stack[64];
+    uintptr_t _sp = 0;
+    ASGCT_CallFrame _frames[kMaxDepth + 1];
+    std::unique_ptr<ReadableContext> _ctx;
+};
+
+// Control: the interrupted leaf gets its caller from LR.
+TEST_F(WalkVmLinkRegisterTest, InterruptedLeafUnwindsThroughLinkRegister) {
+    ReadableContext* ctx = leafContext(leafPc(), _sp);
+    int depth = walkFromLeaf(&ctx->uc, leafPc(), false, _sp);
+    ASSERT_EQ(2, depth);
+    EXPECT_STREQ("walkvm_lr_leaf", nameOf(_frames[0]));
+    EXPECT_STREQ("walkvm_lr_caller", nameOf(_frames[1]));
+}
+
+// No registers at all: the walk must stop at the leaf without reading any.
+TEST_F(WalkVmLinkRegisterTest, NullContextStopsAtTheLeafWithoutFaulting) {
+    int depth = walkFromLeaf(nullptr, leafPc(), false, _sp);
+    ASSERT_EQ(1, depth);
+    EXPECT_STREQ("walkvm_lr_leaf", nameOf(_frames[0]));
+    EXPECT_FALSE(anyErrorFrame(depth))
+        << "a register read from the null context faulted inside the protected walk";
+}
+
+// A seed that is not the interrupted pc (an anchor or a hook boundary) does
+// not own the sample's LR.
+TEST_F(WalkVmLinkRegisterTest, SeedOtherThanTheInterruptedPcIgnoresLinkRegister) {
+    ReadableContext* ctx = leafContext(kLrLibBase + kLrCallerOff, _sp);
+    int depth = walkFromLeaf(&ctx->uc, leafPc(), false, _sp);
+    EXPECT_EQ(1, depth) << "LR belongs to the interrupted pc, not to this seed";
+}
+
+// A pc recovered from a return address means LR was already spent on it.
+TEST_F(WalkVmLinkRegisterTest, ReturnAddressSeedIgnoresLinkRegister) {
+    const void* ra = static_cast<const char*>(leafPc()) + 4;
+    ReadableContext* ctx = leafContext(ra, _sp);
+    int depth = walkFromLeaf(&ctx->uc, ra, true, _sp);
+    EXPECT_EQ(1, depth);
+}
+
+TEST_F(WalkVmLinkRegisterTest, SeedOnAnotherStackPointerIgnoresLinkRegister) {
+    ReadableContext* ctx = leafContext(leafPc(), _sp + 16);
+    int depth = walkFromLeaf(&ctx->uc, leafPc(), false, _sp);
+    EXPECT_EQ(1, depth);
 }
