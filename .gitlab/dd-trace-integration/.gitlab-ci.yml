@@ -95,9 +95,6 @@ prepare-patched-agent:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
-    # Not applicable: upstream OpenJ9 requires glibc and publishes no musl runtime.
-    - if: '$JVM_TYPE == "openj9" && $LIBC_VARIANT == "musl"'
-      when: never
     - when: on_success
   interruptible: true
   timeout: 10m
@@ -274,11 +271,11 @@ integration-test-x64-musl:
   extends: .integration_test_base
   tags: [ "arch:amd64" ]
   image: ${BUILD_IMAGE_X64_MUSL}
+  # OpenJ9 requires glibc and publishes no musl runtime; omit it from musl matrices
+  # so downstream `needs:` do not expand to unscheduled jobs.
   parallel:
     matrix:
       - JVM_TYPE: hotspot
-        JAVA_VERSION: [8, 11, 17, 21, 25]
-      - JVM_TYPE: openj9
         JAVA_VERSION: [8, 11, 17, 21, 25]
   variables:
     LIBC_VARIANT: musl
@@ -305,8 +302,6 @@ integration-test-arm64-musl:
   parallel:
     matrix:
       - JVM_TYPE: hotspot
-        JAVA_VERSION: [8, 11, 17, 21, 25]
-      - JVM_TYPE: openj9
         JAVA_VERSION: [8, 11, 17, 21, 25]
   variables:
     LIBC_VARIANT: musl
