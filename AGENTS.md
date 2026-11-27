@@ -125,6 +125,10 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
 - Native-memory budget: the `memcheck:*` GitLab jobs fail a PR whose profiler memory
   exceeds `utils/memcheck/budget.txt`; fix the regression or raise the limit with the
   reason in the PR (see [doc/building/MemoryOverheadCheck.md](doc/building/MemoryOverheadCheck.md)).
+- Pinned JDK download URLs (`JAVA_*_URL` in `.github/workflows/cache_java.yml`) are
+  probed daily by `.github/workflows/jdk-url-check.yml`: a stale pin fails the check
+  and files a PROF ticket; until the pin is fixed, a cache miss on it fails the jobs
+  that download it (see [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md)).
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol
@@ -169,7 +173,7 @@ Details and troubleshooting:
 extraction, artifact layout),
 [doc/building/BuildSystemGuide.md](doc/building/BuildSystemGuide.md) (Java formatting and convention-test CI),
 [doc/building/Versioning.md](doc/building/Versioning.md) (version from git tags),
-[doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md) (JDK upgrade touchpoints).
+[doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md) (JDK upgrade touchpoints and the pinned JDK download URL check).
 
 ## Architecture
 

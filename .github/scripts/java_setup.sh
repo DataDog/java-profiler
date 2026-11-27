@@ -1,5 +1,31 @@
 #!/usr/bin/env bash
 
+# Copyright 2026, Datadog, Inc.
+
+# fetchAndExtract <url> <target_path> <strip_components> [sudo]
+# Streams the archive into tar like a plain `curl | tar`, but reports the
+# HTTP status and fails on a curl error: without pipefail the pipeline exits
+# with tar's status, so a 404 would surface only as a gzip error.
+function fetchAndExtract() {
+  local url=$1
+  local target_path=$2
+  local strip=$3
+  local tar_cmd=(tar)
+  if [[ "${4:-}" == "sudo" ]]; then
+    tar_cmd=(sudo tar)
+  fi
+  curl -L --fail -w '%{stderr}HTTP status: %{http_code}\n' "${url}" | "${tar_cmd[@]}" -xvzf - -C "${target_path}" --strip-components "${strip}"
+  local statuses=("${PIPESTATUS[@]}")
+  if [[ ${statuses[0]} -ne 0 ]]; then
+    echo "Download failed (curl exit ${statuses[0]}, HTTP status above): ${url}" >&2
+    return 1
+  fi
+  if [[ ${statuses[1]} -ne 0 ]]; then
+    echo "Extraction failed (tar exit ${statuses[1]}): ${url}" >&2
+    return 1
+  fi
+}
+
 function prepareJdk() {
   local variant=$1
   local arch=$2
@@ -22,14 +48,14 @@ function prepareJdk() {
       echo "Musl/Liberica JDK URL not found for ${arch}/${variant}"
       exit 1
     fi
-    curl -L --fail "${URL}" | tar -xvzf - -C ${target_path} --strip-components 1
+    fetchAndExtract "${URL}" "${target_path}" 1 || exit 1
     return
   fi
 
   if [[ ${qualifier} == "orcl" ]]; then
     if [[ ${version} == "8" ]]; then
       mkdir -p "${target_path}"
-      curl -L --fail "${JAVA_8_ORACLE_URL}" | sudo tar -xvzf - -C ${target_path} --strip-components 1
+      fetchAndExtract "${JAVA_8_ORACLE_URL}" "${target_path}" 1 sudo || exit 1
       return
     else
       echo "Oracle JDK 8 only!"
@@ -40,7 +66,7 @@ function prepareJdk() {
   if [[ ${qualifier} == "ibm" ]]; then
     if [[ ${version} == "8" ]]; then
       mkdir -p "${target_path}"
-      curl -L --fail "${JAVA_8_IBM_URL}" | sudo tar -xvzf - -C ${target_path} --strip-components 2
+      fetchAndExtract "${JAVA_8_IBM_URL}" "${target_path}" 2 sudo || exit 1
       return
     else
       echo "IBM JDK 8 only!"
@@ -59,7 +85,7 @@ function prepareJdk() {
       echo "Zing JDK URL not found for ${variant}"
       exit 1
     fi
-    curl -L --fail "${URL}" | sudo tar -xvzf - -C ${target_path} --strip-components 1
+    fetchAndExtract "${URL}" "${target_path}" 1 sudo || exit 1
     if [[ "${arch}" != "aarch64" ]]; then
       # rename the bundled libstdc++.so to avoid conflicts with the system one
       sudo mv ${target_path}/etc/libc++/libstdc++.so.6 ${target_path}/etc/libc++/libstdc++.so.6.bak

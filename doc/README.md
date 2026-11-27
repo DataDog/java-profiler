@@ -37,7 +37,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [BuildSystemGuide](building/BuildSystemGuide.md) - Build conventions, Java formatting, TestKit verification and independent JDK 21 build-logic CI
 - [CodeCoverage](building/CodeCoverage.md) - Opt-in C++ (gcovr) and Java (JaCoCo) coverage reports, prerequisites, debug-only scope
 - [GradleTasks](building/GradleTasks.md) - Available Gradle tasks reference
-- [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern and JDK upgrade touchpoints
+- [JdkUpgrades](building/JdkUpgrades.md) - Two-JDK pattern, JDK upgrade touchpoints and the pinned JDK URL check
 - [MemoryOverheadCheck](building/MemoryOverheadCheck.md) - Per-PR native-memory budget check on GitLab and how to recalibrate it
 - [NativeBuildPlugin](building/NativeBuildPlugin.md) - Native C++ compilation plugin
 - [ReleaseTrain](building/ReleaseTrain.md) - Automated release train: nightly certification, Friday minor release, dd-trace-java bump
