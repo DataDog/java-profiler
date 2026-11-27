@@ -219,8 +219,8 @@ def cmd_start(a):
         else:
             st["parent_checkout"] = git("rev-parse", "--show-toplevel")
             log(st, "resumed", "worker relaunched on `%s`" % st["expected_head"][:9])
-        # Saved before any GitHub write, with heartbeat 0: if a write below fails, the
-        # next start resumes this run instead of posting a second status comment.
+        # Saved before the status-comment POST, with heartbeat 0: if that POST fails, the
+        # next start resumes this run (carried lists intact) instead of starting over.
         st["status"], st["heartbeat_at"] = "running", 0
         save(st)
         publish_status(st)
@@ -296,23 +296,27 @@ def poll_once(pr_number, now):
         d = policy.decide(state_view, snap, make_trusted(st, snap["pr"]["author"]), now)
         changed = bool(d["actions"] or d["events"])
         for act in d["actions"]:
-            # Recorded and saved before the POST: a failed or interrupted POST must not
-            # turn a once-per-run (or once-per-head) action into one per poll.
             if act[0] == "rerun":
+                # Saved before the POST: a failed or interrupted rerun must not become one
+                # rerun per poll. "already running" means GitHub did nothing: retry later.
                 st["retried_runs"].append(act[1])
-                log(st, "retried", "%s (run %d)" % (act[2], act[1]))
                 save(st)
                 try:
                     gh_api("repos/%s/actions/runs/%d/rerun-failed-jobs" % (REPO, act[1]), "POST")
                 except EnvError as e:
                     if "already running" not in str(e):
                         raise
+                    st["retried_runs"].remove(act[1])
+                    save(st)
+                    continue
+                log(st, "retried", "%s (run %d)" % (act[2], act[1]))
             else:
-                st["bits_triggered"].append(act[1])
-                log(st, "Bits", "review requested on `%s`" % act[1][:9])
-                save(st)
+                # Recorded after the POST: a duplicate @datadog review is cheap, a lost one
+                # stalls the run until the cap.
                 gh_api("repos/%s/issues/%d/comments" % (REPO, pr_number), "POST",
                        {"body": policy.BITS_TRIGGER})
+                st["bits_triggered"].append(act[1])
+                log(st, "Bits", "review requested on `%s`" % act[1][:9])
         for key in ("ci", "bits"):
             if d["facts"].get(key) and d["facts"][key] != st["facts"].get(key):
                 changed = True

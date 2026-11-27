@@ -54,18 +54,24 @@ def dedupe_checks(check_runs):
 
 
 def ci_summary(check_runs, statuses):
-    """{"state": green|red|pending, "failing": [...], "pending": [...]} over deduped check
-    runs and commit-status contexts, excluding the Bits context (reported separately).
-    A failing entry carries name, kind (gha|gitlab|other), run_id (gha only) and url."""
-    failing, pending = [], []
+    """{"state": green|red|pending, "failing", "pending", "cancelled", "running_runs"} over
+    deduped check runs and commit-status contexts, excluding the Bits context (reported
+    separately). A failing entry carries name, kind (gha|gitlab|other), run_id (gha only)
+    and url; running_runs holds the GHA run ids with a check still in flight."""
+    failing, pending, cancelled, running_runs = [], [], [], set()
     for name, run in sorted(dedupe_checks(check_runs).items()):
-        # cancelled counts as not-yet-green, never as a failure: the CI workflow's
-        # concurrency group cancels superseded runs, and rerunning those cancels the live one.
-        if run.get("status") != "completed" or run.get("conclusion") == "cancelled":
+        url = run.get("details_url") or ""
+        m = GHA_RUN.search(url) if "github.com" in url else None
+        if run.get("status") != "completed":
             pending.append(name)
+            if m:
+                running_runs.add(int(m.group(1)))
+        elif run.get("conclusion") == "cancelled":
+            # Not a failure: the CI workflow's concurrency group cancels superseded runs,
+            # and rerunning one of those cancels the live run.
+            pending.append(name)
+            cancelled.append(name)
         elif run.get("conclusion") not in ("success", "neutral", "skipped"):
-            url = run.get("details_url") or ""
-            m = GHA_RUN.search(url) if "github.com" in url else None
             failing.append({"name": name, "kind": "gha" if m else "other",
                             "run_id": int(m.group(1)) if m else None, "url": url})
     latest = {}
@@ -80,7 +86,8 @@ def ci_summary(check_runs, statuses):
             failing.append({"name": ctx, "kind": "gitlab" if ctx.startswith("dd-gitlab/") else "other",
                             "run_id": None, "url": st.get("target_url") or ""})
     state = "red" if failing else "pending" if pending else "green"
-    return {"state": state, "failing": failing, "pending": pending}
+    return {"state": state, "failing": failing, "pending": pending, "cancelled": cancelled,
+            "running_runs": running_runs}
 
 
 def bits_state(statuses):
@@ -163,12 +170,17 @@ def decide(state, snap, trusted, now):
     rerun = set()
     for f in ci["failing"]:
         if f["kind"] == "gha" and f["run_id"] not in state["retried_runs"]:
-            if f["run_id"] not in rerun:  # one rerun per workflow run, not per failing job
+            # One rerun per workflow run, and only once the run is finished: GitHub refuses
+            # rerun-failed-jobs while any job of the run is still in flight.
+            if f["run_id"] not in rerun and f["run_id"] not in ci["running_runs"]:
                 rerun.add(f["run_id"])
                 out["actions"].append(("rerun", f["run_id"], f["name"]))
         else:
             surface(_event("ci_red", "ci:%s@%s" % (f["name"], head), check=f["name"], ci_kind=f["kind"],
                            run_id=f["run_id"], url=f["url"]))
+    if ci["cancelled"] and sorted(ci["pending"]) == sorted(ci["cancelled"]):
+        # Only cancelled checks keep CI from green and no newer run replaces them.
+        surface(_event("ci_cancelled", "cancelled:" + head, head=head, checks=ci["cancelled"]))
     if bits == "failure":
         surface(_event("bits_red", "bits:" + head, head=head))
     elif bits in ("pending", "missing") and (ci["state"] == "green" or pr.get("draft")) \

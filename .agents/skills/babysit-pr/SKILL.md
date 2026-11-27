@@ -90,6 +90,8 @@ when the PR branch predates it: `B="python3 <checkout>/utils/babysit-pr.py"`.
      (`details_url`); fix a real failure (step 3). Otherwise `ack` it: a flake that
      survived its rerun, or any `dd-gitlab/*` failure you cannot fix, goes to the
      summary.
+   - `ci_cancelled`: only cancelled checks keep CI from green, and no newer run replaces
+     them. Do not rerun; `ack` it and leave it for the summary.
    - `bits_red`: handle every finding as a thread. When all are refuted and replied,
      run `$B trigger-bits --pr <n> --reason all-refuted`.
    - `conflict`: stage a `rebase` with your resolution plan.
