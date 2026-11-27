@@ -588,17 +588,22 @@ void ReferenceChainTracker::deferResolvedChainInvalidation(
   if (!was_cached) {
     return;
   }
+  queueChainInvalidation(source_tag, kind);
+}
+
+void ReferenceChainTracker::queueChainInvalidation(jlong source_tag,
+                                                    ChainInvalidationKind kind) {
   // Cache keys are frontier tags (>= 0); a negative key would alias another tag's REBUILD
-  // encoding, so it is never queued.
-  assert(source_tag >= 0);
+  // encoding, so it is never queued - a defined policy in every build type, not an assert.
   if (source_tag < 0) {
+    TEST_LOG("ReferenceChainTracker::queueChainInvalidation ignored negative "
+             "source_tag=%lld",
+             (long long)source_tag);
     return;
   }
   const jlong evict = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::EVICT);
   const jlong rebuild = encodePendingChainInvalidation(source_tag, ChainInvalidationKind::REBUILD);
 
-  // A traversal snapshot and the cache cap bound distinct eligible tags; polling drains pending
-  // work before inserting chains. The overflow path still fails closed if that contract changes.
   _pending_chain_invalidations_lock.lock();
   for (jlong &pending : _pending_chain_invalidations) {
     if (pending == evict) {
@@ -617,9 +622,17 @@ void ReferenceChainTracker::deferResolvedChainInvalidation(
       MAX_PENDING_CHAIN_INVALIDATIONS) {
     _pending_chain_invalidations.push_back(
         kind == ChainInvalidationKind::REBUILD ? rebuild : evict);
-  } else {
-    // No callback may drop an invalidation; the next drain clears every cached chain instead.
+  } else if (kind == ChainInvalidationKind::EVICT) {
+    // No callback may drop an eviction: a live rejected source would keep re-emitting its
+    // rejected chain until start()/stop(). The next drain clears every cached chain instead.
     _pending_chain_invalidation_overflow = true;
+  } else {
+    // A dropped REBUILD is self-healing: it only leaves the stale cached identity until the
+    // next path change or correlation re-queues it.
+    Counters::increment(REFERENCE_CHAIN_REBUILDS_DROPPED, 1);
+    TEST_LOG("ReferenceChainTracker::queueChainInvalidation dropped REBUILD "
+             "source_tag=%lld (buffer full)",
+             (long long)source_tag);
   }
   _pending_chain_invalidations_lock.unlock();
 }
@@ -667,7 +680,10 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
   // REBUILD tags whose cached chain is current-generation. A chain cached by an earlier search
   // under the same numeric tag describes a different object (restartSearch() resets the tag
   // namespace), so a path change on the new object says nothing about it: leave it alone.
-  jlong rebuild_tags[MAX_PENDING_CHAIN_INVALIDATIONS];
+  // At most MAX_CHAIN_REBUILDS_PER_POLL heap walks per poll keep this BFS-thread step's latency
+  // bounded; eligible REBUILD entries over the cap are requeued (idempotent - a later rebuild
+  // replaces the same entry under the same generation guard).
+  jlong rebuild_tags[MAX_CHAIN_REBUILDS_PER_POLL];
   int rebuild_count = 0;
   {
     ExclusiveLockGuard guard(&_resolved_chains_lock);
@@ -685,8 +701,14 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
     _pending_chain_invalidations.swap(_draining_chain_invalidations);
     _pending_chain_invalidations_lock.unlock();
 
-    for (jlong pending : _draining_chain_invalidations) {
-      jlong tag = pendingChainInvalidationTag(pending);
+    // Eligible REBUILD entries over the cap are packed in place at the front of the scratch
+    // buffer: every write lands strictly behind the read cursor (deferred < i at each write,
+    // since the first MAX_CHAIN_REBUILDS_PER_POLL eligible entries never defer), so the loop
+    // only overwrites already-read slots and the vector never grows.
+    size_t deferred = 0;
+    for (size_t i = 0; i < _draining_chain_invalidations.size(); i++) {
+      const jlong pending = _draining_chain_invalidations[i];
+      const jlong tag = pendingChainInvalidationTag(pending);
       if (!isPendingChainRebuild(pending)) {
         if (_resolved_chains.erase(tag) > 0) {
           TEST_LOG("ReferenceChainTracker::drainPendingChainInvalidations source_tag=%lld",
@@ -695,11 +717,52 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
         continue;
       }
       auto it = _resolved_chains.find(tag);
-      if (it != _resolved_chains.end() &&
-          it->second.source_search_ns == current_search_ns &&
-          rebuild_count < MAX_PENDING_CHAIN_INVALIDATIONS) {
-        rebuild_tags[rebuild_count++] = tag;
+      if (it == _resolved_chains.end() ||
+          it->second.source_search_ns != current_search_ns) {
+        continue; // no-op REBUILD: nothing current to rebuild
       }
+      if (rebuild_count < MAX_CHAIN_REBUILDS_PER_POLL) {
+        rebuild_tags[rebuild_count++] = tag;
+      } else {
+        assert(deferred < i);  // compaction may only overwrite already-read slots
+        _draining_chain_invalidations[deferred++] = pending;
+      }
+    }
+    if (deferred > 0) {
+      // Lock order: _resolved_chains_lock (held) before the pending lock.
+      {
+        ExclusiveLockGuard pending_guard(&_pending_chain_invalidations_lock);
+        for (size_t i = 0; i < deferred; i++) {
+          const jlong pending = _draining_chain_invalidations[i];
+          const jlong tag = pendingChainInvalidationTag(pending);
+          const jlong evict =
+              encodePendingChainInvalidation(tag, ChainInvalidationKind::EVICT);
+          bool queued = false;
+          for (jlong existing : _pending_chain_invalidations) {
+            // A newer EVICT wins; a newer REBUILD for the same tag is a duplicate.
+            if (existing == evict || existing == pending) {
+              queued = true;
+              break;
+            }
+          }
+          if (queued) {
+            continue;
+          }
+          if ((int)_pending_chain_invalidations.size() <
+              MAX_PENDING_CHAIN_INVALIDATIONS) {
+            _pending_chain_invalidations.push_back(pending);
+          } else {
+            // REBUILD requeue overflow: dropping is self-healing (see the buffer's overflow
+            // comment); the cached chain is kept and a later correlation or path change re-queues.
+            Counters::increment(REFERENCE_CHAIN_REBUILDS_DROPPED, 1);
+            TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations requeue overflow, "
+                     "keeping cached chain source_tag=%lld",
+                     (long long)tag);
+          }
+        }
+      }
+      TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations deferred=%zu rebuilds",
+               deferred);
     }
     _draining_chain_invalidations.clear();
   }
@@ -732,17 +795,42 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
       continue;
     }
     event._start_time = TSC::ticks();
-    ExclusiveLockGuard guard(&_resolved_chains_lock);
-    auto it = _resolved_chains.find(tag);
-    // Replace only: a dump may have evicted the entry (dead owner) since the scan above, and a
-    // rebuild must never resurrect it.
-    if (it != _resolved_chains.end() &&
-        it->second.source_search_ns == current_search_ns) {
-      it->second.event = std::move(event);
-      it->second.source_tag = tag;
-      TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations rebuilt "
-               "source_tag=%lld depth=%u",
-               (long long)tag, it->second.event._depth);
+    const bool leak_correlated = isLeakTag((jlong)event._target_tag);
+    bool replaced = false;
+    {
+      ExclusiveLockGuard guard(&_resolved_chains_lock);
+      auto it = _resolved_chains.find(tag);
+      // Replace only: a dump may have evicted the entry (dead owner) since the scan above, and a
+      // rebuild must never resurrect it.
+      if (it != _resolved_chains.end() &&
+          it->second.source_search_ns == current_search_ns) {
+        it->second.event = std::move(event);
+        it->second.source_tag = tag;
+        replaced = true;
+        TEST_LOG("ReferenceChainTracker::applyPendingChainInvalidations rebuilt "
+                 "source_tag=%lld depth=%u",
+                 (long long)tag, it->second.event._depth);
+      }
+    }
+    if (replaced && leak_correlated) {
+      // A rebuilt leak chain for a discovered instance must keep its candidate marked found:
+      // buildDiscoveredInstanceChains() skips already-cached tags, so without this a rebuild
+      // after an improvePath would leave popcount(_candidate_found_bits) short and the search
+      // would keep hunting a candidate whose chain is already resolved. Every _candidate_*
+      // access runs on the single BFS thread (traversal callbacks, runPass()'s terminal branch,
+      // buildDiscoveredInstanceChains(), pollWatchedTargets()); dump threads never read them.
+      for (int s = 0; s < _candidate_count; s++) {
+        if (_candidate_found_bits & (1ULL << s)) {
+          continue;
+        }
+        for (int d = 0; d < _candidate_discovered_count[s]; d++) {
+          if (_candidate_discovered_tags[s][d] == tag) {
+            _candidate_found_bits |= (1ULL << s);
+            _candidate_frontier_tags[s] = tag;
+            break;
+          }
+        }
+      }
     }
   }
 }
@@ -750,6 +838,18 @@ void ReferenceChainTracker::applyPendingChainInvalidations(
 void ReferenceChainTracker::clearPendingChainInvalidations() {
   ExclusiveLockGuard cache_guard(&_resolved_chains_lock);
   _pending_chain_invalidations_lock.lock();
+  // A pending REBUILD evicts its cached chain: the restart has reset the frontier and the tag
+  // namespace, so the rebuild could never run, and dump() re-emits every cached chain regardless
+  // of generation. EVICT entries stay inert - a restarted search may already have re-cached the
+  // reused tag (RestartDropsPendingTagsBeforeNumericTagReuse).
+  for (jlong pending : _pending_chain_invalidations) {
+    if (isPendingChainRebuild(pending)) {
+      _resolved_chains.erase(pendingChainInvalidationTag(pending));
+      TEST_LOG("ReferenceChainTracker::clearPendingChainInvalidations evicted "
+               "chain of undrained REBUILD source_tag=%lld",
+               (long long)pendingChainInvalidationTag(pending));
+    }
+  }
   _pending_chain_invalidations.clear();
   _draining_chain_invalidations.clear();
   _pending_chain_invalidation_overflow = false;
@@ -934,6 +1034,20 @@ bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
            (long long)entry.parent_tag);
   recordDiscoveredInstance(klass_id, frontier_tag, true,
                            CacheInvalidationMode::SYNCHRONOUS, nullptr, 0);
+  // A chain cached for this frontier tag was built while entry.leak_tag was still 0, so its stored
+  // _target_tag is the frontier tag - no allocation-sample correlation. A REBUILD is bounded
+  // (deferred to the next poll; this call runs under LivenessTracker's shared _table_lock, so a
+  // synchronous heap walk here is not an option) and makes the next rebuild re-bind the cached
+  // chain to the leak tag; until then dumps keep re-emitting the frontier-tagged event. A dump
+  // evicting between the presence check and the queue only leaves a no-op REBUILD, which the
+  // apply drops.
+  {
+    ExclusiveLockGuard guard(&_resolved_chains_lock);
+    if (_resolved_chains.find(frontier_tag) == _resolved_chains.end()) {
+      return true;
+    }
+  }
+  queueChainInvalidation(frontier_tag, ChainInvalidationKind::REBUILD);
   return true;
 }
 

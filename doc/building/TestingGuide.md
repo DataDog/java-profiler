@@ -209,7 +209,7 @@ as artifacts.
 [Upstream OpenJ9 platform support](https://github.com/eclipse-openj9/openj9-docs/blob/e2f1f05b69b04b45c262ea9ed3527e1bb861df08/docs/openj9_support.md)
 requires glibc on Linux for all five JDK lines. Upstream publishes no musl runtime.
 
-The CI applicability rule does not schedule the ten musl/OpenJ9 combinations.
+The musl integration matrices omit OpenJ9, so those ten combinations are not scheduled.
 The PR reporter counts them as not applicable, not as passes, failures or missing results.
 The other 30 configurations still require validation logs; missing results fail the report.
 
@@ -406,6 +406,9 @@ The C++ report covers only the `-O0 -DDEBUG` build. Prerequisites and limits are
 Cached images are reused until `--rebuild-base` (or `--rebuild`) is passed. Use it
 after the base image's package list changes, e.g. to pick up gcovr for coverage runs:
 it rebuilds the base image and the JDK image built on it.
+Clone mode (the default) builds the committed HEAD, also from a git worktree. On macOS,
+the checkout must be in a host directory that the runtime's VM shares, or the script stops
+with an error. See [utils/README.md](../../utils/README.md#run-containers-testssh) for the details.
 
 ```bash
 # Matches the nightly configuration
