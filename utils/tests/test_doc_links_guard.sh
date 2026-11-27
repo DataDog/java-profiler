@@ -50,6 +50,9 @@ git -C "$TEMP_REPO" add -A
 # Created after `add -A`: tracked by the worktree, not by git — the untracked-but-
 # not-ignored half of the --check-file target universe.
 printf 'u\n' > "$TEMP_REPO/untracked.md"
+mkdir -p "$TEMP_REPO/doc"
+printf 'paren doc\n' > "$TEMP_REPO/note(1).md"
+git -C "$TEMP_REPO" add note\(1\).md 2>/dev/null || git -C "$TEMP_REPO" add "note(1).md"
 
 # --- Claude Code adapter: JSON payload on stdin, exit 2 blocks, 0 allows ---
 claude() {
@@ -81,6 +84,21 @@ expect "claude: malformed payload is allowed" 0 "" \
   claude 'not-json'
 expect "claude: non-string write content is allowed" 0 "" \
   claude '{"tool_name":"Write","tool_input":{"file_path":"'"$ROOT"'/README.md","content":123}}'
+# A bare `..` target must not reach git as an out-of-repository pathspec: that exits 2
+# and the guards would allow the whole write, including the unrelated broken link.
+expect "claude: bare parent target does not disable the guard" 2 "broken link" \
+  claude_repo '{"tool_name":"Write","tool_input":{"file_path":"'"$TEMP_REPO"'/parent-links.md","content":"[parent](..) [bad](missing.md)\n"}}'
+# The incoming document exists prospectively: a self-link in a new file must not block.
+expect "claude: self-link in a new file is allowed" 0 "" \
+  claude_repo '{"tool_name":"Write","tool_input":{"file_path":"'"$TEMP_REPO"'/fresh.md","content":"[section](fresh.md#sec)\n"}}'
+# Code spans delimited by two backticks are code, not links.
+expect "claude: double-backtick code span is not a link" 0 "" \
+  claude_repo '{"tool_name":"Write","tool_input":{"file_path":"'"$TEMP_REPO"'/spans.md","content":"``[skip](Nope2.md)``\n"}}'
+# Nested parentheses in a destination: a tracked target resolves, an absent one is caught.
+expect "claude: nested-paren destination resolves a tracked file" 0 "" \
+  claude_repo '{"tool_name":"Write","tool_input":{"file_path":"'"$TEMP_REPO"'/notes.md","content":"[x](note(1).md)\n"}}'
+expect "claude: nested-paren destination catches a missing file" 2 "broken link" \
+  claude_repo '{"tool_name":"Write","tool_input":{"file_path":"'"$TEMP_REPO"'/notes.md","content":"[x](absent((1)).md)\n"}}'
 
 # Edit that inserts a link INSIDE an existing fenced code block of the file being
 # edited: the resulting document keeps the fence, so the link is inside code and the
@@ -116,6 +134,8 @@ const mod = await import(ext);
 let handler;
 mod.default({ on: (name, fn) => { if (name === "tool_call") handler = fn; } });
 const input = field === "edits"
+  ? { path: "@" + path, edits: [{ oldText, newText: content }] }
+  : field === "atpath"
   ? { path, edits: [{ oldText, newText: content }] }
   : field === "newText"
   ? { path, oldText, newText: content }
@@ -157,6 +177,14 @@ JS
   expect "pi: write targeting an untracked-but-not-ignored file is allowed" 0 "" \
     node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
     "$ROOT/.pi/extensions/doc-links-guard.ts" "$TEMP_REPO" write "$TEMP_REPO/notes.md" '[x](untracked.md)' content
+  # A session whose cwd is a subdirectory still checks writes into the repository: the
+  # checker is resolved from the repository root, not from ctx.cwd.
+  expect "pi: write from a subdirectory cwd is checked against the repo" 2 "broken link" \
+    node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
+    "$ROOT/.pi/extensions/doc-links-guard.ts" "$TEMP_REPO/doc" write "$TEMP_REPO/sub-guide.md" '[x](docs/absent.md)' content
+  expect "pi: @-prefixed edit path is normalized" 2 "broken link" \
+    node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
+    "$ROOT/.pi/extensions/doc-links-guard.ts" "$TEMP_REPO" edit "$TEMP_REPO/guide.md" '[x](docs/absent.md)' atpath '[real](fenced-real.md)' 
 else
   echo "SKIP: pi doc-links-guard cases (node with --experimental-strip-types not found)"
 fi

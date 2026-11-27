@@ -31,7 +31,6 @@ KNOWN_BROKEN = {
     ("test-validation/README.md", "./.gitlab/dd-trace-integration/.gitlab-ci.yml"),
 }
 
-_INLINE = re.compile(r"!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(\s*(<[^>]*>|[^()\s]*(?:\([^()]*\)[^()\s]*)*)[^)]*\)")
 _REF_DEF = re.compile(r"^ {0,3}\[[^\]]+\]:\s+(?:<([^>]*)>|(\S+))")
 _HTML = re.compile(r"""(?:href|src)\s*=\s*["']([^"']+)["']""")
 _FENCE = re.compile(r"^ {0,3}(```+|~~~+)")
@@ -60,15 +59,71 @@ def targets(text):
             continue
         if fence is not None:
             continue
-        line = re.sub(r"`[^`]*`", "", line)
-        for m in _INLINE.finditer(line):
-            yield lineno, m.group(1), m.group(2).strip("<>").strip()
+        line = re.sub(r"(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)", "", line)
+        for label, raw in _inline_links(line):
+            yield lineno, label, raw
         m = _REF_DEF.match(line)
         if m:
             raw = m.group(1) or m.group(2)
             yield lineno, "[%s]" % m.group(0)[1:m.group(0).find("]")], raw
         for m in _HTML.finditer(line):
             yield lineno, m.group(0), m.group(1)
+
+
+def _inline_links(line):
+    """(link text, raw destination) for [text](dest) and ![alt](dest), with balanced
+    brackets in the text and a destination parsed with full parenthesis nesting
+    ([x](doc((1)).md) names doc((1)).md, not doc). Escaped brackets are literal."""
+    i, n = 0, len(line)
+    while i < n:
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line[i] != "[":
+            i += 1
+            continue
+        depth, j = 1, i + 1
+        while j < n and depth:
+            if line[j] == "\\":
+                j += 1
+            elif line[j] == "[":
+                depth += 1
+            elif line[j] == "]":
+                depth -= 1
+            j += 1
+        if depth or j >= n or line[j] != "(":
+            i = j + 1
+            continue
+        k = j + 1
+        while k < n and line[k] in " \t":
+            k += 1
+        if k < n and line[k] == "<":
+            end = line.find(">", k + 1)
+            if end == -1:
+                i = j + 1
+                continue
+            yield line[i + 1:j - 1], line[k + 1:end]
+            i = end + 1
+            continue
+        paren, k2 = 1, k
+        while k2 < n:
+            c = line[k2]
+            if c == "\\":
+                k2 += 1
+            elif c == "(":
+                paren += 1
+            elif c == ")":
+                paren -= 1
+                if paren == 0:
+                    break
+            elif c.isspace() and paren == 1:
+                break  # whitespace ends the destination; a title may follow
+            k2 += 1
+        if paren != 0:
+            i = j + 1
+            continue
+        yield line[i + 1:j - 1], line[k:k2]
+        i = k2 + 1
 
 
 def unbalanced(text):
@@ -90,9 +145,11 @@ def resolve(doc, raw):
     """Repo-relative path the link names, or None when it is not a repository-relative
     link. A protocol-relative //host/path URL names a site, and a site-absolute /path
     link resolves against the site root on GitHub, not the repository — both are
-    skipped rather than guessed at."""
-    target = unquote(raw.strip()).split("#", 1)[0].split("?", 1)[0]
-    if not target or _SCHEME.match(raw.strip()) or target.startswith("/"):
+    skipped rather than guessed at. Fragments and queries split before percent-decoding:
+    README.md%23x.md names the file README.md#x.md, not a fragment of README.md."""
+    raw = raw.strip()
+    target = unquote(raw.split("#", 1)[0].split("?", 1)[0])
+    if not target or _SCHEME.match(raw) or target.startswith("/"):
         return None
     return posixpath.normpath(posixpath.join(posixpath.dirname(doc), target))
 
@@ -155,6 +212,8 @@ def self_test():
             '<img src="../img/gone.png"> [frag](B.md#sec) [diff](D(2).md) ![lost](../img/lost.png)',  # EXPECT src, lost
             "[ref]: ../top.md",
             "[known](Old.md) [deep](../deep/x) [gone2](absent(2).md)",  # EXPECT absent(2).md
+            "``[spanskip](Nope2.md)`` [spanbad](Missing3.md) [deep2](doc((1)).md)",  # EXPECT Missing3, doc((1)).md
+            "[enc](missing%23x.md)",                    # EXPECT missing%23x.md (decoded to missing#x.md)
         ]),
         "doc/B.md": "",
     }
@@ -166,6 +225,9 @@ def self_test():
             "doc/A.md:8: broken link '../img/lost.png' (link text 'lost') (no such path in the repository)",
             "doc/A.md:8: broken link '../img/gone.png' (link text 'src=\"../img/gone.png\"') (no such path in the repository)",
             "doc/A.md:10: broken link 'absent(2).md' (link text 'gone2') (no such path in the repository)",
+            "doc/A.md:11: broken link 'Missing3.md' (link text 'spanbad') (no such path in the repository)",
+            "doc/A.md:11: broken link 'doc((1)).md' (link text 'deep2') (no such path in the repository)",
+            "doc/A.md:12: broken link 'missing%23x.md' (link text 'enc') (no such path in the repository)",
             "doc/A.md: KNOWN_BROKEN entry 'Fixed.md' is no longer broken; remove it"]
     if got != want:
         return False, got
@@ -214,8 +276,8 @@ def main(argv):
         # (leading "..") can never be in paths, so it is skipped and reported broken.
         cands = {resolve(args.check_file, raw) for _, _, raw in targets(content)}
         cands.discard(None)
-        inside = {c for c in cands if c != "." and not c.startswith("../")}
-        paths = set()
+        inside = {c for c in cands if c not in {".", ".."} and not c.startswith("../")}
+        paths = {args.check_file}  # the incoming document exists prospectively
         if "." in cands:
             paths.add(".")  # the repository root itself always resolves
         try:

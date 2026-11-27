@@ -65,11 +65,15 @@ for c in 'rm -rf build' 'rm' 'sudo ls' 'cd x && rm -f y' 'true; rm y' 'ls | sudo
          'env rm y' 'exec rm y' 'nohup rm y' 'command rm y' 'xargs rm < list' \
          'env -i rm y' 'time -p rm y' 'xargs -0 rm < list' 'nice rm y' 'setsid rm y' \
          'env FOO=1 exec rm y' $'rm \
--rf y' 'env sudo ls'; do
+-rf y' 'env sudo ls' \
+         'echo "$( (true); rm y)"' 'if true; then rm y; fi' 'for f in y; do rm "$f"; done' \
+         'FOO="two words" rm y' $'# don\'t\nrm y' 'export FOO=1 rm y'; do
   expect "floor denies: $c" 2 "$BLOCK_MSG" pi_hook bash "$c"
 done
 for c in 'ls -la' 'rmdir x' 'grep rm file' 'git rm --cached f' 'echo sudo' 'sudoedit f' '' \
-         'times' 'environ x' 'time ls' "grep 'rm;rm y' file" 'echo "a && rm b"'; do
+         'times' 'environ x' 'time ls' "grep 'rm;rm y' file" 'echo "a && rm b"' \
+         $'cat <<\'EOF\'\nrm -rf build\nEOF' $'cat <<EOF\nrm y\nEOF' 'cat <<< "rm y"' \
+         'echo foo#bar' 'git log # rm y'; do
   expect "floor allows: $c" 0 "" pi_hook bash "$c"
 done
 expect "floor ignores other tools" 0 "" pi_hook read "rm -rf build"
@@ -94,6 +98,9 @@ eq('echo "a && rm b"', ['echo "a && rm b"']); // double-quoted metacharacters ar
 eq("echo $(rm y) end", ["echo $(", "rm y", " end"]); // substitution executes: split
 eq("echo `rm y`", ["echo `", "rm y", ""]);     // backtick substitution executes: split
 eq("echo $(rm)", ["echo $(", "rm", ""]);        // bare form keeps the exact deny match
+eq("echo \"$( (true); rm y)\"", ["echo \"$(", " ", "true", "", " rm y", "\""]); // subshell parens nest inside the substitution
+eq("# don't\nrm y", ["", "rm y"]);      // a comment is not a segment at all
+eq("cat <<'EOF'\nrm -rf build\nEOF\nls", ["cat <<'EOF'", "ls"]); // heredoc body is data
 eq("rm -rf y\\", ["rm -rf y\\"]);              // trailing backslash without newline stays
 eq("(rm y)", ["", "rm y", ""]);               // subshell parens split as separators
 JS

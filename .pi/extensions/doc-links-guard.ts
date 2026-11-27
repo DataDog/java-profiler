@@ -1,8 +1,8 @@
 // Copyright 2026, Datadog, Inc.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 // In-loop floor for the doc-reference constraint that utils/check-doc-links.py enforces
 // repo-wide: markdown an agent writes may not introduce a link to a path the repository
@@ -11,17 +11,47 @@ import { isAbsolute, relative, resolve } from "node:path";
 // in .claude/hooks/doc-links-guard.py. A floor, not a sandbox: other write paths (bash
 // sed -i) bypass it, and exit 2 (environment error) must not wedge the agent.
 export default function (pi: ExtensionAPI) {
+  // cwd → repository root. The checker lives at the root's utils/, so a session whose
+  // cwd is a subdirectory resolves the root once and reuses it.
+  const rootCache = new Map<string, string | null>();
+  function repoRoot(cwd: string): string | null {
+    const cached = rootCache.get(cwd);
+    if (cached !== undefined) return cached;
+    const res = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd, encoding: "utf8", timeout: 10_000,
+    });
+    // git reports the symlink-resolved root (macOS /var → /private/var); the tool's
+    // cwd may be the symlinked form, so both sides go through realpathSync before the
+    // containment comparison.
+    const root = res.status === 0 ? realpathSync(String(res.stdout).trim()) : null;
+    rootCache.set(cwd, root);
+    return root;
+  }
+
   pi.on("tool_call", async (event, ctx) => {
     const tool = String(event.toolName);
     if (tool !== "write" && tool !== "edit") return undefined;
     const input = event.input as Record<string, unknown>;
-    const p = String(input.path ?? input.file_path ?? "");
+    // Pi's file tools accept `@path` mentions; the guard must see the same path.
+    const p = String(input.path ?? input.file_path ?? "").replace(/^@/, "");
     if (!/\.(md|markdown)$/i.test(p)) return undefined;
     // Check the document the call would produce, never just the introduced fragment:
     // a fragment's code fences balance against the surrounding file, so fragment-only
     // checking false-blocks valid edits and misses breaks formed by the combination.
-    const abs = isAbsolute(p) ? p : resolve(ctx.cwd, p);
-    const rel = relative(ctx.cwd, abs);
+    const cwd = realpathSync(ctx.cwd);
+    const root = repoRoot(cwd);
+    if (!root) return undefined; // not a checkout: nothing to check against
+    let abs = isAbsolute(p) ? p : resolve(cwd, p);
+    try {
+      abs = realpathSync(abs); // pi may pass the symlinked path (macOS /var)
+    } catch {
+      try {
+        abs = join(realpathSync(dirname(abs)), basename(abs)); // new file: real parent
+      } catch {
+        return undefined; // parent not resolvable: allow, the write call will fail
+      }
+    }
+    const rel = relative(root, abs);
     if (rel.startsWith("..") || isAbsolute(rel) || rel === "") return undefined; // outside the checkout
     let doc: string | null = null;
     if (tool === "write") {
@@ -50,8 +80,8 @@ export default function (pi: ExtensionAPI) {
     }
     if (doc === null) return undefined;
     const res = spawnSync(
-      "python3", ["utils/check-doc-links.py", "--check-file", rel],
-      { cwd: ctx.cwd, input: doc, encoding: "utf8", timeout: 15_000 },
+      "python3", [join(root, "utils/check-doc-links.py"), "--check-file", rel],
+      { cwd: root, input: doc, encoding: "utf8", timeout: 15_000 },
     );
     if (res.status === 1) {
       return {
