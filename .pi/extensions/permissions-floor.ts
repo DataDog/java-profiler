@@ -7,7 +7,6 @@ import { spawnSync } from "node:child_process";
 // A hygiene floor, not a sandbox: allowed tools (python3 -c, sed -i) can still delete.
 const TRUSTED_REF = "refs/remotes/origin/main"; // qualified: a tag named origin/main must not win
 const DENY_RULE = /^Bash\((.+):\*\)$/;
-const SEGMENT = /[\n;&|()`]+/;
 const ENV_PREFIX = /^(?:\w+=\S*\s+)*/;
 // Launchers that exec their arguments keep the denied command as the payload; one
 // option cluster after the launcher is stripped. Not an argv parser: value-taking
@@ -42,42 +41,74 @@ function deniedCommands(cwd: string): string[] {
   }
 }
 
-// Backslash-newline is a line continuation outside single quotes (bash removes the
-// pair inside double quotes too); inside single quotes both characters are literal,
-// so a quoted argument's text must survive for the deny match on the segment.
-export function joinContinuations(command: string): string {
-  let out = "";
-  let quote: "" | "'" | '"' = "";
+type Ctx = "'" | '"' | "`" | "$(";
+
+// Split a bash command into segments at the separators the shell treats as command
+// boundaries ([\n;&|()] and the command-substitution openers). Never inside single
+// quotes (everything is literal); inside double quotes only at a command substitution
+// boundary, which executes even quoted — so `echo "a && rm b"` is one segment, while
+// `echo "pre`rm y`post"` still yields an `rm y` segment. A backslash-newline is a line
+// continuation outside single quotes (bash removes the pair inside double quotes too);
+// inside single quotes both characters are literal.
+export function splitSegments(command: string): string[] {
+  const segments: string[] = [];
+  let seg = "";
+  const stack: Ctx[] = [];
+  const top = () => (stack.length ? stack[stack.length - 1]! : "");
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
-    if (quote === "'") {
-      out += ch;
-      if (ch === "'") quote = "";
+    const ctx = top();
+    if (ctx === "'") {
+      seg += ch;
+      if (ch === "'") stack.pop();
+      continue;
+    }
+    if ((ctx === "`" && ch === "`") || (ctx === "$(" && ch === ")")) {
+      segments.push(seg + ch);
+      seg = "";
+      stack.pop();
       continue;
     }
     if (ch === "\\") {
       if (command[i + 1] === "\n") { i++; continue; } // line continuation: remove the pair
-      out += ch;
-      if (i + 1 < command.length) out += command[++i]!; // escaped character, verbatim
+      seg += ch;
+      if (i + 1 < command.length) seg += command[++i]!; // escaped character, verbatim
       continue;
     }
-    if (quote === '"') {
-      out += ch;
-      if (ch === '"') quote = "";
+    if (ch === "`" || (ch === "$" && command[i + 1] === "(")) {
+      const opener = ch === "`" ? "`" : "$(";
+      stack.push(opener as Ctx);
+      segments.push(seg + opener);
+      seg = "";
+      if (opener === "$(") i++;
       continue;
     }
-    if (ch === "'" || ch === '"') quote = ch;
-    out += ch;
+    if (ctx === '"') {
+      seg += ch;
+      if (ch === '"') stack.pop();
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      stack.push(ch);
+      seg += ch;
+      continue;
+    }
+    if (/[\n;&|()]/.test(ch)) {
+      segments.push(seg);
+      seg = "";
+      continue;
+    }
+    seg += ch;
   }
-  return out;
+  segments.push(seg);
+  return segments;
 }
 
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
-    const command = joinContinuations(String(event.input.command ?? ""));
     const denied = deniedCommands(ctx.cwd);
-    for (const segment of command.split(SEGMENT)) {
+    for (const segment of splitSegments(String(event.input.command ?? ""))) {
       // Match the segment as written and after stripping each launcher/assignment
       // prefix, so neither a deny rule for the bare command nor one for the launcher
       // form is missed.

@@ -4,7 +4,8 @@
 
 A link to a path the repository does not have is a false claim to every reader, agents
 included. Checked: inline links and images, reference definitions, HTML href/src. Skipped:
-absolute URLs, pure #anchors, and anything inside a code span or fenced code block. A
+absolute URLs, protocol-relative //host URLs, site-absolute /path links, pure
+#anchors, and anything inside a code span or fenced code block. A
 target resolves when it is a tracked or untracked-but-not-ignored file, or a directory
 holding one; build outputs do not count. KNOWN_BROKEN lists the links that were already
 broken when this check was added; an entry that no longer matches a broken link is
@@ -86,12 +87,13 @@ def unbalanced(text):
 
 
 def resolve(doc, raw):
-    """Repo-relative path the link names, or None when it is not a relative link."""
+    """Repo-relative path the link names, or None when it is not a repository-relative
+    link. A protocol-relative //host/path URL names a site, and a site-absolute /path
+    link resolves against the site root on GitHub, not the repository — both are
+    skipped rather than guessed at."""
     target = unquote(raw.strip()).split("#", 1)[0].split("?", 1)[0]
-    if not target or _SCHEME.match(raw.strip()):
+    if not target or _SCHEME.match(raw.strip()) or target.startswith("/"):
         return None
-    if target.startswith("/"):
-        return posixpath.normpath(target.lstrip("/"))
     return posixpath.normpath(posixpath.join(posixpath.dirname(doc), target))
 
 
@@ -115,12 +117,13 @@ def broken_links(docs, paths):
     return out
 
 
-def _listed_paths(root, cands, extra):
-    """Repo paths under the literal candidate pathspecs: tracked, or (with the
-    --others extras) untracked and not ignored — the same universe the full
-    `git ls-files --cached --others --exclude-standard` enumeration returns, restricted
-    to the candidate paths. Raises on a git failure."""
-    argv = ["git", "-C", root, "ls-files", "-z"] + extra + ["--"] + [":(literal)" + c for c in cands]
+def _listed_paths(root, cands):
+    """Repo paths under the literal candidate pathspecs: tracked, or untracked and not
+    ignored — the same universe the full `git ls-files --cached --others
+    --exclude-standard` enumeration returns, restricted to the candidate paths. Raises
+    on a git failure."""
+    argv = ["git", "-C", root, "ls-files", "-z", "--cached", "--others",
+            "--exclude-standard", "--"] + [":(literal)" + c for c in cands]
     res = subprocess.run(argv, stdout=subprocess.PIPE, check=True)
     return {p.decode("utf-8", "surrogateescape") for p in res.stdout.split(b"\0") if p}
 
@@ -142,7 +145,7 @@ def report(broken, known, include_stale=True):
 def self_test():
     docs = {
         "doc/A.md": "\n".join([
-            "[ok](B.md) [dir](sub) [root](..) [anchor](#x) [web](https://example.com/y.md)",
+            "[ok](B.md) [dir](sub) [root](..) [anchor](#x) [web](https://example.com/y.md) [cdn](//cdn.example.com/i.png) [abs](/doc/README.md)",
             "[bad](Missing.md)",                        # EXPECT line 2
             "[outer [inner] text](Missing2.md)",        # EXPECT line 3: nested text brackets
             "`[code](Nope.md)`",
@@ -217,8 +220,7 @@ def main(argv):
             paths.add(".")  # the repository root itself always resolves
         try:
             if inside:
-                for extra in ([], ["--others", "--exclude-standard"]):
-                    paths |= _listed_paths(root, inside, extra)
+                paths |= _listed_paths(root, inside)
         except (OSError, subprocess.CalledProcessError) as exc:
             print("doc links: git ls-files failed: %s" % exc, file=sys.stderr)
             return 2
@@ -240,7 +242,7 @@ def main(argv):
     docs = {}
     for doc in paths:
         full = os.path.join(root, doc)
-        if doc.endswith(".md") and os.path.isfile(full):
+        if doc.endswith((".md", ".markdown")) and os.path.isfile(full):
             with open(full, encoding="utf-8", errors="replace") as fh:
                 docs[doc] = fh.read()
     lines = report(broken_links(docs, paths), KNOWN_BROKEN)

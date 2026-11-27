@@ -19,7 +19,8 @@ _MD_EXTS = (".md", ".markdown")
 def _resulting_content(tool_name, tool_input, incoming_path):
     """The document the tool call would produce, or None when it cannot be determined."""
     if tool_name == "Write":
-        return tool_input.get("content")
+        content = tool_input.get("content")
+        return content if isinstance(content, str) else None
     # Edit/MultiEdit: check the resulting file, never just the introduced fragment —
     # a fragment's code fences balance against the surrounding file, so fragment-only
     # checking false-blocks valid edits and misses breaks formed by the combination.
