@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-27 10:59:06 EST
+**Date:** 2026-11-27 11:20:30 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 54 |
-| CPU Cores (end) | 63 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 61 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 5 |
-| Sample Rate | 0.08/sec |
-| Health Score | 5% |
-| Threads | 5 |
+| CPU Samples | 6 |
+| Sample Rate | 0.10/sec |
+| Health Score | 6% |
+| Threads | 6 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 54-63 cores)</summary>
+<summary>CPU Timeline (4 unique values: 61-96 cores)</summary>
 
 ```
-1795794935 54
-1795794940 54
-1795794945 54
-1795794950 54
-1795794955 54
-1795794960 54
-1795794965 54
-1795794970 54
-1795794975 54
-1795794980 54
-1795794985 54
-1795794990 54
-1795794995 54
-1795795000 54
-1795795005 63
-1795795010 63
-1795795015 63
-1795795020 63
-1795795025 63
-1795795030 63
+1795796171 96
+1795796176 96
+1795796181 68
+1795796186 68
+1795796191 68
+1795796196 68
+1795796201 68
+1795796206 68
+1795796211 63
+1795796216 63
+1795796221 61
+1795796226 61
+1795796231 61
+1795796236 61
+1795796241 61
+1795796246 61
+1795796251 61
+1795796256 61
+1795796261 61
+1795796266 61
 ```
 </details>
 
