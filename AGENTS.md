@@ -125,9 +125,9 @@ JAVA_TEST_HOME=/path/to/test/jdk ./.claude/commands/build-and-summarize :ddprof-
   exceeds `utils/memcheck/budget.txt`; fix the regression or raise the limit with the
   reason in the PR (see [doc/building/MemoryOverheadCheck.md](doc/building/MemoryOverheadCheck.md)).
 - Pinned JDK download URLs (`JAVA_*_URL` in `.github/workflows/cache_java.yml`) are
-  probed daily by `.github/workflows/jdk-url-check.yml`: a stale pin fails the check,
-  files a PROF ticket and blocks the Linux test matrix (see
-  [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md)).
+  probed daily by `.github/workflows/jdk-url-check.yml`: a stale pin fails the check
+  and files a PROF ticket; until the pin is fixed, a cache miss on it fails the jobs
+  that download it (see [doc/building/JdkUpgrades.md](doc/building/JdkUpgrades.md)).
 - Useful properties: `-Pskip-native`, `-Pskip-tests`, `-Pskip-gtest`, `-PkeepJFRs`,
   `-PenableFaultInjection`, `-PenableSamplerPerf` (the last two only affect
   release/debug builds). There is **no** `-Pskip-debug-extraction` property: debug-symbol

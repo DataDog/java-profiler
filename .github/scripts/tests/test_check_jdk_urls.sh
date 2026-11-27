@@ -81,6 +81,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "${FAKE_CURL_DELAY:-}" ] && sleep "$FAKE_CURL_DELAY"
+[ -n "${FAKE_CURL_SILENT:-}" ] && exit 0
 [ -z "$method" ] && { [ -n "$data" ] && method=POST || method=GET; }
 [ "$head" = 1 ] && method=HEAD
 [ "$range" = 1 ] && method=RANGE
@@ -170,7 +171,7 @@ reset_fakes() {
   : > "$FAKE_CURL_LOG"
   unset FAKE_URLS FAKE_OPEN FAKE_IBM_LISTING FAKE_NO_DONE FAKE_JIRA_FAIL FAKE_SLACK_URL FAKE_SLACK_FAIL \
     FAKE_TRANSITION_FAIL FAKE_TRANSITIONS_GET_FAIL FAKE_COMMENT_FAIL FAKE_SEARCH_FAIL FAKE_DOWNLOAD FAKE_TAR_RC \
-    FAKE_CURL_DELAY FAKE_ISSUE_KEYS FAKE_SEARCH_GARBAGE
+    FAKE_CURL_DELAY FAKE_ISSUE_KEYS FAKE_SEARCH_GARBAGE FAKE_CURL_SILENT
 }
 
 with_jira() {
@@ -361,6 +362,34 @@ assert_contains "$output" "::warning::Probe deadline (3s) reached" "deadline exp
 assert_contains "$output" "::warning::Probe deadline reached; skipping the IBM newer-release check" "deadline skips the IBM check"
 assert_not_contains "$(cat "$FAKE_CURL_LOG")" "GET $IBM_BASE" "deadline: no IBM listing fetch after the deadline"
 
+# The deadline warning is printed once, however many pins it skips.
+reset_fakes
+printf '%s\n' 'https://ok.example.invalid/musl21.tar.gz 200' >> "$TEMP_DIR/urls.txt"
+cat > "$TEMP_DIR/deadline2.yml" <<EOF
+env:
+  JAVA_8_IBM_URL: "$IBM_PIN"
+  JAVA_17_MUSL_URL: "https://gone.example.invalid/jdk.tgz"
+  JAVA_11_MUSL_URL: "https://ok.example.invalid/musl11.tar.gz"
+  JAVA_21_MUSL_URL: "https://ok.example.invalid/musl21.tar.gz"
+EOF
+export FAKE_URLS="$TEMP_DIR/urls.txt" FAKE_CURL_DELAY=1 PROBE_DEADLINE_SECONDS=2
+rc=0
+output=$("$CHECK" check --out "$TEMP_DIR/deadline2" --workflow "$TEMP_DIR/deadline2.yml" 2>&1) || rc=$?
+unset FAKE_CURL_DELAY PROBE_DEADLINE_SECONDS
+assert_eq 1 "$rc" "the once-only deadline test still fails on its STALE pin"
+assert_eq "JAVA_21_MUSL_URL:INCONCLUSIVE " "$(awk -F '\t' '$1 == "JAVA_21_MUSL_URL" { printf "%s:%s ", $1, $3 }' "$TEMP_DIR/deadline2/results.tsv")" "the second past-deadline pin is INCONCLUSIVE"
+assert_eq "1" "$(grep -c 'Probe deadline (2s) reached' <<<"$output")" "the deadline warning is printed exactly once"
+
+# probe_once's empty-output fallback reports 000 with the URL as the final URL.
+reset_fakes
+printf 'env:\n  JAVA_11_MUSL_URL: "https://silent.example.invalid/jdk.tgz"\n' > "$TEMP_DIR/silent.yml"
+export FAKE_URLS="$TEMP_DIR/urls.txt" FAKE_CURL_SILENT=1
+output=$("$CHECK" check --out "$TEMP_DIR/silent" --workflow "$TEMP_DIR/silent.yml" 2>&1)
+unset FAKE_CURL_SILENT
+assert_eq "JAVA_11_MUSL_URL 000 https://silent.example.invalid/jdk.tgz" \
+  "$(awk -F '\t' '$1 == "JAVA_11_MUSL_URL" { print $1, $4, $5 }' "$TEMP_DIR/silent/results.tsv")" "a silent curl reports 000 with the URL as the final URL"
+assert_contains "$output" "::warning::Inconclusive check of JAVA_11_MUSL_URL (HTTP 000)" "a silent curl is inconclusive"
+
 cat > "$TEMP_DIR/no-ibm.yml" <<EOF
 env:
   JAVA_11_MUSL_URL: "https://ok.example.invalid/musl11.tar.gz"
@@ -428,6 +457,15 @@ output=$("$CHECK" alert --out "$OK_OUT" --dry-run --force-issue 2>&1)
 assert_contains "$output" "--summary Stale JDK download URL: JAVA_11_MUSL_URL (jdk-url-check) --body-file" "force_issue without an IBM pin reports the first pin"
 output=$("$CHECK" alert --out "$TEMP_DIR/nothing" --dry-run 2>&1)
 assert_contains "$output" "::warning::No check results" "alert without results warns"
+
+# A check run that died between results.tsv and ibm.txt must not kill cmd_alert.
+reset_fakes
+mkdir -p "$TEMP_DIR/noibm"
+head -n 2 "$OUT/results.tsv" > "$TEMP_DIR/noibm/results.tsv"
+rc=0
+output=$("$CHECK" alert --out "$TEMP_DIR/noibm" --dry-run 2>&1) || rc=$?
+assert_eq 0 "$rc" "alert without ibm.txt still runs"
+assert_not_contains "$output" "Newer IBM SDK 8 release" "a missing ibm.txt reads as no-IBM-data"
 
 # --- alert against the fake Jira and Slack -----------------------------------------
 slack_text() {

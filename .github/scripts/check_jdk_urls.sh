@@ -265,7 +265,7 @@ newer_summary() {
 
 bump_procedure() {
   cat <<'EOF'
-Bump procedure (as in PR #1043):
+Bump procedure:
 1. In .github/workflows/cache_java.yml, set the pin to the new release. For JAVA_8_IBM_URL, both the directory and the archive name carry the version.
 2. Update any comment that names the pinned version. Change .github/scripts/java_setup.sh only when the archive layout changed (the ibm branch strips 2 path components).
 3. Open the PR. The edit changes the JDK cache key, so the PR's cache job downloads the new archive, and the jdk-url-check PR run verifies every pin.
@@ -298,7 +298,12 @@ file_alert() {
     FILED_KEY=""
     FILED_STATUS=failed
   else
-    FILED_STATUS=$(cat "$status_file" 2>/dev/null || echo created)
+    FILED_STATUS=$(cat "$status_file" 2>/dev/null)
+    if [ -z "$FILED_STATUS" ]; then
+      echo "::warning::file-jira-issue.sh exited 0 without a status report; treating the filing as failed"
+      FILED_KEY=""
+      FILED_STATUS=failed
+    fi
   fi
 }
 
@@ -402,6 +407,9 @@ cmd_alert() {
     echo "::warning::No check results in $OUT_DIR; nothing to alert on"
     return 0
   fi
+  # The check step can die between results.tsv and ibm.txt; an empty file reads
+  # as no-IBM-data instead of killing cmd_alert on a missing-file sed.
+  [ -f "$ibm" ] || : > "$ibm"
   if [ -z "${RUN_URL:-}" ]; then
     RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-DataDog/java-profiler}/actions/runs/${GITHUB_RUN_ID:-0}"
   fi
