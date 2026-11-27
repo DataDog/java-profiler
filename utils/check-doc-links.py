@@ -92,7 +92,9 @@ def _inline_links(line):
                 depth -= 1
             j += 1
         if depth or j >= n or line[j] != "(":
-            i = j  # resume after the closed bracket: inside it nothing is a link
+            # a closed non-link bracket resumes after its "]"; an unclosed one
+            # re-parses its contents as ordinary text (CommonMark)
+            i = j if not depth else i + 1
             continue
         k = j + 1
         while k < n and line[k] in " \t":
@@ -234,6 +236,7 @@ def self_test():
             "[enc](missing%23x.md)",                    # EXPECT missing%23x.md (decoded to missing#x.md)
             '[titled](Missing4.md "the title") [t2](B.md "t") [esc]\\[skip](Nope4.md)\\]',  # EXPECT Missing4
             '[unterm](Missing5.md "open [real](Missing6.md)',  # EXPECT Missing6: the unclosed construct is text
+            '[unclosed [real2](Missing7.md)',  # EXPECT Missing7: an unclosed bracket is text
         ]),
         "doc/B.md": "",
     }
@@ -250,6 +253,7 @@ def self_test():
             "doc/A.md:12: broken link 'missing%23x.md' (link text 'enc') (no such path in the repository)",
             "doc/A.md:13: broken link 'Missing4.md' (link text 'titled') (no such path in the repository)",
             "doc/A.md:14: broken link 'Missing6.md' (link text 'real') (no such path in the repository)",
+            "doc/A.md:15: broken link 'Missing7.md' (link text 'real2') (no such path in the repository)",
             "doc/A.md: KNOWN_BROKEN entry 'Fixed.md' is no longer broken; remove it"]
     if got != want:
         return False, got
