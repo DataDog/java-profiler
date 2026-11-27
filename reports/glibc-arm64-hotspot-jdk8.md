@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-27 10:39:49 EST
+**Date:** 2026-11-27 10:59:05 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 89 |
-| Sample Rate | 1.48/sec |
-| Health Score | 92% |
-| Threads | 11 |
+| CPU Samples | 85 |
+| Sample Rate | 1.42/sec |
+| Health Score | 89% |
+| Threads | 8 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 5 |
-| Sample Rate | 0.08/sec |
-| Health Score | 5% |
-| Threads | 4 |
+| CPU Samples | 34 |
+| Sample Rate | 0.57/sec |
+| Health Score | 36% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
 
 ```
-1795793620 33
-1795793625 33
-1795793630 33
-1795793635 33
-1795793640 33
-1795793645 33
-1795793650 33
-1795793655 33
-1795793660 33
-1795793665 33
-1795793670 33
-1795793675 33
-1795793680 33
-1795793685 33
-1795793690 33
-1795793695 33
-1795793700 33
-1795793705 33
-1795793710 33
-1795793715 33
+1795794932 33
+1795794937 33
+1795794942 33
+1795794947 33
+1795794952 33
+1795794957 33
+1795794962 33
+1795794967 33
+1795794972 33
+1795794977 33
+1795794982 33
+1795794987 33
+1795794992 33
+1795794997 33
+1795795002 33
+1795795007 33
+1795795012 33
+1795795017 33
+1795795022 33
+1795795027 33
 ```
 </details>
 
