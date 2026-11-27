@@ -821,6 +821,9 @@ const void* VMNMethod::originalPC(const void* pc, uintptr_t unextended_sp, uintp
     } else {
         return nullptr;
     }
+    // An absent handler address is null; no PC is its entry or the return after its call.
+    if (deopt == nullptr) return pc;
+    if (deopt_mh == nullptr) deopt_mh = deopt;
     // Its saved original PC is not decoded, so the frame stays unrecovered and truncated.
     if (pc == static_cast<const char*>(deopt) + DEOPT_HANDLER_CALL_SIZE ||
             pc == static_cast<const char*>(deopt_mh) + DEOPT_HANDLER_CALL_SIZE) return nullptr;

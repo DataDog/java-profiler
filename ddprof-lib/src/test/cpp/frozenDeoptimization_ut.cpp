@@ -121,6 +121,22 @@ TEST_P(FrozenDeoptimizationTest, RejectsJvmciReturnPcAfterHandlerCall) {
     EXPECT_EQ(blob + 256 + call_size + 4, resolve(blob + 256 + call_size + 4)) << "only the call's return PC";
 }
 
+TEST_P(FrozenDeoptimizationTest, AbsentHandlerMatchesNoPc) {
+    if (GetParam() != 0) GTEST_SKIP() << "only absolute handler addresses can be null";
+#if defined(__x86_64__)
+    constexpr uintptr_t call_size = 5;
+#else
+    constexpr uintptr_t call_size = 4;
+#endif
+    const void* after_null_call = reinterpret_cast<const void*>(call_size);
+    metadata().mh_handler = nullptr;
+    EXPECT_EQ(after_null_call, resolve(after_null_call));
+    EXPECT_EQ(blob + 160, resolve(blob + 256));
+    metadata().handler = nullptr;
+    EXPECT_EQ(after_null_call, resolve(after_null_call));
+    EXPECT_EQ(blob + 256, resolve(blob + 256));
+}
+
 TEST_P(FrozenDeoptimizationTest, RejectsInvalidFrameBounds) {
     auto* nm = (VMNMethod*)blob;
     uintptr_t low = (uintptr_t)&stack[0];
