@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-27 14:05:27 EST
+**Date:** 2026-11-27 16:25:33 EST
 
 ### Configuration
 | Setting | Value |
@@ -19,7 +19,7 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | CPU Cores (start) | 18 |
-| CPU Cores (end) | 48 |
+| CPU Cores (end) | 18 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,10 +28,10 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 33 |
-| Sample Rate | 0.55/sec |
-| Health Score | 34% |
-| Threads | 9 |
+| CPU Samples | 30 |
+| Sample Rate | 0.50/sec |
+| Health Score | 31% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk11
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (3 unique values: 18-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
 
 ```
-1795806083 18
-1795806088 18
-1795806093 18
-1795806098 18
-1795806103 18
-1795806108 18
-1795806113 18
-1795806118 18
-1795806123 18
-1795806128 18
-1795806133 18
-1795806138 18
-1795806143 18
-1795806148 18
-1795806153 18
-1795806158 18
-1795806163 18
-1795806168 18
-1795806173 18
-1795806178 18
+1795814512 18
+1795814517 18
+1795814522 18
+1795814527 18
+1795814532 18
+1795814537 18
+1795814542 18
+1795814547 18
+1795814552 18
+1795814557 18
+1795814562 18
+1795814567 18
+1795814572 18
+1795814577 18
+1795814583 18
+1795814588 18
+1795814593 18
+1795814598 18
+1795814603 18
+1795814608 18
 ```
 </details>
 
