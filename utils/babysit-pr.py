@@ -73,14 +73,16 @@ def sleep(seconds):
     time.sleep(seconds * float(os.environ.get("BABYSIT_SLEEP_SCALE", "1")))
 
 
-def run(cmd, timeout, retries=1, stdin=None, cwd=None):
+def run(cmd, timeout, retries=1, stdin=None, cwd=None, whole=False):
     """(rc, stdout, stderr). A timeout counts as a failed attempt; after the last attempt
     it raises EnvError so no caller mistakes a hung call for an answer."""
     for attempt in range(retries):
         limit = timeout
         if _budget_end is not None:
             left = _budget_end - time.time()
-            if left < 1:
+            # whole: a write cut short may or may not have landed, so it starts only
+            # with its full timeout left, which also means it is never cut short.
+            if left < (timeout if whole else 1):
                 raise OutOfTime(started=attempt > 0)
             limit = min(timeout, left)
         try:
@@ -116,7 +118,7 @@ def gh_api(path, method="GET", payload=None, jq=None, paginate=False, ok404=Fals
     if payload is not None:
         cmd += ["--input", "-"]
     rc, out, err = run(cmd, GH_TIMEOUT_S, retries=READ_RETRIES if method == "GET" else 1,
-                       stdin=json.dumps(payload) if payload is not None else None)
+                       stdin=json.dumps(payload) if payload is not None else None, whole=method != "GET")
     if rc != 0:
         if ok404 and "HTTP 404" in err:
             return None
@@ -639,7 +641,7 @@ def is_signed(commit):
 def commit_handoff(h):
     """Commit the applied patch with the checkout's signing config; the new SHA. Refuses
     (with HEAD possibly one commit past the base) on a file mismatch, a failed commit, or
-    an unsigned result."""
+    an unsigned result; a timed-out commit raises EnvError."""
     files = sorted(git("diff", "--cached", "--name-only", "--no-renames", "HEAD").splitlines())
     if files != sorted(h["files"]):
         raise Refused("applied files %s differ from the staged list" % files)
@@ -665,15 +667,24 @@ def review_marker_fresh(branch):
     return rc == 0, (err or out).strip()
 
 
+def guard_push(st, h, head):
+    """Refuse a push past the round cap or the run deadline, or a rebase handoff whose
+    HEAD lacks the base as fetched now (FETCH_HEAD, whatever the remote's refspec)."""
+    if st["fix_rounds_used"] >= MAX_ROUNDS:
+        raise Refused("fix-push round cap (%d) reached" % MAX_ROUNDS)
+    if time.time() >= st["deadline_at"]:
+        raise Refused("the run's two-hour cap has passed; start a new run to push")
+    if h["kind"] == "rebase":
+        git("fetch", "-q", st["remote"], st["base"], timeout=PUSH_TIMEOUT_S)
+        if run(["git", "merge-base", "--is-ancestor", "FETCH_HEAD", head], GIT_TIMEOUT_S)[0] != 0:
+            raise Refused("HEAD is not rebased onto %s/%s; rebase first" % (st["remote"], st["base"]))
+
+
 def cmd_push_and_reply(a):
     with locked(a.pr) as (box, save):
         st = require(box, a.pr)
         h = pending(st, ("fix", "rebase"))
         if h["phase"] in ("staged", "committed") and not (h["kind"] == "fix" and h["phase"] == "staged"):
-            if st["fix_rounds_used"] >= MAX_ROUNDS:
-                raise Refused("fix-push round cap (%d) reached" % MAX_ROUNDS)
-            if time.time() >= st["deadline_at"]:
-                raise Refused("the run's two-hour cap has passed; start a new run to push")
             if gh_api("repos/%s/pulls/%d" % (REPO, a.pr))["state"] != "open":
                 raise Refused("PR is no longer open")
             if git("symbolic-ref", "-q", "--short", "HEAD", check=False) != st["branch"]:
@@ -682,14 +693,13 @@ def cmd_push_and_reply(a):
             if not fresh:
                 raise Refused("review marker not fresh for HEAD; run pre-pr-review first: " + why)
             head = git("rev-parse", "HEAD")
-            if h["kind"] == "rebase":
-                git("fetch", "-q", st["remote"], st["base"], timeout=PUSH_TIMEOUT_S)
-            if h["kind"] == "rebase" and (head == h["base_head"] or run(
-                    ["git", "merge-base", "--is-ancestor", "refs/remotes/%s/%s" % (st["remote"], st["base"]), head],
-                    GIT_TIMEOUT_S)[0] != 0):
-                raise Refused("HEAD is not rebased onto %s/%s; rebase first" % (st["remote"], st["base"]))
+            if head == h["base_head"]:
+                raise Refused("HEAD is still the handoff base: nothing to push (not rebased?)")
             remote_tip = git("ls-remote", st["remote"], "refs/heads/" + st["branch"], timeout=GH_TIMEOUT_S)
-            if remote_tip.split("\t")[0] != head:  # equal: pushed before a crash lost the save
+            # Equal: pushed before a crash lost the save. The push guards below apply only
+            # to a push still to make, so recovering the replies works past every cap.
+            if remote_tip.split("\t")[0] != head:
+                guard_push(st, h, head)
                 rc, _, err = run(["git", "push", st["remote"],
                                   "--force-with-lease=refs/heads/%s:%s" % (st["branch"], h["base_head"]),
                                   "HEAD:refs/heads/%s" % st["branch"]], PUSH_TIMEOUT_S)

@@ -45,11 +45,11 @@ the worker needs:
   2. Run the `pre-pr-review` skill on the `review_range` it prints. Findings go back
      into the fix (amend, then review again) or to the user.
   3. `push-and-reply --pr <n>`. It checks that the PR is open, the review marker is
-     fresh, and the round cap; pushes `HEAD:<branch>` to the branch's remote with
+     fresh, and both caps; pushes `HEAD:<branch>` to the branch's remote with
      `--force-with-lease` against the handoff base; and only after the push succeeds,
      posts the queued replies with `{commit}` replaced by the pushed SHA and
      re-requests the listed reviewers. If it is interrupted after the push, run it
-     again: it does not push twice and posts only the missing replies. A lease
+     again, also past the caps: it does not push twice and posts only the missing replies. A lease
      rejection means the branch moved: fetch, tell the user, do not force.
 - **`decision`** — a design question with options and a recommendation. Bring it to
   the user. Post the decided reply with `reply`, or implement the choice yourself,
@@ -78,7 +78,8 @@ when the PR branch predates it: `B="python3 <checkout>/utils/babysit-pr.py"`.
    - `action_needed` → handle every event in `events` (step 2), then `wait` again.
 2. Events. The CLI already applied the trust gate: every event comes from a trusted
    author. Untrusted comments never reach you; they go to the stop summary.
-   Comment events carry the full `body`; `gist` is a 200-character preview.
+   `thread`, `review` and `comment` events carry the full `body`; `gist` is a
+   200-character preview.
    - `thread`, `review`, `comment`: ground the finding against the code.
      - Wrong, stale or already fixed → `$B reply --pr <n> --to <id> --kind inline|issue
        --body-file <f> --ack <key>` with the evidence. Inline threads use the root

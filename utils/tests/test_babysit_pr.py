@@ -611,6 +611,23 @@ class CliTest(unittest.TestCase):
         self.assertIn("two-hour cap", self.cli("push-and-reply", rc=1)["reason"])
         self.assertEqual(self.git("ls-remote", "origin", "refs/heads/topic").split()[0], self.head)
 
+    def test_replies_recover_after_cap_when_push_landed(self):
+        self.cli("start")
+        commit = self.stage_fix(self.worker()) and self.cli("apply-handoff")["commit"]
+        self.write_marker()
+        self.git("push", "-q", "origin", "HEAD:topic")
+        self.edit_state(deadline_at=1)
+        self.assertEqual(self.cli("push-and-reply")["commit"], commit)
+        self.assertIn("POST repos/o/r/pulls/1/comments/10/replies", [c["key"] for c in self.calls()])
+
+    def test_write_needs_full_timeout_left(self):
+        mod = self.load_cli()
+        mod._budget_end = mod.time.time() + 30
+        with self.assertRaises(mod.OutOfTime) as cm:
+            mod.run(["true"], 60, whole=True)
+        self.assertFalse(cm.exception.started)
+        self.assertEqual(mod.run(["true"], 60)[0], 0)
+
     def test_no_poll_once_slice_ended(self):
         self.cli("start")
         self.edit_state(next_poll_at=0)
@@ -656,7 +673,7 @@ class CliTest(unittest.TestCase):
         mod.gh_api = gh_api
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(mod.main(["wait", "--pr", "1", "--immediate", "--max-wait", "0"]), 0)
-        self.assertEqual(json.loads(out.getvalue())["outcome"], "continue")
+        self.assertEqual(json.loads(out.getvalue()), {"outcome": "continue", "next_poll_in_s": 0})
         with open(self.state_path()) as f:
             self.assertEqual(json.load(f)["retried_runs"], [])
 
