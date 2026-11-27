@@ -195,6 +195,9 @@ JS
   expect "pi: write into a nonexistent parent directory is checked" 2 "broken link" \
     node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
     "$ROOT/.pi/extensions/doc-links-guard.ts" "$TEMP_REPO" write "$TEMP_REPO/new/docs/guide.md" '[x](docs/absent.md)' content
+  expect "pi: nonexistent-parent write resolves through the real ancestor" 0 "" \
+    node --experimental-strip-types --no-warnings "$TEMP_DIR/pi-driver.mjs" \
+    "$ROOT/.pi/extensions/doc-links-guard.ts" "$TEMP_REPO" write "$TEMP_REPO/new/docs/guide.md" '[x](../../fenced-real.md)' content
 else
   echo "SKIP: pi doc-links-guard cases (node with --experimental-strip-types not found)"
 fi

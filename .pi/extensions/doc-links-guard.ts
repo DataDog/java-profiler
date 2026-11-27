@@ -58,7 +58,8 @@ export default function (pi: ExtensionAPI) {
       let probe = abs;
       for (;;) {
         try {
-          abs = join(realpathSync(dirname(probe)), ...tail.reverse(), basename(probe));
+          // tail holds the components below the existing ancestor, deepest first
+          abs = join(realpathSync(dirname(probe)), basename(probe), ...tail);
           break;
         } catch {
           const parent = dirname(probe);
