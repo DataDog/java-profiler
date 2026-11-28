@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-11-27 17:07:29 EST
+**Date:** 2026-11-28 00:04:22 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 51 |
-| CPU Cores (end) | 51 |
+| CPU Cores (start) | 21 |
+| CPU Cores (end) | 21 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,10 +28,10 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 34 |
-| Sample Rate | 0.57/sec |
-| Health Score | 36% |
-| Threads | 8 |
+| CPU Samples | 30 |
+| Sample Rate | 0.50/sec |
+| Health Score | 31% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk11
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
+<summary>CPU Timeline (1 unique values: 21-21 cores)</summary>
 
 ```
-1795817043 51
-1795817048 51
-1795817053 51
-1795817058 51
-1795817063 51
-1795817068 51
-1795817073 51
-1795817078 51
-1795817083 51
-1795817088 51
-1795817093 51
-1795817098 51
-1795817103 51
-1795817108 51
-1795817113 51
-1795817118 51
-1795817123 51
-1795817128 51
-1795817133 51
-1795817138 51
+1795842022 21
+1795842027 21
+1795842032 21
+1795842037 21
+1795842042 21
+1795842047 21
+1795842052 21
+1795842057 21
+1795842062 21
+1795842067 21
+1795842072 21
+1795842077 21
+1795842082 21
+1795842087 21
+1795842092 21
+1795842097 21
+1795842102 21
+1795842107 21
+1795842112 21
+1795842117 21
 ```
 </details>
 

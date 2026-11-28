@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-11-27 17:07:28 EST
+**Date:** 2026-11-28 00:04:20 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 96 |
-| Sample Rate | 1.60/sec |
-| Health Score | 100% |
-| Threads | 10 |
+| CPU Samples | 104 |
+| Sample Rate | 1.73/sec |
+| Health Score | 108% |
+| Threads | 11 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 57 |
-| Sample Rate | 0.95/sec |
-| Health Score | 59% |
-| Threads | 10 |
+| CPU Samples | 102 |
+| Sample Rate | 1.70/sec |
+| Health Score | 106% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1795817028 34
-1795817033 34
-1795817038 34
-1795817043 34
-1795817048 34
-1795817053 34
-1795817058 34
-1795817063 34
-1795817068 34
-1795817073 34
-1795817078 34
-1795817083 34
-1795817088 34
-1795817093 34
-1795817098 34
-1795817103 34
-1795817108 34
-1795817113 34
-1795817118 34
-1795817123 34
+1795842023 34
+1795842028 34
+1795842033 34
+1795842038 34
+1795842043 34
+1795842048 34
+1795842053 34
+1795842058 34
+1795842063 34
+1795842068 34
+1795842073 34
+1795842078 34
+1795842083 34
+1795842088 34
+1795842093 34
+1795842098 34
+1795842103 34
+1795842108 34
+1795842113 34
+1795842118 34
 ```
 </details>
 
